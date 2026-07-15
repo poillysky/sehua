@@ -3,12 +3,6 @@ name: Build and push images
 on:
   push:
     branches: [main]
-    paths:
-      - "backend/**"
-      - "database/**"
-      - "frontend/admin/**"
-      - "next-web/**"
-      - ".github/workflows/docker.yml"
   workflow_dispatch:
 
 permissions:
