@@ -44,11 +44,8 @@ jobs:
             ${{ env.GHCR }}/${{ github.repository_owner }}/sehuatang-backend
             ${{ env.DOCKERHUB_USER }}/sehuatang-backend
           tags: |
-            type=raw,value=latest,enable={{is_default_branch}}
             type=raw,value=${{ env.RELEASE_TAG }},enable={{is_default_branch}}
             type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=sha,prefix=,format=short
 
       - uses: docker/build-push-action@v6
         with:
@@ -108,11 +105,8 @@ jobs:
             ${{ env.GHCR }}/${{ github.repository_owner }}/sehuatang-admin
             ${{ env.DOCKERHUB_USER }}/sehuatang-admin
           tags: |
-            type=raw,value=latest,enable={{is_default_branch}}
             type=raw,value=${{ env.RELEASE_TAG }},enable={{is_default_branch}}
             type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=sha,prefix=,format=short
 
       - uses: docker/build-push-action@v6
         with:
@@ -184,11 +178,8 @@ jobs:
             ${{ env.GHCR }}/${{ github.repository_owner }}/sehuatang-search
             ${{ env.DOCKERHUB_USER }}/sehuatang-search
           tags: |
-            type=raw,value=latest,enable={{is_default_branch}}
             type=raw,value=${{ env.RELEASE_TAG }},enable={{is_default_branch}}
             type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=sha,prefix=,format=short
 
       - uses: docker/build-push-action@v6
         with:
