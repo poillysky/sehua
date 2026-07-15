@@ -7,7 +7,7 @@
 #   2. 国内可直接 pull Docker Hub（一般比 ghcr.io 快）
 #   3. docker compose -f docker-compose.nas.yml pull
 #   4. docker compose -f docker-compose.nas.yml up -d
-#   5. 检查: 搜索 http://NAS_IP:3010  管理 http://NAS_IP:8081
+#   5. 检查: 搜索 http://NAS_IP:3010  管理 http://NAS_IP:8082
 #      （backend 不映射宿主机端口，健康检查经管理端 /health 或容器内访问）
 #
 # 说明:
@@ -82,7 +82,7 @@ services:
     container_name: sehuatang-admin
     restart: always
     ports:
-      - "8081:80"
+      - "8082:80"
     depends_on:
       - backend
 
