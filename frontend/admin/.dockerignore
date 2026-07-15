@@ -1,8 +1,8 @@
 node_modules/
-dist/
 .env
 .env.*
 *.log
 .vscode/
 .idea/
 .git/
+# 注意：不要忽略 dist/ —— CI 用 Dockerfile.runtime 需要 COPY dist
