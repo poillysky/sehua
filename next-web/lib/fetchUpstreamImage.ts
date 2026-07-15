@@ -1,6 +1,7 @@
 import dns from "node:dns";
 import http from "node:http";
 import https from "node:https";
+import type { LookupFunction } from "node:net";
 
 const UPSTREAM_TIMEOUT_MS = Number(process.env.IMAGE_PROXY_TIMEOUT_MS || 30_000);
 
@@ -11,17 +12,18 @@ const UPSTREAM_HEADERS = {
   Accept: "image/avif,image/webp,image/apng,image/*,*/*;q=0.8",
 };
 
-function ipv4Lookup(
+/** Force IPv4. @types/node LookupFunction only models all:true; runtime uses one-address form. */
+const ipv4Lookup = ((
   hostname: string,
-  _options: unknown,
+  _options: dns.LookupOptions,
   callback: (
     err: NodeJS.ErrnoException | null,
     address: string,
-    family?: number,
+    family: number,
   ) => void,
-) {
+) => {
   dns.lookup(hostname, { family: 4 }, callback);
-}
+}) as unknown as LookupFunction;
 
 export function fetchUpstreamImage(
   url: string,

@@ -15,7 +15,7 @@ function getAllowedImageHosts() {
 }
 
 function matchesAllowedHost(hostname: string, allowedHosts: Set<string>) {
-  for (const host of allowedHosts) {
+  for (const host of Array.from(allowedHosts)) {
     if (hostname === host || hostname.endsWith(`.${host}`)) {
       return true;
     }
