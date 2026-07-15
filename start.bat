@@ -74,14 +74,14 @@ start "sehuatang-admin" /D "%ADMIN%" cmd /k "npm run dev"
 
 timeout /t 1 /nobreak >nul
 
-echo [3/3] 启动搜索前端 Search :3008
+echo [3/3] 启动搜索前端 Search :3010
 start "sehuatang-search" /D "%SEARCH%" cmd /k "npm run dev"
 
 echo.
 echo ----------------------------------------
 echo  后端健康检查  http://127.0.0.1:8080/health
 echo  管理后台      http://localhost:8081
-echo  搜索前端      http://localhost:3008
+echo  搜索前端      http://localhost:3010
 echo  默认账号      admin / admin123 （仅管理后台）
 echo ----------------------------------------
 echo  已打开三个控制台窗口；关闭对应窗口即可停止。

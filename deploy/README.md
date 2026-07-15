@@ -37,7 +37,7 @@ chmod +x update.sh
 
 | 服务 | 地址 |
 |------|------|
-| 搜索 | http://NAS_IP:3008 |
+| 搜索 | http://NAS_IP:3010 |
 | 管理 | http://NAS_IP:8081 |
 | API | http://NAS_IP:8080/health |
 

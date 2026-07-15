@@ -21,7 +21,7 @@ function parseTab(value: string | null): Tab {
 
 function GeneralSettingsPanel() {
   const [proxy, setProxy] = useState('')
-  const [searchFront, setSearchFront] = useState('http://localhost:3008')
+  const [searchFront, setSearchFront] = useState('http://localhost:3010')
   const [intervalLabel, setIntervalLabel] = useState('连续无间隔')
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
@@ -30,7 +30,7 @@ function GeneralSettingsPanel() {
     void fetchSettings()
       .then((s) => {
         setProxy(s.web_crawler_proxy || '')
-        setSearchFront(s.search_frontend_url || 'http://localhost:3008')
+        setSearchFront(s.search_frontend_url || 'http://localhost:3010')
         setIntervalLabel(s.crawl_interval_label || '连续无间隔')
       })
       .catch((err) => toast.error(err instanceof Error ? err.message : '读取失败'))
@@ -42,10 +42,10 @@ function GeneralSettingsPanel() {
     try {
       const saved = await saveSettings({
         web_crawler_proxy: proxy.trim(),
-        search_frontend_url: searchFront.trim() || 'http://localhost:3008',
+        search_frontend_url: searchFront.trim() || 'http://localhost:3010',
       })
       setProxy(saved.web_crawler_proxy || '')
-      setSearchFront(saved.search_frontend_url || 'http://localhost:3008')
+      setSearchFront(saved.search_frontend_url || 'http://localhost:3010')
       toast.success('通用配置已保存')
     } catch (err) {
       toast.error(err instanceof Error ? err.message : '保存失败')
