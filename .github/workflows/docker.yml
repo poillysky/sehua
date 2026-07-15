@@ -10,7 +10,8 @@ permissions:
   packages: write
 
 env:
-  REGISTRY: ghcr.io
+  GHCR: ghcr.io
+  DOCKERHUB_USER: poillysky
 
 jobs:
   backend:
@@ -20,16 +21,25 @@ jobs:
 
       - uses: docker/setup-buildx-action@v3
 
-      - uses: docker/login-action@v3
+      - name: Login GHCR
+        uses: docker/login-action@v3
         with:
-          registry: ${{ env.REGISTRY }}
+          registry: ${{ env.GHCR }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Login Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ env.DOCKERHUB_USER }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
 
       - id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ${{ env.REGISTRY }}/${{ github.repository_owner }}/sehuatang-backend
+          images: |
+            ${{ env.GHCR }}/${{ github.repository_owner }}/sehuatang-backend
+            ${{ env.DOCKERHUB_USER }}/sehuatang-backend
           tags: |
             type=raw,value=latest,enable={{is_default_branch}}
             type=sha,prefix=,format=short
@@ -72,16 +82,25 @@ jobs:
 
       - uses: docker/setup-buildx-action@v3
 
-      - uses: docker/login-action@v3
+      - name: Login GHCR
+        uses: docker/login-action@v3
         with:
-          registry: ${{ env.REGISTRY }}
+          registry: ${{ env.GHCR }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Login Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ env.DOCKERHUB_USER }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
 
       - id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ${{ env.REGISTRY }}/${{ github.repository_owner }}/sehuatang-admin
+          images: |
+            ${{ env.GHCR }}/${{ github.repository_owner }}/sehuatang-admin
+            ${{ env.DOCKERHUB_USER }}/sehuatang-admin
           tags: |
             type=raw,value=latest,enable={{is_default_branch}}
             type=sha,prefix=,format=short
@@ -132,21 +151,29 @@ jobs:
           mkdir -p /tmp/search-runtime/.next/static
           cp -a next-web/.next/static/. /tmp/search-runtime/.next/static/
           cp next-web/Dockerfile.runtime /tmp/search-runtime/Dockerfile
-          # standalone 根目录已有 server.js；补 public/.next/static
           test -f /tmp/search-runtime/server.js
 
       - uses: docker/setup-buildx-action@v3
 
-      - uses: docker/login-action@v3
+      - name: Login GHCR
+        uses: docker/login-action@v3
         with:
-          registry: ${{ env.REGISTRY }}
+          registry: ${{ env.GHCR }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Login Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ env.DOCKERHUB_USER }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
 
       - id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ${{ env.REGISTRY }}/${{ github.repository_owner }}/sehuatang-search
+          images: |
+            ${{ env.GHCR }}/${{ github.repository_owner }}/sehuatang-search
+            ${{ env.DOCKERHUB_USER }}/sehuatang-search
           tags: |
             type=raw,value=latest,enable={{is_default_branch}}
             type=sha,prefix=,format=short
