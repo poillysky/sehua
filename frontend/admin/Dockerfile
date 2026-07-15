@@ -1,12 +1,11 @@
 # syntax=docker/dockerfile:1
-
-# Vite 8 / oxlint 需要 Node >= 20.19 或 >= 22.12；用 22 更稳
+# 本地一键构建仍可用: docker build -t sehuatang-admin ./frontend/admin
 FROM node:22-bookworm-slim AS build
 WORKDIR /app
 COPY package.json package-lock.json ./
-RUN npm ci --no-audit --no-fund
+RUN npm install --no-audit --no-fund
 COPY . .
-RUN npm run build
+RUN npx vite build
 
 FROM nginx:1.27-alpine
 COPY deploy/nginx.conf /etc/nginx/conf.d/default.conf
