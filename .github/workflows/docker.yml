@@ -63,6 +63,13 @@ jobs:
           npx vite build
           test -d dist
 
+      - name: Stage runtime context
+        run: |
+          mkdir -p /tmp/admin-runtime/deploy
+          cp -a frontend/admin/dist /tmp/admin-runtime/dist
+          cp frontend/admin/deploy/nginx.conf /tmp/admin-runtime/deploy/nginx.conf
+          cp frontend/admin/Dockerfile.runtime /tmp/admin-runtime/Dockerfile
+
       - uses: docker/setup-buildx-action@v3
 
       - uses: docker/login-action@v3
@@ -81,8 +88,8 @@ jobs:
 
       - uses: docker/build-push-action@v6
         with:
-          context: frontend/admin
-          file: frontend/admin/Dockerfile.runtime
+          context: /tmp/admin-runtime
+          file: /tmp/admin-runtime/Dockerfile
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
@@ -108,6 +115,7 @@ jobs:
           DOCKER_BUILD: "1"
           NODE_OPTIONS: "--max-old-space-size=4096"
           npm_config_registry: https://registry.npmjs.org/
+          ACTIONS_ALLOW_USE_UNSECURE_NODE_VERSION: "true"
         run: |
           npm install --no-audit --no-fund --legacy-peer-deps
           node -e "console.log('next', require('next/package.json').version)"
@@ -115,6 +123,17 @@ jobs:
           NODE_ENV=production node node_modules/next/dist/bin/next build
           test -f .next/standalone/server.js
           test -d .next/static
+
+      - name: Stage runtime context
+        run: |
+          mkdir -p /tmp/search-runtime/public /tmp/search-runtime/.next
+          cp -a next-web/public/. /tmp/search-runtime/public/
+          cp -a next-web/.next/standalone/. /tmp/search-runtime/
+          mkdir -p /tmp/search-runtime/.next/static
+          cp -a next-web/.next/static/. /tmp/search-runtime/.next/static/
+          cp next-web/Dockerfile.runtime /tmp/search-runtime/Dockerfile
+          # standalone 根目录已有 server.js；补 public/.next/static
+          test -f /tmp/search-runtime/server.js
 
       - uses: docker/setup-buildx-action@v3
 
@@ -134,8 +153,8 @@ jobs:
 
       - uses: docker/build-push-action@v6
         with:
-          context: next-web
-          file: next-web/Dockerfile.runtime
+          context: /tmp/search-runtime
+          file: /tmp/search-runtime/Dockerfile
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}

@@ -1,6 +1,4 @@
-﻿node_modules/
-.next/
-out/
+node_modules/
 .git/
 .env
 .env.local
@@ -13,3 +11,6 @@ docker-compose*.yml
 moke/
 transferring/
 CACHED/
+.next/cache
+.next/diagnostics
+.next/types
