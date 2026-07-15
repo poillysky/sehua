@@ -10,7 +10,8 @@
  */
 function isIosPwa(): boolean {
   try {
-    if (window.navigator.standalone === true) return true
+    const nav = window.navigator as Navigator & { standalone?: boolean }
+    if (nav.standalone === true) return true
     if (typeof window.matchMedia !== 'function') return false
     return (
       window.matchMedia('(display-mode: standalone)').matches ||

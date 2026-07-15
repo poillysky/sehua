@@ -1,16 +1,17 @@
-﻿# GitHub Actions 默认用官方镜像；国内可 --build-# GitHub Actions 用官方镜像；国内本地构建可: --build-arg NODE_IMAGE=docker.m.daocloud.io/library/node:20-alpine
-ARG NODE_IMAGE=node:20-alpine
-ARG NODE_IMAGE=node:20-alpine
+﻿# GitHub Actions / 通用构建默认官方 Debian 镜像（glibc，jieba 原生包更稳）
+# 国内本地若拉不动可: --build-arg NODE_IMAGE=docker.m.daocloud.io/library/node:20-bookworm-slim
+ARG NODE_IMAGE=node:20-bookworm-slim
 
 FROM ${NODE_IMAGE} AS base
 WORKDIR /app
-ENV npm_config_registry=https://registry.npmmirror.com \
+# CI 用官方源；覆盖仓库内 .npmrc 的 npmmirror，避免海外 runner 抽风
+ENV npm_config_registry=https://registry.npmjs.org/ \
     npm_config_fetch_timeout=600000 \
     npm_config_fetch_retries=5
 
 FROM base AS deps
-COPY package.json package-lock.json .npmrc ./
-RUN npm ci --no-audit --no-fund
+COPY package.json package-lock.json ./
+RUN npm ci --no-audit --no-fund --legacy-peer-deps
 
 FROM base AS builder
 ENV BUILD_MODE=standalone \
@@ -26,13 +27,14 @@ RUN node -e "console.log('next', require('next/package.json').version)" \
 FROM ${NODE_IMAGE} AS runner
 WORKDIR /app
 ENV NODE_ENV=production
-RUN apk add --no-cache ca-certificates
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder /app/package.json ./package.json
 COPY --from=builder /app/public ./public
 COPY --from=builder /app/.next/standalone ./
 COPY --from=builder /app/.next/static ./.next/static
-COPY --from=builder /app/.next/server ./.next/server
 RUN mkdir -p .next/cache data
 
 EXPOSE 3000

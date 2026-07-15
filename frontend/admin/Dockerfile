@@ -1,6 +1,7 @@
 # syntax=docker/dockerfile:1
 
-FROM node:20-alpine AS build
+# Vite 8 / oxlint 需要 Node >= 20.19 或 >= 22.12；用 22 更稳
+FROM node:22-bookworm-slim AS build
 WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci --no-audit --no-fund
