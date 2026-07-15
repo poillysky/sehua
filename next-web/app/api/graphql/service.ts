@@ -13,6 +13,7 @@ import {
   linkKindOf,
   normalizeEd2kLinks,
   parseEd2kLink,
+  RESOURCE_HASH_REGEX,
 } from "@/utils/resource";
 
 /** 公开搜索：排除占位 stub（unavailable://） */
@@ -128,9 +129,6 @@ const LIST_RESOURCE_SELECT = `
   rs.ed2k_links,
   rs.extract_password
 `;
-
-// ED2K 32 位 / 磁力 infohash 40 位（十六进制）
-const RESOURCE_HASH_REGEX = /^[a-f0-9]{32}([a-f0-9]{8})?$/i;
 
 const FUZZY_STOPWORDS = new Set([
   "的",

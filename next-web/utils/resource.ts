@@ -172,6 +172,13 @@ export function linkKindOf(link?: string | null): "ed2k" | "magnet" | "other" {
   return "other";
 }
 
+/** ED2K MD4：32 位十六进制；磁力 infohash：40 位十六进制。 */
+export const RESOURCE_HASH_REGEX = /^[a-f0-9]{32}([a-f0-9]{8})?$/i;
+
+export function isResourceHash(hash?: string | null): boolean {
+  return !!hash && RESOURCE_HASH_REGEX.test(hash);
+}
+
 export function parseEd2kLink(link: string) {
   const match = link.match(ED2K_LINK_RE);
 

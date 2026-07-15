@@ -5,14 +5,15 @@ import { cache } from "react";
 import { resourceByHash } from "@/app/api/graphql/service";
 import { base64ToHex } from "@/utils";
 import { DetailContent } from "@/components/DetailContent";
-import { getDisplayTitle } from "@/utils/resource";
+import { getDisplayTitle, isResourceHash } from "@/utils/resource";
 
 export const dynamic = "force-dynamic";
 
 const fetchData = cache(async (hash64: string) => {
   const hash = base64ToHex(hash64);
 
-  if (!hash || hash.length !== 32) {
+  // 支持 ed2k 32 位 / 磁力 infohash 40 位
+  if (!isResourceHash(hash)) {
     console.error("Invalid hash", hash);
     notFound();
   }

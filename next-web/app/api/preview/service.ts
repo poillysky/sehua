@@ -1,5 +1,6 @@
 import { base64ToHex } from "@/utils";
 import { resourceByHash } from "@/app/api/graphql/service";
+import { isResourceHash } from "@/utils/resource";
 
 export const fail = (message: string, status: number = 500) => {
   return Response.json(
@@ -35,7 +36,8 @@ export const success = (data: unknown) => {
 export async function getPreviewInfo(hash64: string) {
   const hash = base64ToHex(hash64);
 
-  if (!hash || hash.length !== 32) {
+  // 支持 ed2k 32 位 / 磁力 infohash 40 位
+  if (!isResourceHash(hash)) {
     throw new Error("Invalid hash");
   }
 
