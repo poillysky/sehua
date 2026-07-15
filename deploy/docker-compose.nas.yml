@@ -7,8 +7,8 @@
 #   2. 国内可直接 pull Docker Hub（一般比 ghcr.io 快）
 #   3. docker compose -f docker-compose.nas.yml pull
 #   4. docker compose -f docker-compose.nas.yml up -d
-#   5. 检查: curl http://127.0.0.1:8080/health
-#            搜索 http://NAS_IP:3010  管理 http://NAS_IP:8081
+#   5. 检查: 搜索 http://NAS_IP:3010  管理 http://NAS_IP:8081
+#      （backend 不映射宿主机端口，健康检查经管理端 /health 或容器内访问）
 #
 # 说明:
 #   - postgres 容器名改为 sehuatang-postgres，数据目录与账号不变 → 库数据保留
@@ -56,8 +56,7 @@ services:
     image: poillysky/sehuatang-backend:latest
     container_name: sehuatang-backend
     restart: always
-    ports:
-      - "8080:8080"
+    # 不对宿主机暴露 8080：浏览器走 admin:8081，由 Nginx 反代到 backend:8080
     shm_size: 2g
     environment:
       POSTGRES_HOST: postgres
