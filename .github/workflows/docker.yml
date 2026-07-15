@@ -13,7 +13,7 @@ permissions:
 env:
   GHCR: ghcr.io
   DOCKERHUB_USER: poillysky
-  # 发版时同步打此版本号到 Hub/GHCR（与 git tag v1.0.1 对应）
+  # 当前发版号；下次发版改为 1.0.2 等，旧版本标签仍保留在 Hub
   RELEASE_TAG: "1.0.1"
 
 jobs:
@@ -45,6 +45,7 @@ jobs:
             ${{ env.DOCKERHUB_USER }}/sehuatang-backend
           tags: |
             type=raw,value=${{ env.RELEASE_TAG }},enable={{is_default_branch}}
+            type=raw,value=latest,enable={{is_default_branch}}
             type=semver,pattern={{version}}
 
       - uses: docker/build-push-action@v6
@@ -106,6 +107,7 @@ jobs:
             ${{ env.DOCKERHUB_USER }}/sehuatang-admin
           tags: |
             type=raw,value=${{ env.RELEASE_TAG }},enable={{is_default_branch}}
+            type=raw,value=latest,enable={{is_default_branch}}
             type=semver,pattern={{version}}
 
       - uses: docker/build-push-action@v6
@@ -179,6 +181,7 @@ jobs:
             ${{ env.DOCKERHUB_USER }}/sehuatang-search
           tags: |
             type=raw,value=${{ env.RELEASE_TAG }},enable={{is_default_branch}}
+            type=raw,value=latest,enable={{is_default_branch}}
             type=semver,pattern={{version}}
 
       - uses: docker/build-push-action@v6

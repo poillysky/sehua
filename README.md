@@ -3,7 +3,7 @@
 色花堂资源采集与检索：**采集后端 + 管理前端 + 搜索前端**，共享 PostgreSQL。  
 生产目标为家庭 NAS **全栈 Docker**；镜像由 GitHub Actions 构建并推送到 **Docker Hub**（及 GHCR），NAS **只 pull、不本地 build**。
 
-当前版本：**1.0.1**（见 [`VERSION`](./VERSION)）。Hub / GHCR **仅保留该版本标签**。
+当前版本：**1.0.1**（见 [`VERSION`](./VERSION)）。发版按 `1.0.1` → `1.0.2` → … **递增叠加**，旧版本标签保留。
 
 ---
 
@@ -48,17 +48,21 @@ sehuatang/
 
 ---
 
-## Docker 镜像（仅 1.0.1）
+## Docker 镜像
 
 ### Docker Hub（NAS 推荐）
 
-| 服务 | 镜像 |
-|------|------|
+| 服务 | 当前标签 |
+|------|----------|
 | 后端 | [`poillysky/sehuatang-backend:1.0.1`](https://hub.docker.com/r/poillysky/sehuatang-backend) |
 | 管理 | [`poillysky/sehuatang-admin:1.0.1`](https://hub.docker.com/r/poillysky/sehuatang-admin) |
 | 搜索 | [`poillysky/sehuatang-search:1.0.1`](https://hub.docker.com/r/poillysky/sehuatang-search) |
 
 账号：https://hub.docker.com/u/poillysky
+
+每次发版会推送 **版本号**（如 `1.0.1`）和 **`latest`（始终指向当前最新版）**。历史版本号会留在 Hub（`1.0.1`、`1.0.2`…），NAS Compose 用固定版本号钉住。
+
+发版前若只要清掉「还没版本号时」的杂标签：Hub → Tags → 删除多余短 SHA 等即可，**不要删已发布的 `1.0.1`**。
 
 ### GHCR（可选）
 
@@ -66,9 +70,7 @@ sehuatang/
 - `ghcr.io/poillysky/sehuatang-admin:1.0.1`
 - `ghcr.io/poillysky/sehuatang-search:1.0.1`
 
-CI：`.github/workflows/docker.yml`（仅推送 `RELEASE_TAG`，当前为 `1.0.1`）。
-
-清理旧标签（Hub 网页）：仓库 → Tags → 删除 `latest`、短 SHA 等，只留 `1.0.1`。
+CI：`.github/workflows/docker.yml`（`RELEASE_TAG` + `latest`）。
 
 ---
 
@@ -188,7 +190,8 @@ Backend 启动时自动跑待执行 SQL 迁移。
 ## 仓库与发版
 
 - GitHub：https://github.com/poillysky/sehua  
-- 发版：改 `VERSION`、Compose 标签、workflow 中 `RELEASE_TAG`，提交并打 `v*` tag；Hub 上只保留对应版本号。
+- 下次发 **1.0.2**：改 `VERSION`、`deploy/docker-compose.nas.yml` 镜像标签、workflow 里 `RELEASE_TAG`，提交并打 `v1.0.2`  
+- Hub 上会留下 `1.0.1`、`1.0.2`…；`latest` 指向最新一次发版
 
 ---
 
