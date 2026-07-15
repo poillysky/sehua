@@ -1,5 +1,6 @@
 import { Fragment, useEffect, useMemo, useState, type FormEvent, type ReactNode } from 'react'
 import {
+  saveForumConfig,
   setActiveBoard,
   type ForumBoard,
   type ForumCrawlerConfig,
@@ -141,12 +142,25 @@ function OverviewTab({
             <div className="forum-config-summary-item">
               <span className="lbl">工作板块</span>
               <span className="val">
-                {boards.find((b) => b.fid === cfg.active_board_fid)?.name || cfg.active_board_fid || '—'}
+                {(() => {
+                  const enabled = cfg.enabled_board_fids?.length
+                    ? cfg.enabled_board_fids
+                    : cfg.active_board_fid
+                      ? [cfg.active_board_fid]
+                      : []
+                  if (!enabled.length) return '—'
+                  const names = enabled.map(
+                    (fid) => boards.find((b) => b.fid === fid)?.name || fid,
+                  )
+                  const current =
+                    boards.find((b) => b.fid === cfg.active_board_fid)?.name || cfg.active_board_fid
+                  return `${enabled.length} 板启用 · 深扫当前 ${current || '—'} · ${names.join(' → ')}`
+                })()}
               </span>
             </div>
             <div className="forum-config-summary-item">
               <span className="lbl">扫列表</span>
-              <span className="val">发帖时间序 · 每批 {cfg.web_crawler_list_pages_per_board || 15} 页</span>
+              <span className="val">发帖时间序 · 深扫每轮 {cfg.web_crawler_list_pages_per_board || 15} 页至板底</span>
             </div>
             <div className="forum-config-summary-item">
               <span className="lbl">抓帖</span>
@@ -275,16 +289,26 @@ function StructureTab({
 function BoardsTab({
   forumId,
   boards,
+  enabledFids,
   activeBoardFid,
-  onSelect,
+  onToggle,
+  onSetCurrent,
 }: {
   forumId: string
   boards: ForumBoard[]
+  enabledFids: string[]
   activeBoardFid: string
-  onSelect: (fid: string) => void
+  onToggle: (fid: string, enabled: boolean) => void
+  onSetCurrent: (fid: string) => void
 }) {
   const magnetCount = boards.filter((b) => b.primary_link === 'magnet').length
   const ed2kCount = boards.filter((b) => b.primary_link === 'ed2k').length
+  const enabledSet = useMemo(() => new Set(enabledFids.map(String)), [enabledFids])
+  const queueIndex = useMemo(() => {
+    const map = new Map<string, number>()
+    enabledFids.forEach((fid, i) => map.set(String(fid), i + 1))
+    return map
+  }, [enabledFids])
   const active = boards.find((b) => b.fid === activeBoardFid)
   const groups = groupBoards(boards)
 
@@ -294,23 +318,25 @@ function BoardsTab({
         <div className="forum-boards-toolbar">
           <div className="forum-boards-toolbar-main">
             <p className="hint">
-              共 {boards.length} 个白名单板块 · 磁力 {magnetCount} · ED2K {ed2kCount} · 点选即可切换工作板块
+              共 {boards.length} 个白名单板块 · 磁力 {magnetCount} · ED2K {ed2kCount} · 多选启用，按列表排序依次爬取
             </p>
             <div className="forum-boards-active-card">
-              <span className="forum-boards-active-lbl">当前工作板块</span>
-              {active ? (
+              <span className="forum-boards-active-lbl">启用队列 · {enabledFids.length} 板</span>
+              {enabledFids.length ? (
                 <div className="forum-boards-active-val">
-                  <strong>{active.name}</strong>
-                  <code>fid={active.fid}</code>
-                  {active.category ? <span className="tag">{active.category}</span> : null}
-                  <span
-                    className={`tag tag-${active.primary_link === 'ed2k' ? 'ed2k' : active.primary_link === 'magnet' ? 'magnet' : 'stub'}`}
-                  >
-                    {boardLinkLabel(active.primary_link)}
-                  </span>
+                  <strong>
+                    {enabledFids
+                      .map((fid) => boards.find((b) => b.fid === fid)?.name || fid)
+                      .join(' → ')}
+                  </strong>
+                  {active ? (
+                    <span className="tag tag-active" title="深扫当前板">
+                      深扫当前 · {active.name}
+                    </span>
+                  ) : null}
                 </div>
               ) : (
-                <span className="hint warn">未选择</span>
+                <span className="hint warn">请至少勾选一个工作板块</span>
               )}
             </div>
           </div>
@@ -328,14 +354,14 @@ function BoardsTab({
             </colgroup>
             <thead>
               <tr>
-                <th className="board-select-cell">选择</th>
+                <th className="board-select-cell">启用</th>
                 <th className="board-col-fid">fid</th>
                 <th className="board-col-name">名称</th>
                 <th className="board-col-link">主链接</th>
-                <th className="board-col-count" title="已爬取帖子数">
-                  已爬取
+                <th className="board-col-count" title="队列顺序">
+                  顺序
                 </th>
-                <th className="board-col-time">上次爬取</th>
+                <th className="board-col-time">深扫当前</th>
               </tr>
             </thead>
             <tbody data-forum-boards={forumId}>
@@ -348,27 +374,33 @@ function BoardsTab({
                     </td>
                   </tr>
                   {items.map((b) => {
-                    const selected = b.fid === activeBoardFid
+                    const selected = enabledSet.has(b.fid)
+                    const isCurrent = b.fid === activeBoardFid
+                    const ord = queueIndex.get(b.fid)
                     return (
                       <tr
                         key={b.fid}
                         className={`forum-board-row${selected ? ' is-active-board' : ''}`}
                         data-board-fid={b.fid}
-                        onClick={() => {
-                          if (!selected) onSelect(b.fid)
-                        }}
+                        onClick={() => onToggle(b.fid, !selected)}
+                        style={{ cursor: 'pointer' }}
                       >
                         <td className="board-select-cell">
-                          <label className="board-select-radio" title="设为当前工作板块">
+                          <label
+                            className="board-select-check"
+                            title="勾选加入爬取队列"
+                            onClick={(e) => e.stopPropagation()}
+                          >
                             <input
-                              type="radio"
-                              name={`active_board_${forumId}`}
-                              value={b.fid}
+                              type="checkbox"
                               checked={selected}
-                              onChange={() => onSelect(b.fid)}
+                              onChange={(e) => {
+                                e.stopPropagation()
+                                onToggle(b.fid, e.target.checked)
+                              }}
                               onClick={(e) => e.stopPropagation()}
                             />
-                            <span className="board-select-dot" aria-hidden />
+                            <span className="board-select-box" aria-hidden />
                           </label>
                         </td>
                         <td className="board-col-fid">
@@ -377,7 +409,8 @@ function BoardsTab({
                         <td className="board-col-name">
                           <span className="board-name-text">{b.name}</span>
                           {b.hot ? <span className="tag tag-pending">热门</span> : null}
-                          {selected ? <span className="tag tag-active">工作中</span> : null}
+                          {selected ? <span className="tag tag-active">启用</span> : null}
+                          {isCurrent ? <span className="tag tag-pending">深扫中</span> : null}
                         </td>
                         <td className="board-col-link">
                           <span
@@ -386,8 +419,25 @@ function BoardsTab({
                             {boardLinkLabel(b.primary_link)}
                           </span>
                         </td>
-                        <td className="board-col-count">—</td>
-                        <td className="board-col-time">—</td>
+                        <td className="board-col-count">{ord ?? '—'}</td>
+                        <td className="board-col-time">
+                          {selected ? (
+                            <button
+                              type="button"
+                              className={`btn sm ${isCurrent ? 'primary' : 'secondary'}`}
+                              disabled={isCurrent}
+                              title="设为深扫当前板"
+                              onClick={(e) => {
+                                e.stopPropagation()
+                                onSetCurrent(b.fid)
+                              }}
+                            >
+                              {isCurrent ? '当前' : '设为当前'}
+                            </button>
+                          ) : (
+                            '—'
+                          )}
+                        </td>
                       </tr>
                     )
                   })}
@@ -421,63 +471,40 @@ function ConfigTab({
     <div className="forum-tab-content">
       <form className="forum-config-form" onSubmit={onSubmit}>
         <p className="hint" style={{ marginBottom: 12 }}>
-          参数分组与「执行拓扑」一致：开关 → 调度 → 进站 → 扫列表 → 抓帖 → 入库。工作板请在「板块列表」单选。
+          从上到下：调速度 → 进论坛 → 扫列表找帖 → 抓帖内容 → 入库。开关在爬虫活动页；要爬哪些板，去「板块列表」勾选。
         </p>
 
         <section className="forum-modal-block forum-config-step">
           <div className="forum-config-step-head">
             <span className="forum-config-step-badge">①</span>
             <div>
-              <h4>开关</h4>
-              <p className="field-hint">总开关关闭则整条链路不调度（与活动页开关同源）。</p>
-            </div>
-          </div>
-          <div className="forum-config-grid forum-config-grid--single">
-            <label className="forum-field-block forum-field-block--switch">
-              <span className="forum-field-label">论坛爬虫开关</span>
-              <div className="forum-field-control">
-                <input
-                  type="checkbox"
-                  checked={!!draft.web_crawler_enabled}
-                  onChange={(e) => setDraft({ ...draft, web_crawler_enabled: e.target.checked })}
-                />
-              </div>
-              <small className="field-hint">{draft.web_crawler_enabled ? '开启 · 可进入调度' : '关闭 · 不调度'}</small>
-            </label>
-          </div>
-        </section>
-
-        <section className="forum-modal-block forum-config-step">
-          <div className="forum-config-step-head">
-            <span className="forum-config-step-badge">②</span>
-            <div>
               <h4>调度</h4>
-              <p className="field-hint">连续执行、无轮间间隔；仅请求延迟 / 自动节流 / 失败冷却限速。</p>
+              <p className="field-hint">一直连着跑，中间不停歇。主要靠下面这些延迟、冷却来限速，避免封号。</p>
             </div>
           </div>
           <div className="settings-grid-3 forum-config-grid">
-            <Field label="轮间间隔" hint="本站固定 0（连续爬取）">
+            <Field label="轮间间隔" hint="固定为 0，一轮完立刻下一轮">
               <input type="number" min={0} max={0} value={0} readOnly disabled />
             </Field>
-            <Field label="请求延迟（秒）" hint="帖间基准延迟，默认 2s">
+            <Field label="请求延迟（秒）" hint="每抓一帖前后先等一会儿，默认 2 秒">
               <input type="number" min={0.5} max={60} step={0.5} value={draft.web_crawler_request_delay} onChange={(e) => setNum('web_crawler_request_delay', e.target.value)} />
             </Field>
-            <Field label="目标入库数" hint="0 = 不限，达上限停止本批">
+            <Field label="目标入库数" hint="本轮最多入库几条；填 0 表示不限制">
               <input type="number" min={0} max={10000} value={draft.web_crawler_target_imports} onChange={(e) => setNum('web_crawler_target_imports', e.target.value)} />
             </Field>
-            <Field label="连续失败阈值" hint="连续抓取失败达此次数后进入冷却">
+            <Field label="连续失败阈值" hint="连续失败这么多次，就暂停一会儿">
               <input type="number" min={2} max={20} value={draft.web_crawler_fetch_failure_threshold} onChange={(e) => setNum('web_crawler_fetch_failure_threshold', e.target.value)} />
             </Field>
-            <Field label="失败冷却（秒）" hint="触发冷却后暂停时长">
+            <Field label="失败冷却（秒）" hint="暂停时一共歇多久">
               <input type="number" min={15} max={600} value={draft.web_crawler_fetch_cooldown_seconds} onChange={(e) => setNum('web_crawler_fetch_cooldown_seconds', e.target.value)} />
             </Field>
-            <Field label="每轮最大冷却" hint="冷却满次数仍失败则本轮熔断">
+            <Field label="每轮最大冷却" hint="本轮暂停这么多次还不行，就停掉本轮">
               <input type="number" min={1} max={10} value={draft.web_crawler_fetch_max_cooldowns} onChange={(e) => setNum('web_crawler_fetch_max_cooldowns', e.target.value)} />
             </Field>
-            <Field label="自动节流上限（秒）" hint="失败率升高时动态延迟上限">
+            <Field label="自动节流上限（秒）" hint="失败多了会自动多等一会儿，最多等到这个秒数">
               <input type="number" min={5} max={300} value={draft.web_crawler_autothrottle_max_delay} onChange={(e) => setNum('web_crawler_autothrottle_max_delay', e.target.value)} />
             </Field>
-            <Field label="自动节流采样窗口" hint="统计近 N 次请求成功率">
+            <Field label="自动节流采样窗口" hint="用最近多少次请求来判断成功率">
               <input type="number" min={5} max={100} value={draft.web_crawler_autothrottle_window} onChange={(e) => setNum('web_crawler_autothrottle_window', e.target.value)} />
             </Field>
           </div>
@@ -485,14 +512,14 @@ function ConfigTab({
 
         <section className="forum-modal-block forum-config-step">
           <div className="forum-config-step-head">
-            <span className="forum-config-step-badge">③</span>
+            <span className="forum-config-step-badge">②</span>
             <div>
               <h4>进站</h4>
-              <p className="field-hint">入口 URL / Cookie / UA；HTTP 代理在「系统设置 → 通用配置」。</p>
+              <p className="field-hint">怎么进论坛：地址、Cookie、浏览器标识。代理去「系统设置 → 通用配置」填。</p>
             </div>
           </div>
           <div className="settings-grid-2 forum-config-grid">
-            <Field label="入口 URL" hint="逗号分隔；主站失效时按序尝试备用域名" full>
+            <Field label="入口 URL" hint="多个地址用英文逗号隔开；前面的挂了会试后面的" full>
               <textarea
                 rows={3}
                 className="forum-entry-urls-field"
@@ -502,16 +529,16 @@ function ConfigTab({
                 onChange={(e) => setDraft({ ...draft, web_crawl_urls: e.target.value })}
               />
             </Field>
-            <Field label="请求超时（秒）" hint="单次浏览器/HTTP 请求上限">
+            <Field label="请求超时（秒）" hint="单次打开网页最多等多久">
               <input type="number" min={5} max={300} value={draft.web_crawler_timeout} onChange={(e) => setNum('web_crawler_timeout', e.target.value)} />
             </Field>
-            <Field label="取页重试次数" hint="HTTP/浏览器单次请求失败重试">
+            <Field label="取页重试次数" hint="打开失败时再试几次">
               <input type="number" min={1} max={10} value={draft.web_crawler_fetch_retries} onChange={(e) => setNum('web_crawler_fetch_retries', e.target.value)} />
             </Field>
-            <Field label="User-Agent" full>
+            <Field label="浏览器标识（UA）" hint="伪装成普通浏览器访问" full>
               <input type="text" value={draft.web_crawler_ua} onChange={(e) => setDraft({ ...draft, web_crawler_ua: e.target.value })} />
             </Field>
-            <Field label="论坛 Cookie" hint="登录后复制；列表需登录时必须填写" full>
+            <Field label="论坛 Cookie" hint="浏览器登录后复制过来；看列表要登录时必填" full>
               <textarea
                 rows={4}
                 className="forum-cookie-field"
@@ -526,19 +553,64 @@ function ConfigTab({
 
         <section className="forum-modal-block forum-config-step">
           <div className="forum-config-step-head">
-            <span className="forum-config-step-badge">④</span>
+            <span className="forum-config-step-badge">③</span>
             <div>
               <h4>扫列表</h4>
-              <p className="field-hint">
-                每日一次从首页捕新（扫到整页已入库即停）；当天后续循环只深扫。深扫结束页重叠 1 页。
-              </p>
+              <p className="field-hint">从板块列表页找帖。「立即爬取」往深处翻；「扫新帖」从第 1 页抓新贴。</p>
             </div>
           </div>
           <div className="settings-grid-2 forum-config-grid">
-            <Field label="列表页数 / 批" hint="深扫每批向前页数，默认 15">
+            <Field label="每轮翻几页" hint="深扫一轮最多翻这么多页，下轮接着翻；默认 15">
               <input type="number" min={1} max={100} value={draft.web_crawler_list_pages_per_board} onChange={(e) => setNum('web_crawler_list_pages_per_board', e.target.value)} />
             </Field>
-            <Field label="首页捕新安全上限" hint="每日首页最多翻 N 页；通常扫到全已知即停，默认 50">
+            <Field label="扫新帖页数（全局）" hint="点「扫新帖」时最多翻几页；默认 20">
+              <input
+                type="number"
+                min={1}
+                max={200}
+                value={draft.web_crawler_manual_head_pages ?? 20}
+                onChange={(e) => setNum('web_crawler_manual_head_pages', e.target.value)}
+              />
+            </Field>
+            <Field
+              label={`扫新帖页数（当前板 ${draft.active_board_fid || '—'}）`}
+              hint="只改当前板；空白表示用上面的全局页数"
+            >
+              <input
+                type="number"
+                min={1}
+                max={200}
+                placeholder="用全局"
+                value={
+                  draft.active_board_fid && draft.board_manual_head_pages?.[String(draft.active_board_fid)] != null
+                    ? draft.board_manual_head_pages[String(draft.active_board_fid)]
+                    : ''
+                }
+                onChange={(e) => {
+                  const fid = String(draft.active_board_fid || '').trim()
+                  if (!fid) return
+                  const map = { ...(draft.board_manual_head_pages || {}) }
+                  const raw = e.target.value.trim()
+                  if (!raw) {
+                    delete map[fid]
+                  } else {
+                    const n = Number(raw)
+                    if (Number.isFinite(n) && n >= 1) map[fid] = Math.floor(n)
+                  }
+                  setDraft({ ...draft, board_manual_head_pages: map })
+                }}
+              />
+            </Field>
+            <Field label="扫新帖早停页数" hint="连续这么多页看到的都是旧帖，就提前结束；默认 2">
+              <input
+                type="number"
+                min={1}
+                max={10}
+                value={draft.web_crawler_list_known_stop_pages ?? 2}
+                onChange={(e) => setNum('web_crawler_list_known_stop_pages', e.target.value)}
+              />
+            </Field>
+            <Field label="首页捕新上限（已废弃）" hint="旧参数，请改用「扫新帖页数」">
               <input
                 type="number"
                 min={1}
@@ -547,17 +619,26 @@ function ConfigTab({
                 onChange={(e) => setNum('web_crawler_list_head_pages', e.target.value)}
               />
             </Field>
-            <Field label="深扫早停页数（已废弃）" hint="深扫全已知也会继续后扫，不再早停卡游标；字段仅兼容旧配置">
-              <input
-                type="number"
-                min={0}
-                max={10}
-                value={draft.web_crawler_list_known_stop_pages ?? 0}
-                onChange={(e) => setNum('web_crawler_list_known_stop_pages', e.target.value)}
-              />
+            <Field label="列表页总上限" hint="硬上限；填 0 表示不限，翻到没内容为止">
+              <input type="number" min={0} max={50000} value={draft.web_crawler_max_list_pages} onChange={(e) => setNum('web_crawler_max_list_pages', e.target.value)} />
             </Field>
-            <Field label="全局列表页上限" hint="0 = 安全上限 300 页/板">
-              <input type="number" min={0} max={300} value={draft.web_crawler_max_list_pages} onChange={(e) => setNum('web_crawler_max_list_pages', e.target.value)} />
+          </div>
+        </section>
+
+        <section className="forum-modal-block forum-config-step">
+          <div className="forum-config-step-head">
+            <span className="forum-config-step-badge">④</span>
+            <div>
+              <h4>抓帖</h4>
+              <p className="field-hint">打开帖子读内容。遇到广告/验证页会自动用浏览器再打开一次。</p>
+            </div>
+          </div>
+          <div className="settings-grid-2 forum-config-grid">
+            <Field label="单帖超时（秒）" hint="抓一篇帖最多等多久；0 表示不限制，默认 120">
+              <input type="number" min={0} max={900} value={draft.web_crawler_thread_timeout} onChange={(e) => setNum('web_crawler_thread_timeout', e.target.value)} />
+            </Field>
+            <Field label="取页方式" hint="固定策略，不能改">
+              <input type="text" value="列表用浏览器 · 帖子用普通请求 · 广告页再用浏览器" readOnly disabled />
             </Field>
           </div>
         </section>
@@ -566,35 +647,17 @@ function ConfigTab({
           <div className="forum-config-step-head">
             <span className="forum-config-step-badge">⑤</span>
             <div>
-              <h4>抓帖</h4>
-              <p className="field-hint">HTTP 读帖；遇软文/安全壳自动浏览器整页重读后再判定。</p>
-            </div>
-          </div>
-          <div className="settings-grid-2 forum-config-grid">
-            <Field label="单帖超时（秒）" hint="0 = 不限；默认 120">
-              <input type="number" min={0} max={900} value={draft.web_crawler_thread_timeout} onChange={(e) => setNum('web_crawler_thread_timeout', e.target.value)} />
-            </Field>
-            <Field label="取页策略" hint="与拓扑定稿一致，不可改">
-              <input type="text" value="列表浏览器 · 帖子 HTTP · 软文浏览器重读" readOnly disabled />
-            </Field>
-          </div>
-        </section>
-
-        <section className="forum-modal-block forum-config-step">
-          <div className="forum-config-step-head">
-            <span className="forum-config-step-badge">⑥</span>
-            <div>
               <h4>入库</h4>
-              <p className="field-hint">正常写主资源；占位写无链地址；跳过/重试/失败不写。</p>
+              <p className="field-hint">有下载链就正常入库；没有就只记一条占位。跳过/失败的不算入库。</p>
             </div>
           </div>
           <div className="forum-config-grid forum-config-grid--single">
             <label className="forum-field-block forum-field-block--switch">
               <span className="forum-field-label">每帖只入一条主资源</span>
               <div className="forum-field-control">
-                <input type="checkbox" checked disabled title="拓扑定稿，不可关闭" />
+                <input type="checkbox" checked disabled title="固定开启，不可关闭" />
               </div>
-              <small className="field-hint">同帖全部链接写入 links 字段</small>
+              <small className="field-hint">帖里其他链接会一并记在 links 里</small>
             </label>
           </div>
         </section>
@@ -644,17 +707,65 @@ export function ForumConfigModal({
   }, [forum.boards, forum.crawler_config.board_order])
 
   const activeBoardFid = draft.active_board_fid || forum.crawler_config.active_board_fid || boards[0]?.fid || ''
+  const enabledBoardFids = useMemo(() => {
+    const raw = draft.enabled_board_fids?.length
+      ? draft.enabled_board_fids
+      : forum.crawler_config.enabled_board_fids?.length
+        ? forum.crawler_config.enabled_board_fids
+        : activeBoardFid
+          ? [activeBoardFid]
+          : []
+    const order = draft.board_order || forum.crawler_config.board_order || boards.map((b) => b.fid)
+    const wanted = new Set(raw.map(String))
+    return order.map(String).filter((fid) => wanted.has(fid))
+  }, [
+    draft.enabled_board_fids,
+    draft.board_order,
+    forum.crawler_config.enabled_board_fids,
+    forum.crawler_config.board_order,
+    activeBoardFid,
+    boards,
+  ])
 
-  const handleSelectBoard = (fid: string) => {
-    if (fid === activeBoardFid) return
+  const handleToggleBoard = (fid: string, enabled: boolean) => {
+    const wanted = new Set(enabledBoardFids)
+    if (enabled) wanted.add(fid)
+    else wanted.delete(fid)
+    if (!wanted.size) {
+      toast.info('至少保留一个启用板块')
+      return
+    }
+    const order = draft.board_order || forum.crawler_config.board_order || boards.map((b) => b.fid)
+    const nextEnabled = order.map(String).filter((id) => wanted.has(id))
+    const nextActive = nextEnabled.includes(activeBoardFid) ? activeBoardFid : nextEnabled[0]
     const next = {
       ...draft,
-      active_board_fid: fid,
-      web_crawler_max_boards_per_run: 1,
+      enabled_board_fids: nextEnabled,
+      active_board_fid: nextActive,
+      web_crawler_max_boards_per_run: Math.max(1, nextEnabled.length),
     }
     setDraft(next)
     onActiveBoardChange(next)
-    // 后台静默写入，无需点保存
+    void saveForumConfig(forum.id, next).then(
+      (res) => onActiveBoardChange({ ...next, ...res.config }),
+      (err) => toast.error(err instanceof Error ? err.message : '更新启用板块失败'),
+    )
+  }
+
+  const handleSetCurrentBoard = (fid: string) => {
+    if (fid === activeBoardFid) return
+    if (!enabledBoardFids.includes(fid)) {
+      toast.info('请先勾选启用该板块')
+      return
+    }
+    const next = {
+      ...draft,
+      active_board_fid: fid,
+      enabled_board_fids: enabledBoardFids,
+      web_crawler_max_boards_per_run: Math.max(1, enabledBoardFids.length),
+    }
+    setDraft(next)
+    onActiveBoardChange(next)
     void setActiveBoard(forum.id, fid).then(
       (res) => onActiveBoardChange({ ...next, ...res.config }),
       () => {
@@ -670,8 +781,9 @@ export function ForumConfigModal({
       const payload: ForumCrawlerConfig = {
         ...draft,
         active_board_fid: draft.active_board_fid || activeBoardFid,
+        enabled_board_fids: enabledBoardFids,
         web_crawler_interval_minutes: 0,
-        web_crawler_max_boards_per_run: 1,
+        web_crawler_max_boards_per_run: Math.max(1, enabledBoardFids.length),
         web_crawler_one_link_per_thread: true,
         web_crawler_require_structured_desc: false,
         web_crawler_auto_discover: false,
@@ -759,8 +871,10 @@ export function ForumConfigModal({
                 <BoardsTab
                   forumId={forum.id}
                   boards={boards}
+                  enabledFids={enabledBoardFids}
                   activeBoardFid={activeBoardFid}
-                  onSelect={handleSelectBoard}
+                  onToggle={handleToggleBoard}
+                  onSetCurrent={handleSetCurrentBoard}
                 />
               ) : null}
             </div>

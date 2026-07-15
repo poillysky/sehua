@@ -52,6 +52,11 @@ CLOUD_SHARE_RE = re.compile(
     r")",
     re.I,
 )
+# 115 直链分享：115://文件名|字节数|hash|hash
+RE_115_SHA = re.compile(
+    r"115://[^\s<>\"'|]+\|\d+\|[A-Fa-f0-9]{32,64}\|[A-Fa-f0-9]{32,64}",
+    re.I,
+)
 SOFT_AD_TITLE_HINTS = ("名人名言", "请稍候", "Just a moment")
 GENERIC_TITLES = frozenset({"提示信息", "提示", "手机版", "请稍候"})
 MOBILE_SHELL_TITLES = frozenset({"手机版", "请稍候…", "请稍候"})
@@ -120,6 +125,19 @@ def has_target_link(text: str, link_kind: str) -> bool:
     if link_kind == "magnet":
         return bool(MAGNET_RE.search(blob))
     return bool(ED2K_RE.search(blob) or MAGNET_RE.search(blob))
+
+
+def has_115_sha_link(text: str) -> bool:
+    """识别 115sha 直链：115://文件名|size|hash|hash。
+
+    附件语料常把长链拆成多行，匹配前去掉空白再搜。
+    """
+    if not text:
+        return False
+    if RE_115_SHA.search(text):
+        return True
+    compact = re.sub(r"\s+", "", text)
+    return compact != text and bool(RE_115_SHA.search(compact))
 
 
 def title_recognizable(title: str) -> bool:

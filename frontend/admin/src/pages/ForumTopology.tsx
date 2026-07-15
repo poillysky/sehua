@@ -157,27 +157,26 @@ function StepDetail({
     board?.fid === '95'
       ? '仅分类 716 · 发帖时间序'
       : board?.fid === '141'
-        ? '满 3 天 · 发帖时间序'
+        ? '满 3 天才入队 · 发帖时间序'
         : '发帖时间序列表'
+  const enabledCount = cfg.enabled_board_fids?.length || (cfg.active_board_fid ? 1 : 0)
+  const enabledLabel = enabledCount > 0 ? ` · 启用 ${enabledCount} 板` : ''
 
   if (step === 'switch') {
     return (
-      <ChartShell hint="本站开关：论坛爬虫总开关 + 是否为当前启用论坛；关闭则整条链路不跑">
+      <ChartShell hint="连续调度受总开关约束；手动「立即爬取 / 扫新帖 / 异常重试」不受开关阻挡（busy 时仍互斥）">
         <Process text="读爬虫开关" sub={`当前：${cfg.web_crawler_enabled ? '开' : '关'}`} />
         <ArrowDown />
-        <Decision text="开关开启？" />
+        <Decision text="触发来源？" />
         <ArrowDown />
-        <Junction pair>
-          <Branch label="关">
-            <Terminal text="不调度" sub="保持待命 / 空转" kind="muted" />
-          </Branch>
-          <Branch label="开" main>
+        <Junction cols={3}>
+          <Branch label="连续调度">
             <Spine>
-              <Decision text="是否当前启用论坛？" />
+              <Decision text="开关开启且为本论坛？" />
               <ArrowDown />
               <Junction pair>
                 <Branch label="否">
-                  <Terminal text="跳过本论坛" sub="只跑启用的专用爬虫" kind="warn" />
+                  <Terminal text="不调度" sub="待命 / 跳过本论坛" kind="muted" />
                 </Branch>
                 <Branch label="是" main>
                   <Terminal
@@ -189,29 +188,20 @@ function StepDetail({
               </Junction>
             </Spine>
           </Branch>
+          <Branch label="手动立即 / 扫新帖" main>
+            <Terminal text="可直接开跑" sub="不要求开关为开 · 连续跑着时拒绝" kind="ok" />
+          </Branch>
+          <Branch label="异常重试">
+            <Terminal text="可直接开跑" sub="只消化异常队列 · 不扫列表" kind="ok" />
+          </Branch>
         </Junction>
       </ChartShell>
     )
   }
 
   if (step === 'scheduler') {
-    const maxCool = cfg.web_crawler_fetch_max_cooldowns || 3
-    const failGate = (
-      <Spine>
-        <Decision text={`连续失败 ≥ ${failN}？`} />
-        <ArrowDown />
-        <Junction pair>
-          <Branch label="是">
-            <Terminal text="进入冷却" sub={`${cool} 秒 · 最多 ${maxCool} 次`} kind="warn" />
-          </Branch>
-          <Branch label="否" main>
-            <Terminal text="进入选板" sub="带限速进入下一步" kind="ok" />
-          </Branch>
-        </Junction>
-      </Spine>
-    )
     return (
-      <ChartShell hint="本站连续调度：一轮结束立即再开，无轮间间隔；仅请求延迟与失败冷却限速（深扫页数在「扫列表」）">
+      <ChartShell hint="本步只定节奏与模式：连续无间隔、套用限速。入库上限与连续失败冷却在「抓帖」环内判定。">
         <Process text="连续执行" sub="无轮间间隔 · 循环不停" />
         <ArrowDown />
         <Process
@@ -219,30 +209,32 @@ function StepDetail({
           sub={`延迟 ${delay} 秒 · 节流窗口 ${cfg.web_crawler_autothrottle_window} · 上限 ${cfg.web_crawler_autothrottle_max_delay}s`}
         />
         <ArrowDown />
-        {target > 0 ? (
-          <>
-            <Decision text={`本批入库 ≥ ${target}？`} />
-            <ArrowDown />
-            <Junction pair>
-              <Branch label="已达上限">
-                <Terminal text="本批收工" sub="可人工提高上限后继续" kind="muted" />
-              </Branch>
-              <Branch label="未达" main>
-                {failGate}
-              </Branch>
-            </Junction>
-          </>
-        ) : (
-          failGate
-        )}
+        <Process text="本轮列表模式" sub="连续/立即爬取 → 仅深扫；扫新帖按钮 → 捕新" />
+        <ArrowDown />
+        <Terminal
+          text="进入选板"
+          sub={
+            target > 0
+              ? `抓帖环内：入库目标 ${target} · 失败阈值 ${failN}/${cool}s`
+              : `抓帖环内：失败阈值 ${failN} · 冷却 ${cool}s`
+          }
+          kind="ok"
+        />
       </ChartShell>
     )
   }
 
   if (step === 'board_select') {
     return (
-      <ChartShell hint="本站一次只跑一个工作板（板块列表单选）；策略来自白名单板块策略">
-        <Process text="读取工作板块" sub={board ? `${board.name} · 版块号 ${board.fid}` : '未选择'} />
+      <ChartShell hint="多选启用板块按 board_order 依次爬；深扫扫完当前板后切下一板，扫新帖每板达标后换下一板">
+        <Process
+          text="读取启用队列"
+          sub={
+            board
+              ? `当前 ${board.name}（${board.fid}）${enabledLabel}`
+              : `未选择${enabledLabel}`
+          }
+        />
         <ArrowDown />
         <Decision text="在白名单？" />
         <ArrowDown />
@@ -288,47 +280,95 @@ function StepDetail({
   }
 
   if (step === 'list_scan') {
+    const headPages =
+      (board?.fid && cfg.board_manual_head_pages?.[board.fid]) ||
+      cfg.web_crawler_manual_head_pages ||
+      20
+    const knownStop = cfg.web_crawler_list_known_stop_pages || 2
     return (
-      <ChartShell hint={`扫列表：统一 orderby=dateline（发帖时间）；浏览器读 HTML；最多深扫 ${pages} 页`}>
-        <Process
-          text="拼列表地址"
-          sub={
-            board?.fid === '95'
-              ? '分类 716 · 按发帖时间排序'
-              : '按发帖时间排序 · 第 n 页'
-          }
-        />
+      <ChartShell hint={`扫列表前先看队列背压；连续/立即：每轮深扫 ${pages} 页至板底；扫新帖：上限 ${headPages} 页，连续 ${knownStop} 页全已知早停`}>
+        <Decision text="正常待抓 ≥ 150？" />
         <ArrowDown />
-        <Process text="浏览器打开列表" sub="复用进站会话" />
-        <ArrowDown />
-        <Decision text="网页内容是否正常？" />
-        <ArrowDown />
-        <Junction cols={3}>
-          <Branch label="仍卡十八禁/壳">
-            <Terminal text="记失败" sub="强制重进站后再试" kind="warn" />
+        <Junction pair>
+          <Branch label="是 · 背压">
+            <Terminal text="跳过列表" sub="先消化正常队列 · 异常/软文不计背压" kind="warn" />
           </Branch>
-          <Branch label="需登录">
-            <Terminal text="停板" sub="补登录凭据" kind="warn" />
-          </Branch>
-          <Branch label="正常论坛页" main>
+          <Branch label="否" main>
             <Spine>
               <Process
-                text="解析帖链"
+                text="拼列表地址"
                 sub={
-                  board?.fid === '141'
-                    ? '跳过置顶 · 满 3 天龄期过滤'
-                    : '跳过置顶 · 按发帖时间序'
+                  board?.fid === '95'
+                    ? '分类 716 · 按发帖时间排序'
+                    : '按发帖时间排序 · 第 n 页'
                 }
               />
               <ArrowDown />
-              <Decision text="有新帖号？" />
+              <Decision text="本轮是手动扫新帖？" />
               <ArrowDown />
               <Junction pair>
-                <Branch label="无">
-                  <Terminal text="翻下一页" sub={`最多 ${pages} 页`} kind="muted" />
+                <Branch label="是 · 捕新">
+                  <Spine>
+                    <Process text="自进度页捕新" sub={`默认可从 P1；上限 ${headPages} 页 · 多板按序`} />
+                    <ArrowDown />
+                    <Process text="浏览器读列表 · 解析帖链" sub="跳过置顶 · 发帖时间序" />
+                    <ArrowDown />
+                    <Decision text={`连续 ${knownStop} 页均已入库？`} />
+                    <ArrowDown />
+                    <Junction cols={3}>
+                      <Branch label="是 · 完成">
+                        <Terminal text="本板捕新结束" sub="切下一启用板或收工" kind="muted" />
+                      </Branch>
+                      <Branch label="触达上限仍有新">
+                        <Terminal text="下轮续扫" sub="保留 head 进度页" kind="warn" />
+                      </Branch>
+                      <Branch label="有新帖" main>
+                        <Terminal text="写入待抓队列" sub="持久队列 · 进入抓帖" kind="ok" />
+                      </Branch>
+                    </Junction>
+                  </Spine>
                 </Branch>
-                <Branch label="有" main>
-                  <Terminal text="写入待抓队列" sub="持久队列 · 进入抓帖" kind="ok" />
+                <Branch label="否 · 深扫" main>
+                  <Spine>
+                    <Process text="浏览器打开列表" sub={`自游标向更旧推进 · 本轮 ${pages} 页`} />
+                    <ArrowDown />
+                    <Decision text="网页内容是否正常？" />
+                    <ArrowDown />
+                    <Junction cols={3}>
+                      <Branch label="仍卡十八禁/壳">
+                        <Terminal text="记失败" sub="强制重进站后再试" kind="warn" />
+                      </Branch>
+                      <Branch label="需登录">
+                        <Terminal text="停板" sub="补登录凭据" kind="warn" />
+                      </Branch>
+                      <Branch label="正常论坛页" main>
+                        <Spine>
+                          <Process
+                            text="解析帖链并入队"
+                            sub={
+                              board?.fid === '141'
+                                ? '跳过置顶 · 仅入队发帖已满 3 天'
+                                : '跳过置顶 · 按发帖时间序'
+                            }
+                          />
+                          <ArrowDown />
+                          <Decision text="本轮状态？" />
+                          <ArrowDown />
+                          <Junction cols={3}>
+                            <Branch label="空页 / 夹页 · 板底">
+                              <Terminal text="切下一启用板" sub="仅 list_exhausted 切板" kind="muted" />
+                            </Branch>
+                            <Branch label="本轮配额已满">
+                              <Terminal text="同板续扫" sub={`游标保留 · 下轮再扫 ${pages} 页`} kind="ok" />
+                            </Branch>
+                            <Branch label="页内有新帖" main>
+                              <Terminal text="写入待抓队列" sub="进入抓帖" kind="ok" />
+                            </Branch>
+                          </Junction>
+                        </Spine>
+                      </Branch>
+                    </Junction>
+                  </Spine>
                 </Branch>
               </Junction>
             </Spine>
@@ -340,12 +380,29 @@ function StepDetail({
 
   if (step === 'thread_crawl') {
     const prefer = board?.primary_link === 'ed2k' ? '电驴' : '磁力'
+    const maxCool = cfg.web_crawler_fetch_max_cooldowns || 3
     const attachHint =
       board?.primary_link === 'ed2k'
         ? '正文无电驴 → 下尾部 txt/压缩包（需回复贴则不下）'
         : '正文无磁力 → 下 .torrent 转磁力'
     return (
-      <ChartShell hint="抓帖：HTTP 取页 → 软文/壳则浏览器整页重读 → 再判定（跳过 / 失败 / 正常 / 占位 / 下附件 / 重试）">
+      <ChartShell hint="抓帖环：取队列 → 单帖判定 → 回写 → 检查入库目标/失败冷却。另有「随机抓帖」：直链探测入库，不进待抓队列；停止后清空抽样。">
+        <Process text="取待抓队列" sub="正常 ready + 已到期异常（一并消化）" />
+        <ArrowDown />
+        <Decision text="本轮来源？" />
+        <ArrowDown />
+        <Junction cols={3}>
+          <Branch label="异常专重试">
+            <Terminal text="只取异常队列" sub="不扫列表 · 成功才出队" kind="warn" />
+          </Branch>
+          <Branch label="随机抓帖">
+            <Terminal text="循环随机 tid" sub="每轮 200 · 不进队列 · 直接入库" kind="ok" />
+          </Branch>
+          <Branch label="正常抓帖" main>
+            <Terminal text="正常+到期异常" sub="列表已扫或背压跳过后再抓" kind="ok" />
+          </Branch>
+        </Junction>
+        <ArrowDown />
         <Process text="HTTP 读取帖页" sub="会话内请求 · 附带进站 Cookie" />
         <ArrowDown />
         <Decision text="页面是否软文/安全壳？" />
@@ -359,7 +416,7 @@ function StepDetail({
               <ArrowDown />
               <Junction pair>
                 <Branch label="是">
-                  <Terminal text="保留重试" sub="软文队列 · 下轮再抓" kind="warn" />
+                  <Terminal text="保留重试" sub="异常队列 · 退避约 3600s · 最多 3 次" kind="warn" />
                 </Branch>
                 <Branch label="否" main>
                   <Terminal text="回到正文判定" sub="按正常帖继续分流" kind="ok" />
@@ -391,51 +448,84 @@ function StepDetail({
                       </Branch>
                       <Branch label="正常正文" main>
                         <Spine>
-                          <Process text="抽正文 + 双链解析" sub={`目标主链：${prefer}`} />
-                          <ArrowDown />
-                          <Decision text="正文已有目标链接？" />
+                          <Decision text="正文含 115sha 直链？" />
                           <ArrowDown />
                           <Junction pair>
-                            <Branch label="有" main>
-                              <Terminal text="进入入库" sub="正常候选" kind="ok" />
+                            <Branch label="是">
+                              <Terminal text="跳过" sub="115://…|size|hash|hash · 立即出队" kind="muted" />
                             </Branch>
-                            <Branch label="无">
+                            <Branch label="否" main>
                               <Spine>
-                                <Process text="附件策略" sub={attachHint} />
+                                <Process text="抽正文 + 双链解析" sub={`目标主链：${prefer}`} />
                                 <ArrowDown />
-                                <Decision text="附件结果？" />
+                                <Decision text="正文已有目标链接？" />
                                 <ArrowDown />
-                                <Junction cols={3}>
-                                  <Branch label="解析出链接">
-                                    <Terminal text="进入入库" sub="正文+附件合并" kind="ok" />
+                                <Junction pair>
+                                  <Branch label="有" main>
+                                    <Spine>
+                                      <Decision text="解析出主资源？" />
+                                      <ArrowDown />
+                                      <Junction pair>
+                                        <Branch label="是" main>
+                                          <Terminal text="进入入库" sub="正常候选" kind="ok" />
+                                        </Branch>
+                                        <Branch label="否">
+                                          <Terminal text="失败出队" sub="有链无主资源 · 不写库" kind="fail" />
+                                        </Branch>
+                                      </Junction>
+                                    </Spine>
                                   </Branch>
-                                  <Branch label="无权限">
-                                    <Terminal text="占位入库" sub="无权限下载附件" kind="warn" />
-                                  </Branch>
-                                  <Branch label="失败/未出链" main>
-                                    <Terminal text="保留重试" sub="附件失败或标题暗示有资源" kind="warn" />
-                                  </Branch>
-                                </Junction>
-                                <ArrowDown />
-                                <Decision text="仍无目标链时？" />
-                                <ArrowDown />
-                                <Junction cols={3}>
-                                  <Branch label="需回复/购买">
-                                    <Terminal text="占位入库" sub="需回复贴 / 需购买贴" kind="warn" />
-                                  </Branch>
-                                  <Branch label="网盘分享/非资源">
-                                    <Terminal text="跳过" sub="非目标板资源 · 不再爬" kind="muted" />
-                                  </Branch>
-                                  <Branch label="其它" main>
-                                    <Terminal
-                                      text="保留重试"
-                                      sub={
-                                        board?.fid === '95'
-                                          ? '无链 / 非情色分享待复核（仅本板）'
-                                          : '无链 / 标题暗示有资源'
-                                      }
-                                      kind="warn"
-                                    />
+                                  <Branch label="无">
+                                    <Spine>
+                                      <Process text="附件策略" sub={attachHint} />
+                                      <ArrowDown />
+                                      <Decision text="附件结果？" />
+                                      <ArrowDown />
+                                      <Junction cols={3}>
+                                        <Branch label="含 115sha">
+                                          <Terminal text="跳过" sub="附件识别到亦立即出队" kind="muted" />
+                                        </Branch>
+                                        <Branch label="解析出目标链" main>
+                                          <Terminal text="进入入库" sub="正文+附件合并" kind="ok" />
+                                        </Branch>
+                                        <Branch label="未出目标链">
+                                          <Spine>
+                                            <Decision text="仍无目标链时？" />
+                                            <ArrowDown />
+                                            <Junction cols={3}>
+                                              <Branch label="无权限下载">
+                                                <Terminal text="占位入库" sub="无权限下载附件" kind="warn" />
+                                              </Branch>
+                                              <Branch label="需回复/购买">
+                                                <Terminal text="占位入库" sub="需回复贴 / 需购买贴" kind="warn" />
+                                              </Branch>
+                                              <Branch label="其它" main>
+                                                <Spine>
+                                                  <Decision text="网盘/非资源？" />
+                                                  <ArrowDown />
+                                                  <Junction pair>
+                                                    <Branch label="是">
+                                                      <Terminal text="跳过" sub="非目标板资源 · 不再爬" kind="muted" />
+                                                    </Branch>
+                                                    <Branch label="否" main>
+                                                      <Terminal
+                                                        text="保留重试"
+                                                        sub={
+                                                          board?.fid === '95'
+                                                            ? '异常队列 · 退避约 900s · 最多 3 次'
+                                                            : '异常队列 · 附件失败约 600s / 其它约 900s · 最多 3 次'
+                                                        }
+                                                        kind="warn"
+                                                      />
+                                                    </Branch>
+                                                  </Junction>
+                                                </Spine>
+                                              </Branch>
+                                            </Junction>
+                                          </Spine>
+                                        </Branch>
+                                      </Junction>
+                                    </Spine>
                                   </Branch>
                                 </Junction>
                               </Spine>
@@ -450,13 +540,54 @@ function StepDetail({
             </Spine>
           </Branch>
         </Junction>
+        <ArrowDown />
+        <Process text="回写队列状态" sub="入库/占位出队 · 跳过结束 · 重试挂起 · 满 3 次→失败" />
+        <ArrowDown />
+        {target > 0 ? (
+          <>
+            <Decision text={`本批入库 ≥ ${target}？`} />
+            <ArrowDown />
+            <Junction pair>
+              <Branch label="已达上限">
+                <Terminal text="本批收工" sub="本轮抓帖环结束" kind="muted" />
+              </Branch>
+              <Branch label="未达" main>
+                <Spine>
+                  <Decision text={`连续失败 ≥ ${failN}？`} />
+                  <ArrowDown />
+                  <Junction pair>
+                    <Branch label="是">
+                      <Terminal text="冷却后再抓" sub={`${cool} 秒 · 最多 ${maxCool} 次熔断`} kind="warn" />
+                    </Branch>
+                    <Branch label="否" main>
+                      <Terminal text="继续下一帖" sub={`请求间隔 ${delay} 秒`} kind="ok" />
+                    </Branch>
+                  </Junction>
+                </Spine>
+              </Branch>
+            </Junction>
+          </>
+        ) : (
+          <>
+            <Decision text={`连续失败 ≥ ${failN}？`} />
+            <ArrowDown />
+            <Junction pair>
+              <Branch label="是">
+                <Terminal text="冷却后再抓" sub={`${cool} 秒 · 最多 ${maxCool} 次熔断`} kind="warn" />
+              </Branch>
+              <Branch label="否" main>
+                <Terminal text="继续下一帖" sub={`请求间隔 ${delay} 秒`} kind="ok" />
+              </Branch>
+            </Junction>
+          </>
+        )}
       </ChartShell>
     )
   }
 
   // import
   return (
-    <ChartShell hint="入库出口：正常写主资源；占位写无链占位地址；失败不写；跳过/重试不入库">
+    <ChartShell hint="入库出口：正常写主资源；占位写无链占位；失败不写；跳过可清坏占位；重试不入库">
       <Process text="接收抓帖判定" sub="正常 / 占位 / 跳过 / 失败 / 重试" />
       <ArrowDown />
       <Decision text="判定结果？" />
@@ -478,7 +609,11 @@ function StepDetail({
         </Branch>
         <Branch label="跳过 / 失败 / 重试">
           <Spine>
-            <Terminal text="不写资源表" sub="跳过·结束 · 失败·记错 · 重试·仍挂起" kind="muted" />
+            <Terminal
+              text="不写或清理"
+              sub="跳过·可删坏占位 · 失败·有链无资产 · 重试·挂起"
+              kind="muted"
+            />
           </Spine>
         </Branch>
       </Junction>
@@ -496,6 +631,7 @@ function buildPipeline(
   const enabled = !!cfg.web_crawler_enabled && activeForumId === forum.id
   const board = boards.find((b) => b.fid === activeBoardFid)
   const pages = cfg.web_crawler_list_pages_per_board || 15
+  const headPages = cfg.web_crawler_manual_head_pages || 20
   return [
     {
       id: 'switch',
@@ -508,13 +644,17 @@ function buildPipeline(
       label: '调度',
       detail: enabled
         ? `连续无间隔 · 延迟 ${cfg.web_crawler_request_delay} 秒`
-        : '已关闭',
+        : '节奏 / 模式',
       status: enabled ? 'active' : 'idle',
     },
     {
       id: 'board_select',
       label: '选板',
-      detail: board ? `${board.name}（仅此板）` : '未选择',
+      detail: (() => {
+        const n = cfg.enabled_board_fids?.length || (board ? 1 : 0)
+        if (!board && !n) return '未选择'
+        return board ? `${board.name} · 启用 ${n} 板` : `启用 ${n} 板`
+      })(),
       status: enabled ? 'ready' : 'idle',
     },
     {
@@ -526,19 +666,19 @@ function buildPipeline(
     {
       id: 'list_scan',
       label: '扫列表',
-      detail: `发帖时间序 · 最多 ${pages} 页`,
+      detail: `背压≥150 · 深扫每轮 ${pages} 页 · 扫新帖 ≤${headPages}`,
       status: 'idle',
     },
     {
       id: 'thread_crawl',
       label: '抓帖',
-      detail: 'HTTP · 软文浏览器重读 · 判定',
+      detail: '队列环 · 115sha · 目标/冷却',
       status: 'idle',
     },
     {
       id: 'import',
       label: '入库',
-      detail: '正常·占位·或跳过不写',
+      detail: '正常·占位·跳过可清',
       status: 'idle',
     },
   ]
@@ -561,6 +701,7 @@ export function ForumTopology({ forum, activeForumId, boards, activeBoardFid }: 
   const enabled = !!cfg.web_crawler_enabled && activeForumId === forum.id
   const isActiveForum = activeForumId === forum.id
   const board = boards.find((b) => b.fid === activeBoardFid)
+  const enabledCount = cfg.enabled_board_fids?.length || (activeBoardFid ? 1 : 0)
   const nodes = useMemo(
     () => buildPipeline(forum, activeForumId, boards, activeBoardFid),
     [forum, activeForumId, boards, activeBoardFid],
@@ -586,9 +727,9 @@ export function ForumTopology({ forum, activeForumId, boards, activeBoardFid }: 
         <div className="crawl-topo-head-main">
           {enabled ? <span className="tag tag-pending">待命</span> : <span className="tag tag-disabled">已关闭</span>}
           <span className="crawl-topo-summary">
-            本站管线 · 仅 1 工作板 · 发帖时间序列表 · 帖子 HTTP
+            本站管线 · 启用 {enabledCount} 板 · 连续仅深扫 · 背压跳列表 · 抓帖环含目标/冷却
           </span>
-          {board ? <span className="crawl-topo-current">当前 · {board.name}</span> : null}
+          {board ? <span className="crawl-topo-current">深扫当前 · {board.name}</span> : null}
         </div>
       </div>
 

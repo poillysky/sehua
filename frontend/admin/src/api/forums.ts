@@ -20,9 +20,13 @@ export type ForumCrawlerConfig = {
   web_crawler_auto_discover: boolean
   web_crawler_max_boards_per_run: number
   web_crawler_list_pages_per_board: number
-  /** 首页捕新最多页数（不计配额；某页全已知则停） */
+  /** @deprecated 原每日自动首页捕新上限；手动扫新帖用 web_crawler_manual_head_pages */
   web_crawler_list_head_pages?: number
-  /** 深扫连续全已知页数达到则早停 */
+  /** 手动「扫新帖」全局默认页数上限 */
+  web_crawler_manual_head_pages?: number
+  /** 每板手动扫新帖页数覆盖 */
+  board_manual_head_pages?: Record<string, number>
+  /** 扫新帖：连续 N 页全已知则早停，默认 2 */
   web_crawler_list_known_stop_pages?: number
   web_crawler_board_refresh_hours: number
   web_crawler_max_threads_per_run: number
@@ -38,9 +42,11 @@ export type ForumCrawlerConfig = {
   web_crawler_max_list_pages: number
   web_crawler_fetch_retries: number
   web_crawler_thread_timeout: number
-  board_order: string[]
-  /** 当前爬虫工作板块（一次仅一个） */
+  /** 启用爬取的板块（按 board_order 排序依次爬） */
+  enabled_board_fids?: string[]
+  /** 深扫当前工作板块（启用队列中的游标） */
   active_board_fid: string
+  board_order: string[]
 }
 
 /** 板块结构化【标签】/解析差异说明（对齐 ed2k format_guides） */
@@ -127,6 +133,19 @@ export function setActiveBoard(forumId: string, fid: string) {
       body: JSON.stringify({ fid }),
     },
   )
+}
+
+export function setEnabledBoards(forumId: string, fids: string[]) {
+  return api<{
+    message: string
+    forum_id: string
+    enabled_board_fids: string[]
+    active_board_fid: string
+    config: ForumCrawlerConfig
+  }>(`/api/forum/${forumId}/enabled-boards`, {
+    method: 'PUT',
+    body: JSON.stringify({ fids }),
+  })
 }
 
 export type ParseThreadBody = {

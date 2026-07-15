@@ -33,7 +33,6 @@ export type ExtractRunResult = {
 type ArchiveTarget = {
   pickCode: string;
   name: string;
-  fileId?: string;
 };
 
 const ARCHIVE_RE = /\.(zip|rar|7z)$/i;
@@ -194,12 +193,11 @@ function pickCodesFromTasks(
     const hash = String(t?.info_hash || t?.infoHash || "").toLowerCase();
     const name = String(t?.name || t?.file_name || "");
     const pick = String(t?.pick_code || t?.pickcode || t?.pc || "").trim();
-    const fileId = String(t?.file_id || t?.fid || t?.delete_file_id || "").trim();
 
     if (want.size && hash && !want.has(hash)) continue;
     if (!isTaskDone(t)) continue;
     if (pick && (isArchiveName(name) || want.has(hash))) {
-      out.push({ pickCode: pick, name, fileId: fileId || undefined });
+      out.push({ pickCode: pick, name });
     }
   }
 
@@ -216,7 +214,6 @@ function pickCodesFromFolder(
     .map((r) => ({
       pickCode: String(r.pc || r.pick_code || "").trim(),
       name: String(r.n || r.name || ""),
-      fileId: String(r.fid || r.file_id || "").trim() || undefined,
       time: Number(r.t || r.te || r.ptime || 0),
     }))
     .filter((r) => r.pickCode && isArchiveName(r.name));
@@ -474,7 +471,7 @@ async function addExtractFile(
   return { ok: false, message: p115HumanError(data, "解压到目录失败") };
 }
 
-/** 对已就绪的压缩包立即解压（不解压失败时删包） */
+/** 对已就绪的压缩包立即解压到同名子文件夹（不删除压缩包或父目录） */
 async function extractReadyTargets(
   job: DeferredExtractJob,
   targets: ArchiveTarget[],
@@ -597,6 +594,6 @@ export function scheduleDeferredExtract(
   return { jobId, mode: "poll" };
 }
 
-/** 兼容旧导入：固定延迟常量已废弃 */
+/** 兼容旧导入（历史上曾延迟删包，已废除，切勿再接 rb/delete） */
 export const EXTRACT_DELAY_MS = 0;
 export const CLEANUP_DELAY_MS = 0;

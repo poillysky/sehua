@@ -16,6 +16,7 @@ from parsers.links import parse_thread_dual
 from parsers.magnet import parse_magnet_text
 from parsers.ed2k import parse_ed2k_text
 from parsers.thread_gates import (
+    has_115_sha_link,
     is_mobile_thread_shell,
     is_reply_required_post,
     is_safe_or_soft_shell,
@@ -30,7 +31,7 @@ from workers.session_factory import (
     fetcher_from_config,
     session_from_config,
 )
-from workers.thread_outcome import VERDICT_LABELS, judge_thread_html
+from workers.thread_outcome import VERDICT_LABELS, ThreadOutcome, judge_thread_html
 
 log = logging.getLogger(__name__)
 
@@ -183,68 +184,83 @@ async def parse_thread_for_admin(
             attachment_downloaded = attach_res.downloaded
             attachment_text = attach_res.text or ""
             attachment_source = attachment_kind or ""
-            if attachment_text:
-                html = inject_attachment_text(html, attachment_text)
-            outcome = judge_thread_html(
-                html,
-                board_fid=board_fid_int,
-                soft_browser_retried=soft_browser_retried,
-                attachments_already_tried=True,
-                attachment_denied=attachment_denied,
-                attachment_failed=attachment_failed,
-                had_attachments=attachment_downloaded or bool(attachment_text),
-                preferred_link=preferred_link,
-            )
-            # 双链模式下：种子失败再试电驴尾部附件
-            if (
-                outcome.verdict != "import"
-                and preferred_link == "both"
-                and attachment_kind == "torrent"
-                and looks_like_attachment_zone(html)
-            ):
-                attach_res2 = await fetch_attachments_for_outcome(
-                    session,
-                    html=html,
-                    thread_url=thread_url,
-                    attachment_kind="txt_tail",
-                    timeout=max(15.0, attach_timeout),
+            if attachment_text and has_115_sha_link(attachment_text):
+                outcome = ThreadOutcome(
+                    "skipped",
+                    "115sha 链接（附件，跳过）",
+                    outcome.link_kind,
+                    outcome.title,
                 )
-                attachment_denied = attachment_denied or attach_res2.denied
-                attachment_failed = attachment_failed or (attach_res2.failed and not attach_res2.downloaded)
-                attachment_downloaded = attachment_downloaded or attach_res2.downloaded
-                if attach_res2.text:
-                    attachment_text = (attachment_text + "\n" + attach_res2.text).strip()
-                    attachment_source = "torrent+txt_tail" if attachment_source else "txt_tail"
+            else:
+                if attachment_text:
                     html = inject_attachment_text(html, attachment_text)
-                    outcome = judge_thread_html(
-                        html,
-                        board_fid=board_fid_int,
-                        soft_browser_retried=soft_browser_retried,
-                        attachments_already_tried=True,
-                        attachment_denied=attachment_denied,
-                        attachment_failed=attachment_failed,
-                        had_attachments=True,
-                        preferred_link=preferred_link,
-                    )
-            if outcome.verdict != "import" and attachment_text:
-                merged = parse_thread_dual(
+                outcome = judge_thread_html(
                     html,
-                    tid=tid,
-                    preferred_link=preferred_link,  # type: ignore[arg-type]
-                    extra_text=attachment_text,
-                    base_url=thread_url,
                     board_fid=board_fid_int,
+                    soft_browser_retried=soft_browser_retried,
+                    attachments_already_tried=True,
+                    attachment_denied=attachment_denied,
+                    attachment_failed=attachment_failed,
+                    had_attachments=attachment_downloaded or bool(attachment_text),
+                    preferred_link=preferred_link,
                 )
-                if merged.primary_link_kind != "none" and merged.assets:
-                    from workers.thread_outcome import ThreadOutcome
-
-                    outcome = ThreadOutcome(
-                        "import",
-                        "成功：附件解析出目标链接",
-                        merged.primary_link_kind,
-                        merged.title or outcome.title,
-                        parsed=merged,
+                # 双链模式下：种子失败再试电驴尾部附件
+                if (
+                    outcome.verdict not in {"import", "skipped"}
+                    and preferred_link == "both"
+                    and attachment_kind == "torrent"
+                    and looks_like_attachment_zone(html)
+                ):
+                    attach_res2 = await fetch_attachments_for_outcome(
+                        session,
+                        html=html,
+                        thread_url=thread_url,
+                        attachment_kind="txt_tail",
+                        timeout=max(15.0, attach_timeout),
                     )
+                    attachment_denied = attachment_denied or attach_res2.denied
+                    attachment_failed = attachment_failed or (attach_res2.failed and not attach_res2.downloaded)
+                    attachment_downloaded = attachment_downloaded or attach_res2.downloaded
+                    if attach_res2.text and has_115_sha_link(attach_res2.text):
+                        attachment_text = (attachment_text + "\n" + attach_res2.text).strip()
+                        attachment_source = "torrent+txt_tail" if attachment_source else "txt_tail"
+                        outcome = ThreadOutcome(
+                            "skipped",
+                            "115sha 链接（附件，跳过）",
+                            outcome.link_kind,
+                            outcome.title,
+                        )
+                    elif attach_res2.text:
+                        attachment_text = (attachment_text + "\n" + attach_res2.text).strip()
+                        attachment_source = "torrent+txt_tail" if attachment_source else "txt_tail"
+                        html = inject_attachment_text(html, attachment_text)
+                        outcome = judge_thread_html(
+                            html,
+                            board_fid=board_fid_int,
+                            soft_browser_retried=soft_browser_retried,
+                            attachments_already_tried=True,
+                            attachment_denied=attachment_denied,
+                            attachment_failed=attachment_failed,
+                            had_attachments=True,
+                            preferred_link=preferred_link,
+                        )
+                if outcome.verdict not in {"import", "skipped"} and attachment_text:
+                    merged = parse_thread_dual(
+                        html,
+                        tid=tid,
+                        preferred_link=preferred_link,  # type: ignore[arg-type]
+                        extra_text=attachment_text,
+                        base_url=thread_url,
+                        board_fid=board_fid_int,
+                    )
+                    if merged.primary_link_kind != "none" and merged.assets:
+                        outcome = ThreadOutcome(
+                            "import",
+                            "成功：附件解析出目标链接",
+                            merged.primary_link_kind,
+                            merged.title or outcome.title,
+                            parsed=merged,
+                        )
 
         parsed = outcome.parsed or parse_thread_dual(
             html,

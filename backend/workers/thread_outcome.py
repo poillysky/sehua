@@ -17,6 +17,7 @@ from typing import Literal
 from parsers.boards import DISCUZ_BOARD_FID, get_board_policy
 from parsers.links import DualParseResult, parse_thread_dual
 from parsers.thread_gates import (
+    has_115_sha_link,
     has_target_link,
     is_genuine_non_resource,
     is_non_target_cloud_share,
@@ -129,6 +130,12 @@ def judge_thread_html(
             link_kind,
             page_tit or title,
         )
+
+    # 115sha 直链（正文或已注入的附件语料）：无法按 magnet/ed2k 入库，立即跳过
+    if has_115_sha_link(text) or has_115_sha_link(html):
+        from_attach = attachments_already_tried or "postmessage_attach" in (html or "")
+        tip = "115sha 链接（附件，跳过）" if from_attach else "115sha 链接（跳过）"
+        return ThreadOutcome("skipped", tip, link_kind, title)
 
     # Body has target link?
     if has_target_link(text, link_kind) or has_target_link(html, link_kind):

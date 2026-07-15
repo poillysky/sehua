@@ -85,10 +85,13 @@ def pages_to_scan(
 
 
 def resolve_page_cap(pages_per_board: int, max_list_pages: int) -> int:
-    """列表深扫上限：max=0 → 安全上限 300。"""
-    safety = 300
+    """深扫每轮页数配额。跨轮从游标续扫直到板底。
+
+    - pages_per_board：本轮翻页上限（至少 1）
+    - max_list_pages > 0：本轮配额再与之取 min（页码硬顶仍由调用方 _page_hard_limit 管）
+    """
     per = max(1, int(pages_per_board or 1))
     global_cap = int(max_list_pages or 0)
-    if global_cap <= 0:
-        return min(per, safety)
-    return min(per, global_cap, safety)
+    if global_cap > 0:
+        return min(per, global_cap)
+    return per

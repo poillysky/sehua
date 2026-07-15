@@ -36,8 +36,14 @@ ROUTE_PERMISSIONS: dict[tuple[str, str], str] = {
     ("GET", "/api/crawler/status"): "crawler.view",
     ("PUT", "/api/crawler/enabled"): "crawl.run",
     ("POST", "/api/crawler/run"): "crawl.run",
+    ("POST", "/api/crawler/scan-head"): "crawl.run",
+    ("POST", "/api/crawler/random-tid"): "crawl.run",
+    ("POST", "/api/crawler/random-tid/loop/start"): "crawl.run",
     ("POST", "/api/crawler/loop/start"): "crawl.run",
     ("POST", "/api/crawler/loop/stop"): "crawl.run",
+    ("POST", "/api/crawler/queue/retry-abnormal"): "crawl.run",
+    ("POST", "/api/crawler/queue/retry-soft-ad"): "crawl.run",
+    ("POST", "/api/crawler/stop"): "crawl.run",
     ("POST", "/api/import"): "import",
     ("POST", "/api/import/file"): "import",
     ("GET", "/api/auth/me"): "resources.view",
@@ -73,6 +79,8 @@ def route_permission(method: str, path: str) -> str | None:
     if method == "PUT" and path.startswith("/api/forum/") and path.endswith("/config"):
         return "settings.write"
     if method == "PUT" and path.startswith("/api/forum/") and path.endswith("/active-board"):
+        return "settings.write"
+    if method == "PUT" and path.startswith("/api/forum/") and path.endswith("/enabled-boards"):
         return "settings.write"
     if method == "PUT" and path.startswith("/api/forum/") and path.endswith("/board-order"):
         return "settings.write"

@@ -11,6 +11,8 @@ import { fontSans, fontNoto, fontMono } from "@/config/fonts";
 import { DemoMode } from "@/components/DemoMode";
 import { BgEffect } from "@/components/BgEffect";
 import { IosStandalone } from "@/components/IosStandalone";
+import { SafariChromeTint } from "@/components/SafariChromeTint";
+import { CHROME_DARK, CHROME_LIGHT } from "@/config/chrome";
 
 export const metadata: Metadata = {
   title: {
@@ -46,9 +48,10 @@ export const metadata: Metadata = {
 
 export const viewport: Viewport = {
   themeColor: [
-    { media: "(prefers-color-scheme: light)", color: "#ffffff" },
-    { media: "(prefers-color-scheme: dark)", color: "#0B1220" },
+    { media: "(prefers-color-scheme: light)", color: CHROME_LIGHT },
+    { media: "(prefers-color-scheme: dark)", color: CHROME_DARK },
   ],
+  colorScheme: "light dark",
   width: "device-width",
   height: "device-height",
   initialScale: 1,
@@ -85,10 +88,11 @@ export default async function RootLayout({
             }}
           >
             <IosStandalone />
-            <div className="app-shell relative flex flex-col h-full min-h-[100dvh]">
+            <SafariChromeTint />
+            <div className="app-shell relative flex h-full min-h-[100dvh] flex-col">
               <DemoMode />
               <BgEffect />
-              <main className="container w-full md:w-4/5 mx-auto max-w-6xl flex-grow z-10">
+              <main className="container z-10 mx-auto w-full max-w-6xl flex-grow md:w-4/5">
                 {children}
               </main>
             </div>

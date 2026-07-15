@@ -15,14 +15,6 @@ export const BgEffect = () => {
   const { theme } = useTheme();
   const isSSR = useIsSSR();
 
-  const colorPreset = useMemo(
-    () => ({
-      light: ["#f1f1f1", "#d1d9e1"],
-      dark: ["#1d1d1d", "#0d1521"],
-    }),
-    [],
-  );
-
   useEffect(() => {
     if (theme === "system") {
       const mediaQuery = window.matchMedia("(prefers-color-scheme: dark)");
@@ -54,11 +46,12 @@ export const BgEffect = () => {
   const particlesOptions = useMemo(
     () =>
       ({
+        // Transparent — Safari samples body / chrome tint bars, not this layer
         background: {
-          image:
-            colorScheme === "light"
-              ? `linear-gradient(145deg, ${colorPreset.light[0]}, ${colorPreset.light[1]})`
-              : `linear-gradient(145deg, ${colorPreset.dark[0]}, ${colorPreset.dark[1]})`,
+          color: { value: "transparent" },
+        },
+        fullScreen: {
+          enable: false,
         },
         fpsLimit: 120,
         interactivity: {
@@ -117,34 +110,27 @@ export const BgEffect = () => {
         },
         detectRetina: true,
       }) as any,
-    [colorScheme, colorPreset],
+    [colorScheme],
   );
 
   if (isSSR) return null;
 
+  // Solid page color comes from body CSS; no opaque fixed gradient that steals Safari sampling
   if (!UI_BACKGROUND_ANIMATION) {
-    const linearGradient = colorPreset[colorScheme];
-
-    return (
-      <div
-        className="fixed top-0 left-0 w-full h-full bg-gradient-to-br z-0"
-        style={
-          {
-            "--tw-gradient-stops": `${linearGradient[0]}, ${linearGradient[1]}`,
-          } as React.CSSProperties
-        }
-      />
-    );
+    return null;
   }
 
   if (!init) return null;
 
   return (
-    <Particles
-      options={particlesOptions}
-      particlesLoaded={async (_container) => {
-        // console.log(container);
-      }}
-    />
+    <div aria-hidden className="bg-effect-layer">
+      <Particles
+        className="h-full w-full"
+        options={particlesOptions}
+        particlesLoaded={async (_container) => {
+          // ready
+        }}
+      />
+    </div>
   );
 };

@@ -10,8 +10,9 @@ from crawler.list_urls import list_url_for_board, site_root
 from crawler.session import BASE_URL, SessionManager
 from parsers.boards import get_board_policy
 from parsers.links import DualParseResult, parse_thread_dual
+from parsers.thread_gates import has_115_sha_link
 from workers.session_factory import fetcher_from_config, session_from_config
-from workers.thread_outcome import judge_thread_html
+from workers.thread_outcome import ThreadOutcome, judge_thread_html
 
 log = logging.getLogger(__name__)
 
@@ -72,9 +73,18 @@ async def process_thread(
     persist: bool = False,
     crawler_config: Optional[dict[str, Any]] = None,
     fetcher: Optional[Fetcher] = None,
+    preferred_link: Optional[str] = None,
+    html: Optional[str] = None,
 ) -> dict[str, Any]:
-    """Full single-thread path: HTTP fetch → soft-browser retry → outcome → optional persist."""
+    """Full single-thread path: HTTP fetch → soft-browser retry → outcome → optional persist.
+
+    preferred_link: 覆盖板块主链（如随机抓帖用 \"both\"）。
+    html: 若已取到帖页 HTML 则复用，避免重复请求。
+    """
     policy = get_board_policy(board_fid)
+    link_pref = (preferred_link or policy.primary_link or "magnet").strip().lower()
+    if link_pref not in {"magnet", "ed2k", "both"}:
+        link_pref = policy.primary_link
     cfg = crawler_config or {}
     own_session = session is None
     session = session or (session_from_config(cfg) if cfg else SessionManager())
@@ -91,9 +101,11 @@ async def process_thread(
         list_url = list_url_for_board(board_fid, 1, root=root, policy=policy)
         # 批量重爬共用 Fetcher 时也要随板块更新 Referer
         fetcher.set_referer(list_url)
-        # HTTP 读帖；软文/安全壳时 get_thread_html 内会浏览器整页重试
-        html = await fetcher.get_thread_html(thread_url, retries=retries)
-        soft_browser_retried = fetcher.last_soft_browser_retried
+        soft_browser_retried = False
+        if html is None:
+            # HTTP 读帖；软文/安全壳时 get_thread_html 内会浏览器整页重试
+            html = await fetcher.get_thread_html(thread_url, retries=retries)
+            soft_browser_retried = fetcher.last_soft_browser_retried
 
         outcome = judge_thread_html(
             html,
@@ -101,6 +113,7 @@ async def process_thread(
             list_title=list_title,
             base_url=thread_url,
             soft_browser_retried=soft_browser_retried,
+            preferred_link=link_pref,
         )
         # 兜底：判定仍要求浏览器重试且尚未做过
         if outcome.need_browser_retry and not soft_browser_retried:
@@ -113,6 +126,7 @@ async def process_thread(
                 list_title=list_title,
                 base_url=thread_url,
                 soft_browser_retried=True,
+                preferred_link=link_pref,
             )
 
         attachment_kind = outcome.attachment_kind
@@ -137,44 +151,53 @@ async def process_thread(
             )
             attach_tried = True
             attachment_text = attach_res.text or ""
-            if attachment_text:
-                html = inject_attachment_text(html, attachment_text)
-            outcome = judge_thread_html(
-                html,
-                board_fid=board_fid,
-                list_title=list_title,
-                base_url=thread_url,
-                soft_browser_retried=soft_browser_retried,
-                attachments_already_tried=True,
-                attachment_denied=attach_res.denied,
-                attachment_failed=attach_res.failed and not attach_res.downloaded,
-                had_attachments=attach_res.downloaded or bool(attachment_text),
-            )
-            # 附件语料可能已含链但 judge 走了非 import：再双解析一次补全
-            if outcome.verdict != "import" and attachment_text:
-                merged = parse_thread_dual(
-                    html,
-                    tid=tid,
-                    preferred_link=policy.primary_link,  # type: ignore[arg-type]
-                    extra_text=attachment_text,
-                    base_url=thread_url,
-                    board_fid=board_fid,
+            if attachment_text and has_115_sha_link(attachment_text):
+                log.info("tid=%s attachment has 115sha — skip", tid)
+                outcome = ThreadOutcome(
+                    "skipped",
+                    "115sha 链接（附件，跳过）",
+                    outcome.link_kind,
+                    outcome.title or list_title,
                 )
-                if merged.primary_link_kind != "none" and merged.assets:
-                    from workers.thread_outcome import ThreadOutcome
-
-                    outcome = ThreadOutcome(
-                        "import",
-                        "成功：附件解析出目标链接",
-                        outcome.link_kind,
-                        merged.title or outcome.title,
-                        parsed=merged,
+            else:
+                if attachment_text:
+                    html = inject_attachment_text(html, attachment_text)
+                outcome = judge_thread_html(
+                    html,
+                    board_fid=board_fid,
+                    list_title=list_title,
+                    base_url=thread_url,
+                    soft_browser_retried=soft_browser_retried,
+                    attachments_already_tried=True,
+                    attachment_denied=attach_res.denied,
+                    attachment_failed=attach_res.failed and not attach_res.downloaded,
+                    had_attachments=attach_res.downloaded or bool(attachment_text),
+                    preferred_link=link_pref,
+                )
+                # 附件语料可能已含链但 judge 走了非 import：再双解析一次补全
+                # skipped（含 115sha）不再抬升为 import
+                if outcome.verdict not in {"import", "skipped"} and attachment_text:
+                    merged = parse_thread_dual(
+                        html,
+                        tid=tid,
+                        preferred_link=link_pref,  # type: ignore[arg-type]
+                        extra_text=attachment_text,
+                        base_url=thread_url,
+                        board_fid=board_fid,
                     )
+                    if merged.primary_link_kind != "none" and merged.assets:
+                        outcome = ThreadOutcome(
+                            "import",
+                            "成功：附件解析出目标链接",
+                            outcome.link_kind,
+                            merged.title or outcome.title,
+                            parsed=merged,
+                        )
 
         parsed = outcome.parsed or parse_thread_dual(
             html,
             tid=tid,
-            preferred_link=policy.primary_link,  # type: ignore[arg-type]
+            preferred_link=link_pref,  # type: ignore[arg-type]
             extra_text=attachment_text,
             base_url=thread_url,
             board_fid=board_fid,

@@ -114,7 +114,7 @@
     "translate_already_english": "內容已是英文",
     "translate_failed": "翻譯失敗，請稍後重試",
     "p115_success": "已轉存 {count} 條到 115 雲下載",
-    "p115_success_extract": "已轉存 {count} 條，完成後將自動雲解壓",
+    "p115_success_extract": "已轉存 {count} 條；後台輪詢轉存（最長約 30 秒），完成後立即雲解壓",
     "p115_failed": "轉存 115 失敗",
     "p115_need_config": "尚未設定 115，請先填寫 Cookie"
   }

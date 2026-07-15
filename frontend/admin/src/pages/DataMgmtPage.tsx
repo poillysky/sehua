@@ -29,11 +29,8 @@ type ResetResult = {
 const STAT_ITEMS: { key: keyof Overview; label: string }[] = [
   { key: 'resources', label: '资源条目' },
   { key: 'resource_sources', label: '资源关联' },
-  { key: 'import_jobs', label: '导入任务' },
   { key: 'crawl_pages', label: '爬取页面' },
   { key: 'crawl_pending', label: '待处理队列' },
-  { key: 'crawl_boards', label: '板块记录' },
-  { key: 'activity_logs', label: '活动日志' },
 ]
 
 function emptyOverview(): Overview {

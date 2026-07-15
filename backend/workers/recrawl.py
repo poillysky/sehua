@@ -12,7 +12,6 @@ from db.connection import connect
 from db.forum_configs import SITE_CRAWLER_FORUM_ID, load_forum_configs_map
 from db.queue import (
     mark_pending_retry,
-    mark_pending_soft_ad,
     mark_thread_done,
     mark_thread_skipped,
     requeue_for_recrawl,
@@ -102,15 +101,17 @@ def _apply_queue_outcome(
     elif verdict == "skipped":
         mark_thread_skipped(conn, thread_url, str(outcome.get("outcome") or "skipped"))
     elif verdict == "retry" or "软文" in str(outcome.get("outcome") or ""):
-        if outcome.get("soft_browser_retried") or "软文" in str(outcome.get("outcome") or ""):
-            mark_pending_soft_ad(conn, thread_url, backoff_seconds=3600)
-        else:
-            mark_pending_retry(
-                conn,
-                thread_url,
-                str(outcome.get("outcome") or "retry"),
-                backoff_seconds=900,
+        err_msg = str(outcome.get("outcome") or "retry")
+        backoff = (
+            3600
+            if (
+                outcome.get("soft_browser_retried")
+                or "软文" in err_msg
+                or "安全壳" in err_msg
             )
+            else 900
+        )
+        mark_pending_retry(conn, thread_url, err_msg, backoff_seconds=backoff)
     elif verdict == "need_attachments":
         mark_pending_retry(conn, thread_url, "need_attachments", backoff_seconds=600)
     else:

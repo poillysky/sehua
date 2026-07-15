@@ -7,26 +7,27 @@ from typing import Any, Optional
 from urllib.parse import parse_qs, urlparse
 
 SOFT_AD_ERROR = "soft_ad"
-PENDING_EXCLUDE_SOFT = "AND COALESCE(last_error, '') NOT IN ('soft_ad', 'interstitial')"
-PENDING_SOFT_ONLY = "AND COALESCE(last_error, '') IN ('soft_ad', 'interstitial')"
-# 异常帖：非软文且曾失败/有错误标记（成功出队前一直留在异常队列）
+# 历史软文标记；现与异常帖同一队列，识别/重试逻辑一致
+_SOFT_AD_MARKERS = ("soft_ad", "interstitial")
+# 异常帖（含原软文壳）：曾失败或有错误标记
 PENDING_ABNORMAL_ONLY = (
-    "AND COALESCE(last_error, '') NOT IN ('soft_ad', 'interstitial') "
     "AND (COALESCE(fetch_fail_count, 0) > 0 OR COALESCE(last_error, '') <> '')"
 )
 PENDING_NORMAL_ONLY = (
     "AND COALESCE(last_error, '') = '' AND COALESCE(fetch_fail_count, 0) = 0"
 )
-# 连续调度可抓：新帖 + 退避已到期的异常帖（仍排除软文）
-PENDING_WORKABLE = (
-    "AND COALESCE(last_error, '') NOT IN ('soft_ad', 'interstitial')"
+# 兼容旧调用：软文 = 异常中的历史 soft_ad/interstitial 子集
+PENDING_SOFT_ONLY = (
+    "AND COALESCE(last_error, '') IN ('soft_ad', 'interstitial')"
 )
+# 连续调度可抓：新帖 + 到期的异常/软文（同一重试池）
+PENDING_WORKABLE = ""
 PENDING_READY = "AND (retry_after IS NULL OR retry_after <= now())"
 PENDING_ORDER = "ORDER BY COALESCE(fetch_fail_count, 0) ASC, updated_at ASC, created_at ASC"
 
 # 同一帖连续重试上限：超出后出队为 failed，避免永远占异常队列空转
 MAX_THREAD_RETRIES = 3
-# 正常待抓积压阈值（不含异常/软文）：达到/超过则本轮不再扫列表，先消化正常队列
+# 正常待抓积压阈值（不含异常队列）：达到/超过则本轮不再扫列表
 QUEUE_LIST_BACKPRESSURE = 150
 
 _TID_RE = re.compile(r"thread-(\d+)-", re.I)
@@ -234,14 +235,9 @@ def fetch_pending_threads(
     include_soft_ad: bool = False,
     include_due_abnormal: bool = True,
 ) -> list[dict[str, Any]]:
-    """取出可抓队列：默认 = 新帖 + 退避到期的异常帖（不含软文）。
-
-    include_due_abnormal=False 时仅从未失败过的正常帖（旧行为）。
-    """
-    if include_soft_ad:
-        extra = f"{PENDING_READY}"
-    elif include_due_abnormal:
-        extra = f"{PENDING_READY} {PENDING_WORKABLE}"
+    """取出可抓队列：默认 = 新帖 + 退避到期的异常/软文（同一重试池）。"""
+    if include_soft_ad or include_due_abnormal:
+        extra = f"{PENDING_READY}".strip()
     else:
         extra = f"{PENDING_READY} {PENDING_NORMAL_ONLY}"
     cur = conn.cursor()
@@ -268,7 +264,7 @@ def fetch_pending_abnormal(
     board_fid: str | int,
     limit: int = 50,
 ) -> list[dict[str, Any]]:
-    """取出异常队列帖（忽略退避，供「异常重试」在队列内重爬）。"""
+    """取出异常队列帖（含原软文；忽略退避，供手动重试）。"""
     cur = conn.cursor()
     cur.execute(
         f"""
@@ -293,23 +289,8 @@ def fetch_pending_soft_ad(
     board_fid: str | int,
     limit: int = 50,
 ) -> list[dict[str, Any]]:
-    """取出软文队列帖（忽略退避，供「软文重试」在队列内重爬）。"""
-    cur = conn.cursor()
-    cur.execute(
-        f"""
-        SELECT url, tid, thread_title, board_fid, board_name, last_error, fetch_fail_count
-        FROM crawl_pages
-        WHERE page_type = 'thread'
-          AND status = 'pending'
-          AND board_fid = %s
-          {PENDING_SOFT_ONLY}
-        {PENDING_ORDER}
-        LIMIT %s
-        """,
-        (str(board_fid), max(1, int(limit))),
-    )
-    cols = [d[0] for d in cur.description]
-    return [dict(zip(cols, row)) for row in cur.fetchall()]
+    """兼容旧接口：与异常队列相同。"""
+    return fetch_pending_abnormal(conn, board_fid=board_fid, limit=limit)
 
 
 def count_pending(conn: Any, *, board_fid: str | int | None = None) -> dict[str, int]:
@@ -330,37 +311,22 @@ def count_pending(conn: Any, *, board_fid: str | int | None = None) -> dict[str,
         return int(cur.fetchone()[0])
 
     ready = _count(f"{PENDING_READY} {PENDING_NORMAL_ONLY}")
-    soft = _count(PENDING_SOFT_ONLY)
     abnormal = _count(PENDING_ABNORMAL_ONLY)
     deferred = _count("AND retry_after IS NOT NULL AND retry_after > now()")
-    # 连续调度马上能吃的（含到期异常重试）
-    workable = _count(f"{PENDING_READY} {PENDING_WORKABLE}")
+    workable = _count(PENDING_READY)
     return {
         "ready": ready,
-        "soft_ad": soft,
+        "soft_ad": 0,
         "abnormal": abnormal,
         "deferred": deferred,
         "workable": workable,
-        "total_pending": ready + soft + abnormal,
+        "total_pending": ready + abnormal,
     }
 
 
 def mark_pending_soft_ad(conn: Any, url: str, *, backoff_seconds: int = 3600) -> None:
-    url = canonical_thread_url(url)
-    cur = conn.cursor()
-    cur.execute(
-        """
-        UPDATE crawl_pages
-        SET last_error = %s,
-            fetch_fail_count = COALESCE(fetch_fail_count, 0) + 1,
-            retry_after = now() + (%s * interval '1 second'),
-            updated_at = now()
-        WHERE page_type = 'thread' AND status = 'pending' AND url = %s
-        """,
-        (SOFT_AD_ERROR, max(60, int(backoff_seconds)), url),
-    )
-    conn.commit()
-
+    """兼容旧名：软文失败与异常同一套 mark_pending_retry。"""
+    mark_pending_retry(conn, url, SOFT_AD_ERROR, backoff_seconds=backoff_seconds)
 
 def mark_pending_retry(conn: Any, url: str, error: str, *, backoff_seconds: int = 900) -> None:
     url = canonical_thread_url(url)

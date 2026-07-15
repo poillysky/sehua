@@ -15,6 +15,7 @@ from db.forum_configs import (
     save_forum_config,
     set_active_board_fid,
     set_active_forum_id,
+    set_enabled_board_fids,
 )
 from db.settings_store import get_setting
 from workers.link_test import DEFAULT_TEST_URL, test_http_link
@@ -40,11 +41,14 @@ class ActiveBoardBody(BaseModel):
     fid: str = Field(..., min_length=1, max_length=32)
 
 
+class EnabledBoardsBody(BaseModel):
+    fids: list[str] = Field(default_factory=list)
+
+
 class ThreadParseBody(BaseModel):
     url: str = Field(..., min_length=1)
     fid: str = ""
     proxy: str = ""
-
 
 
 @router.get("/rules")
@@ -101,6 +105,31 @@ def put_active_board(
         return {
             "message": "success",
             "forum_id": forum_id,
+            "active_board_fid": saved.get("active_board_fid"),
+            "enabled_board_fids": saved.get("enabled_board_fids"),
+            "config": saved,
+        }
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    finally:
+        conn.close()
+
+
+@router.put("/{forum_id}/enabled-boards")
+def put_enabled_boards(
+    forum_id: str,
+    body: EnabledBoardsBody,
+    _user: dict = Depends(require_permission("settings.write")),
+) -> dict:
+    if forum_id != SITE_CRAWLER_FORUM_ID:
+        raise HTTPException(status_code=400, detail="该论坛尚未接入配置")
+    conn = connect()
+    try:
+        saved = set_enabled_board_fids(conn, forum_id, list(body.fids or []))
+        return {
+            "message": "success",
+            "forum_id": forum_id,
+            "enabled_board_fids": saved.get("enabled_board_fids"),
             "active_board_fid": saved.get("active_board_fid"),
             "config": saved,
         }

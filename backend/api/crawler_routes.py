@@ -12,6 +12,7 @@ from db.forum_configs import (
     build_forums_payload,
     get_active_forum_id,
     load_forum_configs_map,
+    resolve_enabled_board_fids,
     save_forum_config,
 )
 from db.queue import count_pending
@@ -19,10 +20,12 @@ from workers.runner import (
     _log_activity,
     crawl_status,
     run_crawl_once,
+    run_scan_head_once,
     start_continuous_loop,
     stop_continuous_loop,
     stop_crawler,
 )
+from workers.random_tid import run_random_tid_batch, start_random_tid_loop
 
 router = APIRouter(prefix="/api/crawler", tags=["crawler"])
 
@@ -37,6 +40,30 @@ class RunBody(BaseModel):
     persist: bool = True
     max_threads: int | None = Field(default=None, ge=1, le=500)
     scan_list: bool = True
+
+
+class ScanHeadBody(BaseModel):
+    forum_id: str = Field(default=SITE_CRAWLER_FORUM_ID)
+    persist: bool = True
+    max_pages: int | None = Field(default=None, ge=1, le=200)
+
+
+class RandomTidBody(BaseModel):
+    forum_id: str = Field(default=SITE_CRAWLER_FORUM_ID)
+    persist: bool = True
+    count: int | None = Field(default=None, ge=1, le=500, description="探测 tid 数上限")
+    import_target: int | None = Field(
+        default=None, ge=0, le=200, description="入库+占位目标；0=跑满本轮探测"
+    )
+    tid_min: int | None = Field(default=None, ge=1, le=50_000_000)
+    tid_max: int | None = Field(default=None, ge=1, le=50_000_000)
+
+
+class RandomTidLoopBody(BaseModel):
+    forum_id: str = Field(default=SITE_CRAWLER_FORUM_ID)
+    count: int | None = Field(default=200, ge=1, le=500, description="每轮随机探测数")
+    tid_min: int | None = Field(default=None, ge=1, le=50_000_000)
+    tid_max: int | None = Field(default=None, ge=1, le=50_000_000)
 
 
 @router.get("/status")
@@ -57,6 +84,7 @@ def get_crawler_status(_user: dict = Depends(require_permission("crawler.view"))
         cfg_forum_id = active if active in configs else SITE_CRAWLER_FORUM_ID
         cfg = dict(configs.get(cfg_forum_id) or configs.get(SITE_CRAWLER_FORUM_ID) or {})
         board_fid = str(cfg.get("active_board_fid") or "")
+        enabled_fids = resolve_enabled_board_fids(cfg)
         try:
             qstats = count_pending(conn, board_fid=board_fid or None)
         except Exception:
@@ -65,41 +93,53 @@ def get_crawler_status(_user: dict = Depends(require_permission("crawler.view"))
         conn.close()
 
     boards: list[dict] = []
-    if board_fid.isdigit() and int(board_fid) in BOARD_POLICIES:
-        pol = BOARD_POLICIES[int(board_fid)]
-        boards = [
-            {
-                "fid": str(pol.fid),
-                "name": pol.name,
-                "pending": qstats.get("ready", "—"),
-                "done": "—",
-            }
-        ]
+    for efid in enabled_fids:
+        if efid.isdigit() and int(efid) in BOARD_POLICIES:
+            pol = BOARD_POLICIES[int(efid)]
+            boards.append(
+                {
+                    "fid": str(pol.fid),
+                    "name": pol.name,
+                    "pending": qstats.get("ready", "—") if efid == board_fid else "—",
+                    "done": "—",
+                    "current": efid == board_fid,
+                }
+            )
 
     st = crawl_status()
     last = st.get("last_result") or {}
+    try:
+        from workers.random_tid import random_progress
+
+        rnd = random_progress()
+    except Exception:
+        rnd = {}
     return {
         "forum_id": cfg_forum_id,
         "active_forum_id": active,
         "active_forum_name": active_forum_name,
         "enabled": bool(cfg.get("web_crawler_enabled")),
         "active_board_fid": board_fid,
+        "enabled_board_fids": enabled_fids,
         "request_delay": cfg.get("web_crawler_request_delay"),
         "list_pages_per_board": cfg.get("web_crawler_list_pages_per_board"),
         "list_head_pages": cfg.get("web_crawler_list_head_pages"),
+        "manual_head_pages": cfg.get("web_crawler_manual_head_pages"),
         "list_known_stop_pages": cfg.get("web_crawler_list_known_stop_pages"),
         "list_sort": "dateline",
         "list_sort_label": "按发帖时间",
-        "list_strategy": "daily_head_once+deep_rest",
+        "list_strategy": "manual_head+auto_deep",
         "interval_minutes": 0,
         "interval_label": "连续无间隔",
         "running": bool(st.get("running")),
         "looping": bool(st.get("looping")),
+        "loop_kind": st.get("loop_kind"),
         "stopping": bool(st.get("stopping")),
         "phase": st.get("phase") or "idle",
         "last_started_at": st.get("last_started_at"),
         "last_finished_at": st.get("last_finished_at"),
         "last_result": last,
+        "random_progress": rnd,
         "activity": st.get("activity") or [],
         "boards": boards,
         "queue": qstats or st.get("queue") or {},
@@ -116,6 +156,10 @@ def get_crawler_status(_user: dict = Depends(require_permission("crawler.view"))
             "queue_soft_ad": (qstats or {}).get("soft_ad") or 0,
             "queue_abnormal": (qstats or {}).get("abnormal") or 0,
             "queue_deferred": (qstats or {}).get("deferred") or 0,
+            "random_probed": rnd.get("probed") or 0,
+            "random_budget": rnd.get("probe_budget") or 0,
+            "random_imported": rnd.get("imported") or 0,
+            "random_session": rnd.get("session_probed") or 0,
         },
     }
 
@@ -180,12 +224,109 @@ async def post_crawler_run(
         persist=body.persist,
         max_threads=body.max_threads,
         scan_list=body.scan_list,
+        scan_head=False,
+        deep_scan=True,
         from_loop=False,
         require_enabled=False,
     )
     if result.get("reason") == "loop_running":
         raise HTTPException(status_code=409, detail=str(result.get("error") or "连续调度进行中"))
     return {"message": "ok" if result.get("ok") and not result.get("skipped") else "failed", "result": result}
+
+
+@router.post("/scan-head")
+async def post_crawler_scan_head(
+    body: ScanHeadBody | None = None,
+    _user: dict = Depends(require_permission("crawl.run")),
+) -> dict:
+    """手动扫新帖：首页捕新入队，本轮不做深扫；连续调度启用时不可触发。"""
+    body = body or ScanHeadBody()
+    fid = (body.forum_id or SITE_CRAWLER_FORUM_ID).strip()
+    if fid != SITE_CRAWLER_FORUM_ID:
+        raise HTTPException(status_code=400, detail="该论坛尚未接入爬虫")
+    st = crawl_status()
+    if st.get("looping"):
+        raise HTTPException(status_code=409, detail="连续调度进行中，请先关闭后再扫新帖")
+    if st.get("running"):
+        raise HTTPException(status_code=409, detail="上一轮仍在执行，请稍候")
+    result = await run_scan_head_once(
+        forum_id=fid,
+        max_pages=body.max_pages,
+        persist=body.persist,
+    )
+    if result.get("reason") == "loop_running":
+        raise HTTPException(status_code=409, detail=str(result.get("error") or "连续调度进行中"))
+    if result.get("reason") == "already_running":
+        raise HTTPException(status_code=409, detail="上一轮仍在执行，请稍候")
+    return {"message": "ok" if result.get("ok") and not result.get("skipped") else "failed", "result": result}
+
+
+@router.post("/random-tid")
+async def post_crawler_random_tid(
+    body: RandomTidBody | None = None,
+    _user: dict = Depends(require_permission("crawl.run")),
+) -> dict:
+    """手动随机抓帖：tid 直链探测早期帖，magnet+ed2k 混合判定入库。"""
+    body = body or RandomTidBody()
+    fid = (body.forum_id or SITE_CRAWLER_FORUM_ID).strip()
+    if fid != SITE_CRAWLER_FORUM_ID:
+        raise HTTPException(status_code=400, detail="该论坛尚未接入爬虫")
+    st = crawl_status()
+    if st.get("looping"):
+        raise HTTPException(status_code=409, detail="连续调度进行中，请先关闭后再随机抓帖")
+    if st.get("running"):
+        raise HTTPException(status_code=409, detail="上一轮仍在执行，请稍候")
+    result = await run_random_tid_batch(
+        forum_id=fid,
+        probe=body.count,
+        import_target=body.import_target,
+        tid_min=body.tid_min,
+        tid_max=body.tid_max,
+        persist=body.persist,
+    )
+    if result.get("reason") == "loop_running":
+        raise HTTPException(status_code=409, detail=str(result.get("error") or "连续调度进行中"))
+    if result.get("reason") == "busy":
+        raise HTTPException(status_code=409, detail=str(result.get("error") or "爬虫正在执行"))
+    ok = bool(result.get("ok") and not result.get("skipped"))
+    return {
+        "message": "ok" if ok else "failed",
+        "result": result,
+        "probed": result.get("probed") or 0,
+        "imported": result.get("imported") or 0,
+        "stubbed": result.get("stubbed") or 0,
+        "missing": result.get("missing") or 0,
+        "skipped_dup": result.get("skipped_dup") or 0,
+    }
+
+
+@router.post("/random-tid/loop/start")
+async def post_crawler_random_tid_loop_start(
+    body: RandomTidLoopBody | None = None,
+    _user: dict = Depends(require_permission("crawl.run")),
+) -> dict:
+    """启动随机抓帖连续循环：每轮 count 个随机 tid，跳过已入库，无间隔再开下一轮。"""
+    body = body or RandomTidLoopBody()
+    fid = (body.forum_id or SITE_CRAWLER_FORUM_ID).strip()
+    if fid != SITE_CRAWLER_FORUM_ID:
+        raise HTTPException(status_code=400, detail="该论坛尚未接入爬虫")
+    result = start_random_tid_loop(
+        forum_id=fid,
+        probe=body.count if body.count is not None else 200,
+        tid_min=body.tid_min,
+        tid_max=body.tid_max,
+    )
+    if result.get("already"):
+        return {"message": "already", "looping": True, "loop_kind": "random_tid", **result}
+    if not result.get("ok"):
+        raise HTTPException(status_code=409, detail=str(result.get("error") or "无法启动"))
+    _log_activity(str(result.get("message") or "随机抓帖连续调度已启动"))
+    return {
+        "message": "started",
+        "looping": True,
+        "loop_kind": "random_tid",
+        "probe": result.get("probe") or body.count or 200,
+    }
 
 
 @router.post("/loop/start")
@@ -247,11 +388,11 @@ async def _post_queue_retry(kind: str) -> dict:
 
 @router.post("/queue/retry-abnormal")
 async def post_retry_abnormal(_user: dict = Depends(require_permission("crawl.run"))) -> dict:
-    """在异常队列内重爬；成功（入库/占位/跳过/终态失败）才出队。"""
+    """重爬异常队列（含原软文壳）；成功才出队。"""
     return await _post_queue_retry("abnormal")
 
 
 @router.post("/queue/retry-soft-ad")
 async def post_retry_soft_ad(_user: dict = Depends(require_permission("crawl.run"))) -> dict:
-    """在软文队列内重爬；成功才出队，失败仍留软文队列。"""
-    return await _post_queue_retry("soft_ad")
+    """兼容旧接口：与异常重试相同。"""
+    return await _post_queue_retry("abnormal")

@@ -1,5 +1,6 @@
 import type { MetadataRoute } from "next";
 
+import { CHROME_DARK } from "@/config/chrome";
 import { siteConfig } from "@/config/site";
 
 export default function manifest(): MetadataRoute.Manifest {
@@ -11,8 +12,8 @@ export default function manifest(): MetadataRoute.Manifest {
     scope: "/",
     display: "standalone",
     orientation: "portrait-primary",
-    background_color: "#0B1220",
-    theme_color: "#0B1220",
+    background_color: CHROME_DARK,
+    theme_color: CHROME_DARK,
     lang: "zh-CN",
     categories: ["utilities", "productivity"],
     icons: [

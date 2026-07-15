@@ -1,4 +1,5 @@
-html ,body {
+html,
+body {
   width: 100%;
   height: 100%;
   margin: 0;
@@ -13,16 +14,101 @@ html ,body {
   --safe-right: env(safe-area-inset-right, 0px);
   --safe-bottom: env(safe-area-inset-bottom, 0px);
   --safe-left: env(safe-area-inset-left, 0px);
+  --chrome-light: #ffffff;
+  --chrome-dark: #0b1220;
 }
 
-/* iOS Home Screen / installed PWA fullscreen */
+/* Solid body colors for Safari overscroll + toolbar fallback (iOS 26+) */
+body {
+  background-color: var(--chrome-light);
+}
+
+.dark body,
+html.chrome-dark body,
+html[data-chrome-scheme="dark"] body {
+  background-color: var(--chrome-dark);
+}
+
+html.chrome-light body,
+html[data-chrome-scheme="light"] body {
+  background-color: var(--chrome-light);
+}
+
+/* iOS Safari Liquid Glass tab/toolbar tint strips (full-width fixed edges) */
+.safari-chrome-tint {
+  display: none;
+  pointer-events: none;
+  position: fixed;
+  left: 0;
+  right: 0;
+  width: 100%;
+  min-height: 12px;
+  z-index: 1;
+  background-color: var(--chrome-light);
+}
+
+html.chrome-dark .safari-chrome-tint,
+html[data-chrome-scheme="dark"] .safari-chrome-tint,
+.dark .safari-chrome-tint {
+  background-color: var(--chrome-dark);
+}
+
+.safari-chrome-tint--top {
+  top: 0;
+}
+
+.safari-chrome-tint--bottom {
+  bottom: -8px;
+  min-height: 16px;
+}
+
+@supports (-webkit-touch-callout: none) {
+  @media (width < 768px) {
+    .safari-chrome-tint {
+      display: block;
+    }
+
+    /* Hide tint rails in installed PWA — no Safari chrome to color */
+    html.ios-standalone .safari-chrome-tint,
+    html[data-standalone="true"] .safari-chrome-tint {
+      display: none;
+    }
+  }
+}
+
+/* Standalone: dark strip behind translucent status bar (white icons stay readable) */
+.ios-status-backdrop {
+  display: none;
+  pointer-events: none;
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: max(var(--safe-top), 0px);
+  z-index: 50;
+  background-color: var(--chrome-dark);
+}
+
+html.ios-standalone .ios-status-backdrop,
+html[data-standalone="true"] .ios-status-backdrop {
+  display: block;
+}
+
+/* Light standalone: still need dark status pad for white system icons */
+html.ios-standalone.chrome-light .ios-status-backdrop,
+html[data-standalone="true"].chrome-light .ios-status-backdrop,
+html.ios-standalone[data-chrome-scheme="light"] .ios-status-backdrop,
+html[data-standalone="true"][data-chrome-scheme="light"] .ios-status-backdrop {
+  background-color: var(--chrome-dark);
+}
+
+/* iOS Home Screen / installed PWA fullscreen (no Safari URL bar at all) */
 @media all and (display-mode: standalone) {
   html,
   body {
     min-height: 100dvh;
     min-height: -webkit-fill-available;
     overscroll-behavior-y: none;
-    background-color: #0b1220;
   }
 
   .app-shell {
@@ -44,7 +130,6 @@ html.ios-standalone body,
 html[data-standalone="true"] body {
   min-height: 100dvh;
   min-height: -webkit-fill-available;
-  background-color: #0b1220;
 }
 
 html.ios-standalone .app-shell,
@@ -77,6 +162,20 @@ html[data-standalone="true"] .app-shell {
   top: max(5vh, calc(var(--safe-top) + 0.75rem));
   padding-left: max(1rem, var(--safe-left));
   padding-right: max(1rem, var(--safe-right));
+}
+
+/* Decorative bg must not win Safari edge sampling */
+.bg-effect-layer {
+  pointer-events: none;
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  background: transparent !important;
+}
+
+.bg-effect-layer canvas,
+.bg-effect-layer > div {
+  background: transparent !important;
 }
 
 input:-internal-autofill-selected,

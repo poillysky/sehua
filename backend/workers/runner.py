@@ -12,11 +12,14 @@ from crawler.throttle import THROTTLE
 from db.connection import connect
 from db.forum_configs import (
     SITE_CRAWLER_FORUM_ID,
+    advance_active_board_fid,
     get_active_forum_id,
     get_board_head_progress,
     get_board_list_cursor,
     is_board_head_done_today,
     load_forum_configs_map,
+    resolve_enabled_board_fids,
+    resolve_manual_head_pages,
     save_forum_config,
     set_board_head_catchup_state,
     set_board_list_cursor,
@@ -28,10 +31,8 @@ from db.queue import (
     count_pending,
     dedupe_pending_by_tid,
     fetch_pending_abnormal,
-    fetch_pending_soft_ad,
     fetch_pending_threads,
     mark_pending_retry,
-    mark_pending_soft_ad,
     mark_thread_done,
     mark_thread_skipped,
     tid_from_url,
@@ -51,6 +52,7 @@ log = logging.getLogger(__name__)
 _STATE: dict[str, Any] = {
     "running": False,
     "looping": False,
+    "loop_kind": None,
     "phase": "idle",
     "last_result": None,
     "last_started_at": None,
@@ -68,6 +70,8 @@ def crawl_status() -> dict[str, Any]:
     out = dict(_STATE)
     out["throttle"] = THROTTLE.status()
     out["stopping"] = bool(THROTTLE.should_stop() and _STATE.get("running"))
+    if out.get("looping") and not out.get("loop_kind"):
+        out["loop_kind"] = "deep"
     return out
 
 
@@ -121,14 +125,19 @@ async def run_crawl_once(
     max_threads: Optional[int] = None,
     persist: bool = True,
     scan_list: bool = True,
+    scan_head: bool | None = None,
+    deep_scan: bool = True,
+    head_pages_override: int | None = None,
+    board_fid_override: str | int | None = None,
     from_loop: bool = False,
     require_enabled: bool = True,
     queue_kind: str | None = None,
 ) -> dict[str, Any]:
     """执行拓扑一轮：选板→进站→扫列表入队→取待抓→抓帖入库。
 
-    - 手动「立即爬取」：from_loop=False；连续调度启用时拒绝。
-    - 连续循环内部调用：from_loop=True。
+    - 手动「立即爬取」：from_loop=False；连续调度启用时拒绝；默认仅深扫当前板。
+    - 手动「扫新帖」：scan_head=True, deep_scan=False；可由 run_scan_head_once 按启用队列逐板调用。
+    - 连续循环：scan_head=False, deep_scan=True, from_loop=True；当前板 list_exhausted 后切下一启用板。
     - queue_kind=abnormal|soft_ad：只在该队列内重爬，成功才出队，不扫列表。
     """
     kind = (queue_kind or "").strip().lower() or None
@@ -227,19 +236,33 @@ async def run_crawl_once(
         )
 
         _STATE["phase"] = "board_select"
-        board_fid_s = str(cfg.get("active_board_fid") or "").strip()
+        enabled = resolve_enabled_board_fids(cfg)
+        result["enabled_board_fids"] = enabled
+        if board_fid_override is not None:
+            board_fid_s = str(board_fid_override).strip()
+        else:
+            board_fid_s = str(cfg.get("active_board_fid") or "").strip()
+            if board_fid_s not in enabled and enabled:
+                board_fid_s = enabled[0]
         if board_fid_s not in {str(f) for f in BOARD_POLICIES}:
             result["ok"] = False
             result["error"] = f"工作板 fid={board_fid_s} 不在白名单"
+            _log_activity(result["error"])
+            return result
+        if enabled and board_fid_s not in enabled:
+            result["ok"] = False
+            result["error"] = f"工作板 fid={board_fid_s} 未在启用队列中"
             _log_activity(result["error"])
             return result
         board_fid = int(board_fid_s)
         pol = get_board_policy(board_fid)
         result["board_fid"] = board_fid
         result["board_name"] = pol.name
+        queue_label = " → ".join(enabled) if enabled else board_fid_s
         _log_activity(
             f"选板 · {pol.name}（{board_fid}）· 主链 {pol.primary_link}"
             + (f" · 满 {pol.min_thread_age_days} 天" if pol.min_thread_age_days else "")
+            + f" · 启用队列 {len(enabled)} 板 [{queue_label}]"
             + " · 发帖时间序"
         )
 
@@ -280,10 +303,19 @@ async def run_crawl_once(
                 _STATE["phase"] = "list_scan"
                 pages_per = int(cfg.get("web_crawler_list_pages_per_board") or 15)
                 max_pages = int(cfg.get("web_crawler_max_list_pages") or 0)
-                head_pages = int(cfg.get("web_crawler_list_head_pages") or 50)
                 known_stop = int(cfg.get("web_crawler_list_known_stop_pages") or 2)
                 list_cursor = get_board_list_cursor(cfg, board_fid)
-                do_head = not is_board_head_done_today(cfg, board_fid)
+                if scan_head is None:
+                    do_head = not is_board_head_done_today(cfg, board_fid)
+                else:
+                    do_head = bool(scan_head)
+                do_deep = bool(deep_scan)
+                if head_pages_override is not None:
+                    head_pages = max(1, int(head_pages_override))
+                elif do_head and not do_deep:
+                    head_pages = resolve_manual_head_pages(cfg, board_fid)
+                else:
+                    head_pages = int(cfg.get("web_crawler_list_head_pages") or 50)
                 head_start = get_board_head_progress(cfg, board_fid) if do_head else 1
                 scan = await scan_board_list(
                     fetcher,
@@ -293,6 +325,7 @@ async def run_crawl_once(
                     head_pages=head_pages,
                     known_stop_pages=known_stop,
                     scan_head=do_head,
+                    deep_scan=do_deep,
                     head_start_page=head_start,
                     entry_url=start,
                     last_list_page=list_cursor,
@@ -301,6 +334,7 @@ async def run_crawl_once(
                     on_log=_log_activity,
                 )
                 result["pages_scanned"] = scan.pages_scanned
+                result["pages_head"] = list(getattr(scan, "pages_head", None) or [])
                 result["pages_skipped"] = list(scan.pages_skipped)
                 result["discovered"] = len(scan.threads)
                 result["enqueued"] = scan.enqueued
@@ -310,8 +344,10 @@ async def run_crawl_once(
                 result["deferred_young"] = int(getattr(scan, "deferred_young", 0) or 0)
                 result["head_skipped"] = bool(getattr(scan, "head_skipped", False))
                 result["head_completed"] = bool(getattr(scan, "head_completed", False))
+                result["scan_head"] = do_head
+                result["deep_scan"] = do_deep
                 result["fetch_failures"] += scan.fetch_failures
-                # 持久化游标 + 每日首页捕新状态
+                # 持久化游标；手动扫新帖不写每日捕新闸门
                 cursor_conn = connect()
                 try:
                     set_board_list_cursor(
@@ -321,14 +357,33 @@ async def run_crawl_once(
                         scan.last_list_page,
                         reset=bool(scan.list_exhausted),
                     )
-                    if scan.head_completed:
-                        set_board_head_catchup_state(
-                            cursor_conn,
-                            forum_id,
-                            board_fid,
-                            done_today=True,
+                    if do_deep and scan.list_exhausted:
+                        saved = advance_active_board_fid(
+                            cursor_conn, forum_id, from_fid=board_fid
                         )
-                    elif scan.head_incomplete and scan.head_progress_page:
+                        nxt = str(saved.get("active_board_fid") or "")
+                        result["board_advanced"] = True
+                        result["next_board_fid"] = nxt
+                        _log_activity(
+                            f"板 {board_fid} 深扫到底 · 下轮切换为 fid={nxt or '—'}"
+                        )
+                    if do_head and scan.head_completed:
+                        if do_deep:
+                            set_board_head_catchup_state(
+                                cursor_conn,
+                                forum_id,
+                                board_fid,
+                                done_today=True,
+                            )
+                        else:
+                            set_board_head_catchup_state(
+                                cursor_conn,
+                                forum_id,
+                                board_fid,
+                                clear_progress=True,
+                            )
+                            _log_activity("本板扫新帖结束 · 未写入每日捕新闸门")
+                    elif do_head and scan.head_incomplete and scan.head_progress_page:
                         set_board_head_catchup_state(
                             cursor_conn,
                             forum_id,
@@ -345,19 +400,22 @@ async def run_crawl_once(
                     return result
                 head_n = len(getattr(scan, "pages_head", None) or [])
                 if scan.head_skipped:
-                    head_label = "首页跳过(今日已捕新)"
+                    head_label = "首页跳过"
                 elif head_n:
                     head_label = f"首页捕新 {head_n} 页"
                 else:
                     head_label = "首页未读"
-                _log_activity(
-                    f"扫列表(发帖时间) · {head_label} · "
-                    f"深扫 {len(scan.pages_scanned)} 页"
-                    + (
+                deep_n = len(scan.pages_scanned)
+                if not do_deep:
+                    deep_label = "深扫跳过"
+                else:
+                    deep_label = f"深扫 {deep_n} 页" + (
                         f"（自 P{scan.harvest_start_page}）"
                         if scan.harvest_start_page
                         else ""
                     )
+                _log_activity(
+                    f"扫列表(发帖时间) · {head_label} · {deep_label}"
                     + f" · 发现 {len(scan.threads)} · 新入队 {scan.enqueued}"
                     + (f" · 游标 P{scan.last_list_page}" if scan.last_list_page else "")
                 )
@@ -374,25 +432,21 @@ async def run_crawl_once(
                 _log_activity(f"队列去重 · 合并同帖重复 URL {merged} 条")
             qstats = count_pending(conn, board_fid=board_fid)
             _STATE["queue"] = qstats
-            if kind == "abnormal":
+            if kind in {"abnormal", "soft_ad"}:
                 pending = fetch_pending_abnormal(conn, board_fid=board_fid, limit=500)
-            elif kind == "soft_ad":
-                pending = fetch_pending_soft_ad(conn, board_fid=board_fid, limit=500)
             else:
                 pending = fetch_pending_threads(conn, board_fid=board_fid, limit=500)
         finally:
             conn.close()
 
-        if kind == "abnormal":
-            _log_activity(f"异常队列重爬 · {len(pending)} 条（成功才出队）")
-        elif kind == "soft_ad":
-            _log_activity(f"软文队列重爬 · {len(pending)} 条（成功才出队）")
+        if kind in {"abnormal", "soft_ad"}:
+            _log_activity(f"异常队列重爬 · {len(pending)} 条（含原软文；成功才出队）")
         else:
             deferred = int(qstats.get("deferred") or 0)
             workable = int(qstats.get("workable") or len(pending))
             _log_activity(
                 f"待抓队列 · 可抓 {workable}（正常 {qstats.get('ready', 0)}）· "
-                f"异常 {qstats.get('abnormal', 0)} · 软文 {qstats.get('soft_ad', 0)}"
+                f"异常 {qstats.get('abnormal', 0)}"
                 + (f" · 退避中 {deferred}" if deferred else "")
             )
             if not pending and int(result.get("discovered") or 0) > 0 and int(result.get("enqueued") or 0) == 0:
@@ -501,26 +555,32 @@ async def run_crawl_once(
                         consecutive_fail += 1
                         THROTTLE.record_failure()
                         prev_fails = int(row.get("fetch_fail_count") or 0)
-                        if outcome.get("soft_browser_retried") or "软文" in str(
-                            outcome.get("outcome") or ""
-                        ):
-                            mark_pending_soft_ad(conn, thread_url, backoff_seconds=3600)
-                        elif prev_fails + 1 >= MAX_THREAD_RETRIES:
+                        err_msg = str(outcome.get("outcome") or "retry")
+                        # 软文壳与其它失败统一进异常重试池，计数与耗尽规则一致
+                        if prev_fails + 1 >= MAX_THREAD_RETRIES:
                             mark_thread_done(
                                 conn,
                                 thread_url,
-                                outcome=f"重试{MAX_THREAD_RETRIES}次仍失败："
-                                f"{str(outcome.get('outcome') or 'retry')[:120]}",
+                                outcome=f"重试{MAX_THREAD_RETRIES}次仍失败：{err_msg[:120]}",
                                 status="failed",
                             )
                             result["failed"] += 1
-                            log_label = f"重试耗尽出队 · {outcome.get('outcome') or 'retry'}"
+                            log_label = f"重试耗尽出队 · {err_msg}"
                         else:
+                            backoff = (
+                                3600
+                                if (
+                                    outcome.get("soft_browser_retried")
+                                    or "软文" in err_msg
+                                    or "安全壳" in err_msg
+                                )
+                                else 900
+                            )
                             mark_pending_retry(
                                 conn,
                                 thread_url,
-                                str(outcome.get("outcome") or "retry"),
-                                backoff_seconds=900,
+                                err_msg,
+                                backoff_seconds=backoff,
                             )
                     elif verdict == "need_attachments":
                         result["retries"] += 1
@@ -649,10 +709,133 @@ async def run_crawl_once(
         }
 
 
+async def run_scan_head_once(
+    *,
+    forum_id: str = SITE_CRAWLER_FORUM_ID,
+    max_pages: int | None = None,
+    persist: bool = True,
+) -> dict[str, Any]:
+    """手动扫新帖：按启用队列顺序逐板首页捕新；每板达上限或扫完后换下一板。"""
+    conn = connect()
+    try:
+        configs = load_forum_configs_map(conn)
+        cfg = dict(configs.get(forum_id) or {})
+    finally:
+        conn.close()
+    enabled = resolve_enabled_board_fids(cfg)
+    if not enabled:
+        return {"ok": False, "skipped": True, "reason": "no_enabled_boards", "error": "未选择工作板块"}
+
+    _log_activity(
+        f"手动扫新帖 · 启用 {len(enabled)} 板 · 顺序 {' → '.join(enabled)}"
+    )
+    agg: dict[str, Any] = {
+        "ok": True,
+        "scan_head": True,
+        "deep_scan": False,
+        "enabled_board_fids": enabled,
+        "boards": [],
+        "discovered": 0,
+        "enqueued": 0,
+        "crawled": 0,
+        "imports": 0,
+        "stubs": 0,
+        "retries": 0,
+        "failed": 0,
+        "pages_head": [],
+        "pages_scanned": [],
+    }
+    last: dict[str, Any] = {}
+    for fid in enabled:
+        if THROTTLE.should_stop():
+            agg["reason"] = "stopped"
+            break
+        if max_pages is not None:
+            pages = max(1, int(max_pages))
+        else:
+            pages = resolve_manual_head_pages(cfg, fid)
+        _log_activity(f"扫新帖 · 板块 {fid} · 上限 {pages} 页")
+        last = await run_crawl_once(
+            forum_id=forum_id,
+            persist=persist,
+            scan_list=True,
+            scan_head=True,
+            deep_scan=False,
+            head_pages_override=pages,
+            board_fid_override=fid,
+            from_loop=False,
+            require_enabled=False,
+        )
+        if last.get("skipped"):
+            agg["ok"] = False
+            agg["skipped"] = True
+            agg["reason"] = last.get("reason")
+            agg["error"] = last.get("error")
+            break
+        board_summary = {
+            "board_fid": last.get("board_fid"),
+            "board_name": last.get("board_name"),
+            "pages_head": last.get("pages_head") or [],
+            "enqueued": last.get("enqueued") or 0,
+            "discovered": last.get("discovered") or 0,
+            "crawled": last.get("crawled") or 0,
+            "imports": last.get("imports") or 0,
+            "head_completed": last.get("head_completed"),
+            "head_incomplete": bool(last.get("head_incomplete")),
+            "reason": last.get("reason"),
+        }
+        agg["boards"].append(board_summary)
+        for key in ("discovered", "enqueued", "crawled", "imports", "stubs", "retries", "failed"):
+            agg[key] = int(agg.get(key) or 0) + int(last.get(key) or 0)
+        agg["pages_head"] = list(agg.get("pages_head") or []) + list(last.get("pages_head") or [])
+        if last.get("ok") is False:
+            agg["ok"] = False
+            agg["error"] = last.get("error") or last.get("reason")
+            if last.get("reason") in {"list_login_required", "cooldown_tripped", "stopped"}:
+                agg["reason"] = last.get("reason")
+                break
+        # 达上限或扫完均已于本板 run 内结束，继续下一启用板
+        # 刷新 cfg 以便后续板读到最新进度
+        conn = connect()
+        try:
+            configs = load_forum_configs_map(conn)
+            cfg = dict(configs.get(forum_id) or {})
+        finally:
+            conn.close()
+
+    if last:
+        agg["board_fid"] = last.get("board_fid")
+        agg["board_name"] = last.get("board_name")
+        if last.get("reason") and not agg.get("reason"):
+            agg["reason"] = last.get("reason")
+    _STATE["last_result"] = {
+        k: agg.get(k)
+        for k in (
+            "ok",
+            "enabled_board_fids",
+            "boards",
+            "discovered",
+            "enqueued",
+            "crawled",
+            "imports",
+            "stubs",
+            "retries",
+            "reason",
+            "error",
+        )
+    }
+    _log_activity(
+        f"扫新帖汇总 · {len(agg.get('boards') or [])}/{len(enabled)} 板 · "
+        f"入队 {agg['enqueued']} · 抓 {agg['crawled']} · 入库 {agg['imports']}"
+    )
+    return agg
+
+
 async def _continuous_loop() -> None:
     """拓扑：一轮结束立即再开，无轮间间隔。"""
     _STATE["looping"] = True
     _STATE["running"] = True
+    _STATE["loop_kind"] = "deep"
     _log_activity("连续调度已启动 · 无轮间间隔")
     try:
         while _STATE.get("looping") and not THROTTLE.should_stop():
@@ -667,7 +850,14 @@ async def _continuous_loop() -> None:
                 _log_activity("开关已关 · 连续调度待命")
                 await THROTTLE.sleep_for(5)
                 continue
-            await run_crawl_once(persist=True, scan_list=True, from_loop=True, require_enabled=True)
+            await run_crawl_once(
+                persist=True,
+                scan_list=True,
+                scan_head=False,
+                deep_scan=True,
+                from_loop=True,
+                require_enabled=True,
+            )
             if THROTTLE.should_stop() or not _STATE.get("looping"):
                 break
             # 无轮间间隔：立即下一轮（仅极短让出事件循环）
@@ -678,6 +868,7 @@ async def _continuous_loop() -> None:
     finally:
         _STATE["looping"] = False
         _STATE["running"] = False
+        _STATE["loop_kind"] = None
         _STATE["phase"] = "idle"
         _log_activity("连续调度已停止")
 
@@ -686,9 +877,12 @@ def start_continuous_loop() -> dict[str, Any]:
     global _loop_task
     if _STATE.get("looping") and _loop_task and not _loop_task.done():
         return {"ok": True, "already": True, "message": "连续调度已在运行"}
+    if _STATE.get("looping") and _STATE.get("loop_kind") == "random_tid":
+        return {"ok": False, "already": False, "message": "随机抓帖连续中，请先停止"}
     THROTTLE.clear_stop()
     _STATE["looping"] = True
     _STATE["running"] = True
+    _STATE["loop_kind"] = "deep"
     _STATE["phase"] = "scheduler"
     _loop_task = asyncio.get_running_loop().create_task(_continuous_loop())
     return {"ok": True, "message": "连续调度已启动"}
@@ -705,6 +899,7 @@ def _force_idle_state() -> None:
     _STATE["looping"] = False
     _STATE["running"] = False
     _STATE["loop_inner"] = False
+    _STATE["loop_kind"] = None
     _STATE["phase"] = "idle"
     _round_task = None
 
@@ -752,6 +947,15 @@ async def stop_crawler(
                 # 同一 task（循环内）只 cancel 一次
                 if _loop_task is None or _round_task is not _loop_task:
                     tasks.append(_round_task)
+            try:
+                from workers.random_tid import cancel_random_loop_task, clear_random_session_state
+
+                for t in cancel_random_loop_task():
+                    if t not in tasks:
+                        tasks.append(t)
+                clear_random_session_state()
+            except Exception:
+                pass
             for t in tasks:
                 t.cancel()
             _log_activity("手动停止 · 超时强制取消任务")

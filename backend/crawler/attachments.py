@@ -22,6 +22,7 @@ from parsers.attachments import (
     filter_torrent_attachments,
     is_attachment_denied,
 )
+from parsers.thread_gates import has_115_sha_link
 from parsers.torrent import parse_torrent_bytes
 
 log = logging.getLogger(__name__)
@@ -313,6 +314,13 @@ class AttachmentDownloader:
                     attachment.name,
                     len(text),
                 )
+                # 附件一旦识别 115sha，立即停止继续下其余附件
+                if has_115_sha_link(text):
+                    log.info(
+                        "115sha in attachment %s — stop further attachment downloads",
+                        attachment.name,
+                    )
+                    break
             except Exception as exc:
                 log.warning("Attachment download failed %s: %s", attachment.name, exc)
 

@@ -9,7 +9,7 @@ export const dynamic = "force-dynamic";
 
 export default function Home() {
   return (
-    <section className="mx-auto flex h-full w-4/5 flex-col items-center justify-center gap-4 pb-24 md:w-3/5 md:pb-20">
+    <section className="mx-auto flex h-full w-4/5 flex-col items-center justify-center gap-4 pt-[max(3rem,10vh)] pb-[max(2rem,6vh)] md:w-3/5 md:pt-[max(2.5rem,8vh)] md:pb-[max(2rem,5vh)]">
       <HomeLogo />
       <SearchInput />
       <BrowseEntryButton />

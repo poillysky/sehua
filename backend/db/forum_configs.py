@@ -39,9 +39,13 @@ FORUM_CRAWLER_DEFAULTS: dict[str, Any] = {
     "web_crawler_auto_discover": False,
     "web_crawler_max_boards_per_run": 1,
     "web_crawler_list_pages_per_board": 15,
-    # 每日首页捕新安全上限：从 P1 扫到「整页已入库」为止；当天完成后不再扫首页
+    # 已废弃：原每日自动首页捕新安全上限；手动扫新帖请用 web_crawler_manual_head_pages
     "web_crawler_list_head_pages": 50,
-    # 深扫连续 N 页所见均已入库则早停，下轮继续深扫（当天不再读 P1）
+    # 手动「扫新帖」全局默认页数上限
+    "web_crawler_manual_head_pages": 20,
+    # 每板覆盖手动扫新帖上限，如 {"95": 30, "2": 10}
+    "board_manual_head_pages": {},
+    # 深扫连续 N 页所见均已入库则早停（已废弃给深扫用）；现供扫新帖早停：连续 N 页全已知结束，默认 2
     "web_crawler_list_known_stop_pages": 2,
     "web_crawler_board_refresh_hours": 12,
     "web_crawler_max_threads_per_run": 0,
@@ -57,10 +61,17 @@ FORUM_CRAWLER_DEFAULTS: dict[str, Any] = {
     "web_crawler_max_list_pages": 0,
     "web_crawler_fetch_retries": 3,
     "web_crawler_thread_timeout": 120,
+    # 随机抓帖（tid 直链探测早期帖）
+    "web_crawler_random_tid_min": 80_000,
+    "web_crawler_random_tid_max": 500_000,
+    "web_crawler_random_tid_probe": 200,
+    "web_crawler_random_tid_import_target": 0,
     "board_order": default_board_order(),
-    # 本站爬虫一次只跑一个工作板块（在「板块列表」里单选）
+    # 勾选参与爬取的板块（按 board_order 排序依次爬）
+    "enabled_board_fids": default_board_order()[:1],
+    # 深扫当前工作板块（启用队列中的游标）
     "active_board_fid": default_board_order()[0],
-    # 各板列表翻页游标：所见均已入库时继续往后；有新帖后从该页起按 pages_per_board 计数
+    # 各板列表翻页游标：深扫向后推进；空页或内容重复则 list_exhausted 并重置
     "board_list_cursors": {},
     # 各板「今日首页捕新已完成」日期 YYYY-MM-DD（上海时区）
     "board_head_catchup_on": {},
@@ -87,6 +98,12 @@ def _normalize_forum_config(raw: dict | None) -> dict[str, Any]:
             elif isinstance(val, str):
                 base[key] = [item.strip() for item in val.split(",") if item.strip()]
             continue
+        if key == "enabled_board_fids":
+            if isinstance(val, list):
+                base[key] = [str(item).strip() for item in val if str(item).strip()]
+            elif isinstance(val, str):
+                base[key] = [item.strip() for item in val.split(",") if item.strip()]
+            continue
         if key == "board_list_cursors":
             if isinstance(val, dict):
                 cleaned: dict[str, int] = {}
@@ -96,6 +113,16 @@ def _normalize_forum_config(raw: dict | None) -> dict[str, Any]:
                     except (TypeError, ValueError):
                         continue
                 base[key] = cleaned
+            continue
+        if key == "board_manual_head_pages":
+            if isinstance(val, dict):
+                cleaned_m: dict[str, int] = {}
+                for bf, pg in val.items():
+                    try:
+                        cleaned_m[str(bf)] = max(1, int(pg))
+                    except (TypeError, ValueError):
+                        continue
+                base[key] = cleaned_m
             continue
         if key == "board_head_catchup_on":
             if isinstance(val, dict):
@@ -134,8 +161,13 @@ def _normalize_forum_config(raw: dict | None) -> dict[str, Any]:
     base["web_crawler_require_structured_desc"] = False
     # 拓扑：仅白名单工作板，不做自动发现
     base["web_crawler_auto_discover"] = False
-    # 本站模型：每轮最多扫 1 个板块；工作板块必须落在白名单内
-    base["web_crawler_max_boards_per_run"] = 1
+    # 启用队列长度作提示；实际按板依次处理，不再限制「每轮多板并发」
+    try:
+        base["web_crawler_max_boards_per_run"] = max(
+            1, int(base.get("web_crawler_max_boards_per_run") or 1)
+        )
+    except (TypeError, ValueError):
+        base["web_crawler_max_boards_per_run"] = 1
     # 本站连续爬取：关闭轮间间隔
     base["web_crawler_interval_minutes"] = 0
     # 本批帖数上限：0 = 不另限（深扫入队多少抓多少，仍受目标入库约束）
@@ -152,18 +184,86 @@ def _normalize_forum_config(raw: dict | None) -> dict[str, Any]:
         if fid not in order:
             order.append(fid)
     base["board_order"] = order
+    # 启用队列：按 board_order 排序；旧配置无 enabled 时用 active_board_fid 迁移
+    if "enabled_board_fids" not in (raw or {}):
+        legacy_active = str(base.get("active_board_fid") or "").strip()
+        if legacy_active in allowed:
+            enabled = [legacy_active]
+        else:
+            enabled = [order[0]] if order else [default_board_order()[0]]
+    else:
+        raw_enabled = [str(x) for x in (base.get("enabled_board_fids") or []) if str(x) in allowed]
+        enabled = [fid for fid in order if fid in set(raw_enabled)]
+        if not enabled:
+            legacy_active = str(base.get("active_board_fid") or "").strip()
+            if legacy_active in allowed:
+                enabled = [legacy_active]
+            else:
+                enabled = [order[0]] if order else [default_board_order()[0]]
+    base["enabled_board_fids"] = enabled
     active = str(base.get("active_board_fid") or "").strip()
-    if active not in allowed:
-        base["active_board_fid"] = order[0] if order else default_board_order()[0]
+    if active not in enabled:
+        base["active_board_fid"] = enabled[0]
     else:
         base["active_board_fid"] = active
+    base["web_crawler_max_boards_per_run"] = max(1, len(enabled))
     if not isinstance(base.get("board_list_cursors"), dict):
         base["board_list_cursors"] = {}
+    if not isinstance(base.get("board_manual_head_pages"), dict):
+        base["board_manual_head_pages"] = {}
     if not isinstance(base.get("board_head_catchup_on"), dict):
         base["board_head_catchup_on"] = {}
     if not isinstance(base.get("board_head_progress"), dict):
         base["board_head_progress"] = {}
+    try:
+        base["web_crawler_manual_head_pages"] = max(
+            1, int(base.get("web_crawler_manual_head_pages") or 20)
+        )
+    except (TypeError, ValueError):
+        base["web_crawler_manual_head_pages"] = 20
     return base
+
+
+def resolve_enabled_board_fids(cfg: dict[str, Any] | None) -> list[str]:
+    """启用爬取队列：按 board_order 排序后的 enabled_board_fids。"""
+    allowed = {str(fid) for fid in BOARD_POLICIES}
+    order = [str(x) for x in ((cfg or {}).get("board_order") or []) if str(x) in allowed]
+    if not order:
+        order = [fid for fid in default_board_order() if fid in allowed]
+    raw = [str(x) for x in ((cfg or {}).get("enabled_board_fids") or []) if str(x) in allowed]
+    enabled = [fid for fid in order if fid in set(raw)]
+    if enabled:
+        return enabled
+    active = str((cfg or {}).get("active_board_fid") or "").strip()
+    if active in allowed:
+        return [active]
+    return [order[0]] if order else []
+
+
+def next_enabled_board_fid(cfg: dict[str, Any] | None, current: str | int | None) -> str:
+    """启用队列中下一板（到尾后回绕到首板）。"""
+    boards = resolve_enabled_board_fids(cfg)
+    if not boards:
+        return str(current or "")
+    cur = str(current or "").strip()
+    if cur not in boards:
+        return boards[0]
+    return boards[(boards.index(cur) + 1) % len(boards)]
+
+
+def resolve_manual_head_pages(cfg: dict[str, Any] | None, board_fid: str | int) -> int:
+    """手动扫新帖页数上限：每板覆盖优先，否则全局默认。"""
+    raw = (cfg or {}).get("board_manual_head_pages") or {}
+    fid = str(board_fid)
+    if isinstance(raw, dict) and fid in raw:
+        try:
+            return max(1, int(raw[fid]))
+        except (TypeError, ValueError):
+            pass
+    try:
+        return max(1, int((cfg or {}).get("web_crawler_manual_head_pages") or 20))
+    except (TypeError, ValueError):
+        return 20
 
 
 def crawl_today() -> str:
@@ -256,13 +356,49 @@ def set_board_list_cursor(
 
 
 def set_active_board_fid(conn: Any, forum_id: str, board_fid: str) -> dict:
+    """设置深扫当前板；若不在启用队列中则加入。"""
     fid = str(board_fid or "").strip()
     if fid not in {str(x) for x in BOARD_POLICIES}:
         raise ValueError(f"板块 fid={fid} 不在白名单")
     configs = load_forum_configs_map(conn)
-    current = configs.get(forum_id) or default_forum_crawler_config()
+    current = dict(configs.get(forum_id) or default_forum_crawler_config())
+    enabled = list(resolve_enabled_board_fids(current))
+    if fid not in enabled:
+        enabled.append(fid)
+        # 保持按 board_order 排序
+        order = [str(x) for x in (current.get("board_order") or [])]
+        enabled = [x for x in order if x in set(enabled)] or enabled
+    current["enabled_board_fids"] = enabled
     current["active_board_fid"] = fid
-    current["web_crawler_max_boards_per_run"] = 1
+    current["web_crawler_max_boards_per_run"] = max(1, len(enabled))
+    return save_forum_config(conn, forum_id, current)
+
+
+def set_enabled_board_fids(conn: Any, forum_id: str, board_fids: list[str]) -> dict:
+    """设置多选启用队列；当前板若不在队列内则切到首板。"""
+    allowed = {str(x) for x in BOARD_POLICIES}
+    configs = load_forum_configs_map(conn)
+    current = dict(configs.get(forum_id) or default_forum_crawler_config())
+    order = [str(x) for x in (current.get("board_order") or default_board_order())]
+    wanted = {str(x).strip() for x in (board_fids or []) if str(x).strip() in allowed}
+    enabled = [fid for fid in order if fid in wanted]
+    if not enabled:
+        raise ValueError("至少选择一个工作板块")
+    current["enabled_board_fids"] = enabled
+    active = str(current.get("active_board_fid") or "").strip()
+    if active not in enabled:
+        current["active_board_fid"] = enabled[0]
+    current["web_crawler_max_boards_per_run"] = max(1, len(enabled))
+    return save_forum_config(conn, forum_id, current)
+
+
+def advance_active_board_fid(conn: Any, forum_id: str, *, from_fid: str | int | None = None) -> dict:
+    """深扫某板到底后切到启用队列下一板。"""
+    configs = load_forum_configs_map(conn)
+    current = dict(configs.get(forum_id) or default_forum_crawler_config())
+    cur = str(from_fid or current.get("active_board_fid") or "").strip()
+    nxt = next_enabled_board_fid(current, cur)
+    current["active_board_fid"] = nxt
     return save_forum_config(conn, forum_id, current)
 
 

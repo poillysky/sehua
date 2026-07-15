@@ -75,7 +75,7 @@ export async function POST(request: Request) {
   }
 
   const message = extractScheduled
-    ? `${result.message} · 转存完成后将自动云解压`
+    ? `${result.message} · 后台轮询转存（最长约 30 秒），完成后立即云解压`
     : result.message;
 
   return NextResponse.json(

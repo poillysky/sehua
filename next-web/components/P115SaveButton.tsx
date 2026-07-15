@@ -100,7 +100,7 @@ export function P115SaveButton({
       size={compact ? "sm" : size}
       title={
         password
-          ? "转存后轮询，完成后立即云解压（使用资源密码；不解压删包）"
+          ? "转存后轮询，完成后立即云解压到同名文件夹（保留压缩包，不删除转存目录）"
           : "转存到 115 云下载"
       }
       variant="flat"

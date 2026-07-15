@@ -2,10 +2,11 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import {
   fetchCrawlerStatus,
   retryAbnormalQueue,
-  retrySoftAdQueue,
   runCrawlerOnce,
+  scanHeadOnce,
   setCrawlerEnabled,
   startCrawlerLoop,
+  startRandomTidLoop,
   stopCrawler,
   type CrawlerStatus,
 } from '../api/crawler'
@@ -28,6 +29,11 @@ function activityLevelClass(msg: string): string {
     m.includes('已入库重爬结束') ||
     m.includes('已入库批量重爬结束') ||
     (m.includes('已入库批量重爬') && zeroFail) ||
+    m.includes('扫新帖完成') ||
+    m.includes('随机入库') ||
+    m.includes('随机抓帖结束') ||
+    m.includes('随机抓帖本轮结束') ||
+    m.includes('随机抓帖连续调度已启动') ||
     m.includes('本批入库已达上限') ||
     /重试结束/.test(m) ||
     /完成[：:]/.test(m)
@@ -60,6 +66,15 @@ function formatResultLine(status: CrawlerStatus | null, runHint: string): string
     return `已停止：处理 ${last.crawled ?? 0} · 入库 ${last.imports ?? 0} · 队列已保留`
   }
   if (last.ok === false) return `失败：${String(last.error || last.reason || '本轮失败')}`
+  if (last.mode === 'random_tid') {
+    return (
+      `随机一轮：探测 ${last.probed ?? 0}` +
+      ` · 入库 ${last.imported ?? 0}` +
+      ` · 占位 ${last.stubbed ?? 0}` +
+      ` · 缺失 ${last.missing ?? 0}` +
+      ` · 重复 ${last.skipped_dup ?? 0}`
+    )
+  }
   if (status.last_finished_at || last.crawled != null) {
     return `完成：新帖 ${last.enqueued ?? last.discovered ?? 0} · 处理 ${last.crawled ?? 0} · 入库 ${last.imports ?? 0}`
   }
@@ -113,6 +128,7 @@ export function CrawlerPage() {
   const enabled = !!status?.enabled
   const running = !!status?.running
   const looping = !!status?.looping
+  const loopKind = status?.loop_kind || (looping ? 'deep' : null)
   const stopping = !!status?.stopping
   const metrics = status?.metrics
   const queue = status?.queue
@@ -120,8 +136,13 @@ export function CrawlerPage() {
   const activity = status?.activity || []
 
   const abnormal = Number(metrics?.queue_abnormal ?? queue?.abnormal ?? 0)
-  const softAd = Number(metrics?.queue_soft_ad ?? queue?.soft_ad ?? 0)
   const readyQueue = Number(metrics?.queue_ready ?? queue?.ready ?? 0)
+  const rnd = status?.random_progress
+  const randomActive = !!rnd?.active || (looping && loopKind === 'random_tid')
+  const randomProbed = Number(rnd?.probed ?? metrics?.random_probed ?? 0)
+  const randomBudget = Number(rnd?.probe_budget ?? metrics?.random_budget ?? 200)
+  const randomImported = Number(rnd?.imported ?? metrics?.random_imported ?? 0)
+  const randomSession = Number(rnd?.session_probed ?? metrics?.random_session ?? 0)
   const delayCurrent = throttle?.fetch_delay_current ?? status?.request_delay
   const riskTripped = String(status?.last_result?.reason || '').includes('cooldown_tripped')
 
@@ -186,6 +207,68 @@ export function CrawlerPage() {
     }
   }
 
+  const onScanHead = async () => {
+    if (enabled || looping || running || busy || stopping) {
+      toast.info(enabled || looping ? '连续调度进行中，请先关闭开关' : '爬虫正在执行，请稍候')
+      return
+    }
+    setBusy(true)
+    setRunHint('扫新帖中，请稍候...')
+    try {
+      const res = await scanHeadOnce()
+      const r = res.result || {}
+      if (r.skipped) {
+        setRunHint(`跳过：${String(r.reason || '本轮未执行')}`)
+        toast.info(String(r.reason || '本轮跳过'))
+      } else if (r.ok === false) {
+        setRunHint(`失败：${String(r.error || r.reason || '本轮失败')}`)
+        toast.error(String(r.error || '本轮失败'))
+      } else if (r.reason === 'stopped') {
+        const line = `已停止：新帖 ${r.enqueued ?? 0} · 处理 ${r.crawled ?? 0} · 队列已保留`
+        setRunHint(line)
+        toast.info(line)
+      } else {
+        const headN = Array.isArray(r.pages_head) ? r.pages_head.length : 0
+        const line = `扫新帖完成：捕新 ${headN} 页 · 新入队 ${r.enqueued ?? r.discovered ?? 0} · 处理 ${r.crawled ?? 0}`
+        setRunHint(line)
+        toast.success(line)
+      }
+      await refresh()
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : '扫新帖失败'
+      setRunHint(msg)
+      toast.error(msg)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const onRandomTid = async () => {
+    if (enabled || looping || running || busy || stopping) {
+      toast.info(enabled || looping ? '连续调度进行中，请先关闭开关' : '爬虫正在执行，请稍候')
+      return
+    }
+    setBusy(true)
+    setRunHint('随机抓帖连续调度启动中…')
+    try {
+      const res = await startRandomTidLoop({ count: 200 })
+      const probe = res.probe ?? 200
+      const line =
+        res.message === 'already'
+          ? `随机抓帖连续调度已在运行 · 每轮 ${probe}`
+          : `随机抓帖连续调度已启动 · 每轮 ${probe} · 不进队列 · 跳过已入库 · 停止后重新抽样`
+      setRunHint(line)
+      toast.success(line)
+      await refresh()
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : '随机抓帖启动失败'
+      setRunHint(msg)
+      toast.error(msg)
+    } finally {
+      setBusy(false)
+    }
+  }
+
   const onStop = async () => {
     if (!running && !looping && !enabled) {
       toast.info('当前没有在跑的爬虫')
@@ -226,7 +309,7 @@ export function CrawlerPage() {
     }
     const ok = await confirmDialog({
       title: '异常重试',
-      message: `在异常队列内重爬 ${abnormal} 条；成功后才出队，失败仍留在异常队列。确定？`,
+      message: `重爬异常队列 ${abnormal} 条（含软文/拦截壳）；成功后才出队，失败仍留队。确定？`,
       confirmText: '开始重爬',
     })
     if (!ok) return
@@ -245,42 +328,14 @@ export function CrawlerPage() {
     }
   }
 
-  const onRetrySoftAd = async () => {
-    if (softAd <= 0) {
-      toast.info('当前没有软文帖可重试')
-      return
-    }
-    if (looping || running) {
-      toast.info(looping ? '请先关闭连续调度' : '请等待当前任务结束')
-      return
-    }
-    const ok = await confirmDialog({
-      title: '软文重试',
-      message: `在软文队列内重爬 ${softAd} 条；成功后才出队，失败仍留在软文队列。确定？`,
-      confirmText: '开始重爬',
-    })
-    if (!ok) return
-    setBusy(true)
-    setRunHint('软文队列重爬中…')
-    try {
-      const res = await retrySoftAdQueue()
-      const line = `软文重试：处理 ${res.crawled ?? 0} · 入库 ${res.imports ?? 0} · 仍软文 ${res.retries ?? 0}`
-      setRunHint(line)
-      toast.success(line)
-      await refresh()
-    } catch (err) {
-      toast.error(err instanceof Error ? err.message : '软文重试失败')
-    } finally {
-      setBusy(false)
-    }
-  }
-
   const forumName = status?.active_forum_name || status?.active_forum_id || '论坛'
 
   const runLabel = (() => {
     if (loading) return '读取中…'
-    if (stopping || (running && !enabled)) return `正在停止 · ${forumName}`
+    if (stopping || (running && !enabled && loopKind !== 'random_tid')) return `正在停止 · ${forumName}`
+    if (stopping) return `正在停止 · ${forumName}`
     if (riskTripped) return `${forumName} · 风控熔断`
+    if (looping && loopKind === 'random_tid') return `随机抓帖连续中 · 每轮 200 · ${forumName}`
     if (running || looping) return `正在执行 · ${forumName}`
     if (enabled) return `${forumName} · 已开启 · 连续执行`
     return `${forumName} · 已关闭`
@@ -306,84 +361,115 @@ export function CrawlerPage() {
                 <span className="crawler-run-label">{runLabel}</span>
               </div>
               <div className="crawler-toolbar-right">
-                <button
-                  type="button"
-                  className="btn primary sm"
-                  disabled={enabled || looping || running || busy || stopping}
-                  title={
-                    enabled || looping
-                      ? '连续调度进行中，请先关闭开关后再立即爬取'
-                      : running || stopping
-                        ? '本轮仍在执行，请稍候'
-                        : '执行一轮爬虫（扫列表 → 抓帖 → 入库）'
-                  }
-                  onClick={() => void onRun()}
-                >
-                  {running || looping || enabled ? '执行中…' : '立即爬取'}
-                </button>
-                <button
-                  type="button"
-                  className="btn danger sm"
-                  disabled={busy || stopping || (!running && !looping && !enabled)}
-                  title="停止爬虫并清理线程；未完成队列保留不丢"
-                  onClick={() => void onStop()}
-                >
-                  {stopping ? '停止中…' : '手动停止'}
-                </button>
-                <button
-                  type="button"
-                  className="btn secondary sm"
-                  disabled={busy || looping || running || abnormal <= 0}
-                  title={
-                    looping
-                      ? '连续调度进行中，请先关闭'
-                      : running
-                        ? '请等待当前任务结束'
-                        : abnormal > 0
-                          ? `在异常队列内重爬 ${abnormal} 条，成功才出队`
-                          : '暂无异常帖'
-                  }
-                  onClick={() => void onRetryAbnormal()}
-                >
-                  异常重试{abnormal > 0 ? ` ${abnormal}` : ''}
-                </button>
-                <button
-                  type="button"
-                  className="btn secondary sm"
-                  disabled={busy || looping || running || softAd <= 0}
-                  title={
-                    looping
-                      ? '连续调度进行中，请先关闭'
-                      : running
-                        ? '请等待当前任务结束'
-                        : softAd > 0
-                          ? `在软文队列内重爬 ${softAd} 条，成功才出队`
-                          : '暂无软文帖'
-                  }
-                  onClick={() => void onRetrySoftAd()}
-                >
-                  软文重试{softAd > 0 ? ` ${softAd}` : ''}
-                </button>
-                <button type="button" className="btn ghost sm" disabled={busy} onClick={() => void refresh()}>
-                  刷新
-                </button>
+                <div className="crawler-actions" role="group" aria-label="爬虫操作">
+                  <button
+                    type="button"
+                    className="crawler-action crawler-action-primary"
+                    disabled={enabled || looping || running || busy || stopping}
+                    title={
+                      enabled || looping
+                        ? '连续调度进行中，请先关闭开关后再立即爬取'
+                        : running || stopping
+                          ? '本轮仍在执行，请稍候'
+                          : '执行一轮爬虫（仅深扫列表 → 抓帖 → 入库）'
+                    }
+                    onClick={() => void onRun()}
+                  >
+                    {running || looping || enabled ? '执行中…' : '立即爬取'}
+                  </button>
+                  <button
+                    type="button"
+                    className="crawler-action"
+                    disabled={enabled || looping || running || busy || stopping}
+                    title={
+                      enabled || looping
+                        ? '连续调度进行中，请先关闭开关后再扫新帖'
+                        : running || stopping
+                          ? '本轮仍在执行，请稍候'
+                          : '从第 1 页捕新入队（启用多板按序轮换；连续 2 页全已知或达上限后换下一板）'
+                    }
+                    onClick={() => void onScanHead()}
+                  >
+                    扫新帖
+                  </button>
+                  <button
+                    type="button"
+                    className="crawler-action"
+                    disabled={enabled || looping || running || busy || stopping}
+                    title={
+                      enabled || looping
+                        ? '连续调度进行中，请先关闭开关后再随机抓帖'
+                        : running || stopping
+                          ? '本轮仍在执行，请稍候'
+                          : '循环模式：每轮随机 200 个 tid 直链探测并入库；不写待抓队列；跳过已入库；停止后清空本会话抽样，下次重新生成'
+                    }
+                    onClick={() => void onRandomTid()}
+                  >
+                    随机抓帖
+                  </button>
+                  <button
+                    type="button"
+                    className="crawler-action crawler-action-danger"
+                    disabled={busy || stopping || (!running && !looping && !enabled)}
+                    title="停止爬虫并清理线程；未完成队列保留不丢"
+                    onClick={() => void onStop()}
+                  >
+                    {stopping ? '停止中…' : '手动停止'}
+                  </button>
+                  <button
+                    type="button"
+                    className={`crawler-action${abnormal > 0 ? ' crawler-action-warn' : ''}`}
+                    disabled={busy || looping || running || abnormal <= 0}
+                    title={
+                      looping
+                        ? '连续调度进行中，请先关闭'
+                        : running
+                          ? '请等待当前任务结束'
+                          : abnormal > 0
+                            ? `重爬异常队列 ${abnormal} 条（含软文/拦截壳），成功才出队`
+                            : '暂无异常帖'
+                    }
+                    onClick={() => void onRetryAbnormal()}
+                  >
+                    异常重试
+                    {abnormal > 0 ? <span className="crawler-action-badge">{abnormal}</span> : null}
+                  </button>
+                  <button
+                    type="button"
+                    className="crawler-action crawler-action-muted"
+                    disabled={busy}
+                    title="刷新状态与活动日志"
+                    onClick={() => void refresh()}
+                  >
+                    刷新
+                  </button>
+                </div>
               </div>
             </div>
 
             <div className="crawler-overview">
               <div className="crawler-overview-row">
                 <div className="crawler-overview-metrics">
-                  <span className="metric-pill" title="失败/重试贴；点「异常重试」在本队列重爬，成功才出队">
+                  <span className="metric-pill" title="失败/重试贴（含软文拦截壳）；点「异常重试」在本队列重爬，成功才出队；到期后连续调度也会吃">
                     <span className="metric-val stat-warn">{abnormal}</span>
                     <span className="metric-lbl">异常帖</span>
-                  </span>
-                  <span className="metric-pill" title="软文/拦截壳；点「软文重试」在本队列重爬，成功才出队">
-                    <span className="metric-val stat-pending">{softAd}</span>
-                    <span className="metric-lbl">软文帖</span>
                   </span>
                   <span className="metric-pill" title="尚未失败过的正常待抓帖（立即爬取/连续调度会吃这个队列）">
                     <span className="metric-val">{readyQueue}</span>
                     <span className="metric-lbl">正常队列</span>
+                  </span>
+                  <span
+                    className={`metric-pill${randomActive ? ' metric-pill-random' : ''}`}
+                    title={
+                      randomActive
+                        ? `随机抓取进行中：本轮 ${randomProbed}/${randomBudget} · 入库 ${randomImported} · 本会话已探 ${randomSession}（不进待抓队列）`
+                        : `随机抓取进度（空闲）。启动后显示本轮已探/配额；入库 ${randomImported} · 会话 ${randomSession}`
+                    }
+                  >
+                    <span className={`metric-val${randomActive ? ' stat-ok' : ''}`}>
+                      {randomProbed}/{randomBudget}
+                    </span>
+                    <span className="metric-lbl">随机进度</span>
                   </span>
                   {riskTripped ? (
                     <span className="metric-pill metric-pill-risk">
