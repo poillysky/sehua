@@ -1,44 +1,209 @@
-# sehua
+# sehua（sehuatang）
 
-色花堂资源：**采集后端 + 管理前端 + 搜索前端**，共享 PostgreSQL；生产目标为家庭 NAS 全栈 Docker 部署。
+色花堂资源采集与检索：**采集后端 + 管理前端 + 搜索前端**，共享 PostgreSQL。  
+生产目标为家庭 NAS **全栈 Docker**；镜像由 GitHub Actions 构建，推送到 **Docker Hub**（及 GHCR），NAS **只 pull、不本地 build**。
 
-## 结构
+当前版本：**1.0.1**（见 [`VERSION`](./VERSION)）
 
-| 目录 | 说明 | 端口 |
-|------|------|------|
-| `backend/` | FastAPI 收集器（爬虫 / 入库 / 管理 API） | 8080 |
-| `frontend/admin/` | 管理后台（Vite + React） | 8081 |
-| `next-web/` | 搜索前端（Next.js） | 3010 |
-| `database/migrations/` | PostgreSQL 迁移 | 5433 |
-| `deploy/` | NAS Compose（只 pull 镜像） | — |
-| `docs/` | [架构](docs/架构.md) · [设计说明](docs/设计说明.md) · [部署](docs/部署.md) |
+---
 
-本地开发可双击根目录 `start.bat`（后端 + 管理端 + 搜索端）。
+## 功能概览
 
-## NAS 一键部署
+| 能力 | 说明 |
+|------|------|
+| 网站爬虫 | 按发帖时间序列表扫帖；每日首页捕新，当天后续轮次只深扫 |
+| 资源入库 | 对齐 ed2k 模型：`ed2k_resources` + `resource_sources`（含论坛 / 板块） |
+| 管理后台 | 登录鉴权、爬虫拓扑、导入、资源核对、重爬 |
+| 搜索前端 | Next.js 搜 / 看详情；可选 115 离线转存 + 云解压 |
+| 数据库 | PostgreSQL 16，SQL 迁移在 `database/migrations/` |
 
-镜像由 Actions 推到 GHCR：
+不做：Telegram 监听、NAS 上编译业务镜像、管理端原生 App。
+
+---
+
+## 仓库结构
+
+```text
+sehuatang/
+├── backend/                 # FastAPI：爬虫 / 入库 / 管理 API
+├── frontend/admin/          # 管理端 Vite + React（Nginx 静态）
+├── next-web/                # 搜索端 Next.js（GraphQL + 直连 PG）
+├── database/migrations/     # PostgreSQL 迁移（001–018…）
+├── deploy/                  # NAS Compose（只 pull）
+│   ├── docker-compose.nas.yml
+│   └── update.sh
+├── docs/                    # 架构 / 设计 / 部署专文
+├── VERSION                  # 镜像发版号
+└── start.bat                # Windows 本地开发三窗启动
+```
+
+| 目录 | 说明 | 生产端口（宿主机） |
+|------|------|-------------------|
+| `backend/` | 收集器 API + Playwright | 不对外（由 admin 反代 `/api`） |
+| `frontend/admin/` | 管理后台 | **8082** |
+| `next-web/` | 搜索前端 | **3010** |
+| PostgreSQL | `postgres:16-alpine` | **5433** |
+
+更细的架构说明：[docs/架构.md](./docs/架构.md) · [docs/设计说明.md](./docs/设计说明.md)
+
+---
+
+## Docker 镜像（1.0.1）
+
+### Docker Hub（NAS 推荐）
+
+| 服务 | 镜像 |
+|------|------|
+| 后端 | [`poillysky/sehuatang-backend:1.0.1`](https://hub.docker.com/r/poillysky/sehuatang-backend) |
+| 管理 | [`poillysky/sehuatang-admin:1.0.1`](https://hub.docker.com/r/poillysky/sehuatang-admin) |
+| 搜索 | [`poillysky/sehuatang-search:1.0.1`](https://hub.docker.com/r/poillysky/sehuatang-search) |
+
+同步标签：`latest`、短 commit SHA。账号主页：https://hub.docker.com/u/poillysky
+
+### GHCR（可选）
 
 - `ghcr.io/poillysky/sehuatang-backend`
 - `ghcr.io/poillysky/sehuatang-admin`
 - `ghcr.io/poillysky/sehuatang-search`
 
-在 NAS 上：
+CI：push `main` / tag `v*` → [`.github/workflows/docker.yml`](./.github/workflows/docker.yml)
 
-```bash
-cd deploy
-# 按需改 docker-compose.nas.yml 中的密码、卷路径
-docker login ghcr.io
-docker compose -f docker-compose.nas.yml pull
-docker compose -f docker-compose.nas.yml up -d
-# 或: ./update.sh
+---
+
+## NAS 部署（推荐）
+
+### 1. 目录
+
+```text
+/vol1/1000/Docker/sehuatang/
+├── docker-compose.nas.yml   # 从仓库 deploy/ 拷贝
+├── update.sh                # 可选
+└── data/
+    ├── postgres/            # 库数据（可从旧 ed2k 拷贝）
+    ├── backend/             # Cookie、预览等
+    ├── search/              # 115 Cookie 等
+    └── search-cache/        # Next 缓存（可丢）
 ```
 
-访问：搜索 `http://NAS_IP:3010` · 管理 `http://NAS_IP:8081` · API `http://NAS_IP:8080/health`
+### 2. 启动
 
-详情见 [docs/部署.md](docs/部署.md)。
+```bash
+cd /vol1/1000/Docker/sehuatang
+# 确认 compose 中镜像为 :1.0.1
+docker compose -f docker-compose.nas.yml pull
+docker compose -f docker-compose.nas.yml up -d
+# 或: sh update.sh
+```
 
-## 说明
+### 3. 访问
 
-- `ed2k/` 为本地参考工程，**不入库**。
-- 默认管理账号见 Compose 中 `INITIAL_ADMIN_*`，上线后请立刻修改。
+| 地址 | 说明 |
+|------|------|
+| `http://NAS_IP:3010` | 搜索 |
+| `http://NAS_IP:8082` | 管理（Nginx 反代 `/api` → backend） |
+| `NAS_IP:5433` | PostgreSQL（工具直连） |
+
+默认账号（**务必改**）：
+
+- 管理：`admin` / `admin123`（Compose `INITIAL_ADMIN_*`）
+- 数据库：`postgres` / `postgres`，库名 `ed2k`
+
+### 4. 从旧 ed2k 迁库（只做一次）
+
+```bash
+# 先停旧栈，不要 docker compose down -v，不要删旧目录
+mkdir -p /vol1/1000/Docker/sehuatang/data
+cp -a /vol1/1000/Docker/ed2k/postgres /vol1/1000/Docker/sehuatang/data/postgres
+```
+
+迁移与空库兼容说明见 [docs/部署.md](./docs/部署.md)。
+
+### 5. 升级到新镜像
+
+改 compose 标签（或拉新 `deploy/docker-compose.nas.yml`）后：
+
+```bash
+docker compose -f docker-compose.nas.yml pull
+docker compose -f docker-compose.nas.yml up -d
+```
+
+---
+
+## 爬虫行为（摘要）
+
+- 列表统一 **`orderby=dateline`（发帖时间）**。
+- **每天一次**从首页捕新：翻页直到某一页「所见均已入库」，当日标记完成；**当天后续循环不再读第 1 页，只深扫**。
+- 深扫：按板块游标续爬（结束页重叠 1 页）；连续全已知可早停。
+- 网友原创区（fid=141）：未满 3 天帖延期入队（`retry_after`），到期再抓。
+- 待抓队列积压过大时先消化队列，暂缓读列表。
+
+配置入口：管理端 → 论坛 / 爬虫设置。
+
+---
+
+## 本地开发
+
+Windows 可双击根目录 `start.bat`（后端 + 管理 + 搜索）。
+
+手动示例：
+
+```bash
+# 后端（需本机 Python / PG）
+cd backend
+pip install -r requirements.txt
+uvicorn api.main:app --reload --port 8080
+
+# 管理端
+cd frontend/admin
+npm install && npm run dev
+
+# 搜索端
+cd next-web
+npm install && npm run dev
+```
+
+环境变量与代理等细节见各子目录 README / [docs/部署.md](./docs/部署.md)。
+
+---
+
+## 数据模型要点
+
+- **`ed2k_resources`**：hash 为主的资源主体（ed2k / magnet 链接）
+- **`resource_sources`**：来源元数据（标题、描述、预览、`board_*`、`forum_id`、`import_outcome`…）
+- **`crawl_pages`**：待抓 / 已抓队列
+- **`sources` / auth_***：来源类型与管理账号
+
+迁移由 backend 启动时 `ensure_ed2k_schema` 按需执行。  
+`forum_id` 展示名（如 `sehuatang` → 色花堂）在 API / 搜索层映射，无单独 `forum_name` 列。
+
+---
+
+## 搜索端 115
+
+在搜索站「115 设置」填写 Cookie 与目录。  
+带解压密码转存时：轮询离线任务（最长约 **30 秒**），转存就绪后立即云解压到同名文件夹，**不删除压缩包**。需 115 VIP；`zip/rar/7z` 有大小限制。
+
+---
+
+## 文档
+
+| 文档 | 内容 |
+|------|------|
+| [docs/架构.md](./docs/架构.md) | 组件职责、数据流、NAS 拓扑 |
+| [docs/设计说明.md](./docs/设计说明.md) | 产品边界与设计取舍 |
+| [docs/部署.md](./docs/部署.md) | 部署细则、目录、更新 |
+| [deploy/README.md](./deploy/README.md) | Compose 目录约定 |
+
+---
+
+## 仓库与发版
+
+- GitHub：https://github.com/poillysky/sehua  
+- 发版：更新 `VERSION`、Compose 标签、`.github/workflows/docker.yml` 中 `RELEASE_TAG`，提交并打 `v*` tag  
+- 说明：本地参考目录 `ed2k/` **不入库**
+
+---
+
+## License / 声明
+
+仅供个人学习与局域网自用；请遵守目标站点与当地法规，勿用于未授权传播。
