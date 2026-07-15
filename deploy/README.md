@@ -1,51 +1,52 @@
-# NAS 部署
+# NAS 部署（替换现网 ed2k-next-web）
 
-全栈四容器：**postgres + backend + admin + search**。镜像由 GitHub Actions 推到 GHCR，NAS 只 pull。
+## 拷到 NAS 的文件
 
-详细说明见 [docs/部署.md](../docs/部署.md)。
+只需：
 
-## 持久化目录
+```text
+/vol1/1000/Docker/sehuatang/          # 或你喜欢的目录
+  docker-compose.nas.yml              # 本仓库 deploy/ 下同名文件
+  update.sh                           # 可选
+```
 
-| 宿主机 | 容器 | 内容 |
-|--------|------|------|
-| `./data/postgres` | postgres `/var/lib/postgresql/data` | 数据库 |
-| `./data/backend` | backend `/app/data` | cookies、预览图 |
-| `./data/search` | search `/app/data` | **115 配置** `p115-config.json` |
-| `./data/search-cache` | search `/app/.next/cache` | Next 缓存（可清空） |
+**不要删：** `/vol1/1000/Docker/ed2k/postgres`（现网数据库）
 
-admin 无状态，不挂卷。**不要**把 `/app/.next` 整目录或 `/app/public` 挂出去。
+## 从旧栈切换（保数据）
 
-配置全部写在 `docker-compose.nas.yml` 内（无 `${VAR}`），`restart: always`。部署前改镜像名、密码、路径。
-
-## 首次启动
+旧 compose 一般有 `ed2k-postgres` + `ed2k-next-web`。
 
 ```bash
-# 编辑 docker-compose.nas.yml：GHCR 用户名、密码、卷路径
+# 1) 停旧栈（不要 -v，不要删 postgres 目录）
+cd /path/to/旧compose目录
+docker compose down
+
+# 2) 起新栈
+cd /vol1/1000/Docker/sehuatang
+# 若 GHCR 包仍是 Private：
 docker login ghcr.io
 docker compose -f docker-compose.nas.yml pull
 docker compose -f docker-compose.nas.yml up -d
+
+# 3) 检查
+docker compose -f docker-compose.nas.yml ps
+curl -s http://127.0.0.1:8080/health
 ```
 
-## 一键更新
-
-```bash
-chmod +x update.sh
-./update.sh
-```
-
-## 访问
-
-| 服务 | 地址 |
+| 地址 | 说明 |
 |------|------|
-| 搜索 | http://NAS_IP:3010 |
-| 管理 | http://NAS_IP:8081 |
-| API | http://NAS_IP:8080/health |
+| http://NAS_IP:3010 | 搜索（原端口不变） |
+| http://NAS_IP:8081 | 管理后台（新增） |
+| http://NAS_IP:8080/health | API |
+| NAS:5433 | 仍是同一套 ed2k 库 |
 
-## 本机构建试跑（可选）
+## 卷对照
 
-```bash
-# 在仓库根目录
-docker build -f backend/Dockerfile -t sehuatang-backend .
-docker build -t sehuatang-admin ./frontend/admin
-docker build -t sehuatang-search ./next-web
-```
+| 路径 | 用途 |
+|------|------|
+| `/vol1/1000/Docker/ed2k/postgres` | **旧库，必须保留** |
+| `/vol1/1000/Docker/ed2k/backend` | 爬虫 cookies / 预览（新建即可） |
+| `/vol1/1000/Docker/ed2k/search` | 115 配置（新建；旧站点若有可再拷） |
+| `/vol1/1000/Docker/ed2k/search-cache` | Next 缓存（可空） |
+
+账号密码与现网一致：`postgres` / `postgres`，库名 `ed2k`。
