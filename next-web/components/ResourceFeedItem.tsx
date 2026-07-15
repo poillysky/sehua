@@ -184,6 +184,12 @@ function ResourceFooterMeta({ item }: { item: Ed2kResourceProps }) {
 
   return (
     <div className="flex min-w-0 flex-wrap items-center gap-x-4 gap-y-1 text-xs text-gray-600 md:text-sm dark:text-slate-400">
+      {item.forum_name ? (
+        <span>
+          {t("Search.forum")}
+          {item.forum_name}
+        </span>
+      ) : null}
       {item.board_name ? (
         <span>
           {t("Search.board")}

@@ -2046,14 +2046,16 @@ function renderForumConfigTab(forum) {
           <span class="forum-config-step-badge">②</span>
           <div>
             <h4>扫列表</h4>
-            <p class="field-hint">发帖时间序向前推进，边界重叠 3 页；P1 补扫计入页数配额。列表入队不限帖数，避免漏扫。</p>
+            <p class="field-hint">每日一次从首页捕新（扫到整页已入库即停）；当天后续循环只深扫，不再读第 1 页。深扫结束页重叠 1 页。</p>
           </div>
         </div>
         <div class="settings-grid-2 forum-config-grid">
-          ${field("列表页数 / 批", '<input type="number" min="1" max="100" data-forum-key="web_crawler_list_pages_per_board" class="forum-field" />', "每批向前扫描页数，默认 15")}
+          ${field("列表页数 / 批", '<input type="number" min="1" max="100" data-forum-key="web_crawler_list_pages_per_board" class="forum-field" />', "深扫每批向前页数，默认 15")}
+          ${field("首页捕新安全上限", '<input type="number" min="1" max="100" data-forum-key="web_crawler_list_head_pages" class="forum-field" />', "每日首页捕新最多翻这么多页；通常扫到全已知即停，默认 50")}
+          ${field("深扫早停页数", '<input type="number" min="1" max="10" data-forum-key="web_crawler_list_known_stop_pages" class="forum-field" />', "连续 N 页全已知则提前结束本轮深扫，默认 2")}
           ${field("全局列表页上限", '<input type="number" min="0" max="300" data-forum-key="web_crawler_max_list_pages" class="forum-field" />', "0 = 安全上限 300 页/板")}
         </div>
-        <p class="field-hint forum-config-note">除网友原创区（141）跳过 P1 外，每批会补扫 P1 以发现新帖。ED2K 板（95/141）列表优先标题含 ed2k；fid=95 仅扫「情色分享」（typeid=716）；磁力板无正文链接时会解析 .torrent 附件。</p>
+        <p class="field-hint forum-config-note">自然日按 Asia/Shanghai。今日首页捕新完成后，连续开爬也只深扫。翌日再从 P1 捕新。网友原创区（141）未满 3 天帖延期入队。</p>
       </section>
       <section class="forum-modal-block forum-config-step">
         <div class="forum-config-step-head">

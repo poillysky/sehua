@@ -529,12 +529,32 @@ function ConfigTab({
             <span className="forum-config-step-badge">④</span>
             <div>
               <h4>扫列表</h4>
-              <p className="field-hint">统一按发帖时间（orderby=dateline）排序筛选；跳过置顶；满龄板按发帖日期过滤。</p>
+              <p className="field-hint">
+                每日一次从首页捕新（扫到整页已入库即停）；当天后续循环只深扫。深扫结束页重叠 1 页。
+              </p>
             </div>
           </div>
           <div className="settings-grid-2 forum-config-grid">
-            <Field label="列表页数 / 批" hint="每批深扫页数，默认 15（拓扑同源）">
+            <Field label="列表页数 / 批" hint="深扫每批向前页数，默认 15">
               <input type="number" min={1} max={100} value={draft.web_crawler_list_pages_per_board} onChange={(e) => setNum('web_crawler_list_pages_per_board', e.target.value)} />
+            </Field>
+            <Field label="首页捕新安全上限" hint="每日首页最多翻 N 页；通常扫到全已知即停，默认 50">
+              <input
+                type="number"
+                min={1}
+                max={100}
+                value={draft.web_crawler_list_head_pages ?? 50}
+                onChange={(e) => setNum('web_crawler_list_head_pages', e.target.value)}
+              />
+            </Field>
+            <Field label="深扫早停页数" hint="连续 N 页全已知则提前结束本轮深扫，默认 2">
+              <input
+                type="number"
+                min={1}
+                max={10}
+                value={draft.web_crawler_list_known_stop_pages ?? 2}
+                onChange={(e) => setNum('web_crawler_list_known_stop_pages', e.target.value)}
+              />
             </Field>
             <Field label="全局列表页上限" hint="0 = 安全上限 300 页/板">
               <input type="number" min={0} max={300} value={draft.web_crawler_max_list_pages} onChange={(e) => setNum('web_crawler_max_list_pages', e.target.value)} />

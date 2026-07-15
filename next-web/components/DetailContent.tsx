@@ -94,6 +94,12 @@ export const DetailContent = ({ data }: { data: Ed2kResourceProps }) => {
                 </DetailInfoRow>
               )}
 
+              {data.forum_name && (
+                <DetailInfoRow label={trimLabel(t("Detail.forum"))}>
+                  {data.forum_name}
+                </DetailInfoRow>
+              )}
+
               {data.board_name && (
                 <DetailInfoRow label={trimLabel(t("Detail.board"))}>
                   {data.board_name}

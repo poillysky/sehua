@@ -13,6 +13,33 @@ logger = logging.getLogger(__name__)
 STUB_LINK_PREFIX = "unavailable://thread/"
 _schema_ready = False
 
+# forum_id → 展示名（人工导入可能直接把中文名写入 forum_id）
+FORUM_DISPLAY_NAMES: dict[str, str] = {
+    "sehuatang": "色花堂",
+    "other": "其他论坛",
+}
+
+
+def resolve_forum_display_name(
+    forum_id: str | None,
+    *,
+    description: str | None = None,
+) -> str:
+    """资源来源论坛展示名。"""
+    fid = (forum_id or "").strip()
+    if fid in FORUM_DISPLAY_NAMES:
+        return FORUM_DISPLAY_NAMES[fid]
+    if fid:
+        return fid
+    text = description or ""
+    for marker in ("来源论坛名：", "来源论坛名:"):
+        if marker in text:
+            line = text.split(marker, 1)[1].splitlines()[0].strip()
+            if line:
+                return line
+    return ""
+
+
 LINK_KIND_SQL = """
 CASE
   WHEN lower(COALESCE(r.ed2k_link, '')) LIKE 'unavailable://thread/%%' THEN 'stub'
@@ -384,7 +411,8 @@ def list_recent_resources(
               rs.title, rs.description, rs.source_url, rs.board_fid, rs.board_name,
               rs.ed2k_links, rs.extract_password, s.key, s.source_type,
               rs.preview_images,
-              COALESCE(NULLIF(rs.import_outcome, ''), NULLIF(cp.outcome, '')) AS import_outcome
+              COALESCE(NULLIF(rs.import_outcome, ''), NULLIF(cp.outcome, '')) AS import_outcome,
+              rs.forum_id
             FROM ed2k_resources r
             JOIN resource_sources rs ON rs.hash = r.hash
             JOIN sources s ON s.id = rs.source_id
@@ -402,6 +430,8 @@ def list_recent_resources(
     out: list[dict] = []
     for row in rows:
         link = row[4] or ""
+        description = row[7]
+        forum_id = row[17]
         out.append(
             {
                 "id": int(row[0]),
@@ -411,7 +441,7 @@ def list_recent_resources(
                 "ed2k_link": link,
                 "updated_at": row[5].isoformat() if row[5] else None,
                 "title": row[6],
-                "description": row[7],
+                "description": description,
                 "source_url": row[8],
                 "board_fid": row[9],
                 "board_name": row[10],
@@ -421,6 +451,8 @@ def list_recent_resources(
                 "source_type": row[14],
                 "preview_images": list(row[15] or []),
                 "import_outcome": row[16],
+                "forum_id": forum_id,
+                "forum_name": resolve_forum_display_name(forum_id, description=description),
                 "link_kind": infer_resource_link_kind(link),
             }
         )
@@ -439,7 +471,7 @@ def get_resource_by_hash(conn: Any, resource_hash: str) -> dict | None:
               r.hash, r.filename, r.size, r.ed2k_link, r.updated_at,
               rs.title, rs.description, rs.source_url, rs.board_fid, rs.board_name,
               rs.ed2k_links, rs.extract_password, s.key, s.source_type,
-              rs.preview_images
+              rs.preview_images, rs.forum_id
             FROM ed2k_resources r
             JOIN resource_sources rs ON rs.hash = r.hash
             JOIN sources s ON s.id = rs.source_id
@@ -452,6 +484,8 @@ def get_resource_by_hash(conn: Any, resource_hash: str) -> dict | None:
     if not row:
         return None
     link = row[3] or ""
+    description = row[6]
+    forum_id = row[15]
     return {
         "hash": row[0],
         "filename": row[1],
@@ -459,7 +493,7 @@ def get_resource_by_hash(conn: Any, resource_hash: str) -> dict | None:
         "ed2k_link": link,
         "updated_at": row[4].isoformat() if row[4] else None,
         "title": row[5],
-        "description": row[6],
+        "description": description,
         "source_url": row[7],
         "board_fid": row[8],
         "board_name": row[9],
@@ -468,6 +502,8 @@ def get_resource_by_hash(conn: Any, resource_hash: str) -> dict | None:
         "source_key": row[12],
         "source_type": row[13],
         "preview_images": list(row[14] or []),
+        "forum_id": forum_id,
+        "forum_name": resolve_forum_display_name(forum_id, description=description),
         "link_kind": infer_resource_link_kind(link),
     }
 

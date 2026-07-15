@@ -114,7 +114,7 @@
     "translate_already_english": "Text is already in English",
     "translate_failed": "Translation failed. Please try again later.",
     "p115_success": "Added {count} link(s) to 115 cloud download",
-    "p115_success_extract": "Saved {count} link(s); cloud extract in {seconds}s",
+    "p115_success_extract": "Saved {count} link(s); will extract when transfer finishes",
     "p115_failed": "Failed to save to 115",
     "p115_need_config": "115 is not configured. Please set Cookie first."
   }

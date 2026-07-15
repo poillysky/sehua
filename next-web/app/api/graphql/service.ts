@@ -37,14 +37,34 @@ type Ed2kRow = {
   source_url?: string | null;
   board_fid?: string | null;
   board_name?: string | null;
+  forum_id?: string | null;
   preview_images?: string[] | null;
   ed2k_links?: string[] | null;
   extract_password?: string | null;
 };
 
+const FORUM_DISPLAY_NAMES: Record<string, string> = {
+  sehuatang: "色花堂",
+  other: "其他论坛",
+};
+
+function resolveForumName(forumId?: string | null, description?: string | null): string | null {
+  const fid = (forumId || "").trim();
+  if (fid && FORUM_DISPLAY_NAMES[fid]) return FORUM_DISPLAY_NAMES[fid];
+  if (fid) return fid;
+  const text = description || "";
+  for (const marker of ["来源论坛名：", "来源论坛名:"]) {
+    if (text.includes(marker)) {
+      const line = text.split(marker, 2)[1]?.split(/\r?\n/, 1)[0]?.trim();
+      if (line) return line;
+    }
+  }
+  return null;
+}
+
 const SOURCE_META_JOIN = `
 LEFT JOIN LATERAL (
-  SELECT title, description, source_url, board_fid, board_name,
+  SELECT title, description, source_url, board_fid, board_name, forum_id,
          preview_images, ed2k_links, extract_password
   FROM resource_sources
   WHERE hash = r.hash
@@ -60,7 +80,7 @@ LEFT JOIN LATERAL (
 
 const LIST_META_JOIN = `
 LEFT JOIN LATERAL (
-  SELECT title, description, source_url, board_fid, board_name,
+  SELECT title, description, source_url, board_fid, board_name, forum_id,
          preview_images, ed2k_links, extract_password
   FROM resource_sources
   WHERE hash = r.hash
@@ -84,6 +104,7 @@ const RESOURCE_SELECT = `
   rs.source_url,
   rs.board_fid,
   rs.board_name,
+  rs.forum_id,
   rs.preview_images,
   rs.ed2k_links,
   rs.extract_password
@@ -102,6 +123,7 @@ const LIST_RESOURCE_SELECT = `
   rs.source_url,
   rs.board_fid,
   rs.board_name,
+  rs.forum_id,
   rs.preview_images,
   rs.ed2k_links,
   rs.extract_password
@@ -177,6 +199,8 @@ export function formatResource(row: Ed2kRow) {
     source_url: row.source_url || null,
     board_fid: row.board_fid || null,
     board_name: row.board_name?.trim() || null,
+    forum_id: row.forum_id || null,
+    forum_name: resolveForumName(row.forum_id, description),
     extract_password: row.extract_password?.trim() || null,
     preview_images: previewImages,
     ed2k_links: ed2kLinks,

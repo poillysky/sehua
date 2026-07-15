@@ -52,7 +52,7 @@ services:
           memory: 512M
 
   backend:
-    image: poillysky/sehuatang-backend:latest
+    image: poillysky/sehuatang-backend:1.0.1
     container_name: sehuatang-backend
     restart: always
     # 不对宿主机暴露 8080：浏览器走 admin:8082，由 Nginx 反代到 backend:8080
@@ -77,7 +77,7 @@ services:
         condition: service_healthy
 
   admin:
-    image: poillysky/sehuatang-admin:latest
+    image: poillysky/sehuatang-admin:1.0.1
     container_name: sehuatang-admin
     restart: always
     ports:
@@ -86,7 +86,7 @@ services:
       - backend
 
   search:
-    image: poillysky/sehuatang-search:latest
+    image: poillysky/sehuatang-search:1.0.1
     container_name: sehuatang-search
     restart: always
     ports:

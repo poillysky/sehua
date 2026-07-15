@@ -230,6 +230,7 @@ async def process_thread(
                     source_url=thread_url,
                     board_fid=board_fid,
                     board_name=board_name or policy.name,
+                    forum_id="sehuatang",
                     import_outcome=str(outcome.outcome or outcome.label or ""),
                 )
             finally:

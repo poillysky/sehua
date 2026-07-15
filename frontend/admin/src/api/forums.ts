@@ -20,6 +20,10 @@ export type ForumCrawlerConfig = {
   web_crawler_auto_discover: boolean
   web_crawler_max_boards_per_run: number
   web_crawler_list_pages_per_board: number
+  /** 首页捕新最多页数（不计配额；某页全已知则停） */
+  web_crawler_list_head_pages?: number
+  /** 深扫连续全已知页数达到则早停 */
+  web_crawler_list_known_stop_pages?: number
   web_crawler_board_refresh_hours: number
   web_crawler_max_threads_per_run: number
   web_crawler_request_delay: number

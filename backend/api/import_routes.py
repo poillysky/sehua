@@ -120,6 +120,15 @@ def import_links(
     images = _parse_preview_images(preview_images)
     size_override = int(file_size) if file_size is not None and int(file_size) > 0 else None
     forum = (forum_name or "").strip() or "sehuatang"
+    # 中文论坛名归一化到 forum_id，便于展示与筛选
+    _forum_aliases = {
+        "色花堂": "sehuatang",
+        "sehua": "sehuatang",
+        "98堂": "sehuatang",
+        "其他": "other",
+        "其他论坛": "other",
+    }
+    forum = _forum_aliases.get(forum, forum)
     board = (board_name or "").strip() or None
     pwd = (extract_password or "").strip() or None
     src = (source_url or "").strip() or None

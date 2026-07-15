@@ -3,6 +3,7 @@ name: Build and push images
 on:
   push:
     branches: [main]
+    tags: ["v*"]
   workflow_dispatch:
 
 permissions:
@@ -12,6 +13,8 @@ permissions:
 env:
   GHCR: ghcr.io
   DOCKERHUB_USER: poillysky
+  # 发版时同步打此版本号到 Hub/GHCR（与 git tag v1.0.1 对应）
+  RELEASE_TAG: "1.0.1"
 
 jobs:
   backend:
@@ -42,6 +45,9 @@ jobs:
             ${{ env.DOCKERHUB_USER }}/sehuatang-backend
           tags: |
             type=raw,value=latest,enable={{is_default_branch}}
+            type=raw,value=${{ env.RELEASE_TAG }},enable={{is_default_branch}}
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
             type=sha,prefix=,format=short
 
       - uses: docker/build-push-action@v6
@@ -103,6 +109,9 @@ jobs:
             ${{ env.DOCKERHUB_USER }}/sehuatang-admin
           tags: |
             type=raw,value=latest,enable={{is_default_branch}}
+            type=raw,value=${{ env.RELEASE_TAG }},enable={{is_default_branch}}
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
             type=sha,prefix=,format=short
 
       - uses: docker/build-push-action@v6
@@ -176,6 +185,9 @@ jobs:
             ${{ env.DOCKERHUB_USER }}/sehuatang-search
           tags: |
             type=raw,value=latest,enable={{is_default_branch}}
+            type=raw,value=${{ env.RELEASE_TAG }},enable={{is_default_branch}}
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
             type=sha,prefix=,format=short
 
       - uses: docker/build-push-action@v6

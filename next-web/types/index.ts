@@ -18,6 +18,8 @@ export type Ed2kResourceProps = {
   source_url?: string | null;
   board_fid?: string | null;
   board_name?: string | null;
+  forum_id?: string | null;
+  forum_name?: string | null;
   extract_password?: string | null;
   preview_images?: string[];
   size: number;

@@ -27,6 +27,8 @@ const typeDefs = gql`
     source_url: String
     board_fid: String
     board_name: String
+    forum_id: String
+    forum_name: String
     extract_password: String
     preview_images: [String!]
     ed2k_links: [String!]

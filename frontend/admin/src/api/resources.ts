@@ -12,6 +12,8 @@ export type ApiResource = {
   source_url: string | null
   board_fid: string | null
   board_name: string | null
+  forum_id?: string | null
+  forum_name?: string | null
   ed2k_links: string[]
   extract_password: string | null
   source_key: string
@@ -24,6 +26,8 @@ export type ApiResource = {
 export type ResourceRow = {
   id: string
   title: string
+  forum?: string
+  forumId?: string
   board: string
   boardFid?: string
   outcome: string
@@ -88,6 +92,8 @@ export function mapApiResource(item: ApiResource): ResourceRow {
   return {
     id: item.id != null ? String(item.id) : item.hash,
     title: item.title || item.filename || item.hash,
+    forum: item.forum_name || item.forum_id || undefined,
+    forumId: item.forum_id || undefined,
     board: item.board_name || (item.board_fid ? `fid ${item.board_fid}` : '—'),
     boardFid: item.board_fid || undefined,
     outcome: formatOutcome(kind, item.import_outcome),

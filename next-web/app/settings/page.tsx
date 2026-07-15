@@ -562,8 +562,9 @@ export default function SettingsPage() {
           </div>
 
           <p className="px-1 text-center text-[11px] leading-relaxed text-gray-400 dark:text-slate-500">
-            配置写入 data/p115-config.json。带密码时约 10s 云解压到同名文件夹；再约
-            45s 直接删除压缩包（不比大小、不轮询）。需 VIP；zip/rar/7z ≤20GB。
+            配置写入 data/p115-config.json。带密码时会轮询离线任务（最长约 30
+            秒），转存完成后立即云解压到同名文件夹（保留压缩包）。需 VIP；zip/rar/7z
+            ≤20GB。
           </p>
         </>
       )}

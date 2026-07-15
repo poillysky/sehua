@@ -73,7 +73,6 @@ export function P115SaveButton({
         Toast.success(
           t("Toast.p115_success_extract", {
             count: urls.length,
-            seconds: json.data.extractInSeconds || 10,
           }),
         );
       } else {
@@ -101,7 +100,7 @@ export function P115SaveButton({
       size={compact ? "sm" : size}
       title={
         password
-          ? "转存后约 10 秒安排云解压（使用资源密码）"
+          ? "转存后轮询，完成后立即云解压（使用资源密码；不解压删包）"
           : "转存到 115 云下载"
       }
       variant="flat"

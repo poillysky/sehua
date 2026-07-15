@@ -193,8 +193,12 @@ def enqueue_thread(
     board_name: str = "",
     title: str = "",
     forum_id: str = "sehuatang",
+    retry_after: object | None = None,
 ) -> bool:
-    """新帖入队；已存在则不覆盖状态。返回是否新插入。"""
+    """新帖入队；已存在则不覆盖状态。返回是否新插入。
+
+    retry_after：龄期未满等场景先占位入队，到期后再被取队列抓取。
+    """
     url = canonical_thread_url(url)
     tid = tid_from_url(url)
     cur = conn.cursor()
@@ -202,9 +206,9 @@ def enqueue_thread(
         """
         INSERT INTO crawl_pages (
           url, page_type, status, tid, board_fid, board_name, thread_title, forum_id,
-          created_at, updated_at
+          retry_after, created_at, updated_at
         )
-        VALUES (%s, 'thread', 'pending', %s, %s, %s, %s, %s, now(), now())
+        VALUES (%s, 'thread', 'pending', %s, %s, %s, %s, %s, %s, now(), now())
         ON CONFLICT (url) DO NOTHING
         """,
         (
@@ -214,6 +218,7 @@ def enqueue_thread(
             board_name or None,
             title or None,
             forum_id,
+            retry_after,
         ),
     )
     inserted = cur.rowcount > 0

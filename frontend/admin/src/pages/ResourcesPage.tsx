@@ -528,7 +528,7 @@ export function ResourcesPage() {
                   </th>
                   <th className="col-icon">#</th>
                   <th className="col-name">帖子</th>
-                  <th className="col-board">板块</th>
+                  <th className="col-board">论坛 / 板块</th>
                   <th className="col-outcome">判定</th>
                   <th className="col-result">结果</th>
                   <th className="col-time">处理时间</th>
@@ -579,7 +579,13 @@ export function ResourcesPage() {
                         <td className="col-name" title={r.title}>
                           <span className="row-title">{r.title}</span>
                         </td>
-                        <td className="col-board" title={r.board}>
+                        <td className="col-board" title={[r.forum, r.board].filter(Boolean).join(' · ')}>
+                          {r.forum ? (
+                            <>
+                              <span className="row-forum">{r.forum}</span>
+                              <span className="row-forum-sep"> · </span>
+                            </>
+                          ) : null}
                           {r.board}
                         </td>
                         <td className="col-outcome" title={r.outcome}>
@@ -1083,6 +1089,10 @@ function DetailTabs({
               <span className="val">{row.outcome}</span>
             </div>
             <div className="detail-field">
+              <span className="lbl">论坛</span>
+              <span className="val">{row.forum || '—'}</span>
+            </div>
+            <div className="detail-field">
               <span className="lbl">板块</span>
               <span className="val">{row.board}</span>
             </div>
@@ -1114,6 +1124,14 @@ function DetailTabs({
             <div className="detail-field full">
               <span className="lbl">来源 URL</span>
               <span className="val mono">{row.sourceUrl || '—'}</span>
+            </div>
+            <div className="detail-field">
+              <span className="lbl">来源论坛</span>
+              <span className="val">{row.forum || row.forumId || '—'}</span>
+            </div>
+            <div className="detail-field">
+              <span className="lbl">来源板块</span>
+              <span className="val">{row.board}</span>
             </div>
             <div className="detail-field">
               <span className="lbl">来源类型</span>

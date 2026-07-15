@@ -13,9 +13,12 @@ from db.connection import connect
 from db.forum_configs import (
     SITE_CRAWLER_FORUM_ID,
     get_active_forum_id,
+    get_board_head_progress,
     get_board_list_cursor,
+    is_board_head_done_today,
     load_forum_configs_map,
     save_forum_config,
+    set_board_head_catchup_state,
     set_board_list_cursor,
 )
 from db.migrate import run_migrations
@@ -277,12 +280,20 @@ async def run_crawl_once(
                 _STATE["phase"] = "list_scan"
                 pages_per = int(cfg.get("web_crawler_list_pages_per_board") or 15)
                 max_pages = int(cfg.get("web_crawler_max_list_pages") or 0)
+                head_pages = int(cfg.get("web_crawler_list_head_pages") or 50)
+                known_stop = int(cfg.get("web_crawler_list_known_stop_pages") or 2)
                 list_cursor = get_board_list_cursor(cfg, board_fid)
+                do_head = not is_board_head_done_today(cfg, board_fid)
+                head_start = get_board_head_progress(cfg, board_fid) if do_head else 1
                 scan = await scan_board_list(
                     fetcher,
                     board_fid=board_fid,
                     pages_per_board=pages_per,
                     max_list_pages=max_pages,
+                    head_pages=head_pages,
+                    known_stop_pages=known_stop,
+                    scan_head=do_head,
+                    head_start_page=head_start,
                     entry_url=start,
                     last_list_page=list_cursor,
                     board_name=pol.name,
@@ -295,8 +306,12 @@ async def run_crawl_once(
                 result["enqueued"] = scan.enqueued
                 result["list_cursor"] = scan.last_list_page
                 result["harvest_start_page"] = scan.harvest_start_page
+                result["deep_early_stop"] = bool(getattr(scan, "deep_early_stop", False))
+                result["deferred_young"] = int(getattr(scan, "deferred_young", 0) or 0)
+                result["head_skipped"] = bool(getattr(scan, "head_skipped", False))
+                result["head_completed"] = bool(getattr(scan, "head_completed", False))
                 result["fetch_failures"] += scan.fetch_failures
-                # 持久化游标：到底则复位；否则记住扫到的页，下轮继续往后
+                # 持久化游标 + 每日首页捕新状态
                 cursor_conn = connect()
                 try:
                     set_board_list_cursor(
@@ -306,8 +321,22 @@ async def run_crawl_once(
                         scan.last_list_page,
                         reset=bool(scan.list_exhausted),
                     )
+                    if scan.head_completed:
+                        set_board_head_catchup_state(
+                            cursor_conn,
+                            forum_id,
+                            board_fid,
+                            done_today=True,
+                        )
+                    elif scan.head_incomplete and scan.head_progress_page:
+                        set_board_head_catchup_state(
+                            cursor_conn,
+                            forum_id,
+                            board_fid,
+                            progress_page=int(scan.head_progress_page),
+                        )
                 except Exception as cursor_exc:
-                    log.warning("save list cursor: %s", cursor_exc)
+                    log.warning("save list cursor / head catchup: %s", cursor_exc)
                 finally:
                     cursor_conn.close()
                 if scan.login_required:
@@ -315,9 +344,15 @@ async def run_crawl_once(
                     result["reason"] = "list_login_required"
                     return result
                 head_n = len(getattr(scan, "pages_head", None) or [])
+                if scan.head_skipped:
+                    head_label = "首页跳过(今日已捕新)"
+                elif head_n:
+                    head_label = f"首页捕新 {head_n} 页"
+                else:
+                    head_label = "首页未读"
                 _log_activity(
-                    f"扫列表(发帖时间) · 首页 {head_n} 页(不计配额) · "
-                    f"计数 {len(scan.pages_scanned)} 页"
+                    f"扫列表(发帖时间) · {head_label} · "
+                    f"深扫 {len(scan.pages_scanned)} 页"
                     + (
                         f"（自 P{scan.harvest_start_page}）"
                         if scan.harvest_start_page

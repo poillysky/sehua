@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from copy import deepcopy
+from datetime import date, datetime
 from typing import Any
 
 from db.settings_store import get_setting, save_settings
@@ -38,6 +39,10 @@ FORUM_CRAWLER_DEFAULTS: dict[str, Any] = {
     "web_crawler_auto_discover": False,
     "web_crawler_max_boards_per_run": 1,
     "web_crawler_list_pages_per_board": 15,
+    # 每日首页捕新安全上限：从 P1 扫到「整页已入库」为止；当天完成后不再扫首页
+    "web_crawler_list_head_pages": 50,
+    # 深扫连续 N 页所见均已入库则早停，下轮继续深扫（当天不再读 P1）
+    "web_crawler_list_known_stop_pages": 2,
     "web_crawler_board_refresh_hours": 12,
     "web_crawler_max_threads_per_run": 0,
     "web_crawler_request_delay": 2.0,
@@ -57,6 +62,10 @@ FORUM_CRAWLER_DEFAULTS: dict[str, Any] = {
     "active_board_fid": default_board_order()[0],
     # 各板列表翻页游标：所见均已入库时继续往后；有新帖后从该页起按 pages_per_board 计数
     "board_list_cursors": {},
+    # 各板「今日首页捕新已完成」日期 YYYY-MM-DD（上海时区）
+    "board_head_catchup_on": {},
+    # 各板当日首页捕新进度页（未扫完全已知时跨轮续扫；完成后清空）
+    "board_head_progress": {},
 }
 
 
@@ -87,6 +96,25 @@ def _normalize_forum_config(raw: dict | None) -> dict[str, Any]:
                     except (TypeError, ValueError):
                         continue
                 base[key] = cleaned
+            continue
+        if key == "board_head_catchup_on":
+            if isinstance(val, dict):
+                cleaned_d: dict[str, str] = {}
+                for bf, day in val.items():
+                    s = str(day or "").strip()
+                    if len(s) >= 10 and s[4] == "-" and s[7] == "-":
+                        cleaned_d[str(bf)] = s[:10]
+                base[key] = cleaned_d
+            continue
+        if key == "board_head_progress":
+            if isinstance(val, dict):
+                cleaned_p: dict[str, int] = {}
+                for bf, pg in val.items():
+                    try:
+                        cleaned_p[str(bf)] = max(1, int(pg))
+                    except (TypeError, ValueError):
+                        continue
+                base[key] = cleaned_p
             continue
         if isinstance(default, bool):
             base[key] = bool(val) if isinstance(val, bool) else str(val).lower() in {"1", "true", "yes", "on"}
@@ -131,7 +159,69 @@ def _normalize_forum_config(raw: dict | None) -> dict[str, Any]:
         base["active_board_fid"] = active
     if not isinstance(base.get("board_list_cursors"), dict):
         base["board_list_cursors"] = {}
+    if not isinstance(base.get("board_head_catchup_on"), dict):
+        base["board_head_catchup_on"] = {}
+    if not isinstance(base.get("board_head_progress"), dict):
+        base["board_head_progress"] = {}
     return base
+
+
+def crawl_today() -> str:
+    """爬虫「自然日」：Asia/Shanghai 的 YYYY-MM-DD。"""
+    try:
+        from zoneinfo import ZoneInfo
+
+        return datetime.now(ZoneInfo("Asia/Shanghai")).date().isoformat()
+    except Exception:
+        return date.today().isoformat()
+
+
+def get_board_head_catchup_on(cfg: dict[str, Any] | None, board_fid: str | int) -> str:
+    raw = (cfg or {}).get("board_head_catchup_on") or {}
+    if not isinstance(raw, dict):
+        return ""
+    return str(raw.get(str(board_fid)) or "").strip()[:10]
+
+
+def is_board_head_done_today(cfg: dict[str, Any] | None, board_fid: str | int) -> bool:
+    return get_board_head_catchup_on(cfg, board_fid) == crawl_today()
+
+
+def get_board_head_progress(cfg: dict[str, Any] | None, board_fid: str | int) -> int:
+    raw = (cfg or {}).get("board_head_progress") or {}
+    if not isinstance(raw, dict):
+        return 1
+    try:
+        return max(1, int(raw.get(str(board_fid)) or 1))
+    except (TypeError, ValueError):
+        return 1
+
+
+def set_board_head_catchup_state(
+    conn: Any,
+    forum_id: str,
+    board_fid: str | int,
+    *,
+    done_today: bool = False,
+    progress_page: int | None = None,
+    clear_progress: bool = False,
+) -> dict:
+    """更新当日首页捕新状态。done_today=True 时写入今日日期并清空进度。"""
+    configs = load_forum_configs_map(conn)
+    current = dict(configs.get(forum_id) or default_forum_crawler_config())
+    key = str(board_fid)
+    dates = dict(current.get("board_head_catchup_on") or {})
+    progress = dict(current.get("board_head_progress") or {})
+    if done_today:
+        dates[key] = crawl_today()
+        progress.pop(key, None)
+    elif clear_progress:
+        progress.pop(key, None)
+    elif progress_page is not None:
+        progress[key] = max(1, int(progress_page))
+    current["board_head_catchup_on"] = dates
+    current["board_head_progress"] = progress
+    return save_forum_config(conn, forum_id, current)
 
 
 def get_board_list_cursor(cfg: dict[str, Any] | None, board_fid: str | int) -> int:

@@ -2,10 +2,7 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 
 import { addOfflineTasks } from "@/lib/p115";
-import {
-  EXTRACT_DELAY_MS,
-  scheduleDeferredExtract,
-} from "@/lib/p115Extract";
+import { scheduleDeferredExtract } from "@/lib/p115Extract";
 import { readP115Config } from "@/lib/p115Config";
 import { isPublicDownloadLink } from "@/utils/resource";
 
@@ -14,7 +11,7 @@ export const dynamic = "force-dynamic";
 const schema = z.object({
   urls: z.array(z.string()).min(1).max(50),
   folderCid: z.string().optional(),
-  /** 资源解压密码；有值则转存成功后 10s 安排一次云解压 */
+  /** 资源解压密码；有值则转存后轮询，完成后立即云解压 */
   password: z.string().optional(),
   titleHint: z.string().optional(),
   /** 默认：有密码则自动安排解压 */
@@ -65,26 +62,20 @@ export async function POST(request: Request) {
     body.autoExtract !== false;
 
   let extractScheduled = false;
-  let extractInSeconds = 0;
 
   if (wantExtract) {
-    const scheduled = scheduleDeferredExtract(
-      {
-        cookie: cfg.cookie,
-        folderCid,
-        password,
-        infoHashes: result.infoHashes || [],
-        titleHint: body.titleHint || "",
-      },
-      EXTRACT_DELAY_MS,
-    );
-
+    scheduleDeferredExtract({
+      cookie: cfg.cookie,
+      folderCid,
+      password,
+      infoHashes: result.infoHashes || [],
+      titleHint: body.titleHint || "",
+    });
     extractScheduled = true;
-    extractInSeconds = Math.round(scheduled.delayMs / 1000);
   }
 
   const message = extractScheduled
-    ? `${result.message} · ${extractInSeconds}s 后安排云解压`
+    ? `${result.message} · 转存完成后将自动云解压`
     : result.message;
 
   return NextResponse.json(
@@ -93,7 +84,7 @@ export async function POST(request: Request) {
       data: {
         ...result,
         extractScheduled,
-        extractInSeconds,
+        extractMode: extractScheduled ? "poll" : null,
       },
       message,
     },

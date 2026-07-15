@@ -114,5 +114,6 @@ def ensure_ed2k_schema() -> None:
             "015_crawl_queue_retry.sql",
             "016_resource_sources_unique_hash.sql",
             "017_resource_import_outcome.sql",
+            "018_resource_sources_forum_board.sql",
         }
     )

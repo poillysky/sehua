@@ -1,6 +1,7 @@
 /**
- * 115 云解压（单次触发，不轮询进度）。
- * POST /files/push_extract → GET /files/extract_info（一页）→ POST /files/add_extract_file
+ * 115 云解压：转存后轮询离线任务，转存完成后立即解压。
+ * POST /files/push_extract → GET /files/extract_info → POST /files/add_extract_file
+ * 不再删除压缩包。
  */
 
 import {
@@ -10,9 +11,10 @@ import {
   p115ReadJson,
 } from "@/lib/p115";
 
-export const EXTRACT_DELAY_MS = 10_000;
-/** 解压提交后再延迟删压缩包（给 115 云解压留读包时间，不比大小、不轮询） */
-export const CLEANUP_DELAY_MS = 45_000;
+/** 轮询离线任务间隔 */
+export const POLL_INTERVAL_MS = 3_000;
+/** 轮询最长等待（转存就绪） */
+export const POLL_MAX_MS = 30_000;
 
 export type DeferredExtractJob = {
   cookie: string;
@@ -34,19 +36,34 @@ type ArchiveTarget = {
   fileId?: string;
 };
 
-type CleanupJob = {
-  cookie: string;
-  parentCid: string;
-  archiveName: string;
-  pickCode: string;
-  fileId: string;
-};
-
 const ARCHIVE_RE = /\.(zip|rar|7z)$/i;
 const scheduled = new Map<string, NodeJS.Timeout>();
 
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 function isArchiveName(name: string): boolean {
   return ARCHIVE_RE.test(name || "");
+}
+
+/** 离线任务是否已完成（可入盘 / 可解压） */
+function isTaskDone(t: any): boolean {
+  const status = Number(t?.status ?? -99);
+
+  if (status === 2 || t?.status === "2") return true;
+  if (Number(t?.percentDone) >= 100) return true;
+  if (Number(t?.percentDone ?? t?.percent_done) >= 100) return true;
+
+  return false;
+}
+
+/** 离线任务是否终态失败 */
+function isTaskFailed(t: any): boolean {
+  const status = Number(t?.status ?? 0);
+
+  // -1 失败；其它负状态一般也表示不可继续
+  return status < 0;
 }
 
 /** 与压缩包同名的文件夹名（去扩展名，去掉 115 非法字符） */
@@ -99,7 +116,6 @@ async function ensureSameNameFolder(
     return { ok: true, cid, name: folderName };
   }
 
-  // 已存在等同名目录：在父目录里找一次
   try {
     const rows = await listFolderFilesOnce(cookie, parentCid);
     const hit = rows.find(
@@ -179,12 +195,9 @@ function pickCodesFromTasks(
     const name = String(t?.name || t?.file_name || "");
     const pick = String(t?.pick_code || t?.pickcode || t?.pc || "").trim();
     const fileId = String(t?.file_id || t?.fid || t?.delete_file_id || "").trim();
-    const status = Number(t?.status ?? -99);
-    const done =
-      status === 2 || Number(t?.percentDone) >= 100 || t?.status === "2";
 
     if (want.size && hash && !want.has(hash)) continue;
-    if (!done && !pick) continue;
+    if (!isTaskDone(t)) continue;
     if (pick && (isArchiveName(name) || want.has(hash))) {
       out.push({ pickCode: pick, name, fileId: fileId || undefined });
     }
@@ -220,139 +233,118 @@ function pickCodesFromFolder(
   return archives.sort((a, b) => b.time - a.time).slice(0, 3);
 }
 
-async function resolveArchiveInParent(
-  cookie: string,
-  parentCid: string,
-  pickCode: string,
-  archiveName: string,
-): Promise<{ fileId: string; name: string }> {
-  const rows = await listFolderFilesOnce(cookie, parentCid);
-  const pick = (pickCode || "").toLowerCase();
-  const name = (archiveName || "").trim();
+/**
+ * 轮询直到相关离线任务转存完成，并拿到可解压目标。
+ * - 有 infoHashes：等待对应任务 status=完成（或目录里已出现压缩包）
+ * - 无 hash：轮询目标目录出现压缩包
+ */
+async function waitUntilTransferReady(
+  job: DeferredExtractJob,
+): Promise<
+  | { ok: true; targets: ArchiveTarget[] }
+  | { ok: false; message: string }
+> {
+  const cookie = p115NormalizeCookie(job.cookie);
+  const folderCid = String(job.folderCid || "0");
+  const hashes = (job.infoHashes || []).map((h) => h.toLowerCase()).filter(Boolean);
+  const started = Date.now();
+  let lastNote = "等待离线转存完成";
 
-  const hit = rows.find((r) => {
-    if (!r?.fid) return false;
-    const pc = String(r.pc || r.pick_code || "").toLowerCase();
-    const n = String(r.n || r.name || "").trim();
+  while (Date.now() - started < POLL_MAX_MS) {
+    let tasks: any[] = [];
 
-    return (pick && pc === pick) || (!!name && n === name);
-  });
+    try {
+      tasks = await listOfflineTasksOnce(cookie);
+    } catch (err) {
+      lastNote = err instanceof Error ? err.message : "拉取离线任务失败";
+      await sleep(POLL_INTERVAL_MS);
+      continue;
+    }
 
-  if (!hit?.fid) {
-    return { fileId: "", name };
-  }
+    if (hashes.length) {
+      const matched = tasks.filter((t) => {
+        const hash = String(t?.info_hash || t?.infoHash || "").toLowerCase();
 
-  return {
-    fileId: String(hit.fid),
-    name: String(hit.n || hit.name || name),
-  };
-}
+        return hash && hashes.includes(hash);
+      });
 
-async function deleteFileById(
-  cookie: string,
-  fileId: string,
-  parentCid: string,
-): Promise<{ ok: boolean; message: string }> {
-  if (!fileId) {
-    return { ok: false, message: "无文件 id，无法删除压缩包" };
-  }
+      if (matched.length) {
+        const failed = matched.filter(isTaskFailed);
 
-  const body = new URLSearchParams();
+        if (failed.length === matched.length) {
+          return { ok: false, message: "离线任务全部失败，无法解压" };
+        }
 
-  // 115 删文件常见要 pid + fid[0]
-  body.set("pid", parentCid || "0");
-  body.set("fid[0]", fileId);
-  body.set("ignore_warn", "1");
+        const allTerminal = matched.every((t) => isTaskDone(t) || isTaskFailed(t));
+        const anyDone = matched.some(isTaskDone);
 
-  const res = await fetch("https://webapi.115.com/rb/delete", {
-    method: "POST",
-    headers: {
-      ...p115Headers(cookie),
-      "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
-    },
-    body: body.toString(),
-    cache: "no-store",
-  });
-  const data = await p115ReadJson(res);
+        if (anyDone && allTerminal) {
+          const fromTasks = pickCodesFromTasks(tasks, hashes);
 
-  if (data?.state === true || data?.state === 1 || data?.errno === 0) {
-    return { ok: true, message: "已删除压缩包" };
-  }
+          if (fromTasks.length) {
+            console.info("[p115-extract] transfer ready via tasks", {
+              hashes,
+              archives: fromTasks.map((t) => t.name),
+            });
 
-  // 兼容仅 fid 形式再试一次
-  const body2 = new URLSearchParams();
+            return { ok: true, targets: fromTasks };
+          }
+        }
 
-  body2.set("fid", fileId);
-  body2.set("pid", parentCid || "0");
+        if (!allTerminal) {
+          const downloading = matched.find((t) => !isTaskDone(t) && !isTaskFailed(t));
+          const pct = Number(
+            downloading?.percentDone ?? downloading?.percent_done ?? 0,
+          );
 
-  const res2 = await fetch("https://webapi.115.com/rb/delete", {
-    method: "POST",
-    headers: {
-      ...p115Headers(cookie),
-      "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
-    },
-    body: body2.toString(),
-    cache: "no-store",
-  });
-  const data2 = await p115ReadJson(res2);
+          lastNote = `转存中 ${Number.isFinite(pct) ? `${Math.floor(pct)}%` : "…"}`;
+        }
+      }
+    }
 
-  if (data2?.state === true || data2?.state === 1 || data2?.errno === 0) {
-    return { ok: true, message: "已删除压缩包" };
+    // 目录兜底：转存完成后压缩包会出现在目标目录
+    try {
+      const rows = await listFolderFilesOnce(cookie, folderCid);
+      const fromFolder = pickCodesFromFolder(rows, job.titleHint);
+
+      if (fromFolder.length) {
+        // 有 hash 时，尽量等任务也到终态，避免下到一半就解压
+        if (!hashes.length) {
+          console.info("[p115-extract] transfer ready via folder", {
+            archives: fromFolder.map((t) => t.name),
+          });
+
+          return { ok: true, targets: fromFolder };
+        }
+
+        const matched = tasks.filter((t) => {
+          const hash = String(t?.info_hash || t?.infoHash || "").toLowerCase();
+
+          return hash && hashes.includes(hash);
+        });
+        const allDoneOrMissing =
+          !matched.length ||
+          matched.every((t) => isTaskDone(t) || isTaskFailed(t));
+
+        if (allDoneOrMissing && matched.some(isTaskDone)) {
+          console.info("[p115-extract] transfer ready via folder+tasks", {
+            archives: fromFolder.map((t) => t.name),
+          });
+
+          return { ok: true, targets: fromFolder };
+        }
+      }
+    } catch {
+      // ignore folder errors during poll
+    }
+
+    await sleep(POLL_INTERVAL_MS);
   }
 
   return {
     ok: false,
-    message: p115HumanError(data2 || data, "删除压缩包失败"),
+    message: `等待转存超时（${Math.round(POLL_MAX_MS / 1000)} 秒）：${lastNote}`,
   };
-}
-
-/** 延迟后直接删压缩包（不比对大小） */
-async function runCleanupArchiveOnce(job: CleanupJob): Promise<string> {
-  const cookie = p115NormalizeCookie(job.cookie);
-  let fileId = (job.fileId || "").trim();
-
-  if (!fileId) {
-    const resolved = await resolveArchiveInParent(
-      cookie,
-      job.parentCid,
-      job.pickCode,
-      job.archiveName,
-    );
-
-    fileId = resolved.fileId;
-  }
-
-  if (!fileId) {
-    return "跳过删包：找不到压缩包 fileId";
-  }
-
-  const del = await deleteFileById(cookie, fileId, job.parentCid);
-
-  console.info("[p115-cleanup] delete", {
-    fileId,
-    parentCid: job.parentCid,
-    ok: del.ok,
-    message: del.message,
-  });
-
-  return del.message;
-}
-
-function scheduleCleanupArchive(job: CleanupJob, delayMs = CLEANUP_DELAY_MS) {
-  const jobId = `clean_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
-  const wait = Math.max(1000, delayMs);
-  const timer = setTimeout(() => {
-    scheduled.delete(jobId);
-    void runCleanupArchiveOnce(job).then((msg) => {
-      console.info("[p115-cleanup]", jobId, msg);
-    });
-  }, wait);
-
-  scheduled.set(jobId, timer);
-  console.info("[p115-cleanup] scheduled", jobId, `in ${wait}ms`, {
-    fileId: job.fileId,
-    pickCode: job.pickCode,
-  });
 }
 
 async function pushExtract(
@@ -482,53 +474,14 @@ async function addExtractFile(
   return { ok: false, message: p115HumanError(data, "解压到目录失败") };
 }
 
-/** 单次解压尝试：不轮询进度 */
-export async function runDeferredExtractOnce(
+/** 对已就绪的压缩包立即解压（不解压失败时删包） */
+async function extractReadyTargets(
   job: DeferredExtractJob,
+  targets: ArchiveTarget[],
 ): Promise<ExtractRunResult> {
   const cookie = p115NormalizeCookie(job.cookie);
   const password = (job.password || "").trim();
   const folderCid = String(job.folderCid || "0");
-
-  if (!cookie) {
-    return { ok: false, message: "无 Cookie", extracted: 0 };
-  }
-  if (!password) {
-    return { ok: false, message: "无解压密码", extracted: 0 };
-  }
-
-  let targets: ArchiveTarget[] = [];
-
-  try {
-    const tasks = await listOfflineTasksOnce(cookie);
-
-    targets = pickCodesFromTasks(tasks, job.infoHashes || []);
-  } catch {
-    // 走目录兜底
-  }
-
-  if (!targets.length) {
-    try {
-      const rows = await listFolderFilesOnce(cookie, folderCid);
-
-      targets = pickCodesFromFolder(rows, job.titleHint);
-    } catch (err) {
-      return {
-        ok: false,
-        message: err instanceof Error ? err.message : "定位压缩包失败",
-        extracted: 0,
-      };
-    }
-  }
-
-  if (!targets.length) {
-    return {
-      ok: false,
-      message: "延时触发时未找到可解压压缩包（可能仍在云下载）",
-      extracted: 0,
-    };
-  }
-
   let extracted = 0;
   let lastErr = "";
 
@@ -540,7 +493,14 @@ export async function runDeferredExtractOnce(
       continue;
     }
 
-    const info = await extractInfoOnce(cookie, t.pickCode);
+    // 云端推送后目录可能稍晚就绪：短重试读目录，不算长时间轮询转存
+    let info = await extractInfoOnce(cookie, t.pickCode);
+
+    for (let i = 0; i < 6; i += 1) {
+      if (info.files.length || info.dirs.length || !info.message) break;
+      await sleep(2_000);
+      info = await extractInfoOnce(cookie, t.pickCode);
+    }
 
     if (info.message && !info.files.length && !info.dirs.length) {
       lastErr = info.message;
@@ -565,38 +525,6 @@ export async function runDeferredExtractOnce(
 
     if (add.ok) {
       extracted += 1;
-
-      // 提交解压时钉死 fileId，延迟后直接删包（不比大小）
-      let fileId = (t.fileId || "").trim();
-      let archiveName = t.name;
-
-      if (!fileId) {
-        const resolved = await resolveArchiveInParent(
-          cookie,
-          folderCid,
-          t.pickCode,
-          t.name,
-        );
-
-        fileId = resolved.fileId;
-        if (resolved.name) archiveName = resolved.name;
-      }
-
-      if (fileId) {
-        scheduleCleanupArchive({
-          cookie,
-          parentCid: folderCid,
-          archiveName,
-          pickCode: t.pickCode,
-          fileId,
-        });
-      } else {
-        console.warn(
-          "[p115-cleanup] skip schedule: no fileId for",
-          t.pickCode,
-          t.name,
-        );
-      }
     } else {
       lastErr = add.message;
     }
@@ -605,7 +533,7 @@ export async function runDeferredExtractOnce(
   if (extracted > 0) {
     return {
       ok: true,
-      message: `已提交解压 ${extracted} 个压缩包到同名文件夹（稍后删除压缩包）`,
+      message: `已提交解压 ${extracted} 个压缩包到同名文件夹`,
       extracted,
     };
   }
@@ -613,21 +541,62 @@ export async function runDeferredExtractOnce(
   return { ok: false, message: lastErr || "解压未成功", extracted: 0 };
 }
 
-/** 转存成功后延迟一次触发（默认 10s），不轮询 */
+/** 轮询转存完成 → 立即解压 */
+export async function runPollThenExtract(
+  job: DeferredExtractJob,
+): Promise<ExtractRunResult> {
+  const cookie = p115NormalizeCookie(job.cookie);
+  const password = (job.password || "").trim();
+
+  if (!cookie) {
+    return { ok: false, message: "无 Cookie", extracted: 0 };
+  }
+  if (!password) {
+    return { ok: false, message: "无解压密码", extracted: 0 };
+  }
+
+  const ready = await waitUntilTransferReady(job);
+
+  if (!ready.ok) {
+    return { ok: false, message: ready.message, extracted: 0 };
+  }
+
+  return extractReadyTargets(job, ready.targets);
+}
+
+/** @deprecated 兼容旧名；现在会先轮询转存再解压 */
+export async function runDeferredExtractOnce(
+  job: DeferredExtractJob,
+): Promise<ExtractRunResult> {
+  return runPollThenExtract(job);
+}
+
+/**
+ * 后台：轮询转存完成后再解压。
+ * 立即返回；不阻塞转存 API。
+ */
 export function scheduleDeferredExtract(
   job: DeferredExtractJob,
-  delayMs = EXTRACT_DELAY_MS,
-): { jobId: string; delayMs: number } {
+): { jobId: string; mode: "poll" } {
   const jobId = `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-  const wait = Math.max(1000, delayMs);
+
+  // 立刻进入轮询（用 setTimeout(0) 脱离请求生命周期）
   const timer = setTimeout(() => {
     scheduled.delete(jobId);
-    void runDeferredExtractOnce(job).then((r) => {
+    void runPollThenExtract(job).then((r) => {
       console.info("[p115-extract]", jobId, r.ok ? "ok" : "fail", r.message);
     });
-  }, wait);
+  }, 0);
 
   scheduled.set(jobId, timer);
+  console.info("[p115-extract] scheduled poll-then-extract", jobId, {
+    hashes: job.infoHashes?.length || 0,
+    folderCid: job.folderCid,
+  });
 
-  return { jobId, delayMs: wait };
+  return { jobId, mode: "poll" };
 }
+
+/** 兼容旧导入：固定延迟常量已废弃 */
+export const EXTRACT_DELAY_MS = 0;
+export const CLEANUP_DELAY_MS = 0;
