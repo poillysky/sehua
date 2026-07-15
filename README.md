@@ -192,7 +192,6 @@ Backend 启动时自动跑待执行 SQL 迁移。
 - GitHub：https://github.com/poillysky/sehua  
 - 下次发 **1.0.5**：改 `VERSION`、`deploy/docker-compose.nas.yml` 镜像标签、workflow 的 `RELEASE_TAG`，提交并打 `v1.0.5`
 - Hub 上会留下 `1.0.1`、`1.0.2`、`1.0.3`、`1.0.4`…；`latest` 指向最新一次发版
-- Hub 上会留下 1.0.1、1.0.2、1.0.3…；latest 指向最新一次发版
 
 ---
 
