@@ -8,7 +8,17 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
   applied_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
--- sources 表若已存在则跳过创建；补齐常用来源键
+-- sources：全新库或从未跑过 001 的旧库都要能建出来
+CREATE TABLE IF NOT EXISTS sources (
+  id          SERIAL PRIMARY KEY,
+  key         TEXT NOT NULL UNIQUE,
+  name        TEXT NOT NULL,
+  source_type TEXT NOT NULL CHECK (source_type IN ('web', 'telegram', 'upload')),
+  url         TEXT,
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
 INSERT INTO sources (key, name, source_type) VALUES
   ('upload:manual', '手动上传', 'upload'),
   ('web:crawler', '网站爬虫', 'web')
