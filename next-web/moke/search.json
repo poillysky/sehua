@@ -1,0 +1,29 @@
+{
+  "data": {
+    "keywords": ["demo"],
+    "resources": [
+      {
+        "hash": "181BF8ECED82D3D215187F920D0EA4A511BFD17C",
+        "name": "Demo ED2K Resource",
+        "size": "1073741824",
+        "ed2k_link": "ed2k://|file|demo.mkv|1073741824|181BF8ECED82D3D215187F920D0EA4A511BFD17C|/",
+        "single_file": true,
+        "files_count": 1,
+        "files": [
+          {
+            "index": 0,
+            "path": "demo.mkv",
+            "extension": "mkv",
+            "size": "1073741824"
+          }
+        ],
+        "created_at": 1719015251,
+        "updated_at": 1719015251
+      }
+    ],
+    "total_count": 1,
+    "has_more": false
+  },
+  "message": "success",
+  "status": 200
+}

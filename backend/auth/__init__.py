@@ -1,0 +1,1 @@
+"""Collector authentication and RBAC."""

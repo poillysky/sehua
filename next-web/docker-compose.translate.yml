@@ -1,0 +1,38 @@
+# LibreTranslate 独立部署（与主 compose 分离）
+# 构建: docker build -t libretranslate-local:latest ./docker/libretranslate
+# 启动: docker compose -f docker-compose.translate.yml up -d
+
+services:
+  libretranslate:
+    image: libretranslate-local:latest
+    container_name: ed2k-libretranslate
+    restart: always
+    environment:
+      - LT_LOAD_ONLY=zh,en,ja,ko
+      - LT_UPDATE_MODELS=true
+      - LT_HOST=0.0.0.0
+      - LT_PORT=5000
+    volumes:
+      - ./data/libretranslate:/root/.local
+    ports:
+      - "5000:5000"
+    deploy:
+      resources:
+        limits:
+          cpus: "2"
+          memory: 2G
+        reservations:
+          cpus: "0.5"
+          memory: 1G
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python3",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:5000/languages')",
+        ]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 600s

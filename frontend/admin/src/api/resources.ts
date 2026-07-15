@@ -1,0 +1,193 @@
+import { api } from './client'
+
+export type ApiResource = {
+  id?: number
+  hash: string
+  filename: string
+  size: number
+  ed2k_link: string
+  updated_at: string | null
+  title: string | null
+  description: string | null
+  source_url: string | null
+  board_fid: string | null
+  board_name: string | null
+  ed2k_links: string[]
+  extract_password: string | null
+  source_key: string
+  source_type: string
+  preview_images?: string[]
+  import_outcome?: string | null
+  link_kind: 'magnet' | 'ed2k' | 'stub' | 'failed' | string
+}
+
+export type ResourceRow = {
+  id: string
+  title: string
+  board: string
+  boardFid?: string
+  outcome: string
+  result: 'magnet' | 'ed2k' | 'stub' | 'failed'
+  time: string
+  sourceUrl?: string
+  sourceType?: string
+  description?: string
+  password?: string
+  links?: string[]
+  filename?: string
+  hash?: string
+  previewImages?: string[]
+}
+
+export type ResourceFacets = {
+  sources: Record<string, number>
+  boards: Array<{ name: string; count: number }>
+  results?: Record<string, number>
+}
+
+export type ResourcesPageResult = {
+  items: ApiResource[]
+  count: number
+  total: number
+  page: number
+  page_size: number
+  pages: number
+  boards: string[]
+  facets?: ResourceFacets
+}
+
+const KIND_OUTCOME: Record<string, string> = {
+  magnet: '已提取主链',
+  ed2k: '已提取主链',
+  stub: '无下载链 · 占位入库',
+  failed: '解析失败',
+}
+
+function formatOutcome(kind: string, importOutcome?: string | null): string {
+  const detail = (importOutcome || '').trim()
+  if (detail) {
+    if (kind === 'stub') return detail.includes('占位') ? detail : `${detail} · 占位入库`
+    return detail
+  }
+  return KIND_OUTCOME[kind] || kind
+}
+
+function formatTime(iso: string | null): string {
+  if (!iso) return '—'
+  const d = new Date(iso)
+  if (Number.isNaN(d.getTime())) return iso
+  const pad = (n: number) => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`
+}
+
+export function mapApiResource(item: ApiResource): ResourceRow {
+  const kind = (['magnet', 'ed2k', 'stub', 'failed'].includes(item.link_kind)
+    ? item.link_kind
+    : 'failed') as ResourceRow['result']
+  const links = item.ed2k_links?.length ? item.ed2k_links : item.ed2k_link ? [item.ed2k_link] : []
+  return {
+    id: item.id != null ? String(item.id) : item.hash,
+    title: item.title || item.filename || item.hash,
+    board: item.board_name || (item.board_fid ? `fid ${item.board_fid}` : '—'),
+    boardFid: item.board_fid || undefined,
+    outcome: formatOutcome(kind, item.import_outcome),
+    result: kind,
+    time: formatTime(item.updated_at),
+    sourceUrl: item.source_url || undefined,
+    sourceType: item.source_type,
+    description: item.description || undefined,
+    password: item.extract_password || undefined,
+    links,
+    filename: item.filename,
+    hash: item.hash,
+    previewImages: item.preview_images?.length ? item.preview_images : undefined,
+  }
+}
+
+export const PAGE_SIZE = 30
+
+export function fetchRecentResources(params: {
+  page?: number
+  pageSize?: number
+  source?: string
+  board?: string
+  result?: string
+  q?: string
+}) {
+  const page = params.page ?? 1
+  const pageSize = params.pageSize ?? PAGE_SIZE
+  const sp = new URLSearchParams({
+    page: String(page),
+    page_size: String(pageSize),
+  })
+  if (params.source && params.source !== 'all') sp.set('source', params.source)
+  if (params.board && params.board !== 'all') sp.set('board', params.board)
+  if (params.result && params.result !== 'all') sp.set('result', params.result)
+  if (params.q?.trim()) sp.set('q', params.q.trim())
+  return api<ResourcesPageResult>(`/api/resources/recent?${sp}`)
+}
+
+export function fetchDataOverview() {
+  return api<{
+    message?: string
+    overview: {
+      resources: number
+      resource_sources: number
+      import_jobs: number
+      crawl_pages: number
+      crawl_pending: number
+      crawl_boards: number
+      activity_logs: number
+      sources?: number
+      boards?: number
+    }
+    crawler_running: boolean
+    crawler_enabled: boolean
+  }>('/api/system/data-overview')
+}
+
+export type RecrawlItemResult = {
+  ok: boolean
+  imported?: boolean
+  removed?: boolean
+  queued?: boolean
+  hash?: string
+  tid?: number
+  url?: string
+  title?: string
+  verdict?: string
+  verdict_label?: string
+  outcome?: string
+  note?: string
+  error?: string
+}
+
+export function recrawlResource(hash: string) {
+  return api<{
+    message: string
+    result: RecrawlItemResult
+  }>('/api/resources/recrawl', {
+    method: 'POST',
+    body: JSON.stringify({ hash }),
+  })
+}
+
+export function recrawlResourcesBatch(hashes: string[]) {
+  return api<{
+    message: string
+    result: {
+      ok: boolean
+      mode?: 'immediate' | 'queued' | 'failed'
+      imported?: number
+      removed?: number
+      queued?: number
+      failed?: number
+      note?: string
+      error?: string
+      items?: RecrawlItemResult[]
+    }
+  }>('/api/resources/recrawl-batch', {
+    method: 'POST',
+    body: JSON.stringify({ hashes }),
+  })
+}

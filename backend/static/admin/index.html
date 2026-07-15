@@ -1,0 +1,711 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>ED2K Collector</title>
+  <link rel="stylesheet" href="/static/admin/style.css" />
+</head>
+<body>
+  <header class="app-header">
+    <div class="header-left">
+      <div class="header-brand">
+        <div class="brand-mark" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75">
+            <path d="M12 2L4 6.5v11L12 22l8-4.5v-11L12 2z"/>
+            <path d="M12 12l8-4.5M12 12v10M12 12L4 7.5"/>
+          </svg>
+        </div>
+        <span class="brand-title" id="collectorTitle">ED2K 收集器</span>
+      </div>
+
+      <nav class="header-nav main-nav" id="mainNav">
+        <button type="button" class="nav-btn active" data-page="resources">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h10"/></svg>
+          <span>处理记录</span>
+        </button>
+        <button type="button" class="nav-btn" data-page="crawler">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83"/></svg>
+          <span>爬虫状态</span>
+        </button>
+        <button type="button" class="nav-btn" data-page="parse-test" id="parseTestNavBtn">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>
+          <span>解析测试</span>
+        </button>
+        <button type="button" class="nav-btn" data-page="data-mgmt" id="dataMgmtNavBtn">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M3 5v14c0 1.66 4.03 3 9 3s9-1.34 9-3V5"/><path d="M3 12c0 1.66 4.03 3 9 3s9-1.34 9-3"/></svg>
+          <span>数据管理</span>
+        </button>
+      </nav>
+    </div>
+
+    <div class="header-actions">
+      <span id="healthBadge" class="health-pill badge badge-muted">
+        <span class="health-dot" aria-hidden="true"></span>
+        <span class="health-text">检查中</span>
+      </span>
+      <span class="header-sep" aria-hidden="true"></span>
+      <button type="button" id="systemInfoBtn" class="nav-btn icon-btn system-info-btn" title="系统信息与操作反馈">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 10v5M12 7h.01"/></svg>
+        <span class="nav-label">系统</span>
+        <span id="systemMsgBadge" class="system-msg-badge" hidden>0</span>
+      </button>
+      <button type="button" class="nav-btn icon-btn" data-page="settings" title="系统设置">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41"/></svg>
+        <span class="nav-label">设置</span>
+      </button>
+      <button type="button" id="accountBtn" class="user-chip" title="账号信息">
+        <span class="user-avatar" id="accountAvatar">?</span>
+        <span class="user-name" id="accountLabel">账号</span>
+      </button>
+    </div>
+  </header>
+
+  <div class="app-body">
+    <!-- 处理记录 -->
+    <section id="page-resources" class="page active">
+      <aside class="filter-sidebar">
+        <div id="resourceFilterPanel" class="filter-panel"></div>
+        <div class="filter-actions">
+          <button type="button" id="importQuickBtn" class="btn primary block btn-import">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
+            <span>快速导入</span>
+          </button>
+        </div>
+        <div class="sidebar-foot">
+          <span class="foot-version" id="sidebarVersion">v1.0.0</span>
+        </div>
+      </aside>
+
+      <div class="split-main">
+        <div class="table-pane">
+          <div class="table-toolbar">
+            <input id="resourceSearch" type="search" placeholder="筛选标题、板块、判定原因..." />
+            <span id="resourceCountLabel" class="toolbar-meta">0 条</span>
+            <button type="button" id="refreshResources" class="btn secondary sm">刷新</button>
+          </div>
+          <div class="table-scroll">
+            <table class="resource-table" id="resourceTable">
+              <thead>
+                <tr>
+                  <th class="col-icon">#</th>
+                  <th class="col-name">帖子</th>
+                  <th class="col-board">板块</th>
+                  <th class="col-outcome">判定</th>
+                  <th class="col-result">结果</th>
+                  <th class="col-time">处理时间</th>
+                </tr>
+              </thead>
+              <tbody id="resourceTableBody">
+                <tr><td colspan="6" class="empty">加载中...</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+        <div class="detail-pane">
+          <div class="detail-tabs" id="detailTabs">
+            <button type="button" class="detail-tab active" data-detail="verdict">判定</button>
+            <button type="button" class="detail-tab" data-detail="source">来源</button>
+            <button type="button" class="detail-tab" data-detail="content">内容</button>
+          </div>
+          <div id="detailContent" class="detail-content">
+            <p class="hint">选择一条记录，核对处理判定是否合理</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 爬虫状态 -->
+    <section id="page-crawler" class="page">
+        <div class="page-scroll">
+
+        <nav class="crawler-nav">
+          <button type="button" class="crawler-tab active" data-crawler="forum">论坛爬虫</button>
+          <button type="button" class="crawler-tab" data-crawler="tg">
+            TG 爬虫
+            <span class="tag tag-login tab-tag">待定</span>
+          </button>
+        </nav>
+
+        <div id="crawler-forum" class="crawler-panel active">
+          <div class="card block crawler-live">
+            <div class="crawler-toolbar">
+              <div class="crawler-toolbar-left">
+                <label class="crawler-switch" id="crawlerToggleWrap" title="开启/关闭论坛爬虫">
+                  <input type="checkbox" id="crawlerSwitch" />
+                  <span class="crawler-switch-slider" aria-hidden="true"></span>
+                </label>
+                <span id="crawlerRunState" class="crawler-run-label">-</span>
+              </div>
+              <div class="crawler-toolbar-right">
+                <button type="button" id="runCrawlBtn" class="btn primary sm">立即爬取</button>
+                <button type="button" id="refreshCrawler" class="btn ghost sm">刷新</button>
+              </div>
+            </div>
+            <div id="crawlerOverview" class="crawler-overview">
+              <div class="crawler-overview-row">
+                <div class="crawler-overview-metrics">
+                  <span class="metric-pill">
+                    <span id="metricPendingCarryover" class="metric-val stat-pending">-</span>
+                    <span class="metric-lbl">上轮遗留异常待处理</span>
+                  </span>
+                  <span class="metric-pill">
+                    <span id="metricPendingAbnormal" class="metric-val stat-warn">-</span>
+                    <span class="metric-lbl">本轮新增异常待处理</span>
+                  </span>
+                  <span class="metric-pill">
+                    <span id="metricPendingSoftAd" class="metric-val stat-pending">-</span>
+                    <span class="metric-lbl">软文拦截待处理</span>
+                  </span>
+                  <span class="metric-pill">
+                    <span id="metricPendingDiscovered" class="metric-val">-</span>
+                    <span class="metric-lbl">队列任务数</span>
+                  </span>
+                  <span class="metric-pill">
+                    <span id="metricRunCrawled" class="metric-val">-</span>
+                    <span class="metric-lbl">本轮已处理</span>
+                  </span>
+                  <span class="metric-pill">
+                    <span id="metricRunLinks" class="metric-val">-</span>
+                    <span class="metric-lbl">本轮入库</span>
+                  </span>
+                  <span class="metric-pill metric-pill-risk" id="metricRiskControlWrap" hidden>
+                    <span id="metricRiskControl" class="metric-val stat-failed">熔断</span>
+                    <span class="metric-lbl">风控状态</span>
+                  </span>
+                  <span class="metric-pill metric-pill-delay" id="metricFetchDelayWrap" hidden>
+                    <span id="metricFetchDelay" class="metric-val">-</span>
+                    <span class="metric-lbl">当前请求延迟</span>
+                  </span>
+                </div>
+              </div>
+            </div>
+            <p id="crawlerResult" class="hint crawler-result"></p>
+            <div class="activity-log-wrap">
+              <div id="activityLog" class="activity-log">
+                <div class="activity-empty">加载中...</div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div id="crawler-tg" class="crawler-panel">
+          <div class="card block crawler-live crawler-module-pending">
+            <div class="crawler-toolbar">
+              <div class="crawler-toolbar-left">
+                <label class="crawler-switch" title="功能开发中">
+                  <input type="checkbox" disabled />
+                  <span class="crawler-switch-slider" aria-hidden="true"></span>
+                </label>
+                <span class="crawler-run-label">未启用</span>
+              </div>
+              <div class="crawler-toolbar-right">
+                <button type="button" class="btn primary sm" disabled>立即爬取</button>
+                <button type="button" class="btn ghost sm" disabled>刷新</button>
+              </div>
+            </div>
+            <div class="activity-log-wrap">
+              <div class="activity-log">
+                <div class="activity-empty">TG 爬虫功能开发中，可在「系统设置 → 群组管理」预先配置参数</div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+      </div>
+    </section>
+
+    <!-- 解析测试 -->
+    <section id="page-parse-test" class="page">
+      <aside class="parse-test-side">
+        <div class="card block parse-test-input-card">
+          <div class="parse-test-head">
+            <h3>帖子解析测试</h3>
+            <p class="hint">输入色花堂帖子链接，测试抓取与 ED2K / magnet / 附件解析。使用当前论坛配置的 Cookie 与代理，约 30–90 秒。</p>
+          </div>
+          <form id="parseTestForm" class="parse-test-form">
+            <label class="parse-test-field">
+              <span class="lbl">帖子 URL</span>
+              <textarea id="parseTestUrl" rows="4" required placeholder="https://www.sehuatang.net/forum.php?mod=viewthread&tid=..."></textarea>
+            </label>
+            <label class="parse-test-field">
+              <span class="lbl">板块 fid（可选）</span>
+              <input id="parseTestFid" type="text" inputmode="numeric" placeholder="如 103、141" />
+            </label>
+            <label class="parse-test-field">
+              <span class="lbl">代理覆盖（可选）</span>
+              <input id="parseTestProxy" type="text" placeholder="留空则用系统设置" />
+            </label>
+            <div class="parse-test-actions">
+              <button type="submit" id="parseTestBtn" class="btn primary block">开始解析</button>
+            </div>
+          </form>
+        </div>
+      </aside>
+      <div class="parse-test-main">
+        <div class="card block parse-test-output-card">
+          <div class="parse-test-output-head">
+            <h3>解析结果</h3>
+            <span id="parseTestStatus" class="parse-test-status hint">等待输入链接</span>
+          </div>
+          <div id="parseTestResult" class="parse-test-result">
+            <div class="parse-test-empty">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>
+              <p>在左侧输入帖子链接，点击「开始解析」查看结果</p>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 数据管理 -->
+    <section id="page-data-mgmt" class="page">
+      <div class="data-mgmt-shell">
+        <div class="card block data-mgmt-intro">
+          <div class="data-mgmt-head">
+            <h3>数据管理</h3>
+            <p class="hint">清空已爬取的资源、爬虫队列、板块进度与活动日志，使收集器回到初始数据状态。系统设置、论坛配置与账号不会被删除。</p>
+          </div>
+        </div>
+
+        <div class="card block data-mgmt-stats-card">
+          <div class="data-mgmt-stats-head">
+            <h4>当前数据量</h4>
+            <button type="button" id="refreshDataOverview" class="btn ghost sm">刷新</button>
+          </div>
+          <div id="dataOverviewGrid" class="data-overview-grid">
+            <div class="data-overview-item"><span class="lbl">资源条目</span><strong id="dataCountResources">-</strong></div>
+            <div class="data-overview-item"><span class="lbl">资源关联</span><strong id="dataCountResourceSources">-</strong></div>
+            <div class="data-overview-item"><span class="lbl">导入任务</span><strong id="dataCountImportJobs">-</strong></div>
+            <div class="data-overview-item"><span class="lbl">爬取页面</span><strong id="dataCountCrawlPages">-</strong></div>
+            <div class="data-overview-item"><span class="lbl">待处理队列</span><strong id="dataCountCrawlPending">-</strong></div>
+            <div class="data-overview-item"><span class="lbl">板块记录</span><strong id="dataCountCrawlBoards">-</strong></div>
+            <div class="data-overview-item"><span class="lbl">活动日志</span><strong id="dataCountActivityLogs">-</strong></div>
+          </div>
+          <p id="dataMgmtCrawlerHint" class="hint data-mgmt-crawler-hint" hidden></p>
+        </div>
+
+        <div class="card block data-mgmt-danger-card">
+          <div class="data-mgmt-danger-head">
+            <h4>重置所有数据</h4>
+            <p class="hint">此操作不可恢复。执行前请先关闭爬虫；若爬虫正在运行，系统将拒绝清空。</p>
+          </div>
+          <ul class="data-mgmt-scope">
+            <li>所有 ED2K / magnet 资源与标签</li>
+            <li>爬虫队列、已处理帖子记录、板块扫描进度</li>
+            <li>爬虫活动日志</li>
+          </ul>
+          <form id="dataResetForm" class="data-reset-form">
+            <label class="data-reset-field">
+              <span class="lbl">输入「清空」以确认</span>
+              <input id="dataResetConfirm" type="text" autocomplete="off" placeholder="清空" />
+            </label>
+            <div class="data-reset-actions">
+              <button type="submit" id="dataResetBtn" class="btn danger">清空所有数据</button>
+            </div>
+          </form>
+        </div>
+      </div>
+    </section>
+
+    <!-- 系统设置 -->
+    <section id="page-settings" class="page overlay-page">
+      <div class="settings-shell">
+        <aside class="settings-sidebar">
+          <div class="settings-sidebar-head">
+            <div class="settings-brand">
+              <span class="settings-brand-icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41"/></svg>
+              </span>
+              <div>
+                <h2>系统设置</h2>
+                <p class="settings-brand-sub">配置收集器运行参数</p>
+              </div>
+            </div>
+            <button type="button" id="closeSettings" class="btn ghost sm settings-close" title="关闭设置">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M18 6L6 18M6 6l12 12"/></svg>
+            </button>
+          </div>
+          <nav class="settings-nav">
+            <button type="button" class="settings-nav-item" data-config="accounts" id="usersConfigTab" hidden>
+              <span class="settings-nav-icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
+              </span>
+              <span class="settings-nav-text">
+                <strong>账号管理</strong>
+                <small>用户与角色权限</small>
+              </span>
+            </button>
+            <button type="button" class="settings-nav-item active" data-config="forums">
+              <span class="settings-nav-icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M2 12h20M12 3a15 15 0 0 1 0 18M12 3a15 15 0 0 0 0 18"/></svg>
+              </span>
+              <span class="settings-nav-text">
+                <strong>论坛管理</strong>
+                <small>各论坛独立配置</small>
+              </span>
+            </button>
+            <button type="button" class="settings-nav-item" data-config="groups">
+              <span class="settings-nav-icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+              </span>
+              <span class="settings-nav-text">
+                <strong>群组管理</strong>
+                <small>Telegram 群组监听</small>
+              </span>
+            </button>
+            <button type="button" class="settings-nav-item" data-config="general">
+              <span class="settings-nav-icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83"/></svg>
+              </span>
+              <span class="settings-nav-text">
+                <strong>通用配置</strong>
+                <small>系统信息与能力</small>
+              </span>
+            </button>
+          </nav>
+        </aside>
+
+        <main class="settings-main">
+          <!-- 账号管理 -->
+          <div id="config-accounts" class="settings-panel">
+            <header class="settings-panel-head">
+              <div>
+                <h3>账号管理</h3>
+                <p class="settings-panel-desc">管理系统登录账号与角色权限分配</p>
+              </div>
+              <button type="button" id="openCreateUserBtn" class="btn primary sm" hidden>创建账号</button>
+            </header>
+            <div class="settings-panel-body">
+              <div class="settings-card">
+                <div class="settings-card-head">
+                  <h4>账号列表</h4>
+                  <button type="button" id="refreshUsersBtn" class="btn ghost sm">刷新</button>
+                </div>
+                <div class="settings-card-body flush">
+                  <div class="table-wrap">
+                    <table class="data-table settings-table">
+                      <thead>
+                        <tr>
+                          <th>用户名</th>
+                          <th>显示名</th>
+                          <th>角色</th>
+                          <th>状态</th>
+                          <th>上次登录</th>
+                          <th>操作</th>
+                        </tr>
+                      </thead>
+                      <tbody id="usersTableBody"></tbody>
+                    </table>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- 论坛管理 -->
+          <div id="config-forums" class="settings-panel active">
+            <header class="settings-panel-head">
+              <div>
+                <h3>论坛管理</h3>
+                <p class="settings-panel-desc">选择启用的论坛（单选），点击图标配置该论坛的独立爬虫</p>
+              </div>
+            </header>
+            <div class="settings-panel-body">
+              <div id="forumActiveSummary" class="forum-active-summary"></div>
+              <div id="forumCardsContainer" class="forum-cards">
+                <div class="settings-card settings-loading">加载论坛列表...</div>
+              </div>
+            </div>
+          </div>
+
+          <!-- 群组管理 -->
+          <div id="config-groups" class="settings-panel">
+            <header class="settings-panel-head">
+              <div>
+                <h3>群组管理</h3>
+                <p class="settings-panel-desc">Telegram 群组监听与 ED2K 链接采集</p>
+              </div>
+            </header>
+            <div class="settings-panel-body">
+              <div class="settings-notice settings-notice-warn">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="10"/><path d="M12 8v4M12 16h.01"/></svg>
+                <div>
+                  <strong>群组配置待定</strong>
+                  <p>单群解析规则、去重策略、过滤关键词等配置将在后续版本实现。当前可先配置 API 凭证与监听群组列表。</p>
+                </div>
+              </div>
+              <form id="telegramForm" class="settings-card form-grid">
+                <div class="settings-card-head">
+                  <h4>连接配置</h4>
+                  <span class="tag tag-login">基础</span>
+                </div>
+                <div class="settings-card-body">
+                  <label class="switch-row"><span>启用 Telegram 监听</span><input id="tg_enabled" type="checkbox" /></label>
+                  <div class="settings-grid-2">
+                    <label>API ID <input id="tg_api_id" type="text" autocomplete="off" /></label>
+                    <label>API Hash <input id="tg_api_hash" type="password" autocomplete="off" /></label>
+                  </div>
+                  <label>群组 ID（逗号分隔）<input id="tg_groups" type="text" placeholder="-1001234567890, -1009876543210" /></label>
+                  <label>Session 名称 <input id="tg_session" type="text" placeholder="ed2k" /></label>
+                  <p class="hint warn">修改后需重启收集器才能生效。</p>
+                  <div class="actions">
+                    <button type="submit" class="btn primary">保存群组配置</button>
+                  </div>
+                </div>
+              </form>
+              <div class="settings-card settings-card-dashed">
+                <div class="settings-card-head">
+                  <h4>群组列表</h4>
+                  <span class="tag tag-pending">待定</span>
+                </div>
+                <div class="settings-card-body">
+                  <div class="settings-empty">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="M22 3L11 14M22 3l-7 18-4-8-8-3 18-7z"/></svg>
+                    <p>每个群组将显示为独立配置卡片，支持单独设置解析规则与入库策略</p>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- 通用配置 -->
+          <div id="config-general" class="settings-panel">
+            <header class="settings-panel-head">
+              <div>
+                <h3>通用配置</h3>
+                <p class="settings-panel-desc">系统信息与运行能力</p>
+              </div>
+            </header>
+            <div class="settings-panel-body">
+              <form id="settingsForm" class="settings-card form-grid">
+                <div class="settings-card-head">
+                  <h4>系统信息</h4>
+                </div>
+                <div class="settings-card-body settings-form-compact">
+                  <div class="settings-form-fields">
+                    <div class="settings-grid-2">
+                      <label>收集器标题 <input id="collector_title" type="text" /></label>
+                      <label>搜索前端地址 <input id="next_web_url" type="url" placeholder="http://localhost:3008" /></label>
+                    </div>
+                    <label class="settings-field-full">HTTP 代理
+                      <input id="web_crawler_proxy" type="text" placeholder="可选，如 http://127.0.0.1:7890" />
+                      <small class="field-hint">HTTP 代理用于爬虫访问论坛，对所有论坛生效。</small>
+                    </label>
+                  </div>
+                  <div class="actions">
+                    <button type="submit" class="btn primary">保存系统信息</button>
+                    <a id="previewSearchWeb" class="btn secondary link-btn" href="#" target="_blank" rel="noopener">预览前端</a>
+                    <button type="button" id="testProxyBtn" class="btn secondary">测试代理联通性</button>
+                  </div>
+                </div>
+              </form>
+
+              <div class="settings-card">
+                <div class="settings-card-head">
+                  <h4>系统能力</h4>
+                </div>
+                <div class="settings-card-body">
+                  <div id="capabilityGrid" class="capability-grid"></div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </main>
+      </div>
+    </section>
+  </div>
+
+  <!-- 快速导入 -->
+  <div id="importModal" class="modal" hidden>
+    <div class="modal-backdrop" data-close="importModal"></div>
+    <div class="modal-panel">
+      <div class="modal-head">
+        <h3>人工导入</h3>
+        <button type="button" class="btn ghost" data-close="importModal">关闭</button>
+      </div>
+      <div class="grid-2 modal-body">
+        <div>
+          <p class="hint">每行一条 ED2K；格式见快速导入说明</p>
+          <textarea id="importText" rows="12" placeholder="ed2k://|file|www.98T.la@文件名.mp4|大小|hash|/"></textarea>
+          <div class="actions">
+            <button type="button" id="importBtn" class="btn primary">导入</button>
+          </div>
+          <p id="importResult" class="hint"></p>
+        </div>
+        <div>
+          <h4>上传 txt 文件</h4>
+          <input id="importFile" type="file" accept=".txt,.text" />
+          <div class="actions">
+            <button type="button" id="importFileBtn" class="btn primary">上传导入</button>
+          </div>
+          <div id="importSpecBrief" class="spec-brief"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 创建账号 -->
+  <div id="createUserModal" class="modal" hidden>
+    <div class="modal-backdrop" data-close="createUserModal"></div>
+    <div class="modal-panel">
+      <div class="modal-head">
+        <h3>新建账号</h3>
+        <button type="button" class="btn ghost" data-close="createUserModal">关闭</button>
+      </div>
+      <div class="grid-2 modal-body">
+        <form id="createUserForm" class="form-grid">
+          <label>用户名 <input id="newUsername" type="text" required autocomplete="off" /></label>
+          <label>显示名 <input id="newDisplayName" type="text" autocomplete="off" /></label>
+          <label>密码 <input id="newPassword" type="password" required minlength="6" autocomplete="new-password" /></label>
+          <label>角色
+            <select id="newRoles">
+              <option value="admin">管理员</option>
+              <option value="operator" selected>操作员</option>
+              <option value="viewer">只读</option>
+            </select>
+          </label>
+          <div class="actions">
+            <button type="button" class="btn secondary" data-close="createUserModal">取消</button>
+            <button type="submit" class="btn primary">创建账号</button>
+          </div>
+        </form>
+        <div class="modal-side">
+          <h4>角色说明</h4>
+          <ul class="role-list" id="roleHelpList">
+            <li>
+              <span class="role-badge role-admin">管理员</span>
+              <span>全部权限，含系统设置与账号管理</span>
+            </li>
+            <li>
+              <span class="role-badge role-operator">操作员</span>
+              <span>查看、导入、触发爬虫，不可改系统设置</span>
+            </li>
+            <li>
+              <span class="role-badge role-viewer">只读</span>
+              <span>仅查看资源与爬虫状态</span>
+            </li>
+          </ul>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 编辑账号 -->
+  <div id="editUserModal" class="modal" hidden>
+    <div class="modal-backdrop" data-close="editUserModal"></div>
+    <div class="modal-panel">
+      <div class="modal-head">
+        <h3>编辑账号</h3>
+        <button type="button" class="btn ghost" data-close="editUserModal">关闭</button>
+      </div>
+      <div class="grid-2 modal-body">
+        <form id="editUserForm" class="form-grid">
+          <input id="editUserId" type="hidden" />
+          <label>用户名 <input id="editUsername" type="text" readonly /></label>
+          <label>显示名 <input id="editDisplayName" type="text" autocomplete="off" /></label>
+          <label>新密码 <input id="editPassword" type="password" minlength="6" autocomplete="new-password" placeholder="留空则不修改" /></label>
+          <label>角色
+            <select id="editRoles">
+              <option value="admin">管理员</option>
+              <option value="operator">操作员</option>
+              <option value="viewer">只读</option>
+            </select>
+          </label>
+          <label class="switch-row"><span>启用账号</span><input id="editIsActive" type="checkbox" /></label>
+          <div class="actions">
+            <button type="button" class="btn secondary" data-close="editUserModal">取消</button>
+            <button type="submit" class="btn primary">保存修改</button>
+          </div>
+        </form>
+        <div class="modal-side">
+          <h4>编辑说明</h4>
+          <ul class="role-list">
+            <li>用户名创建后不可修改</li>
+            <li>密码留空表示保持原密码不变</li>
+            <li>不能禁用当前登录中的账号</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 账号信息 -->
+  <div id="accountModal" class="modal" hidden>
+    <div class="modal-backdrop" data-close="accountModal"></div>
+    <div class="modal-panel modal-sm">
+      <div class="modal-head">
+        <h3>当前账号</h3>
+        <button type="button" class="btn ghost" data-close="accountModal">关闭</button>
+      </div>
+      <div class="modal-body">
+        <div id="accountInfo" class="account-info"></div>
+        <div class="actions">
+          <button type="button" id="logoutBtn" class="btn secondary">退出登录</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div id="notifyToast" class="notify-toast" role="status" aria-live="polite" hidden>
+    <span class="notify-toast-icon" aria-hidden="true"></span>
+    <span class="notify-toast-body">
+      <strong class="notify-toast-title"></strong>
+      <span class="notify-toast-detail"></span>
+    </span>
+  </div>
+
+  <div id="systemInfoModal" class="modal" hidden>
+    <div class="modal-backdrop" data-close="systemInfoModal"></div>
+    <div class="modal-panel modal-sm system-info-panel">
+      <div class="modal-head">
+        <h3>系统信息</h3>
+        <button type="button" class="btn ghost sm" data-close="systemInfoModal">关闭</button>
+      </div>
+      <div class="modal-body system-info-body">
+        <section class="system-info-summary">
+          <div class="system-info-row"><span>版本</span><strong id="systemInfoVersion">-</strong></div>
+          <div class="system-info-row"><span>数据库</span><strong id="systemInfoDb">-</strong></div>
+          <div class="system-info-row"><span>收集器</span><strong id="systemInfoTitle">-</strong></div>
+          <div class="system-info-row"><span>运行状态</span><strong id="systemInfoHealth">-</strong></div>
+        </section>
+        <section class="system-info-messages">
+          <div class="system-info-messages-head">
+            <h4>操作反馈</h4>
+            <button type="button" id="clearSystemMessages" class="btn ghost sm">清空</button>
+          </div>
+          <ul id="systemMessageList" class="system-message-list">
+            <li class="system-message-empty">暂无操作记录</li>
+          </ul>
+        </section>
+      </div>
+    </div>
+  </div>
+
+  <!-- 论坛配置 -->
+  <div id="forumConfigModal" class="modal" hidden>
+    <div class="modal-backdrop" data-close="forumConfigModal"></div>
+    <div class="modal-panel modal-lg forum-modal-panel">
+      <div class="modal-head">
+        <div id="forumModalHead" class="forum-modal-head"></div>
+        <button type="button" class="btn ghost" data-close="forumConfigModal">关闭</button>
+      </div>
+      <div id="forumModalBody" class="modal-body forum-modal-body"></div>
+    </div>
+  </div>
+
+  <!-- 板块队列（论坛弹窗二级） -->
+  <div id="forumBoardQueueModal" class="modal modal-nested" hidden>
+    <div class="modal-backdrop" data-close="forumBoardQueueModal"></div>
+    <div class="modal-panel modal-lg forum-board-queue-panel">
+      <div class="modal-head">
+        <h3>板块队列</h3>
+        <button type="button" class="btn ghost" data-close="forumBoardQueueModal">关闭</button>
+      </div>
+      <div id="forumBoardQueueBody" class="modal-body forum-board-queue-body"></div>
+    </div>
+  </div>
+
+  <script src="/static/admin/app.js"></script>
+</body>
+</html>

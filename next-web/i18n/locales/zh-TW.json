@@ -1,0 +1,119 @@
+{
+  "COMMON": {
+    "DATE_FORMAT": "YYYY-MM-DD HH:mm:ss",
+    "DATE_FORMAT_SHORT": "YYYY-MM-DD HH:mm",
+    "DATE_FORMAT_DATE": "YYYY-MM-DD",
+    "DATE_FORMAT_TIME": "HH:mm:ss",
+    "DEMO_MODE_TIPS": "這個網站正在演示模式下運行"
+  },
+  "Stats": {
+    "title": "統計資訊",
+    "size": "資料庫大小: {size}",
+    "total_count": "收錄數量: {total_count}",
+    "updated_at": "最後更新: {updated_at}"
+  },
+  "ERROR_MESSAGE": {
+    "INTERNAL_SERVER_ERROR": "發生意外錯誤",
+    "NOT_FOUND": "資源不存在",
+    "GoHome": "返回首頁"
+  },
+  "Metadata": {
+    "search": {
+      "title": "{keyword} 的搜尋結果"
+    }
+  },
+  "Home": {
+    "latest": "最新資源",
+    "empty": "暫無資源，等待收集器入庫",
+    "resource_type": "資源類型",
+    "resource_amount": "資源數量",
+    "extract_password": "解壓密碼"
+  },
+  "Browse": {
+    "entry": "隨便看看",
+    "title": "隨便看看",
+    "subtitle": "瀏覽收錄資源，底部可翻頁",
+    "loading": "正在載入資源...",
+    "refresh": "換一批",
+    "empty": "暫無資源",
+    "page_of": "第 {page} / {total} 頁",
+    "total_count": "共 {count} 條"
+  },
+  "Search": {
+    "placeholder": "搜尋你想要的...",
+    "translate": "翻譯為英文",
+    "filterLabel": {
+      "sortType": "排序方式",
+      "filterTime": "按時間過濾",
+      "filterSize": "按大小過濾",
+      "matchMode": "搜索模式"
+    },
+    "sortType": {
+      "default": "默認排序",
+      "size": "文件大小",
+      "count": "文件數量",
+      "date": "收錄時間"
+    },
+    "filterTime": {
+      "all": "不限時間",
+      "gt-1day": "最近一天內",
+      "gt-7day": "最近一週內",
+      "gt-31day": "最近一月內",
+      "gt-365day": "最近一年內"
+    },
+    "filterSize": {
+      "all": "不限大小",
+      "lt100mb": "小於100MB",
+      "gt100mb-lt500mb": "100MB-500MB",
+      "gt500mb-lt1gb": "500MB-1GB",
+      "gt1gb-lt5gb": "1GB-5GB",
+      "gt5gb": "大於5GB"
+    },
+    "matchMode": {
+      "smart": "智能匹配",
+      "exact": "精確匹配",
+      "fuzzy": "模糊匹配"
+    },
+    "results_found": "找到約 {count} 條結果",
+    "cost_time": "(耗時 {cost_time}ms)",
+    "more_files": "…還有 {count} 個文件",
+    "ed2k": "下載連結",
+    "ed2k_multi": "下載連結 ({count})",
+    "magnet": "磁力",
+    "file_size": "文件大小: ",
+    "file_size_multi": "{count} 條，合計 {size}",
+    "file_count": "文件數量: ",
+    "created_at": "收錄時間: ",
+    "hash": "Hash: ",
+    "board": "板塊: ",
+    "description": "資源簡介",
+    "p115_save": "轉存115",
+    "p115_save_extract": "轉存+解壓"
+  },
+  "Detail": {
+    "details": "詳細資訊",
+    "description": "資源簡介",
+    "preview": "內容預覽",
+    "ed2k": "下載連結",
+    "file_list": "檔案清單",
+    "copy": "複製下載連結",
+    "back": "返回列表",
+    "ed2k_summary": "共 {count} 個檔案，合計 {size}",
+    "source": "來源帖子",
+    "board": "板塊"
+  },
+  "Toast": {
+    "keyword_too_short": "關鍵字需大於兩個字元",
+    "copy_success": "下載連結已複製到剪貼簿",
+    "copy_success_multi": "已複製 {count} 條下載連結",
+    "copy_password_success": "解壓密碼已複製",
+    "copy_password_hint": "點擊複製解壓密碼",
+    "translate_success": "已翻譯為英文，請點擊搜索",
+    "translate_already_english": "內容已是英文",
+    "translate_failed": "翻譯失敗，請稍後重試",
+    "p115_success": "已轉存 {count} 條到 115 雲下載",
+    "p115_success_extract": "已轉存 {count} 條，{seconds}s 後安排雲解壓",
+    "p115_failed": "轉存 115 失敗",
+    "p115_need_config": "尚未設定 115，請先填寫 Cookie"
+  }
+}

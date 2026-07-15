@@ -1,0 +1,21 @@
+# 仅用于 backend 镜像构建（上下文=仓库根）时缩小上传体积
+.git/
+.github/
+**/.venv/
+**/node_modules/
+**/.next/
+**/dist/
+**/out/
+frontend/
+next-web/
+ed2k/
+docs/
+deploy/data/
+**/*.log
+**/.env
+**/.env.*
+!**/.env.example
+backend/data/
+backend/.venv/
+*.md
+start.bat

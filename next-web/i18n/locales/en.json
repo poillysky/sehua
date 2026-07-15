@@ -1,0 +1,121 @@
+{
+  "COMMON": {
+    "DATE_FORMAT": "MM/DD/YYYY HH:mm:ss",
+    "DATE_FORMAT_SHORT": "MM/DD/YYYY HH:mm",
+    "DATE_FORMAT_DATE": "MM/DD/YYYY",
+    "DATE_FORMAT_TIME": "HH:mm:ss",
+    "DEMO_MODE_TIPS": "This website is running in demo mode"
+  },
+  "Stats": {
+    "title": "Statistics",
+    "size": "Database size: {size}",
+    "total_count": "Total resources: {total_count}",
+    "updated_at": "Last updated: {updated_at}"
+  },
+  "ERROR_MESSAGE": {
+    "INTERNAL_SERVER_ERROR": "Something went wrong!",
+    "NOT_FOUND": "Resource not found",
+    "Digest": "Digest",
+    "Message": "Message",
+    "GoHome": "Go Home"
+  },
+  "Metadata": {
+    "search": {
+      "title": "{keyword} search results"
+    }
+  },
+  "Home": {
+    "latest": "Latest resources",
+    "empty": "No resources yet",
+    "resource_type": "Type",
+    "resource_amount": "Amount",
+    "extract_password": "Password"
+  },
+  "Browse": {
+    "entry": "Surprise me",
+    "title": "Just browsing",
+    "subtitle": "Browse catalog with page controls below",
+    "loading": "Loading resources...",
+    "refresh": "Shuffle",
+    "empty": "No resources yet",
+    "page_of": "Page {page} / {total}",
+    "total_count": "{count} items"
+  },
+  "Search": {
+    "placeholder": "Search what you want...",
+    "translate": "Translate to English",
+    "filterLabel": {
+      "sortType": "Sort by",
+      "filterTime": "Filter by time",
+      "filterSize": "Filter by size",
+      "matchMode": "Search mode"
+    },
+    "sortType": {
+      "default": "Default sorting",
+      "size": "File size",
+      "count": "File count",
+      "date": "Date added"
+    },
+    "filterTime": {
+      "all": "All time",
+      "gt-1day": "Past day",
+      "gt-7day": "Past week",
+      "gt-31day": "Past month",
+      "gt-365day": "Past year"
+    },
+    "filterSize": {
+      "all": "All sizes",
+      "lt100mb": "Less than 100MB",
+      "gt100mb-lt500mb": "100MB-500MB",
+      "gt500mb-lt1gb": "500MB-1GB",
+      "gt1gb-lt5gb": "1GB-5GB",
+      "gt5gb": "More than 5GB"
+    },
+    "matchMode": {
+      "smart": "Smart match",
+      "exact": "Exact match",
+      "fuzzy": "Fuzzy match"
+    },
+    "results_found": "About {count} results found",
+    "cost_time": "(Processed in {cost_time}ms)",
+    "more_files": "…and {count} more files",
+    "ed2k": "Download",
+    "ed2k_multi": "Download ({count})",
+    "magnet": "Magnet",
+    "file_size": "File size: ",
+    "file_size_multi": "{count} files, {size} total",
+    "file_count": "File count: ",
+    "created_at": "Date added: ",
+    "hash": "Hash: ",
+    "board": "Board: ",
+    "description": "Description",
+    "p115_save": "Save to 115",
+    "p115_save_extract": "Save + Extract"
+  },
+  "Detail": {
+    "details": "Resource details",
+    "description": "Description",
+    "preview": "Preview",
+    "ed2k": "Download",
+    "file_list": "File list",
+    "copy": "Copy download link",
+    "back": "Back to list",
+    "ed2k_summary": "{count} files, {size} total",
+    "source": "Source thread",
+    "board": "Board"
+  },
+  "Toast": {
+    "keyword_too_short": "Keyword needs to be at least 2 characters",
+    "copy_success": "Download link copied to clipboard",
+    "copy_success_multi": "Copied {count} download links",
+    "copy_password_success": "Password copied",
+    "copy_password_hint": "Click to copy password",
+    "translate_success": "Translated to English. Click search when ready.",
+    "translate_already_english": "Text is already in English",
+    "translate_failed": "Translation failed. Please try again later.",
+    "p115_success": "Added {count} link(s) to 115 cloud download",
+    "p115_success_extract": "Saved {count} link(s); cloud extract in {seconds}s",
+    "p115_failed": "Failed to save to 115",
+    "p115_need_config": "115 is not configured. Please set Cookie first."
+  }
+}

@@ -1,0 +1,51 @@
+# 环境变量与密钥
+.env
+.env.local
+.env.*.local
+!**/.env.example
+!deploy/.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Node.js
+node_modules/
+.next/
+out/
+dist/
+*.tsbuildinfo
+
+# 运行时 / 本地数据
+data/postgres/
+data/collector/
+data/backend/
+backend/data/
+deploy/data/
+*.log
+crawl-run.log
+
+# IDE / OS
+.idea/
+.vscode/
+*.swp
+Thumbs.db
+Desktop.ini
+.DS_Store
+
+# Docker
+*.tar
+
+# 参考工程不入仓（仅本地对照）
+ed2k/
+
+# ed2k 参考树中的运行时数据（若仍局部跟踪时兜底）
+ed2k/data/
+ed2k/**/.venv/
+ed2k/**/node_modules/

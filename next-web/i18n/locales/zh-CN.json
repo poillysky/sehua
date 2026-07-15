@@ -1,0 +1,119 @@
+{
+  "COMMON": {
+    "DATE_FORMAT": "YYYY-MM-DD HH:mm:ss",
+    "DATE_FORMAT_SHORT": "YYYY-MM-DD HH:mm",
+    "DATE_FORMAT_DATE": "YYYY-MM-DD",
+    "DATE_FORMAT_TIME": "HH:mm:ss",
+    "DEMO_MODE_TIPS": "这个网站正在演示模式下运行"
+  },
+  "Stats": {
+    "title": "统计信息",
+    "size": "数据库大小: {size}",
+    "total_count": "收录数量: {total_count}",
+    "updated_at": "最后更新: {updated_at}"
+  },
+  "ERROR_MESSAGE": {
+    "INTERNAL_SERVER_ERROR": "发生意外错误",
+    "NOT_FOUND": "资源不存在",
+    "GoHome": "返回首页"
+  },
+  "Metadata": {
+    "search": {
+      "title": "{keyword} 的搜索结果"
+    }
+  },
+  "Home": {
+    "latest": "最新资源",
+    "empty": "暂无资源，等待爬虫入库",
+    "resource_type": "资源类型",
+    "resource_amount": "资源数量",
+    "extract_password": "解压密码"
+  },
+  "Browse": {
+    "entry": "随便看看",
+    "title": "随便看看",
+    "subtitle": "浏览收录资源，底部可翻页",
+    "loading": "正在加载资源...",
+    "refresh": "换一批",
+    "empty": "暂无资源",
+    "page_of": "第 {page} / {total} 页",
+    "total_count": "共 {count} 条"
+  },
+  "Search": {
+    "placeholder": "搜索色花堂资源…",
+    "translate": "翻译为英文",
+    "filterLabel": {
+      "sortType": "排序方式",
+      "filterTime": "按时间过滤",
+      "filterSize": "按大小过滤",
+      "matchMode": "搜索模式"
+    },
+    "sortType": {
+      "default": "默认排序",
+      "size": "文件大小",
+      "count": "文件数量",
+      "date": "收录时间"
+    },
+    "filterTime": {
+      "all": "不限时间",
+      "gt-1day": "最近一天内",
+      "gt-7day": "最近一周内",
+      "gt-31day": "最近一月内",
+      "gt-365day": "最近一年内"
+    },
+    "filterSize": {
+      "all": "不限大小",
+      "lt100mb": "小于100MB",
+      "gt100mb-lt500mb": "100MB-500MB",
+      "gt500mb-lt1gb": "500MB-1GB",
+      "gt1gb-lt5gb": "1GB-5GB",
+      "gt5gb": "大于5GB"
+    },
+    "matchMode": {
+      "smart": "智能匹配",
+      "exact": "精确匹配",
+      "fuzzy": "模糊匹配"
+    },
+    "results_found": "找到约 {count} 条结果",
+    "cost_time": "(用时 {cost_time}ms)",
+    "more_files": "…还有 {count} 个文件",
+    "ed2k": "下载链接",
+    "ed2k_multi": "下载链接 ({count})",
+    "magnet": "磁力",
+    "file_size": "文件大小: ",
+    "file_size_multi": "{count} 条，合计 {size}",
+    "file_count": "文件数量: ",
+    "created_at": "收录时间: ",
+    "hash": "哈希值: ",
+    "board": "板块: ",
+    "description": "资源简介",
+    "p115_save": "转存115",
+    "p115_save_extract": "转存+解压"
+  },
+  "Detail": {
+    "details": "资源详情",
+    "description": "资源简介",
+    "preview": "内容预览",
+    "ed2k": "下载链接",
+    "file_list": "文件列表",
+    "copy": "复制下载链接",
+    "back": "返回列表",
+    "ed2k_summary": "共 {count} 个文件，合计 {size}",
+    "source": "来源帖子",
+    "board": "板块"
+  },
+  "Toast": {
+    "keyword_too_short": "关键词需要大于两个字符",
+    "copy_success": "下载链接已复制到剪贴板",
+    "copy_success_multi": "已复制 {count} 条下载链接",
+    "copy_password_success": "解压密码已复制",
+    "copy_password_hint": "点击复制解压密码",
+    "translate_success": "已翻译为英文，请点击搜索",
+    "translate_already_english": "内容已是英文",
+    "translate_failed": "翻译失败，请稍后重试",
+    "p115_success": "已转存 {count} 条到 115 云下载",
+    "p115_success_extract": "已转存 {count} 条，{seconds}s 后安排云解压",
+    "p115_failed": "转存 115 失败",
+    "p115_need_config": "尚未配置 115，请先填写 Cookie"
+  }
+}

@@ -1,0 +1,267 @@
+"""Fetch HTML → judge outcome (ed2k-aligned) → persist upsert / stub."""
+
+from __future__ import annotations
+
+import logging
+from typing import Any, Optional
+
+from crawler.fetcher import Fetcher
+from crawler.list_urls import list_url_for_board, site_root
+from crawler.session import BASE_URL, SessionManager
+from parsers.boards import get_board_policy
+from parsers.links import DualParseResult, parse_thread_dual
+from workers.session_factory import fetcher_from_config, session_from_config
+from workers.thread_outcome import judge_thread_html
+
+log = logging.getLogger(__name__)
+
+
+async def fetch_and_parse_thread(
+    tid: int,
+    *,
+    board_fid: int,
+    session: Optional[SessionManager] = None,
+    preferred_link: Optional[str] = None,
+    list_title: str = "",
+    crawler_config: Optional[dict[str, Any]] = None,
+) -> DualParseResult:
+    """Session + dual parsers. Does not write DB — call persist_parsed / process_thread."""
+    policy = get_board_policy(board_fid)
+    preferred = preferred_link or policy.primary_link
+    cfg = crawler_config or {}
+
+    own_session = session is None
+    session = session or (session_from_config(cfg) if cfg else SessionManager())
+    fetcher = fetcher_from_config(session, cfg) if cfg else Fetcher(session)
+    retries = int(cfg.get("web_crawler_fetch_retries") or 3)
+
+    try:
+        if not session._ready:
+            await session.bootstrap()
+        root = site_root(str(cfg.get("web_crawl_urls") or "").split(",")[0] if cfg else BASE_URL)
+        list_url = list_url_for_board(board_fid, 1, root=root, policy=policy)
+        thread_url = f"{root}thread-{tid}-1-1.html"
+        fetcher.set_referer(list_url)
+        html = await fetcher.get_thread_html(thread_url, retries=retries)
+
+        result = parse_thread_dual(
+            html, tid=tid, preferred_link=preferred, board_fid=board_fid
+        )  # type: ignore[arg-type]
+        if list_title and not (result.title or "").strip():
+            result.title = list_title
+        log.info(
+            "parsed tid=%s magnets=%s ed2k=%s primary=%s",
+            result.tid,
+            len(result.magnets),
+            len(result.ed2k_links),
+            result.primary_link_kind,
+        )
+        return result
+    finally:
+        if own_session:
+            await session.close()
+
+
+async def process_thread(
+    tid: int,
+    *,
+    board_fid: int,
+    board_name: str = "",
+    session: Optional[SessionManager] = None,
+    list_title: str = "",
+    persist: bool = False,
+    crawler_config: Optional[dict[str, Any]] = None,
+    fetcher: Optional[Fetcher] = None,
+) -> dict[str, Any]:
+    """Full single-thread path: HTTP fetch → soft-browser retry → outcome → optional persist."""
+    policy = get_board_policy(board_fid)
+    cfg = crawler_config or {}
+    own_session = session is None
+    session = session or (session_from_config(cfg) if cfg else SessionManager())
+    own_fetcher = fetcher is None
+    fetcher = fetcher or (fetcher_from_config(session, cfg) if cfg else Fetcher(session))
+    retries = int(cfg.get("web_crawler_fetch_retries") or 3)
+
+    root = site_root(str(cfg.get("web_crawl_urls") or "").split(",")[0] if cfg else BASE_URL)
+    thread_url = f"{root}thread-{tid}-1-1.html"
+
+    try:
+        if not session._ready:
+            await session.bootstrap()
+        list_url = list_url_for_board(board_fid, 1, root=root, policy=policy)
+        # 批量重爬共用 Fetcher 时也要随板块更新 Referer
+        fetcher.set_referer(list_url)
+        # HTTP 读帖；软文/安全壳时 get_thread_html 内会浏览器整页重试
+        html = await fetcher.get_thread_html(thread_url, retries=retries)
+        soft_browser_retried = fetcher.last_soft_browser_retried
+
+        outcome = judge_thread_html(
+            html,
+            board_fid=board_fid,
+            list_title=list_title,
+            base_url=thread_url,
+            soft_browser_retried=soft_browser_retried,
+        )
+        # 兜底：判定仍要求浏览器重试且尚未做过
+        if outcome.need_browser_retry and not soft_browser_retried:
+            log.info("tid=%s soft-ad → force browser page read", tid)
+            html = await fetcher.get_html(thread_url, mode="browser", retries=min(2, retries))
+            soft_browser_retried = True
+            outcome = judge_thread_html(
+                html,
+                board_fid=board_fid,
+                list_title=list_title,
+                base_url=thread_url,
+                soft_browser_retried=True,
+            )
+
+        attachment_kind = outcome.attachment_kind
+        attachment_text = ""
+        attach_tried = False
+        if outcome.verdict == "need_attachments":
+            from crawler.attachments import fetch_attachments_for_outcome
+            from parsers.attachments import inject_attachment_text
+
+            log.info(
+                "tid=%s need_attachments kind=%s — download & parse",
+                tid,
+                attachment_kind,
+            )
+            attach_timeout = float(cfg.get("web_crawler_timeout") or 45)
+            attach_res = await fetch_attachments_for_outcome(
+                session,
+                html=html,
+                thread_url=thread_url,
+                attachment_kind=attachment_kind,
+                timeout=max(15.0, attach_timeout),
+            )
+            attach_tried = True
+            attachment_text = attach_res.text or ""
+            if attachment_text:
+                html = inject_attachment_text(html, attachment_text)
+            outcome = judge_thread_html(
+                html,
+                board_fid=board_fid,
+                list_title=list_title,
+                base_url=thread_url,
+                soft_browser_retried=soft_browser_retried,
+                attachments_already_tried=True,
+                attachment_denied=attach_res.denied,
+                attachment_failed=attach_res.failed and not attach_res.downloaded,
+                had_attachments=attach_res.downloaded or bool(attachment_text),
+            )
+            # 附件语料可能已含链但 judge 走了非 import：再双解析一次补全
+            if outcome.verdict != "import" and attachment_text:
+                merged = parse_thread_dual(
+                    html,
+                    tid=tid,
+                    preferred_link=policy.primary_link,  # type: ignore[arg-type]
+                    extra_text=attachment_text,
+                    base_url=thread_url,
+                    board_fid=board_fid,
+                )
+                if merged.primary_link_kind != "none" and merged.assets:
+                    from workers.thread_outcome import ThreadOutcome
+
+                    outcome = ThreadOutcome(
+                        "import",
+                        "成功：附件解析出目标链接",
+                        outcome.link_kind,
+                        merged.title or outcome.title,
+                        parsed=merged,
+                    )
+
+        parsed = outcome.parsed or parse_thread_dual(
+            html,
+            tid=tid,
+            preferred_link=policy.primary_link,  # type: ignore[arg-type]
+            extra_text=attachment_text,
+            base_url=thread_url,
+            board_fid=board_fid,
+        )
+        if not parsed.title and (outcome.title or list_title):
+            parsed.title = outcome.title or list_title
+        # 确保描述按本板结构卡片重算（含 outcome.parsed 来自 judge 的路径）
+        from parsers.content import build_structured_description
+
+        parsed.description = build_structured_description(
+            parsed.metadata,
+            extract_password=parsed.extract_password,
+            title=parsed.title,
+            board_fid=board_fid,
+        )
+
+        result: dict[str, Any] = {
+            "tid": tid,
+            "thread_url": thread_url,
+            "verdict": outcome.verdict,
+            "verdict_label": outcome.label,
+            "outcome": outcome.outcome,
+            "link_kind": outcome.link_kind,
+            "need_attachments": outcome.need_attachments,
+            "attachment_kind": attachment_kind,
+            "attachments_tried": attach_tried,
+            "attachment_chars": len(attachment_text),
+            "soft_browser_retried": soft_browser_retried or outcome.soft_browser_retried,
+            "title": parsed.title or outcome.title,
+            "magnets": len(parsed.magnets),
+            "ed2k": len(parsed.ed2k_links),
+            "primary": parsed.primary_link_kind,
+            "persisted": None,
+        }
+
+        if persist and outcome.verdict in {"import", "stub"}:
+            from db.connection import connect
+            from db.persist import persist_dual_parse
+
+            # For stub-only outcomes without assets, force stub path
+            if outcome.verdict == "stub" and parsed.primary_link_kind != "none":
+                # clear assets so persist writes stub (login/reply/purchase cases)
+                parsed.assets = []
+                parsed.magnets = []
+                parsed.ed2k_links = []
+                parsed.primary_link_kind = "none"
+
+            conn = connect()
+            try:
+                result["persisted"] = persist_dual_parse(
+                    conn,
+                    parsed,
+                    source_url=thread_url,
+                    board_fid=board_fid,
+                    board_name=board_name or policy.name,
+                    import_outcome=str(outcome.outcome or outcome.label or ""),
+                )
+            finally:
+                conn.close()
+        elif persist and outcome.verdict == "failed":
+            result["persisted"] = {"count": 0, "stub": False, "link_kind": "failed"}
+
+        return result
+    finally:
+        if own_session:
+            await session.close()
+
+
+def persist_parsed(
+    parsed: DualParseResult,
+    *,
+    board_fid: int,
+    board_name: str = "",
+    source_url: str,
+) -> dict:
+    """Write DualParseResult into ed2k_resources + resource_sources."""
+    from db.connection import connect
+    from db.persist import persist_dual_parse
+
+    conn = connect()
+    try:
+        return persist_dual_parse(
+            conn,
+            parsed,
+            source_url=source_url,
+            board_fid=board_fid,
+            board_name=board_name,
+        )
+    finally:
+        conn.close()

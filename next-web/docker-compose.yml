@@ -1,0 +1,68 @@
+version: '3.8'
+
+services:
+  ed2k-next-web:
+    image: ed2k-next-web:latest
+    container_name: ed2k-next-web
+    restart: always
+    ports:
+      - "3008:3000"
+    environment:
+      TZ: Asia/Shanghai
+      POSTGRES_DB_URL: postgres://postgres:postgres@postgres:5432/ed2k
+      TRANSLATE_API_URL: ${TRANSLATE_API_URL:-}
+      TRANSLATE_FALLBACK: ${TRANSLATE_FALLBACK:-1}
+      NODE_OPTIONS: "--dns-result-order=ipv4first"
+    dns:
+      - 223.5.5.5
+      - 8.8.8.8
+    depends_on:
+      postgres:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          cpus: "2"
+          memory: 1G
+        reservations:
+          cpus: "0.25"
+          memory: 256M
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: ed2k-postgres
+    restart: always
+    ports:
+      - "5433:5432"
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: ed2k
+      POSTGRES_INITDB_ARGS: "--encoding=UTF8 --lc-collate=C --lc-ctype=C"
+      PGDATA: /var/lib/postgresql/data/pgdata
+      TZ: Asia/Shanghai
+    volumes:
+      # 改成你的 NAS 持久化目录
+      - /vol1/1000/Docker/ed2k/postgres:/var/lib/postgresql/data
+      - ./postgres-init:/docker-entrypoint-initdb.d:ro
+    shm_size: 1g
+    sysctls:
+      - kernel.shmmax=1073741824
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d ed2k"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    deploy:
+      resources:
+        limits:
+          cpus: "2"
+          memory: 2G
+        reservations:
+          cpus: "0.5"
+          memory: 512M
+
+networks:
+  default:
+    name: ed2k-network

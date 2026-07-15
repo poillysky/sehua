@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>登录 · ED2K Collector</title>
+  <link rel="stylesheet" href="/static/admin/style.css" />
+</head>
+<body class="login-page">
+  <div class="login-bg" aria-hidden="true">
+    <div class="login-bg-glow login-bg-glow-1"></div>
+    <div class="login-bg-glow login-bg-glow-2"></div>
+    <div class="login-bg-grid"></div>
+  </div>
+
+  <div class="login-shell">
+    <div class="login-card">
+      <div class="login-brand">
+        <div class="login-logo" aria-hidden="true">
+          <svg viewBox="0 0 40 40" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <rect x="4" y="4" width="32" height="32" rx="9" stroke="currentColor" stroke-width="1.5" opacity="0.35"/>
+            <path d="M12 20h16M20 12v16" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+            <circle cx="20" cy="20" r="5" fill="currentColor" opacity="0.9"/>
+          </svg>
+        </div>
+        <div class="login-brand-text">
+          <h1 id="loginTitle">ED2K Collector</h1>
+          <p>资源收集器管理后台</p>
+        </div>
+      </div>
+
+      <form id="loginForm" class="login-form" autocomplete="on">
+        <div class="login-field">
+          <label for="loginUsername">用户名</label>
+          <div class="login-input-wrap">
+            <span class="login-input-icon" aria-hidden="true">
+              <svg viewBox="0 0 20 20" fill="none"><path d="M10 10a4 4 0 1 0 0-8 4 4 0 0 0 0 8Z" stroke="currentColor" stroke-width="1.5"/><path d="M3 18c0-3.314 3.134-6 7-6s7 2.686 7 6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+            </span>
+            <input id="loginUsername" type="text" name="username" placeholder="请输入用户名" autocomplete="username" required />
+          </div>
+        </div>
+
+        <div class="login-field">
+          <label for="loginPassword">密码</label>
+          <div class="login-input-wrap">
+            <span class="login-input-icon" aria-hidden="true">
+              <svg viewBox="0 0 20 20" fill="none"><rect x="4" y="9" width="12" height="8" rx="2" stroke="currentColor" stroke-width="1.5"/><path d="M7 9V7a3 3 0 0 1 6 0v2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+            </span>
+            <input id="loginPassword" type="password" name="password" placeholder="请输入密码" autocomplete="current-password" required />
+            <button type="button" id="togglePassword" class="login-toggle-pwd" aria-label="显示密码" title="显示密码">
+              <svg class="icon-eye" viewBox="0 0 20 20" fill="none"><path d="M2 10s3.5-5 8-5 8 5 8 5-3.5 5-8 5-8-5-8-5Z" stroke="currentColor" stroke-width="1.5"/><circle cx="10" cy="10" r="2.5" stroke="currentColor" stroke-width="1.5"/></svg>
+              <svg class="icon-eye-off" viewBox="0 0 20 20" fill="none" hidden><path d="M3 3l14 14M8.5 8.7A3 3 0 0 0 10 13a3 3 0 0 0 2.8-2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><path d="M6.2 6.4C4.4 7.6 3 10 3 10s3.5 5 8 5c1.2 0 2.3-.3 3.2-.8M13.5 12.1C14.6 11.2 15.4 10 16 10s-1.6-2.4-3.4-3.6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+            </button>
+          </div>
+        </div>
+
+        <div id="loginError" class="login-error" hidden role="alert"></div>
+
+        <button type="submit" id="loginSubmit" class="login-submit">
+          <span class="login-submit-text">登 录</span>
+          <span class="login-submit-spinner" hidden aria-hidden="true"></span>
+        </button>
+      </form>
+    </div>
+
+    <p class="login-footer">ED2K Collector · 安全登录</p>
+  </div>
+
+  <script src="/static/admin/login.js"></script>
+</body>
+</html>
