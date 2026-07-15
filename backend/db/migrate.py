@@ -97,10 +97,21 @@ def run_migrations(*, only: set[str] | None = None) -> list[str]:
 
 
 def ensure_ed2k_schema() -> None:
-    """Ensure ed2k resource + auth tables exist (idempotent)."""
+    """Ensure ed2k resource + crawler + auth tables exist (idempotent).
+
+    搜索-only 库可能只有 ed2k_resources、没有 crawl_*；此处补齐采集所需表。
+    """
     run_migrations(
         only={
+            "002_collector_settings.sql",
+            "003_crawl_pages.sql",
+            "004_discuz_crawler_settings.sql",
+            "005_crawl_boards.sql",
+            "010_crawl_activity.sql",
+            "011_crawl_link_kind.sql",
+            "012_crawl_forum_id.sql",
             "014_ed2k_resources_align.sql",
+            "015_crawl_queue_retry.sql",
             "016_resource_sources_unique_hash.sql",
             "017_resource_import_outcome.sql",
         }
