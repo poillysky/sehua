@@ -8,19 +8,19 @@
 
 | 宿主机 | 容器 | 内容 |
 |--------|------|------|
-| `data/postgres` | postgres `/var/lib/postgresql/data` | 数据库 |
-| `data/backend` | backend `/app/data` | cookies、预览图 |
-| `data/search` | search `/app/data` | **115 配置** `p115-config.json` |
-| `data/search-cache` | search `/app/.next/cache` | Next 缓存（可清空） |
+| `./data/postgres` | postgres `/var/lib/postgresql/data` | 数据库 |
+| `./data/backend` | backend `/app/data` | cookies、预览图 |
+| `./data/search` | search `/app/data` | **115 配置** `p115-config.json` |
+| `./data/search-cache` | search `/app/.next/cache` | Next 缓存（可清空） |
 
-admin 无状态，不挂卷。**不要**把 `/app/.next` 整目录或 `/app/public` 挂出去，会盖掉镜像内构建产物。
+admin 无状态，不挂卷。**不要**把 `/app/.next` 整目录或 `/app/public` 挂出去。
+
+配置全部写在 `docker-compose.nas.yml` 内（无 `${VAR}`），`restart: always`。部署前改镜像名、密码、路径。
 
 ## 首次启动
 
 ```bash
-cp .env.example .env
-# 编辑 .env：GHCR_OWNER、密码、代理等
-
+# 编辑 docker-compose.nas.yml：GHCR 用户名、密码、卷路径
 docker login ghcr.io
 docker compose -f docker-compose.nas.yml pull
 docker compose -f docker-compose.nas.yml up -d
@@ -40,8 +40,6 @@ chmod +x update.sh
 | 搜索 | http://NAS_IP:3008 |
 | 管理 | http://NAS_IP:8081 |
 | API | http://NAS_IP:8080/health |
-
-管理账号来自 `.env` 的 `INITIAL_ADMIN_*`（首次启动写入库；之后改库内密码）。
 
 ## 本机构建试跑（可选）
 

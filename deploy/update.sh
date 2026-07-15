@@ -3,11 +3,6 @@
 set -e
 cd "$(dirname "$0")"
 
-if [ ! -f .env ]; then
-  echo "缺少 .env，请先: cp .env.example .env 并填写 GHCR_OWNER / 密码"
-  exit 1
-fi
-
 echo "[1/3] pull..."
 docker compose -f docker-compose.nas.yml pull
 
