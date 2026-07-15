@@ -1,19 +1,19 @@
-# 替换现网 ed2k-next-web + ed2k-postgres 的全栈版
-# 保留数据库：继续用 /vol1/1000/Docker/ed2k/postgres（切勿删该目录）
+# 全栈部署目录：/vol1/1000/Docker/sehuatang/
 #
-# 切换步骤（在旧 compose 同级或本文件所在目录）:
-#   1. 旧栈: docker compose -f <旧yml> down
-#      （不要加 -v，不要删 /vol1/1000/Docker/ed2k/postgres）
-#   2. 国内可直接 pull Docker Hub（一般比 ghcr.io 快）
-#   3. docker compose -f docker-compose.nas.yml pull
-#   4. docker compose -f docker-compose.nas.yml up -d
-#   5. 检查: 搜索 http://NAS_IP:3010  管理 http://NAS_IP:8082
-#      （backend 不映射宿主机端口，健康检查经管理端 /health 或容器内访问）
+# 本机放：
+#   docker-compose.nas.yml
+#   update.sh（可选）
+#   data/postgres|backend|search|search-cache（见下方卷）
 #
-# 说明:
-#   - postgres 容器名改为 sehuatang-postgres，数据目录与账号不变 → 库数据保留
-#   - 已去掉 postgres-init 挂载（旧库非空，init 也不会执行；避免误挂）
-#   - 业务镜像：Docker Hub poillysky/sehuatang-*（同时仍推 GHCR）
+# 从旧 ed2k 迁移库数据（只做一次，停旧栈后执行）:
+#   mkdir -p /vol1/1000/Docker/sehuatang/data
+#   cp -a /vol1/1000/Docker/ed2k/postgres /vol1/1000/Docker/sehuatang/data/postgres
+#   # 确认拷完后再删旧目录；切勿两边同时挂同一份正在运行的库
+#
+# 启动:
+#   docker compose -f docker-compose.nas.yml pull
+#   docker compose -f docker-compose.nas.yml up -d
+# 访问: 搜索 :3010  管理 :8082
 
 name: sehuatang
 
@@ -32,8 +32,7 @@ services:
       PGDATA: /var/lib/postgresql/data/pgdata
       TZ: Asia/Shanghai
     volumes:
-      # ★ 与现网一致：沿用旧数据目录
-      - /vol1/1000/Docker/ed2k/postgres:/var/lib/postgresql/data
+      - /vol1/1000/Docker/sehuatang/data/postgres:/var/lib/postgresql/data
     shm_size: 1g
     sysctls:
       - kernel.shmmax=1073741824
@@ -56,7 +55,7 @@ services:
     image: poillysky/sehuatang-backend:latest
     container_name: sehuatang-backend
     restart: always
-    # 不对宿主机暴露 8080：浏览器走 admin:8081，由 Nginx 反代到 backend:8080
+    # 不对宿主机暴露 8080：浏览器走 admin:8082，由 Nginx 反代到 backend:8080
     shm_size: 2g
     environment:
       POSTGRES_HOST: postgres
@@ -72,7 +71,7 @@ services:
       WEB_CRAWLER_PROXY: ""
       SEARCH_FRONTEND_URL: http://127.0.0.1:3010
     volumes:
-      - /vol1/1000/Docker/ed2k/backend:/app/data
+      - /vol1/1000/Docker/sehuatang/data/backend:/app/data
     depends_on:
       postgres:
         condition: service_healthy
@@ -107,8 +106,8 @@ services:
       - 223.5.5.5
       - 8.8.8.8
     volumes:
-      - /vol1/1000/Docker/ed2k/search:/app/data
-      - /vol1/1000/Docker/ed2k/search-cache:/app/.next/cache
+      - /vol1/1000/Docker/sehuatang/data/search:/app/data
+      - /vol1/1000/Docker/sehuatang/data/search-cache:/app/.next/cache
     depends_on:
       postgres:
         condition: service_healthy
