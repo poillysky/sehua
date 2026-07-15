@@ -2052,7 +2052,7 @@ function renderForumConfigTab(forum) {
         <div class="settings-grid-2 forum-config-grid">
           ${field("列表页数 / 批", '<input type="number" min="1" max="100" data-forum-key="web_crawler_list_pages_per_board" class="forum-field" />', "深扫每批向前页数，默认 15")}
           ${field("首页捕新安全上限", '<input type="number" min="1" max="100" data-forum-key="web_crawler_list_head_pages" class="forum-field" />', "每日首页捕新最多翻这么多页；通常扫到全已知即停，默认 50")}
-          ${field("深扫早停页数", '<input type="number" min="1" max="10" data-forum-key="web_crawler_list_known_stop_pages" class="forum-field" />', "连续 N 页全已知则提前结束本轮深扫，默认 2")}
+          ${field("深扫早停页数", '<input type="number" min="0" max="10" data-forum-key="web_crawler_list_known_stop_pages" class="forum-field" />', "已废弃：深扫全已知也会继续后扫；保留字段兼容旧配置")}
           ${field("全局列表页上限", '<input type="number" min="0" max="300" data-forum-key="web_crawler_max_list_pages" class="forum-field" />', "0 = 安全上限 300 页/板")}
         </div>
         <p class="field-hint forum-config-note">自然日按 Asia/Shanghai。今日首页捕新完成后，连续开爬也只深扫。翌日再从 P1 捕新。网友原创区（141）未满 3 天帖延期入队。</p>

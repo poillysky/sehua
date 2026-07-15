@@ -1799,7 +1799,7 @@ a {
 }
 
 .activity-log {
-  max-height: min(420px, 50vh);
+  max-height: min(640px, 68vh);
   overflow-y: auto;
   padding: 8px 0;
   font-size: 13px;

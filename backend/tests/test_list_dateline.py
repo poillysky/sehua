@@ -138,8 +138,8 @@ async def test_head_stops_when_page_all_known(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_skip_head_when_done_today(monkeypatch):
-    """今日已捕新：本轮不再读第 1 页，只深扫。"""
+async def test_skip_head_continues_deep_through_known(monkeypatch):
+    """今日已捕新：跳过首页；深扫遇到全已知页仍继续向后推进配额。"""
     from crawler.parser import ThreadBrief
     from workers import list_scan as ls
 
@@ -173,22 +173,23 @@ async def test_skip_head_when_done_today(monkeypatch):
     result = await ls.scan_board_list(
         MagicMock(),
         board_fid=36,
-        pages_per_board=10,
+        pages_per_board=5,
         scan_head=False,
-        known_stop_pages=2,
-        last_list_page=10,
+        known_stop_pages=1,
+        last_list_page=30,
         persist_enqueue=False,
     )
     assert result.head_skipped is True
     assert result.pages_head == []
     assert 1 not in pages_fetched
-    assert result.pages_scanned == [10, 11]
-    assert result.deep_early_stop is True
+    # 全已知也不早停：自 P30 起扫满 5 页
+    assert result.pages_scanned == [30, 31, 32, 33, 34]
+    assert result.last_list_page == 34
 
 
 @pytest.mark.asyncio
-async def test_deep_early_stop_on_known_streak(monkeypatch):
-    """深扫连续 2 页全已知则早停。"""
+async def test_deep_advances_past_known_pages(monkeypatch):
+    """深扫配额内持续向后翻，游标落到本轮最后一页。"""
     from crawler.parser import ThreadBrief
     from workers import list_scan as ls
 
@@ -219,12 +220,12 @@ async def test_deep_early_stop_on_known_streak(monkeypatch):
     result = await ls.scan_board_list(
         MagicMock(),
         board_fid=36,
-        pages_per_board=10,
+        pages_per_board=3,
         scan_head=False,
-        known_stop_pages=2,
+        known_stop_pages=1,
         last_list_page=10,
         persist_enqueue=False,
     )
-    assert result.deep_early_stop is True
-    assert result.pages_scanned == [10, 11]
-    assert result.last_list_page == 11
+    assert result.pages_scanned == [10, 11, 12]
+    assert result.last_list_page == 12
+    assert result.deep_early_stop is False

@@ -8,6 +8,77 @@ html ,body {
   touch-action: manipulation;
 }
 
+:root {
+  --safe-top: env(safe-area-inset-top, 0px);
+  --safe-right: env(safe-area-inset-right, 0px);
+  --safe-bottom: env(safe-area-inset-bottom, 0px);
+  --safe-left: env(safe-area-inset-left, 0px);
+}
+
+/* iOS Home Screen / installed PWA fullscreen */
+@media all and (display-mode: standalone) {
+  html,
+  body {
+    min-height: 100dvh;
+    min-height: -webkit-fill-available;
+    overscroll-behavior-y: none;
+    background-color: #0b1220;
+  }
+
+  .app-shell {
+    min-height: 100dvh;
+    min-height: -webkit-fill-available;
+    padding-top: var(--safe-top);
+    padding-right: var(--safe-right);
+    padding-bottom: var(--safe-bottom);
+    padding-left: var(--safe-left);
+  }
+}
+
+html.ios-standalone,
+html[data-standalone="true"] {
+  overscroll-behavior-y: none;
+}
+
+html.ios-standalone body,
+html[data-standalone="true"] body {
+  min-height: 100dvh;
+  min-height: -webkit-fill-available;
+  background-color: #0b1220;
+}
+
+html.ios-standalone .app-shell,
+html[data-standalone="true"] .app-shell {
+  min-height: 100dvh;
+  min-height: -webkit-fill-available;
+  padding-top: var(--safe-top);
+  padding-right: var(--safe-right);
+  padding-bottom: var(--safe-bottom);
+  padding-left: var(--safe-left);
+}
+
+/* Fixed chrome that must clear notch / home indicator */
+.safe-fixed-top {
+  top: max(1rem, var(--safe-top));
+  right: max(1rem, var(--safe-right));
+}
+
+.safe-fixed-bottom-right {
+  bottom: max(1rem, var(--safe-bottom));
+  right: max(1rem, var(--safe-right));
+}
+
+.safe-fixed-fab {
+  right: max(1.5rem, var(--safe-right));
+  bottom: max(2.5rem, calc(var(--safe-bottom) + 1rem));
+}
+
+.safe-toast {
+  top: max(5vh, calc(var(--safe-top) + 0.75rem));
+  padding-left: max(1rem, var(--safe-left));
+  padding-right: max(1rem, var(--safe-right));
+}
+
 input:-internal-autofill-selected,
 input:-webkit-autofill,
 input:-webkit-autofill:hover,

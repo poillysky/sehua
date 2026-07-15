@@ -181,7 +181,7 @@ export const FloatTool = () => {
   if (!enabled) return null;
 
   return (
-    <div className="fixed right-6 bottom-10 flex flex-col gap-y-2 items-center z-20">
+    <div className="safe-fixed-fab fixed flex flex-col gap-y-2 items-center z-20">
       {/* <ToggleTheme /> */}
       <BackTop />
     </div>

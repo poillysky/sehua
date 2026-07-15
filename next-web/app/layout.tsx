@@ -10,6 +10,7 @@ import { siteConfig } from "@/config/site";
 import { fontSans, fontNoto, fontMono } from "@/config/fonts";
 import { DemoMode } from "@/components/DemoMode";
 import { BgEffect } from "@/components/BgEffect";
+import { IosStandalone } from "@/components/IosStandalone";
 
 export const metadata: Metadata = {
   title: {
@@ -17,20 +18,36 @@ export const metadata: Metadata = {
     template: `%s - ${siteConfig.name}`,
   },
   description: siteConfig.description,
+  applicationName: siteConfig.name,
+  appleWebApp: {
+    capable: true,
+    title: siteConfig.shortName,
+    statusBarStyle: "black-translucent",
+  },
+  formatDetection: {
+    telephone: false,
+  },
+  other: {
+    "mobile-web-app-capable": "yes",
+  },
   icons: {
     icon: [
+      { url: "/icon/favicon", type: "image/png", sizes: "32x32" },
+      { url: "/icon/192", type: "image/png", sizes: "192x192" },
+      { url: "/icon/512", type: "image/png", sizes: "512x512" },
+      { url: "/icons/app-icon.svg", type: "image/svg+xml" },
       { url: "/logo.svg", type: "image/svg+xml" },
-      { url: "/favicon.ico", sizes: "32x32" },
     ],
-    apple: "/logo.svg",
-    shortcut: "/favicon.ico",
+    apple: [{ url: "/apple-icon", type: "image/png", sizes: "180x180" }],
+    shortcut: "/icon/favicon",
   },
+  manifest: "/manifest.webmanifest",
 };
 
 export const viewport: Viewport = {
   themeColor: [
-    { media: "(prefers-color-scheme: light)", color: "white" },
-    { media: "(prefers-color-scheme: dark)", color: "black" },
+    { media: "(prefers-color-scheme: light)", color: "#ffffff" },
+    { media: "(prefers-color-scheme: dark)", color: "#0B1220" },
   ],
   width: "device-width",
   height: "device-height",
@@ -67,7 +84,8 @@ export default async function RootLayout({
               enableSystem: true,
             }}
           >
-            <div className="relative flex flex-col h-full">
+            <IosStandalone />
+            <div className="app-shell relative flex flex-col h-full min-h-[100dvh]">
               <DemoMode />
               <BgEffect />
               <main className="container w-full md:w-4/5 mx-auto max-w-6xl flex-grow z-10">

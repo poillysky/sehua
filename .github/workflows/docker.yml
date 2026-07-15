@@ -13,8 +13,8 @@ permissions:
 env:
   GHCR: ghcr.io
   DOCKERHUB_USER: poillysky
-  # 当前发版号；下次发版改为 1.0.2 等，旧版本标签仍保留在 Hub
-  RELEASE_TAG: "1.0.1"
+  # 当前发版号；下次发版改为 1.0.3 等，旧版本标签仍保留在 Hub
+  RELEASE_TAG: "1.0.2"
 
 jobs:
   backend:

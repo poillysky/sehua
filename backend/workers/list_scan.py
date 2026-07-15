@@ -4,7 +4,7 @@
 1. 每天首次：从首页（或未完成进度页）起扫新帖，直到某一页「所见均已入库」→
    标记今日首页捕新完成；当天后续循环不再读第 1 页。
 2. 深扫：始终从列表游标（含结束页重叠）向更旧页推进。
-3. 深扫早停：连续 known_stop_pages 页全已知 → 结束本轮深扫，游标保留，下轮继续。
+3. 深扫：按配额向更旧页推进；整页已入库也继续往后扫（不因「全已知」卡在同一游标空转）。
 4. 龄期板（如 141）：未满龄帖带 retry_after 入队，不挡游标。
 """
 
@@ -226,7 +226,8 @@ async def scan_board_list(
     1. scan_head=True：从 head_start_page 起捕新，直到某页新入队为 0（全已知）或触顶。
     2. scan_head=False：跳过首页，仅深扫（今日已完成捕新后的循环）。
     3. 深扫从列表游标（与首页已读错开）起读 pages_per_board 页。
-    4. 深扫遇连续 known_stop_pages 页全已知 → 早停。
+    4. 整页已入库仍继续向后翻，用满本轮配额；游标停在本轮最后一页。
+       （旧逻辑「全已知早停」会把游标卡在同一页反复空转，已取消。）
     5. 列表页失败不推进游标。
     """
     pol = get_board_policy(board_fid)
@@ -235,7 +236,8 @@ async def scan_board_list(
     page_limit = _safety_cap(max_list_pages)
     cursor = max(0, int(last_list_page or 0))
     head_cap = max(1, int(head_pages or DEFAULT_HEAD_PAGES))
-    stop_streak_need = max(1, int(known_stop_pages or DEFAULT_KNOWN_STOP_PAGES))
+    # known_stop_pages 保留配置兼容；0/旧「早停」不再中断深扫（避免卡游标）
+    _ = int(known_stop_pages or 0)
     min_age = int(pol.min_thread_age_days or 0)
     head_from = max(1, int(head_start_page or 1))
 
@@ -252,8 +254,7 @@ async def scan_board_list(
         out.head_skipped = True
         _emit(
             f"列表深扫 · 今日首页捕新已完成，本轮跳过第1页 · "
-            f"自游标 P{cursor or '—'} 配额 {harvest_quota} 页 · "
-            f"连续 {stop_streak_need} 页全已知则早停"
+            f"自游标 P{cursor or '—'} 配额 {harvest_quota} 页（全已知也继续后扫）"
         )
     elif cursor >= 2:
         _emit(
@@ -405,23 +406,13 @@ async def scan_board_list(
         _emit(
             f"深扫 P{page} · {len(fetched.batch)} 帖 · 新入队 {enq} · "
             f"{harvested}/{harvest_quota}"
-            + (f" · 全已知连续 {known_streak}/{stop_streak_need}" if enq == 0 else "")
+            + (f" · 全已知连续 {known_streak}" if enq == 0 else "")
         )
         await THROTTLE.sleep()
-
-        if known_streak >= stop_streak_need:
-            out.deep_early_stop = True
-            _emit(
-                f"深扫早停 · 连续 {known_streak} 页所见均已入库 · "
-                f"游标 P{out.last_list_page}（下轮继续深扫，当日不再读首页）"
-            )
-            break
-
+        # 全已知也继续 page+1，用满配额，避免卡在同一游标反复早停空转
         page += 1
 
-    if out.deep_early_stop:
-        pass
-    elif harvested >= harvest_quota and out.pages_scanned:
+    if harvested >= harvest_quota and out.pages_scanned:
         _emit(
             f"本批深扫配额已满 · P{out.harvest_start_page}~P{out.last_list_page} "
             f"共 {harvested} 页 · 合计新入队 {out.enqueued} · 游标 P{out.last_list_page}"

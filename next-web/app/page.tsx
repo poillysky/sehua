@@ -13,10 +13,10 @@ export default function Home() {
       <HomeLogo />
       <SearchInput />
       <BrowseEntryButton />
-      <div className="fixed bottom-4 right-4 invisible md:visible">
+      <div className="safe-fixed-bottom-right fixed invisible md:visible">
         <Stats />
       </div>
-      <div className="fixed top-4 right-4 flex items-center gap-1.5">
+      <div className="safe-fixed-top fixed z-20 flex items-center gap-1.5">
         <SettingsNavLink noBg />
         <SwitchLanguage noBg />
         <ToggleTheme noBg />

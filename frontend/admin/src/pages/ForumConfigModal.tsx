@@ -547,12 +547,12 @@ function ConfigTab({
                 onChange={(e) => setNum('web_crawler_list_head_pages', e.target.value)}
               />
             </Field>
-            <Field label="深扫早停页数" hint="连续 N 页全已知则提前结束本轮深扫，默认 2">
+            <Field label="深扫早停页数（已废弃）" hint="深扫全已知也会继续后扫，不再早停卡游标；字段仅兼容旧配置">
               <input
                 type="number"
-                min={1}
+                min={0}
                 max={10}
-                value={draft.web_crawler_list_known_stop_pages ?? 2}
+                value={draft.web_crawler_list_known_stop_pages ?? 0}
                 onChange={(e) => setNum('web_crawler_list_known_stop_pages', e.target.value)}
               />
             </Field>

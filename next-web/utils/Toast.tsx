@@ -90,7 +90,7 @@ const ToastContainer: React.FC<ToastProps> = ({ messages, removeMessage }) => {
   }, [messages]);
 
   return (
-    <div className="fixed top-[5vh] left-0 right-0 flex flex-col items-center p-4 mb-4 pointer-events-none z-20">
+    <div className="safe-toast fixed left-0 right-0 flex flex-col items-center p-4 mb-4 pointer-events-none z-20">
       {messages.map((message) => (
         <div
           key={message.id}
