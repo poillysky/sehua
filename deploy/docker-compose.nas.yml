@@ -38,7 +38,7 @@ services:
       start_period: 30s
 
   backend:
-    image: ghcr.io/1551564725zhu-cell/sehuatang-backend:latest
+    image: ghcr.io/poillysky/sehuatang-backend:latest
     container_name: sehuatang-backend
     restart: always
     ports:
@@ -64,7 +64,7 @@ services:
         condition: service_healthy
 
   admin:
-    image: ghcr.io/1551564725zhu-cell/sehuatang-admin:latest
+    image: ghcr.io/poillysky/sehuatang-admin:latest
     container_name: sehuatang-admin
     restart: always
     ports:
@@ -73,7 +73,7 @@ services:
       - backend
 
   search:
-    image: ghcr.io/1551564725zhu-cell/sehuatang-search:latest
+    image: ghcr.io/poillysky/sehuatang-search:latest
     container_name: sehuatang-search
     restart: always
     ports:
