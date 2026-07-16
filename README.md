@@ -1,95 +1,117 @@
-# sehua（sehuatang）
+# sehua
 
-色花堂资源采集与检索：**采集后端 + 管理前端 + 搜索前端**，共享 PostgreSQL。  
-生产目标为家庭 NAS **全栈 Docker**；镜像由 GitHub Actions 构建并推送到 **Docker Hub**（及 GHCR），NAS **只 pull、不本地 build**。
+家庭 NAS 上的 **论坛资源采集与检索全栈**：爬虫入库 · 管理运维 · 全文搜索，一套 Compose 跑通。
 
-当前版本：**1.0.6**（见 [`VERSION`](./VERSION)）。发版按 `1.0.1` → `1.0.2` → `1.0.3` → `1.0.4` → `1.0.5` → `1.0.6` → … **递增叠加**，旧版本标签保留。
+[![Version](https://img.shields.io/badge/version-1.0.6-0ea5e9?style=flat-square)](./VERSION)
+[![Stack](https://img.shields.io/badge/stack-FastAPI%20%7C%20React%20%7C%20Next.js%20%7C%20Postgres-64748b?style=flat-square)](#技术栈)
+[![Deploy](https://img.shields.io/badge/deploy-Docker%20Hub%20pull%20only-22c55e?style=flat-square)](#nas-部署)
+[![License](https://img.shields.io/badge/use-personal%20%2F%20LAN-f59e0b?style=flat-square)](#声明)
 
----
-
-## 功能概览
-
-| 能力 | 说明 |
-|------|------|
-| 网站爬虫 | 按发帖时间序列表扫帖；每日首页捕新，当天后续轮次只深扫 |
-| 资源入库 | 磁力 / EM 下载链入库；带来源论坛与板块元数据 |
-| 管理后台 | 登录鉴权、爬虫拓扑、导入、资源核对、重爬 |
-| 搜索前端 | Next.js 搜 / 看详情；可选 115 离线转存 + 云解压 |
-| 数据库 | PostgreSQL 16，SQL 迁移在 `database/migrations/` |
-
-不做：Telegram 监听、NAS 上编译业务镜像、管理端原生 App。
+镜像由 GitHub Actions 构建并推送 **Docker Hub**（及 GHCR）；NAS **只 pull，不本地 build**。发版递增叠加（`1.0.1` … `1.0.6`），历史标签保留，`latest` 始终指向当前版。
 
 ---
 
-## 仓库结构
+## 一眼看懂
 
-```text
-sehuatang/
-├── backend/                 # FastAPI：爬虫 / 入库 / 管理 API
-├── frontend/admin/          # 管理端 Vite + React（Nginx 静态）
-├── next-web/                # 搜索端 Next.js（GraphQL + 直连 PG）
-├── database/migrations/     # PostgreSQL 迁移
-├── deploy/                  # NAS Compose（只 pull）
-│   ├── docker-compose.nas.yml
-│   └── update.sh
-├── docs/                    # 架构 / 设计 / 部署专文
-├── VERSION                  # 镜像发版号
-└── start.bat                # Windows 本地开发三窗启动
+```mermaid
+flowchart LR
+  subgraph Edge["访问入口"]
+    S["搜索 :3010"]
+    A["管理 :8082"]
+  end
+
+  subgraph Runtime["Docker Compose"]
+    NW["next-web"]
+    AD["admin · Nginx"]
+    API["backend · FastAPI / Playwright"]
+    PG[("PostgreSQL :5433")]
+  end
+
+  Forum["目标论坛"]
+
+  S --> NW
+  A --> AD
+  AD -->|"/api"| API
+  NW --> PG
+  API --> PG
+  API <--> Forum
 ```
 
-| 目录 | 说明 | 生产端口（宿主机） |
-|------|------|-------------------|
-| `backend/` | 收集器 API + Playwright | 不对外（由 admin 反代 `/api`） |
-| `frontend/admin/` | 管理后台 | **8082** |
-| `next-web/` | 搜索前端 | **3010** |
-| PostgreSQL | `postgres:16-alpine` | **5433** |
+| 组件 | 职责 | 生产端口 |
+|------|------|----------|
+| **backend** | 列表扫帖 · 详情解析 · 入库 · 重爬 · 资源库备份 | 不对外（经 admin 反代） |
+| **admin** | 鉴权、爬虫拓扑、论坛配置、导入与数据管理 | **8082** |
+| **next-web** | 搜索 / 浏览 / 详情；可选 115 转存与云解压 | **3010** |
+| **PostgreSQL 16** | 资源、来源元数据、爬虫队列、鉴权 | **5433** |
 
-更细说明：[docs/架构.md](./docs/架构.md) · [docs/设计说明.md](./docs/设计说明.md)
+---
+
+## 能力
+
+| | |
+|--|--|
+| **智能爬取** | 按发帖时间扫列表；每日首页捕新，当日后续轮次只深扫；板块游标续爬与积压优先消化 |
+| **结构入库** | 磁力 / ED2K 解析；按板块白名单整理名称、类型、大小、密码等字段；预览图与来源溯源 |
+| **运维闭环** | 连续调度 / 扫新帖 / 随机抓帖 / 账号爬占位；异常重试；单份滚动 SQL 备份 |
+| **检索体验** | Next.js 搜看一体；详情密码一键复制；115 VIP 转存后轮询并云解压（保留压缩包） |
+
+**刻意不做**：Telegram 监听、NAS 现场编译业务镜像、管理端原生 App。
+
+---
+
+## 技术栈
+
+| 层 | 选型 |
+|----|------|
+| API / 爬虫 | Python · FastAPI · Playwright · httpx |
+| 管理端 | Vite · React · Nginx |
+| 搜索端 | Next.js · GraphQL · 直连 Postgres |
+| 数据 | PostgreSQL 16 · SQL 迁移（`database/migrations/`） |
+| 交付 | multi-arch 镜像 · Compose · GitHub Actions |
 
 ---
 
 ## Docker 镜像
 
-### Docker Hub（NAS 推荐）
+### Docker Hub（推荐）
 
-| 服务 | 当前标签 |
-|------|----------|
+| 服务 | 镜像 |
+|------|------|
 | 后端 | [`poillysky/sehuatang-backend:1.0.6`](https://hub.docker.com/r/poillysky/sehuatang-backend) |
 | 管理 | [`poillysky/sehuatang-admin:1.0.6`](https://hub.docker.com/r/poillysky/sehuatang-admin) |
 | 搜索 | [`poillysky/sehuatang-search:1.0.6`](https://hub.docker.com/r/poillysky/sehuatang-search) |
 
-账号：https://hub.docker.com/u/poillysky
-
-每次发版会推送 **版本号**（如 `1.0.6`）和 **`latest`（始终指向当前最新版）**。历史版本号会留在 Hub（`1.0.1`、`1.0.2`、`1.0.3`、`1.0.4`、`1.0.5`、`1.0.6`…），NAS Compose 用固定版本号钉住。
-
-发版前若只要清掉「还没版本号时」的杂标签：Hub → Tags → 删除多余短 SHA 等即可，**不要删已发布的版本号标签**。
+Hub：[poillysky](https://hub.docker.com/u/poillysky) · 每次发版同时推送版本号与 `latest`。NAS Compose 请钉死版本号，勿盲追未验证的 `latest` 行为变更。
 
 ### GHCR（可选）
 
-- `ghcr.io/poillysky/sehuatang-backend:1.0.6`
-- `ghcr.io/poillysky/sehuatang-admin:1.0.6`
-- `ghcr.io/poillysky/sehuatang-search:1.0.6`
+```text
+ghcr.io/poillysky/sehuatang-backend:1.0.6
+ghcr.io/poillysky/sehuatang-admin:1.0.6
+ghcr.io/poillysky/sehuatang-search:1.0.6
+```
 
-CI：`.github/workflows/docker.yml`（`RELEASE_TAG` + `latest`）。
+CI：[`.github/workflows/docker.yml`](./.github/workflows/docker.yml)
 
 ---
 
-## NAS 部署（推荐）
+## NAS 部署
 
-### 1. 目录
+### 目录约定
 
 ```text
 /vol1/1000/Docker/sehuatang/
-├── docker-compose.nas.yml   # 从仓库 deploy/ 拷贝
-├── update.sh                # 可选
+├── docker-compose.nas.yml      # 自仓库 deploy/ 拷贝
+├── update.sh                   # 可选一键 pull + up
 └── data/
-    ├── postgres/            # 库数据
-    ├── backend/             # Cookie、预览等
-    ├── search/              # 115 Cookie 等
-    └── search-cache/        # Next 缓存（可丢）
+    ├── postgres/               # 库文件（可从旧实例迁入）
+    ├── backend/                # Cookie、会话、预览缓存
+    ├── backups/                # 资源表单份备份 ed2k-resources.sql.gz
+    ├── search/                 # 115 等搜索端配置
+    └── search-cache/           # Next 缓存（可丢）
 ```
 
-### 2. 启动
+### 启动
 
 ```bash
 cd /vol1/1000/Docker/sehuatang
@@ -98,29 +120,27 @@ docker compose -f docker-compose.nas.yml up -d
 # 或: sh update.sh
 ```
 
-### 3. 访问
+### 访问
 
-| 地址 | 说明 |
-|------|------|
-| `http://NAS_IP:3010` | 搜索 |
-| `http://NAS_IP:8082` | 管理（Nginx 反代 `/api` → backend） |
+| URL | 用途 |
+|-----|------|
+| `http://NAS_IP:3010` | 搜索前端 |
+| `http://NAS_IP:8082` | 管理后台（`/api` → backend） |
 | `NAS_IP:5433` | PostgreSQL（工具直连） |
 
-默认账号（**务必改**）：
+默认凭据（**上线后立刻修改**）：
 
 - 管理：`admin` / `admin123`（Compose `INITIAL_ADMIN_*`）
-- 数据库：见 Compose 中 `POSTGRES_*`
+- 数据库：见 Compose `POSTGRES_*`
 
-### 4. 迁入已有库数据（只做一次）
+### 迁入旧库（一次性）
 
-停旧栈后（勿加 `-v`、勿删旧数据目录），把旧 Postgres 数据目录拷到  
-`/vol1/1000/Docker/sehuatang/data/postgres`，再 `up -d`。
+停旧栈（勿 `down -v`、勿删数据目录）→ 将旧 Postgres 目录拷至 `data/postgres` → `up -d`。  
+细则：[docs/部署.md](./docs/部署.md) · [deploy/README.md](./deploy/README.md)
 
-细则见 [docs/部署.md](./docs/部署.md)。
+### 升级
 
-### 5. 升级镜像
-
-更新 Compose 中的版本标签后：
+改 Compose 镜像标签至目标版本后：
 
 ```bash
 docker compose -f docker-compose.nas.yml pull
@@ -129,50 +149,70 @@ docker compose -f docker-compose.nas.yml up -d
 
 ---
 
-## 爬虫行为（摘要）
+## 爬虫策略（摘要）
 
-- 列表统一按发帖时间排序。
-- **每天一次**从首页捕新：翻到「整页已入库」即停；**当天后续循环只深扫、不再读第 1 页**。
+- 列表统一按 **发帖时间** 排序。
+- **每天一次**首页捕新：翻到「整页已入库」即停；**当日后续循环只深扫**，不再读第 1 页。
 - 深扫按板块游标续爬（结束页重叠 1 页）；连续全已知可早停。
-- 需满龄的板块：未满龄帖延期入队，到期再抓。
-- 待抓积压过大时先消化队列，暂缓读列表。
+- 需满龄板块：未满龄延期入队，到期再抓。
+- 待抓积压过大时优先消化队列，暂缓读列表。
+- 游客 Cookie 与 **账号 Cookie** 隔离；账号会话仅用于「账号爬占位」。
 
-配置：管理端 → 论坛 / 爬虫设置。
+配置入口：管理端 → 论坛 / 爬虫。
+
+---
+
+## 仓库结构
+
+```text
+sehuatang/
+├── backend/              # FastAPI：爬虫 · 入库 · 管理 API
+├── frontend/admin/       # 管理端（Vite + React → Nginx）
+├── next-web/             # 搜索端（Next.js）
+├── database/migrations/  # PostgreSQL 迁移
+├── deploy/               # NAS Compose（只 pull）
+├── docs/                 # 架构 · 设计 · 部署
+├── VERSION               # 当前发版号
+└── start.bat             # Windows 本地三窗启动
+```
 
 ---
 
 ## 本地开发
 
-Windows 可双击根目录 `start.bat`。
+Windows 可双击根目录 `start.bat`，或分别启动：
 
 ```bash
-# 后端
+# 后端 → :8080
 cd backend && pip install -r requirements.txt
 uvicorn api.main:app --reload --port 8080
 
-# 管理端
+# 管理 → :8081（开发）
 cd frontend/admin && npm install && npm run dev
 
-# 搜索端
+# 搜索 → :3010
 cd next-web && npm install && npm run dev
 ```
 
----
-
-## 数据与迁移
-
-- 资源表：下载链主体 + 来源元数据（标题、描述、预览、论坛 / 板块、入库判定等）
-- 爬虫队列：待抓 / 已抓帖页
-- 鉴权：管理账号与角色
-
-Backend 启动时自动跑待执行 SQL 迁移。
+Backend 启动时自动执行待跑 SQL 迁移。
 
 ---
 
-## 搜索端 115
+## 数据模型（简）
+
+- **资源**：下载链主体 + 文件名 / 大小 / 检索字段  
+- **来源**：标题、结构化描述、预览、论坛 / 板块、入库判定、密码  
+- **队列**：待抓 / 已抓帖页与重试状态  
+- **鉴权**：管理账号与权限  
+
+管理端支持资源表 **单份覆盖备份**（备份前暂停爬虫，结束后按快照恢复）。
+
+---
+
+## 搜索端 · 115
 
 在搜索站「115 设置」填写 Cookie 与目录。  
-带解压密码转存时：轮询离线任务（最长约 **30 秒**），就绪后立即云解压到同名文件夹，**不删除压缩包**。需 VIP。
+带解压密码转存时：轮询离线任务（最长约 **30 秒**），就绪后云解压到同名文件夹，**保留压缩包**（需 VIP）。
 
 ---
 
@@ -181,20 +221,21 @@ Backend 启动时自动跑待执行 SQL 迁移。
 | 文档 | 内容 |
 |------|------|
 | [docs/架构.md](./docs/架构.md) | 组件职责、数据流、NAS 拓扑 |
-| [docs/设计说明.md](./docs/设计说明.md) | 产品边界与设计取舍 |
+| [docs/设计说明.md](./docs/设计说明.md) | 产品边界与取舍 |
 | [docs/部署.md](./docs/部署.md) | 部署细则、目录、更新 |
 | [deploy/README.md](./deploy/README.md) | Compose 目录约定 |
 
 ---
 
-## 仓库与发版
+## 发版
 
-- GitHub：https://github.com/poillysky/sehua  
-- 下次发 **1.0.7**：改 `VERSION`、`deploy/docker-compose.nas.yml` 镜像标签、workflow 的 `RELEASE_TAG`，提交并打 `v1.0.7`
-- Hub 上会留下 `1.0.1`、`1.0.2`、`1.0.3`、`1.0.4`、`1.0.5`、`1.0.6`…；`latest` 指向最新一次发版
+仓库：https://github.com/poillysky/sehua
+
+下一版 **1.0.7**：同步改 `VERSION`、`deploy/docker-compose.nas.yml` 镜像标签、workflow `RELEASE_TAG`，提交并打 `v1.0.7`。  
+Hub / GHCR 保留全部历史版本号；`latest` = 最近一次发版。
 
 ---
 
 ## 声明
 
-仅供个人学习与局域网自用；请遵守目标站点与当地法规，勿用于未授权传播。
+仅供个人学习与局域网自用。请遵守目标站点条款与当地法律法规，勿用于未授权传播或商业用途。
