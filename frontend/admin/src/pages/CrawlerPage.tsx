@@ -468,17 +468,28 @@ export function CrawlerPage() {
       <div className="page-scroll">
         <div className="card block crawler-live">
             <div className="crawler-toolbar">
-              <div className="crawler-toolbar-left">
-                <label className="crawler-switch" title="开启/关闭论坛爬虫">
-                  <input
-                    type="checkbox"
-                    checked={enabled}
-                    disabled={busy || loading}
-                    onChange={(e) => void onToggle(e.target.checked)}
-                  />
-                  <span className="crawler-switch-slider" aria-hidden />
-                </label>
-                <span className="crawler-run-label">{runLabel}</span>
+              <div className="crawler-toolbar-top">
+                <div className="crawler-toolbar-left">
+                  <label className="crawler-switch" title="开启/关闭论坛爬虫">
+                    <input
+                      type="checkbox"
+                      checked={enabled}
+                      disabled={busy || loading}
+                      onChange={(e) => void onToggle(e.target.checked)}
+                    />
+                    <span className="crawler-switch-slider" aria-hidden />
+                  </label>
+                  <span className="crawler-run-label">{runLabel}</span>
+                </div>
+                <button
+                  type="button"
+                  className="crawler-refresh"
+                  disabled={busy}
+                  title="刷新状态与活动日志"
+                  onClick={() => void refresh()}
+                >
+                  刷新
+                </button>
               </div>
               <div className="crawler-toolbar-right">
                 <div className="crawler-actions" role="group" aria-label="爬虫操作">
@@ -568,15 +579,6 @@ export function CrawlerPage() {
                     onClick={() => void onStop()}
                   >
                     {stopping ? '停止中…' : '手动停止'}
-                  </button>
-                  <button
-                    type="button"
-                    className="crawler-action crawler-action-muted"
-                    disabled={busy}
-                    title="刷新状态与活动日志"
-                    onClick={() => void refresh()}
-                  >
-                    刷新
                   </button>
                 </div>
               </div>
