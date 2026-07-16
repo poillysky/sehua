@@ -26,6 +26,7 @@
     "latest": "最新資源",
     "empty": "暫無資源，等待收集器入庫",
     "resource_type": "資源類型",
+    "resource_size": "資源大小",
     "resource_amount": "資源數量",
     "extract_password": "解壓密碼"
   },

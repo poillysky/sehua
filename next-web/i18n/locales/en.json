@@ -28,6 +28,7 @@
     "latest": "Latest resources",
     "empty": "No resources yet",
     "resource_type": "Type",
+    "resource_size": "Size",
     "resource_amount": "Amount",
     "extract_password": "Password"
   },

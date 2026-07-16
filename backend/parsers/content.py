@@ -177,9 +177,10 @@ LABEL_RE = re.compile(
 _NEXT_FIELD_RE = re.compile(r"\s*【[^】]{1,40}】")
 # Discuz 一楼正文起点（仅数字楼 id，跳过 postmessage_attach* 注入）
 _OP_POST_START_RE = re.compile(r'id="postmessage_(\d+)"[^>]*>', re.I)
-# 一楼正文结束：下一帖 / 评论区 / 表尾
+# 一楼正文结束：下一帖 / 评论区 / 表尾（切在开标签前，避免残留 `<div`）
 _OP_POST_END_RE = re.compile(
-    r'id="postmessage_|id="post_\d+|id="comment_|<!--\s*end\s*post|</tbody>',
+    r'<[^>]+id="postmessage_|<[^>]+id="post_\d+|<[^>]+id="comment_|'
+    r'<!--\s*end\s*post|</tbody>',
     re.I,
 )
 # 字段值里常见的附件区 / 楼层 / 页脚噪声（非密码字段也裁）
@@ -190,9 +191,27 @@ _FIELD_NOISE_RE = re.compile(
     r"|发表于\s*\d{4}|只看该作者|使用道具|返回列表"
     r"|Powered by Discuz|快速回复|本版积分规则"
     r"|当前离线|当前在线"
+    r"|回复\s*支持|回复\s*使用道具|本帖最后由"
+    r"|ed2k://|magnet:\?"
+    r"|第\s*\d+\s*页|下一页|上一页"
     r")",
     re.I,
 )
+
+# 枚举型短字段：取值到首个空白/标点为止，避免一楼边界失败时吞进回复
+_SHORT_ENUM_LABELS = frozenset(
+    {
+        "资源类型",
+        "是否有码",
+        "有无码",
+        "影片码别",
+        "有无第三方水印",
+        "有无水印",
+        "第三方水印",
+        "影片格式",
+    }
+)
+_SHORT_ENUM_VALUE_RE = re.compile(r"^([^\s，,。；;|/]+)")
 # 「解压密码是www.98T.la@」——「是/为」是系词不是密码；也兼容冒号/等号
 PASSWORD_RE = re.compile(
     r"(?:解压|提取)\s*密码\s*(?:[:：=]|是|为)?\s*([^\s【】\n，,。；;]+)",
@@ -336,7 +355,12 @@ def extract_first_postmessage_html(html: str) -> str:
     return src
 
 
-def _clip_field_value(value: str, *, password: bool = False) -> str:
+def _clip_field_value(
+    value: str,
+    *,
+    password: bool = False,
+    short_enum: bool = False,
+) -> str:
     """裁掉粘在后面的【下一字段】、附件区与楼层噪声。"""
     val = " ".join((value or "").replace("\r", "\n").split())
     val = val.lstrip(":：").strip()
@@ -355,6 +379,12 @@ def _clip_field_value(value: str, *, password: bool = False) -> str:
             val = val[: m2.start()].strip()
         if len(val) > 120:
             val = val[:120].strip()
+    elif short_enum:
+        m3 = _SHORT_ENUM_VALUE_RE.match(val)
+        if m3:
+            val = m3.group(1).strip()
+        if len(val) > 32:
+            val = val[:32].rstrip()
     elif len(val) > 200:
         # 非密码字段被整页吞入时硬顶，避免描述爆炸
         val = val[:200].rstrip()
@@ -366,7 +396,11 @@ def extract_metadata(text: str) -> dict[str, str]:
     for m in LABEL_RE.finditer(text or ""):
         key = m.group(1).strip()
         is_pwd = key in {"解压密码", "提取密码"}
-        val = _clip_field_value(m.group(2), password=is_pwd)
+        val = _clip_field_value(
+            m.group(2),
+            password=is_pwd,
+            short_enum=key in _SHORT_ENUM_LABELS,
+        )
         if key and val:
             meta[key] = val
     return meta
@@ -434,7 +468,11 @@ def build_structured_description(
         if key not in allowed or key in picked:
             continue
         is_pwd = key == "解压密码"
-        val = _clip_field_value(raw_val, password=is_pwd)
+        val = _clip_field_value(
+            raw_val,
+            password=is_pwd,
+            short_enum=key in _SHORT_ENUM_LABELS,
+        )
         if is_pwd and _is_bogus_password(val):
             continue
         if val:

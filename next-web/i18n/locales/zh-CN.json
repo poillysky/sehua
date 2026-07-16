@@ -26,6 +26,7 @@
     "latest": "最新资源",
     "empty": "暂无资源，等待爬虫入库",
     "resource_type": "资源类型",
+    "resource_size": "资源大小",
     "resource_amount": "资源数量",
     "extract_password": "解压密码"
   },

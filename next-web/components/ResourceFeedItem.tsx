@@ -111,16 +111,18 @@ function ResourceMetaDate({
 
 function ResourceSummaryLines({
   resourceType,
+  resourceSize,
   resourceAmount,
   extractPassword,
 }: {
   resourceType?: string | null;
+  resourceSize?: string | null;
   resourceAmount?: string | null;
   extractPassword?: string | null;
 }) {
   const t = useTranslations();
 
-  if (!resourceType && !resourceAmount && !extractPassword) {
+  if (!resourceType && !resourceSize && !resourceAmount && !extractPassword) {
     return null;
   }
 
@@ -128,6 +130,9 @@ function ResourceSummaryLines({
 
   if (resourceType) {
     rows.push({ label: t("Home.resource_type"), value: resourceType });
+  }
+  if (resourceSize) {
+    rows.push({ label: t("Home.resource_size"), value: resourceSize });
   }
   if (resourceAmount) {
     rows.push({ label: t("Home.resource_amount"), value: resourceAmount });
@@ -255,6 +260,7 @@ export function ResourceFeedItem({
   const previewImages = filterPreviewImages(item.preview_images);
   const coverImage = previewImages[0];
   const resourceType = getDescriptionField(item.description, "资源类型");
+  const resourceSize = getDescriptionField(item.description, "资源大小");
   const resourceAmount = getDescriptionField(item.description, "资源数量");
   const extractPassword = getExtractPassword(item);
   const dense = !showPreview;
@@ -280,7 +286,9 @@ export function ResourceFeedItem({
   );
 
   if (dense) {
-    const hasSummary = Boolean(resourceType || resourceAmount || extractPassword);
+    const hasSummary = Boolean(
+      resourceType || resourceSize || resourceAmount || extractPassword,
+    );
 
     return cardShell(
       <>
@@ -301,6 +309,7 @@ export function ResourceFeedItem({
               <ResourceSummaryLines
                 extractPassword={extractPassword}
                 resourceAmount={resourceAmount}
+                resourceSize={resourceSize}
                 resourceType={resourceType}
               />
             </div>
@@ -340,6 +349,7 @@ export function ResourceFeedItem({
           <ResourceSummaryLines
             extractPassword={extractPassword}
             resourceAmount={resourceAmount}
+            resourceSize={resourceSize}
             resourceType={resourceType}
           />
         </div>

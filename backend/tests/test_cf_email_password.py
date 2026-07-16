@@ -163,6 +163,40 @@ def test_description_strips_attach_ui_and_replies():
     assert "只看该作者" not in desc
 
 
+def test_description_enum_fields_not_swallow_replies_before_size():
+    """字段顺序错乱/一楼边界失败时，资源类型等短字段不得吞回复与 ed2k。"""
+    from parsers.links import parse_thread_dual
+
+    html = """
+    <html><body>
+    <span id="thread_subject">【整理】【115ED2K】倪海厦中医养生视频【70.6G/1169V//7配额】</span>
+    <div id="postmessage_3368244">
+      【资源名称】：倪海厦中医养生视频<br/>
+      【资源类型】：视频<br/>
+      有人说这是骗子别信 回复 支持 使用道具 举报<br/>
+      发表于 2026-03-12 18:56:14 | 只看该作者<br/>
+      ed2k://|file|www.98T.la@本草.rar|1|05C8CF408C1E53AFE6E848387A2CF4BB|/<br/>
+      Powered by Discuz! X3.4<br/>
+      【资源大小】：70.6G/1169V//7配额<br/>
+      【是否有码】：有码<br/>
+      【有无第三方水印】：有水印<br/>
+    </div>
+    </body></html>
+    """
+    parsed = parse_thread_dual(html, tid=3368244, board_fid=95)
+    desc = parsed.description
+    assert "【资源名称】：倪海厦中医养生视频" in desc
+    assert "【资源类型】：视频" in desc
+    assert "【资源大小】：70.6G/1169V//7配额" in desc
+    assert "【是否有码】：有码" in desc
+    assert "【有无第三方水印】：有水印" in desc
+    assert "骗子" not in desc
+    assert "发表于" not in desc
+    assert "ed2k://" not in desc
+    assert "Powered by" not in desc
+    assert "只看该作者" not in desc
+
+
 def test_bt_board_keeps_film_labels():
     from parsers.links import parse_thread_dual
 

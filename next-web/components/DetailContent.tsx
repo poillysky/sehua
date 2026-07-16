@@ -11,9 +11,7 @@ import { useTranslations } from "next-intl";
 import { Suspense, type ReactNode } from "react";
 
 import { Ed2kResourceProps } from "@/types";
-import {
-  formatDate,
-} from "@/utils";
+import { formatDate, setClipboard, Toast } from "@/utils";
 import {
   formatDescriptionLines,
   getDisplayTitle,
@@ -55,6 +53,39 @@ function trimLabel(text: string) {
   return text.replace(/[:：]\s*$/, "");
 }
 
+function CopyablePassword({
+  value,
+  hint,
+  success,
+}: {
+  value: string;
+  hint: string;
+  success: string;
+}) {
+  const copy = () => {
+    setClipboard(value);
+    Toast.success(success);
+  };
+
+  return (
+    <code
+      className="inline-block max-w-full cursor-pointer break-all rounded-md bg-default-100 px-1.5 py-0.5 font-mono text-[11px] leading-4 text-primary md:text-xs dark:bg-slate-800"
+      title={hint}
+      onClick={copy}
+      onKeyDown={(event) => {
+        if (event.key === "Enter" || event.key === " ") {
+          event.preventDefault();
+          copy();
+        }
+      }}
+      role="button"
+      tabIndex={0}
+    >
+      {value}
+    </code>
+  );
+}
+
 export const DetailContent = ({ data }: { data: Ed2kResourceProps }) => {
   const t = useTranslations();
   const hydrated = useHydration();
@@ -82,15 +113,25 @@ export const DetailContent = ({ data }: { data: Ed2kResourceProps }) => {
             <dl className="divide-y divide-default-100 dark:divide-slate-700/60">
               {detailRows.map((row) => (
                 <DetailInfoRow key={row.label} label={row.label}>
-                  {row.value}
+                  {row.label === "解压密码" ? (
+                    <CopyablePassword
+                      value={row.value}
+                      hint={t("Toast.copy_password_hint")}
+                      success={t("Toast.copy_password_success")}
+                    />
+                  ) : (
+                    row.value
+                  )}
                 </DetailInfoRow>
               ))}
 
               {!hasPasswordInDesc && extractPassword && (
                 <DetailInfoRow label={trimLabel(t("Home.extract_password"))}>
-                  <code className="break-all font-mono text-[11px] md:text-xs">
-                    {extractPassword}
-                  </code>
+                  <CopyablePassword
+                    value={extractPassword}
+                    hint={t("Toast.copy_password_hint")}
+                    success={t("Toast.copy_password_success")}
+                  />
                 </DetailInfoRow>
               )}
 

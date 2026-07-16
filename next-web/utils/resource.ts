@@ -24,19 +24,20 @@ export type DescriptionLine = {
 const DISPLAY_DESCRIPTION_LABELS = [
   "资源名称",
   "资源类型",
+  "资源大小",
+  "是否有码",
   "有无水印",
   "资源数量",
   "解压密码",
   "影片名称",
   "出演女优",
-  "是否有码",
 ] as const;
 
 const DESCRIPTION_LABEL_ALIASES: Record<string, (typeof DISPLAY_DESCRIPTION_LABELS)[number]> = {
   有无第三方水印: "有无水印",
-  是否有码: "是否有码",
-  资源大小: "资源数量",
-  影片容量: "资源数量",
+  影片容量: "资源大小",
+  影片大小: "资源大小",
+  文件大小: "资源大小",
   提取密码: "解压密码",
   资源解压密码: "解压密码",
 };
