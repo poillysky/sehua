@@ -4217,13 +4217,42 @@ a {
 
   .crawler-toolbar-right {
     width: 100%;
+    max-width: 100%;
     display: flex;
     flex-wrap: wrap;
+    min-width: 0;
   }
 
   .crawler-toolbar-right .btn {
     flex: 1 1 calc(50% - 4px);
     justify-content: center;
+  }
+
+  /* 窄屏换行，保证「刷新」等按钮可见 */
+  .crawler-actions {
+    display: flex;
+    flex-wrap: wrap;
+    width: 100%;
+    max-width: 100%;
+    height: auto;
+    min-height: 34px;
+    box-sizing: border-box;
+    overflow-x: visible;
+  }
+
+  .crawler-action {
+    flex: 1 1 calc(33.333% - 2px);
+    min-width: 0;
+    height: 30px;
+    padding: 0 8px;
+    font-size: 12px;
+  }
+
+  .crawler-action-badge {
+    min-width: 14px;
+    height: 14px;
+    padding: 0 3px;
+    font-size: 10px;
   }
 
   /* 爬虫页：卡片贴合左右边，日志仍撑满 */
@@ -4731,6 +4760,10 @@ a {
 
   .crawler-toolbar-right .btn {
     flex: 1 1 100%;
+  }
+
+  .crawler-action {
+    flex: 1 1 calc(50% - 2px);
   }
 
   .activity-item {

@@ -197,6 +197,38 @@ def test_description_enum_fields_not_swallow_replies_before_size():
     assert "只看该作者" not in desc
 
 
+def test_file_size_strips_promo_blurb_after_quota():
+    """thread-3363393：文件大小后跟博主导语，不得并进资源大小。"""
+    from parsers.links import parse_thread_dual
+
+    html = """
+    <html><body>
+    <span id="thread_subject">【自转】【百度/115eD2k】韩国顶级健身肥臀女神【Yuyuhwa】付费合集【82V+173P/6.7G/1配额】</span>
+    <div id="postmessage_3363393">
+      【资源名称】：【自转】【百度/115eD2k】韩国顶级健身肥臀女神【Yuyuhwa】付费合集【82V+173P/6.7G/1配额】
+      【资源类型】：视频+图片 【是否有码】：无码 【有无第三方水印】： 有
+      【解压密码】：1998@www.98T.la
+      【文件大小】： 82V+173P/6.7G/1配额 某房3月7日￥26资源 韩国顶级健身肥臀巨乳Yuyuhwa 顶级巨乳 肥臀 完美颜值
+      【剧情连拍截图】
+      www.98T.la@ (2).png (559.43 KB, 下载次数: 0)
+      下载附件
+      【资源预览】
+      www.98T.la@ (5).png (875.18 KB, 下载次数: 0)
+    </div>
+    </body></html>
+    """
+    parsed = parse_thread_dual(html, tid=3363393, board_fid=95)
+    desc = parsed.description
+    assert "【资源类型】：视频+图片" in desc
+    assert "【资源大小】：82V+173P/6.7G/1配额" in desc
+    assert "某房" not in desc
+    assert "完美颜值" not in desc
+    assert "下载附件" not in desc
+    assert "【资源名称】：" in desc
+    assert "Yuyuhwa" in desc
+    assert "【解压密码】：1998@www.98T.la" in desc
+
+
 def test_bt_board_keeps_film_labels():
     from parsers.links import parse_thread_dual
 

@@ -33,6 +33,7 @@ LABEL_KEYS = (
     "时间长度",
     "影片有无声音",
     "剧情连拍截图/缩略图",
+    "剧情连拍截图",
     "资源预览",
     "查重证明图",
     "前缀证明图",
@@ -175,6 +176,23 @@ LABEL_RE = re.compile(
 
 # 下一个字段边界（截密码/字段尾巴用）
 _NEXT_FIELD_RE = re.compile(r"\s*【[^】]{1,40}】")
+# 名称类字段值里常嵌套【自转】【合集】等，只能裁到「已知结构字段」
+_KNOWN_NEXT_FIELD_RE = re.compile(rf"\s*【\s*(?:{_LABEL_ALT})\s*】", re.I)
+_TITLE_FIELD_LABELS = frozenset({"资源名称", "影片名称"})
+_SIZE_FIELD_LABELS = frozenset({"资源大小", "文件大小", "影片大小", "影片容量"})
+# 82V+173P/6.7G/1配额 · 70.6G/1169V//7配额 · 807 M / 1V
+_SIZE_VALUE_RE = re.compile(
+    r"^("
+    r"(?:"
+    r"\d+(?:\.\d+)?\s*[GMTK]B?"
+    r"|\d+\s*[VvPp]"
+    r"|\d+\s*配额"
+    r"|配额"
+    r"|[/\+×xX\-\s]"
+    r")+"
+    r")",
+    re.I,
+)
 # Discuz 一楼正文起点（仅数字楼 id，跳过 postmessage_attach* 注入）
 _OP_POST_START_RE = re.compile(r'id="postmessage_(\d+)"[^>]*>', re.I)
 # 一楼正文结束：下一帖 / 评论区 / 表尾（切在开标签前，避免残留 `<div`）
@@ -360,13 +378,16 @@ def _clip_field_value(
     *,
     password: bool = False,
     short_enum: bool = False,
+    label: str = "",
 ) -> str:
     """裁掉粘在后面的【下一字段】、附件区与楼层噪声。"""
     val = " ".join((value or "").replace("\r", "\n").split())
     val = val.lstrip(":：").strip()
     if not val:
         return ""
-    m = _NEXT_FIELD_RE.search(val)
+    # 名称可含嵌套【标签】；其它字段遇到任意【…】即截
+    next_re = _KNOWN_NEXT_FIELD_RE if label in _TITLE_FIELD_LABELS else _NEXT_FIELD_RE
+    m = next_re.search(val)
     if m:
         val = val[: m.start()].strip()
     noise = _FIELD_NOISE_RE.search(val)
@@ -385,6 +406,13 @@ def _clip_field_value(
             val = m3.group(1).strip()
         if len(val) > 32:
             val = val[:32].rstrip()
+    elif label in _SIZE_FIELD_LABELS:
+        # 大小后常跟博主导语（某房/颜值/合集…），只留容量串
+        m4 = _SIZE_VALUE_RE.match(val)
+        if m4:
+            val = m4.group(1).strip().strip("/+-\u00d7xX \t")
+        if len(val) > 48:
+            val = val[:48].rstrip()
     elif len(val) > 200:
         # 非密码字段被整页吞入时硬顶，避免描述爆炸
         val = val[:200].rstrip()
@@ -400,6 +428,7 @@ def extract_metadata(text: str) -> dict[str, str]:
             m.group(2),
             password=is_pwd,
             short_enum=key in _SHORT_ENUM_LABELS,
+            label=key,
         )
         if key and val:
             meta[key] = val
@@ -468,10 +497,12 @@ def build_structured_description(
         if key not in allowed or key in picked:
             continue
         is_pwd = key == "解压密码"
+        clip_label = raw_key if raw_key in _SIZE_FIELD_LABELS | _TITLE_FIELD_LABELS else key
         val = _clip_field_value(
             raw_val,
             password=is_pwd,
             short_enum=key in _SHORT_ENUM_LABELS,
+            label=clip_label,
         )
         if is_pwd and _is_bogus_password(val):
             continue
