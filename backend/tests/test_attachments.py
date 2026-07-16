@@ -80,3 +80,84 @@ def test_inject_and_denied():
     assert "postmessage_attach0" in merged
     assert "magnet:?" in merged
     assert is_attachment_denied("抱歉，只有特定用户可以下载此附件")
+
+
+def test_denied_not_masked_by_empty_download():
+    """第一个附件空下载、第二个无权时，结果须带 denied（不能只标 downloaded）。"""
+    from parsers.attachments import AttachmentFetchResult
+
+    # 模拟 download_tail 汇总结论（与 crawler 逻辑一致）
+    any_downloaded = True
+    any_denied = True
+    result_text = ""
+    if result_text:
+        out = AttachmentFetchResult(text=result_text, downloaded=True, denied=any_denied)
+    elif any_denied:
+        out = AttachmentFetchResult(downloaded=any_downloaded, denied=True)
+    elif any_downloaded:
+        out = AttachmentFetchResult(downloaded=True)
+    else:
+        out = AttachmentFetchResult(failed=True)
+    assert out.denied is True
+    assert out.downloaded is True
+    assert not out.text
+
+
+def test_judge_stubs_when_second_attachment_denied():
+    """正文无链、附件已试、第二附件无权 → 占位入库，不重试。"""
+    from workers.thread_outcome import judge_thread_html
+
+    html = """
+    <html><head><title>【高清】示例资源贴 - 色花堂</title></head>
+    <body>
+      <span id="thread_subject">【高清】示例资源贴</span>
+      <div id="postmessage_1">链接见第二个附件</div>
+      <div class="tattl">
+        <a href="forum.php?mod=attachment&amp;aid=1">说明.txt</a>
+        <a href="forum.php?mod=attachment&amp;aid=2">资源链接.txt</a>
+      </div>
+      Powered by Discuz!
+    </body></html>
+    """
+    html = html + ("<!-- pad -->" * 900)
+    # 说明.txt 下到了无用文本，资源链接.txt 无权
+    out = judge_thread_html(
+        html,
+        board_fid=95,
+        list_title="【高清】示例资源贴",
+        attachments_already_tried=True,
+        attachment_denied=True,
+        had_attachments=True,
+        preferred_link="ed2k",
+    )
+    assert out.verdict == "stub"
+    assert out.outcome == "无权限下载附件"
+
+
+def test_judge_stubs_after_attachments_tried_without_link():
+    """已下附件仍无目标链 → 占位（避免队列无限重试）。"""
+    from workers.thread_outcome import judge_thread_html
+
+    html = """
+    <html><head><title>【高清】示例资源贴 - 色花堂</title></head>
+    <body>
+      <span id="thread_subject">【高清】示例资源贴</span>
+      <div id="postmessage_1">链接见附件</div>
+      <div class="tattl">
+        <a href="forum.php?mod=attachment&amp;aid=2">资源链接.txt</a>
+      </div>
+      Powered by Discuz!
+    </body></html>
+    """
+    html = html + ("<!-- pad -->" * 900)
+    out = judge_thread_html(
+        html,
+        board_fid=95,
+        list_title="【高清】示例资源贴",
+        attachments_already_tried=True,
+        attachment_denied=False,
+        had_attachments=True,
+        preferred_link="ed2k",
+    )
+    assert out.verdict == "stub"
+    assert "附件" in out.outcome

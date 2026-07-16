@@ -2839,6 +2839,32 @@ a {
   margin: 0;
 }
 
+.data-backup-import {
+  margin-top: 16px;
+  padding-top: 14px;
+  border-top: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.data-backup-import-head h4 {
+  margin: 0 0 4px;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.data-backup-import-head .hint {
+  margin: 0;
+}
+
+.data-backup-import-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
 .data-reset-form {
   display: flex;
   flex-direction: column;

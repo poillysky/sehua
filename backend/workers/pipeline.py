@@ -213,6 +213,21 @@ async def process_thread(
             title=parsed.title,
             board_fid=board_fid,
         )
+        # 附件无权占位：把附件名写入描述，便于账号重爬识别
+        if outcome.verdict == "stub" and "附件" in str(outcome.outcome or ""):
+            from parsers.attachments import extract_download_attachments
+
+            att_names = [
+                a.name for a in extract_download_attachments(thread_url, html)[:6]
+            ]
+            if att_names:
+                extra = "附件：" + "、".join(att_names)
+                if extra not in (parsed.description or ""):
+                    parsed.description = (
+                        f"{parsed.description}\n{extra}".strip()
+                        if parsed.description
+                        else extra
+                    )
 
         result: dict[str, Any] = {
             "tid": tid,

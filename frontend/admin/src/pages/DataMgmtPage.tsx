@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState, type FormEvent } from 'react'
 import { api } from '../api/client'
 import {
   fetchBackupStatus,
+  importBackupFile,
   runBackupNow,
   saveBackupConfig,
   type BackupStatus,
@@ -88,6 +89,8 @@ export function DataMgmtPage() {
   const [backupLoading, setBackupLoading] = useState(true)
   const [backupSaving, setBackupSaving] = useState(false)
   const [backupRunning, setBackupRunning] = useState(false)
+  const [backupImporting, setBackupImporting] = useState(false)
+  const [importFile, setImportFile] = useState<File | null>(null)
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -203,6 +206,40 @@ export function DataMgmtPage() {
     }
   }
 
+  async function onImportBackup() {
+    if (!importFile) {
+      toast.warn('请先选择备份文件')
+      return
+    }
+    const ok = await confirmDialog({
+      title: '导入备份到资源库',
+      message:
+        '将把备份中的资源合并进当前库：相同 hash 会更新并去重，不会清空现有数据。若爬虫在跑会先停再导再开。确定？',
+      confirmText: '开始导入',
+    })
+    if (!ok) return
+    setBackupImporting(true)
+    try {
+      const res = await importBackupFile(importFile)
+      await load()
+      await loadBackup()
+      if (res.ok) {
+        toast.success(
+          `导入完成 · 新增 ${res.resources_inserted} · 更新 ${res.resources_updated}` +
+            (res.resources_skipped ? ` · 跳过 ${res.resources_skipped}` : ''),
+        )
+        setImportFile(null)
+      } else {
+        toast.error(res.error || '导入失败')
+      }
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : '导入失败')
+      await loadBackup().catch(() => {})
+    } finally {
+      setBackupImporting(false)
+    }
+  }
+
   const o = overview
   let crawlerHint = ''
   let crawlerHintTone: 'warn' | 'info' = 'info'
@@ -215,7 +252,7 @@ export function DataMgmtPage() {
   }
 
   const file = backup?.file
-  const busy = backupRunning || Boolean(backup?.busy)
+  const busy = backupRunning || backupImporting || Boolean(backup?.busy)
 
   return (
     <section className="page page-data active">
@@ -225,7 +262,7 @@ export function DataMgmtPage() {
             <div className="data-mgmt-intro-text">
               <h2>数据管理</h2>
               <p>
-                管理资源库备份与数据重置。备份只保留一份完整资源快照；清空不会删除系统设置、论坛配置与账号。
+                管理资源库备份、备份导入与数据重置。备份只保留一份完整资源快照；导入按 hash 去重合并；清空不会删除系统设置、论坛配置与账号。
               </p>
             </div>
           </header>
@@ -351,6 +388,39 @@ export function DataMgmtPage() {
                     </p>
                   </>
                 )}
+              </div>
+
+              <div className="data-backup-import">
+                <div className="data-backup-import-head">
+                  <h4>导入备份</h4>
+                  <p className="hint">
+                    支持 .sql.gz / .zip。合并进当前库，相同资源 hash 与标签名自动去重，不会整库覆盖。
+                  </p>
+                </div>
+                <div className="data-backup-import-row">
+                  <label className={`btn secondary sm import-file-btn${busy ? ' is-disabled' : ''}`}>
+                    {importFile ? importFile.name : '选择文件'}
+                    <input
+                      type="file"
+                      accept=".gz,.sql,.zip,application/gzip,application/zip"
+                      disabled={backupLoading || busy}
+                      hidden
+                      onChange={(e) => {
+                        const f = e.target.files?.[0] || null
+                        setImportFile(f)
+                        e.target.value = ''
+                      }}
+                    />
+                  </label>
+                  <button
+                    type="button"
+                    className="btn primary sm"
+                    disabled={backupLoading || busy || !importFile}
+                    onClick={() => void onImportBackup()}
+                  >
+                    {backupImporting ? '导入中…' : '导入到数据库'}
+                  </button>
+                </div>
               </div>
             </div>
           </div>

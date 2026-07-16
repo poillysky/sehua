@@ -326,11 +326,15 @@ class AttachmentDownloader:
 
         result_text = "\n\n".join(chunks)
         if result_text:
-            return AttachmentFetchResult(text=result_text, downloaded=True)
+            # 保留 denied：若语料仍解析不出链，上层可占位入库
+            return AttachmentFetchResult(
+                text=result_text, downloaded=True, denied=any_denied
+            )
+        if any_denied:
+            # 任一附件明确无权限，且没有可用链接文本 → 占位；勿被「空附件 downloaded」掩盖
+            return AttachmentFetchResult(downloaded=any_downloaded, denied=True)
         if any_downloaded:
             return AttachmentFetchResult(downloaded=True)
-        if any_denied:
-            return AttachmentFetchResult(denied=True)
         return AttachmentFetchResult(failed=True)
 
     async def download_torrents(
@@ -375,11 +379,13 @@ class AttachmentDownloader:
 
         result_text = "\n".join(chunks)
         if result_text:
-            return AttachmentFetchResult(text=result_text, downloaded=True)
+            return AttachmentFetchResult(
+                text=result_text, downloaded=True, denied=any_denied
+            )
+        if any_denied:
+            return AttachmentFetchResult(downloaded=any_downloaded, denied=True)
         if any_downloaded:
             return AttachmentFetchResult(downloaded=True)
-        if any_denied:
-            return AttachmentFetchResult(denied=True)
         return AttachmentFetchResult(failed=True)
 
 

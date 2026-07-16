@@ -1,4 +1,4 @@
-import { api } from './client'
+import { api, getToken, setToken } from './client'
 
 export type BackupFileInfo = {
   exists: boolean
@@ -45,4 +45,47 @@ export function runBackupNow() {
     method: 'POST',
     body: '{}',
   })
+}
+
+export type BackupImportResult = {
+  message: string
+  ok: boolean
+  error?: string
+  resources_inserted: number
+  resources_updated: number
+  resources_skipped: number
+  tags_upserted: number
+  resource_tags_linked: number
+  result?: Record<string, unknown>
+}
+
+export async function importBackupFile(file: File): Promise<BackupImportResult> {
+  const form = new FormData()
+  form.append('file', file)
+
+  const headers = new Headers()
+  const token = getToken()
+  if (token) headers.set('Authorization', `Bearer ${token}`)
+
+  const res = await fetch('/api/system/backup/import', {
+    method: 'POST',
+    headers,
+    body: form,
+    credentials: 'include',
+  })
+  if (res.status === 401) {
+    setToken(null)
+    throw new Error('未登录或登录已过期')
+  }
+  if (!res.ok) {
+    let detail: unknown = `HTTP ${res.status}`
+    try {
+      const data = await res.json()
+      detail = data.detail ?? data.message ?? detail
+    } catch {
+      /* ignore */
+    }
+    throw new Error(typeof detail === 'string' ? detail : JSON.stringify(detail))
+  }
+  return (await res.json()) as BackupImportResult
 }

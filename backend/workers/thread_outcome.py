@@ -193,6 +193,9 @@ def judge_thread_html(
         return ThreadOutcome("stub", "无权限下载附件", link_kind, title)
     if attachment_failed:
         return ThreadOutcome("retry", "附件下载失败，待重试", link_kind, title)
+    # 已尝试附件仍无目标链：有下载痕迹时不再无限重试，改为占位（常见：链接在无权附件里）
+    if attachments_already_tried and had_attachments:
+        return ThreadOutcome("stub", "无权限下载附件", link_kind, title)
     if had_attachments:
         return ThreadOutcome("retry", "附件未解析出链接，待重试", link_kind, title)
 
