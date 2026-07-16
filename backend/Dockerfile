@@ -9,9 +9,15 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
 
 ARG TARGETARCH
+# Postgres 服务为 16.x；Debian bookworm 默认 postgresql-client 是 15，需 PGDG 的 16 客户端
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends wget ca-certificates p7zip-full postgresql-client \
-
+    && apt-get install -y --no-install-recommends wget ca-certificates curl gnupg p7zip-full \
+    && curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc \
+         | gpg --dearmor -o /usr/share/keyrings/postgresql-pgdg.gpg \
+    && echo "deb [signed-by=/usr/share/keyrings/postgresql-pgdg.gpg] http://apt.postgresql.org/pub/repos/apt bookworm-pgdg main" \
+         > /etc/apt/sources.list.d/pgdg.list \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends postgresql-client-16 \
     && set -eu; \
        case "${TARGETARCH}" in \
          amd64) RAR_ARCH=x64 ;; \

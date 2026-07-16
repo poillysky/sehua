@@ -1707,6 +1707,7 @@ a {
 .crawler-toolbar-right {
   gap: 8px;
   width: 100%;
+  justify-content: flex-end;
 }
 
 .crawler-refresh {
@@ -1742,11 +1743,12 @@ a {
   cursor: not-allowed;
 }
 
-/* 统一分段按钮组：同一容器、等高、分隔线，语义色只用文案/强调 */
+/* 桌面：紧凑分段组靠右；窄屏见 media 内全宽铺开 */
 .crawler-actions {
   display: inline-flex;
   align-items: stretch;
-  width: 100%;
+  width: auto;
+  max-width: 100%;
   height: 34px;
   padding: 3px;
   gap: 2px;
@@ -1763,10 +1765,9 @@ a {
   align-items: center;
   justify-content: center;
   gap: 6px;
-  flex: 1 1 0;
-  min-width: 0;
+  flex: 0 0 auto;
   height: 100%;
-  padding: 0 10px;
+  padding: 0 13px;
   margin: 0;
   border: 0;
   border-radius: 7px;

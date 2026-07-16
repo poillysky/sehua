@@ -261,7 +261,13 @@ def _run_pg_dump(tables: list[str], dest_tmp: Path) -> None:
     if code != 0:
         if dest_tmp.exists():
             dest_tmp.unlink(missing_ok=True)
-        raise RuntimeError(f"pg_dump 失败 (exit {code}): {stderr.strip() or 'unknown'}")
+        err = (stderr or "").strip() or "unknown"
+        # 客户端比服务端旧（如镜像里仍是 pg_dump 15、库是 16）时回退 Python 导出
+        if "version mismatch" in err.lower():
+            log.warning("pg_dump version mismatch · fallback to python dump: %s", err)
+            _run_python_dump(tables, dest_tmp)
+            return
+        raise RuntimeError(f"pg_dump 失败 (exit {code}): {err}")
     if not dest_tmp.is_file() or dest_tmp.stat().st_size < 32:
         dest_tmp.unlink(missing_ok=True)
         raise RuntimeError("备份文件为空或过小")

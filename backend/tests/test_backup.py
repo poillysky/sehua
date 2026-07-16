@@ -136,6 +136,67 @@ async def test_pause_and_resume_when_enabled(monkeypatch):
     start_loop.assert_called_once()
 
 
+def test_pg_dump_version_mismatch_falls_back_to_python(monkeypatch, tmp_path):
+    """pg_dump 与服务端主版本不一致时，改走 Python SQL 导出。"""
+    import gzip as gzmod
+    import io
+
+    class _Proc:
+        def __init__(self):
+            self.stdout = io.BytesIO(b"")
+            self.stderr = io.BytesIO(
+                b"pg_dump: error: aborting because of server version mismatch\n"
+                b"pg_dump: detail: server version: 16.14; pg_dump version: 15.18\n"
+            )
+
+        def wait(self, timeout=None):
+            return 1
+
+        def kill(self):
+            return None
+
+    monkeypatch.setattr(bk.shutil, "which", lambda name: "/usr/bin/pg_dump")
+    monkeypatch.setattr(
+        bk,
+        "DatabaseConfig",
+        type(
+            "C",
+            (),
+            {
+                "from_env": staticmethod(
+                    lambda: type(
+                        "Cfg",
+                        (),
+                        {
+                            "host": "127.0.0.1",
+                            "port": 5432,
+                            "user": "postgres",
+                            "password": "x",
+                            "database": "ed2k",
+                        },
+                    )()
+                )
+            },
+        ),
+    )
+    monkeypatch.setattr(bk.subprocess, "Popen", lambda *a, **k: _Proc())
+
+    called: list[list[str]] = []
+
+    def fake_py(tables, dest_tmp: Path):
+        called.append(list(tables))
+        with gzmod.open(dest_tmp, "wb", compresslevel=1) as out:
+            out.write(b"-- python fallback " + b"y" * 48)
+
+    monkeypatch.setattr(bk, "_run_python_dump", fake_py)
+
+    dest = tmp_path / "out.sql.gz"
+    bk._run_pg_dump(["ed2k_resources"], dest)
+    assert called == [["ed2k_resources"]]
+    assert dest.is_file()
+    assert gzmod.open(dest, "rb").read().startswith(b"-- python fallback")
+
+
 def test_save_backup_config_clamps(monkeypatch):
     stored: dict[str, str] = {}
 
