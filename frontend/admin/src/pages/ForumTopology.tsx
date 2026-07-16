@@ -10,6 +10,8 @@ export type TopoStepId =
   | 'list_scan'
   | 'thread_crawl'
   | 'import'
+  | 'random_tid'
+  | 'account_stub'
 
 type PipelineNode = {
   id: TopoStepId
@@ -33,6 +35,8 @@ const STEP_IDS: TopoStepId[] = [
   'list_scan',
   'thread_crawl',
   'import',
+  'random_tid',
+  'account_stub',
 ]
 
 function parseStep(value: string | null): TopoStepId {
@@ -96,8 +100,15 @@ function Branch({ label, main, children }: { label: string; main?: boolean; chil
   )
 }
 
-function Junction({ children, pair, cols }: { children: ReactNode; pair?: boolean; cols?: 2 | 3 }) {
-  const colCls = pair || cols === 3 ? ' fc-split-grid--3' : cols === 2 ? ' fc-split-grid--2' : ''
+function Junction({ children, pair, cols }: { children: ReactNode; pair?: boolean; cols?: 2 | 3 | 4 }) {
+  const colCls =
+    pair || cols === 3
+      ? ' fc-split-grid--3'
+      : cols === 4
+        ? ' fc-split-grid--4'
+        : cols === 2
+          ? ' fc-split-grid--2'
+          : ''
   const pairCls = pair ? ' fc-split-grid--pair' : ''
   return (
     <div className={`fc-split-grid${colCls}${pairCls}`}>
@@ -164,24 +175,24 @@ function StepDetail({
 
   if (step === 'switch') {
     return (
-      <ChartShell hint="连续调度受总开关约束；手动「立即爬取 / 扫新帖 / 异常重试」不受开关阻挡（busy 时仍互斥）">
+      <ChartShell hint="连续深扫受总开关约束。手动立即/扫新帖、随机连续、账号爬占位、异常重试不要求开关开，但与 looping/running 互斥。手动停止/关开关：协作退出并保留队列。资源库备份会先停爬虫，完成后按原 loop 恢复。">
         <Process text="读爬虫开关" sub={`当前：${cfg.web_crawler_enabled ? '开' : '关'}`} />
         <ArrowDown />
         <Decision text="触发来源？" />
         <ArrowDown />
-        <Junction cols={3}>
-          <Branch label="连续调度">
+        <Junction cols={4}>
+          <Branch label="连续深扫">
             <Spine>
-              <Decision text="开关开启且为本论坛？" />
+              <Decision text="开关开且为本论坛？" />
               <ArrowDown />
               <Junction pair>
                 <Branch label="否">
-                  <Terminal text="不调度" sub="待命 / 跳过本论坛" kind="muted" />
+                  <Terminal text="不调度" sub="关时循环 5s 待命" kind="muted" />
                 </Branch>
                 <Branch label="是" main>
                   <Terminal
                     text="进入调度"
-                    sub={isActiveForum && enabled ? '当前满足' : '需启用本论坛'}
+                    sub={isActiveForum && enabled ? '当前满足 · loop=deep' : '需启用本论坛'}
                     kind="ok"
                   />
                 </Branch>
@@ -189,10 +200,27 @@ function StepDetail({
             </Spine>
           </Branch>
           <Branch label="手动立即 / 扫新帖" main>
-            <Terminal text="可直接开跑" sub="不要求开关为开 · 连续跑着时拒绝" kind="ok" />
+            <Terminal
+              text="可直接开跑"
+              sub="不要求开关 · busy 时拒绝"
+              kind="ok"
+            />
           </Branch>
-          <Branch label="异常重试">
-            <Terminal text="可直接开跑" sub="只消化异常队列 · 不扫列表" kind="ok" />
+          <Branch label="侧线任务">
+            <Spine>
+              <Terminal text="随机抓帖连续" sub="loop=random_tid · 与深扫互斥" kind="ok" />
+              <ArrowDown sm />
+              <Terminal text="账号爬占位" sub="需账号 Cookie · 不进待抓队列" kind="warn" />
+              <ArrowDown sm />
+              <Terminal text="异常重试" sub="只吃异常队列 · 不扫列表" kind="warn" />
+            </Spine>
+          </Branch>
+          <Branch label="停止 / 备份">
+            <Spine>
+              <Terminal text="手动停止" sub="关开关 · 队列保留" kind="fail" />
+              <ArrowDown sm />
+              <Terminal text="资源库备份" sub="先停爬 · 备完再按原 loop 开" kind="muted" />
+            </Spine>
           </Branch>
         </Junction>
       </ChartShell>
@@ -201,21 +229,24 @@ function StepDetail({
 
   if (step === 'scheduler') {
     return (
-      <ChartShell hint="本步只定节奏与模式：连续无间隔、套用限速。入库上限与连续失败冷却在「抓帖」环内判定。">
-        <Process text="连续执行" sub="无轮间间隔 · 循环不停" />
+      <ChartShell hint="深扫连续：一轮结束几乎无间隔再开。开关关时循环不退出，约 5s 轮询待命。入库上限与失败冷却在「抓帖」环内判定。">
+        <Process text="连续执行" sub="无轮间间隔 · loop_kind=deep" />
         <ArrowDown />
         <Process
           text="套用请求节奏"
           sub={`延迟 ${delay} 秒 · 节流窗口 ${cfg.web_crawler_autothrottle_window} · 上限 ${cfg.web_crawler_autothrottle_max_delay}s`}
         />
         <ArrowDown />
-        <Process text="本轮列表模式" sub="连续/立即爬取 → 仅深扫；扫新帖按钮 → 捕新" />
+        <Process
+          text="本轮列表模式"
+          sub="连续/立即 → 仅深扫；扫新帖按钮 → 多板捕新（每板扫完即抓帖）"
+        />
         <ArrowDown />
         <Terminal
           text="进入选板"
           sub={
             target > 0
-              ? `抓帖环内：入库目标 ${target} · 失败阈值 ${failN}/${cool}s`
+              ? `抓帖环内：入库+占位目标 ${target} · 失败阈值 ${failN}/${cool}s`
               : `抓帖环内：失败阈值 ${failN} · 冷却 ${cool}s`
           }
           kind="ok"
@@ -286,7 +317,7 @@ function StepDetail({
       20
     const knownStop = cfg.web_crawler_list_known_stop_pages || 2
     return (
-      <ChartShell hint={`扫列表前先看队列背压；连续/立即：每轮深扫 ${pages} 页至板底；扫新帖：上限 ${headPages} 页，连续 ${knownStop} 页全已知早停`}>
+      <ChartShell hint={`扫列表前先看队列背压；连续/立即：每轮深扫 ${pages} 页至板底；扫新帖：每板上限 ${headPages} 页（可板级覆盖），连续 ${knownStop} 页全已知早停，且本板扫完后同轮进入抓帖`}>
         <Decision text="正常待抓 ≥ 150？" />
         <ArrowDown />
         <Junction pair>
@@ -309,7 +340,10 @@ function StepDetail({
               <Junction pair>
                 <Branch label="是 · 捕新">
                   <Spine>
-                    <Process text="自进度页捕新" sub={`默认可从 P1；上限 ${headPages} 页 · 多板按序`} />
+                    <Process
+                      text="自进度页捕新"
+                      sub={`上限 ${headPages} 页 · 多板按序 · 不写每日捕新闸门`}
+                    />
                     <ArrowDown />
                     <Process text="浏览器读列表 · 解析帖链" sub="跳过置顶 · 发帖时间序" />
                     <ArrowDown />
@@ -317,13 +351,13 @@ function StepDetail({
                     <ArrowDown />
                     <Junction cols={3}>
                       <Branch label="是 · 完成">
-                        <Terminal text="本板捕新结束" sub="切下一启用板或收工" kind="muted" />
+                        <Terminal text="本板捕新结束" sub="同轮抓帖后切下一板" kind="muted" />
                       </Branch>
                       <Branch label="触达上限仍有新">
                         <Terminal text="下轮续扫" sub="保留 head 进度页" kind="warn" />
                       </Branch>
                       <Branch label="有新帖" main>
-                        <Terminal text="写入待抓队列" sub="持久队列 · 进入抓帖" kind="ok" />
+                        <Terminal text="写入待抓队列" sub="持久队列 · 同轮抓帖" kind="ok" />
                       </Branch>
                     </Junction>
                   </Spine>
@@ -386,24 +420,21 @@ function StepDetail({
         ? '正文无电驴 → 下尾部 txt/压缩包（需回复贴则不下）'
         : '正文无磁力 → 下 .torrent 转磁力'
     return (
-      <ChartShell hint="抓帖环：取队列 → 单帖判定 → 回写 → 检查入库目标/失败冷却。另有「随机抓帖」：直链探测入库，不进待抓队列；停止后清空抽样。">
+      <ChartShell hint="主链路抓帖：取待抓队列 → 单帖判定 → 回写 → 检查入库+占位目标/失败冷却。「随机抓帖」「账号爬占位」是独立侧线，见总览后两步。">
         <Process text="取待抓队列" sub="正常 ready + 已到期异常（一并消化）" />
         <ArrowDown />
         <Decision text="本轮来源？" />
         <ArrowDown />
-        <Junction cols={3}>
+        <Junction cols={2}>
           <Branch label="异常专重试">
-            <Terminal text="只取异常队列" sub="不扫列表 · 成功才出队" kind="warn" />
-          </Branch>
-          <Branch label="随机抓帖">
-            <Terminal text="循环随机 tid" sub="每轮 200 · 不进队列 · 直接入库" kind="ok" />
+            <Terminal text="只取异常队列" sub="忽略退避 · 成功才出队 · 不扫列表" kind="warn" />
           </Branch>
           <Branch label="正常抓帖" main>
             <Terminal text="正常+到期异常" sub="列表已扫或背压跳过后再抓" kind="ok" />
           </Branch>
         </Junction>
         <ArrowDown />
-        <Process text="HTTP 读取帖页" sub="会话内请求 · 附带进站 Cookie" />
+        <Process text="HTTP 读取帖页" sub="会话内请求 · 附带进站 Cookie（游客/年龄门）" />
         <ArrowDown />
         <Decision text="页面是否软文/安全壳？" />
         <ArrowDown />
@@ -545,7 +576,7 @@ function StepDetail({
         <ArrowDown />
         {target > 0 ? (
           <>
-            <Decision text={`本批入库 ≥ ${target}？`} />
+            <Decision text={`本批入库+占位 ≥ ${target}？`} />
             <ArrowDown />
             <Junction pair>
               <Branch label="已达上限">
@@ -585,35 +616,100 @@ function StepDetail({
     )
   }
 
-  // import
+  if (step === 'import') {
+    return (
+      <ChartShell hint="入库出口：正常写主资源；占位写无链占位；失败不写；跳过可清坏占位；重试不入库。账号爬占位升级成功会删旧占位另见侧线。">
+        <Process text="接收抓帖判定" sub="正常 / 占位 / 跳过 / 失败 / 重试" />
+        <ArrowDown />
+        <Decision text="判定结果？" />
+        <ArrowDown />
+        <Junction cols={3}>
+          <Branch label="正常入库" main>
+            <Spine>
+              <Process text="写入/更新资源" sub="每帖 1 主资源 · 同类链进列表" />
+              <ArrowDown />
+              <Terminal text="成功" sub="处理记录可见" kind="ok" />
+            </Spine>
+          </Branch>
+          <Branch label="占位入库">
+            <Spine>
+              <Process text="写入占位帖" sub="无链占位地址" />
+              <ArrowDown />
+              <Terminal text="占位完成" sub="登录/回复/购买/附件无权" kind="warn" />
+            </Spine>
+          </Branch>
+          <Branch label="跳过 / 失败 / 重试">
+            <Spine>
+              <Terminal
+                text="不写或清理"
+                sub="跳过·可删坏占位 · 失败·有链无资产 · 重试·挂起"
+                kind="muted"
+              />
+            </Spine>
+          </Branch>
+        </Junction>
+      </ChartShell>
+    )
+  }
+
+  if (step === 'random_tid') {
+    return (
+      <ChartShell hint="活动页「随机抓帖」= 连续循环（POST /random-tid/loop/start），与深扫连续互斥；不要求总开关开，但 looping/running 时拒绝。">
+        <Process text="启动随机连续调度" sub="loop_kind=random_tid · 清空本会话抽样" />
+        <ArrowDown />
+        <Process text="每轮随机探测" sub="默认 200 个 tid · 范围可配 · 跳过已入库/已在队列" />
+        <ArrowDown />
+        <Process text="直链读帖入库" sub="不进待抓队列 · magnet+ed2k 混合判定" />
+        <ArrowDown />
+        <Decision text="本轮探测跑满？" />
+        <ArrowDown />
+        <Junction pair>
+          <Branch label="是">
+            <Terminal text="无间隔开下一轮" sub="连续循环不停" kind="ok" />
+          </Branch>
+          <Branch label="手动停止">
+            <Terminal text="退出循环" sub="清空本会话已探 tid · 下次重抽" kind="fail" />
+          </Branch>
+        </Junction>
+      </ChartShell>
+    )
+  }
+
+  // account_stub
   return (
-    <ChartShell hint="入库出口：正常写主资源；占位写无链占位；失败不写；跳过可清坏占位；重试不入库">
-      <Process text="接收抓帖判定" sub="正常 / 占位 / 跳过 / 失败 / 重试" />
+    <ChartShell hint="活动页「账号爬占位」后台跑完优先占位队列；不进待抓列表；与 looping/running 互斥；需论坛配置里的账号 Cookie。">
+      <Process text="校验账号 Cookie" sub="未配置则拒绝 · 与游客 Cookie 分开" />
       <ArrowDown />
-      <Decision text="判定结果？" />
+      <Process
+        text="查库优先占位队列"
+        sub="需登录 / 无阅读权限 / 无权限下载附件 · remaining 每次重算"
+      />
       <ArrowDown />
-      <Junction cols={3}>
-        <Branch label="正常入库" main>
-          <Spine>
-            <Process text="写入/更新资源" sub="每帖 1 主资源 · 同类链进列表" />
-            <ArrowDown />
-            <Terminal text="成功" sub="处理记录可见" kind="ok" />
-          </Spine>
+      <Decision text="还有未尝试的优先占位？" />
+      <ArrowDown />
+      <Junction pair>
+        <Branch label="无">
+          <Terminal text="本轮结束" sub="进度：已处理 / 库内剩余" kind="muted" />
         </Branch>
-        <Branch label="占位入库">
+        <Branch label="有" main>
           <Spine>
-            <Process text="写入占位帖" sub="无链占位地址" />
+            <Process text="账号会话抓帖" sub="cookie_override · 独立 cookie jar" />
             <ArrowDown />
-            <Terminal text="占位完成" sub="登录/回复/购买/附件无权" kind="warn" />
-          </Spine>
-        </Branch>
-        <Branch label="跳过 / 失败 / 重试">
-          <Spine>
-            <Terminal
-              text="不写或清理"
-              sub="跳过·可删坏占位 · 失败·有链无资产 · 重试·挂起"
-              kind="muted"
-            />
+            <Decision text="升级为真链？" />
+            <ArrowDown />
+            <Junction cols={3}>
+              <Branch label="import">
+                <Terminal text="删旧占位 · 正常入库" sub="stub hash ≠ 真链 hash" kind="ok" />
+              </Branch>
+              <Branch label="仍 stub">
+                <Terminal text="保留占位" sub="本轮不再重试该 hash" kind="warn" />
+              </Branch>
+              <Branch label="失败/其它">
+                <Terminal text="记失败" sub="本轮跳过该 hash" kind="fail" />
+              </Branch>
+            </Junction>
+            <ArrowDown />
+            <Terminal text="取下一条" sub="不限数量 · 可手动停止中断" kind="ok" />
           </Spine>
         </Branch>
       </Junction>
@@ -631,7 +727,10 @@ function buildPipeline(
   const enabled = !!cfg.web_crawler_enabled && activeForumId === forum.id
   const board = boards.find((b) => b.fid === activeBoardFid)
   const pages = cfg.web_crawler_list_pages_per_board || 15
-  const headPages = cfg.web_crawler_manual_head_pages || 20
+  const headPages =
+    (activeBoardFid && cfg.board_manual_head_pages?.[activeBoardFid]) ||
+    cfg.web_crawler_manual_head_pages ||
+    20
   return [
     {
       id: 'switch',
@@ -681,6 +780,18 @@ function buildPipeline(
       detail: '正常·占位·跳过可清',
       status: 'idle',
     },
+    {
+      id: 'random_tid',
+      label: '随机',
+      detail: '连续 200/轮 · 不进队列',
+      status: 'idle',
+    },
+    {
+      id: 'account_stub',
+      label: '账号占位',
+      detail: '库内优先占位 · 跑完为止',
+      status: 'idle',
+    },
   ]
 }
 
@@ -692,6 +803,8 @@ const STEP_TITLE: Record<TopoStepId, string> = {
   list_scan: '⑤ 扫列表 — 细步骤',
   thread_crawl: '⑥ 抓帖 — 细步骤',
   import: '⑦ 入库 — 细步骤',
+  random_tid: '⑧ 随机抓帖 — 侧线',
+  account_stub: '⑨ 账号爬占位 — 侧线',
 }
 
 export function ForumTopology({ forum, activeForumId, boards, activeBoardFid }: Props) {
@@ -727,7 +840,8 @@ export function ForumTopology({ forum, activeForumId, boards, activeBoardFid }: 
         <div className="crawl-topo-head-main">
           {enabled ? <span className="tag tag-pending">待命</span> : <span className="tag tag-disabled">已关闭</span>}
           <span className="crawl-topo-summary">
-            本站管线 · 启用 {enabledCount} 板 · 连续仅深扫 · 背压跳列表 · 抓帖环含目标/冷却
+            主链路：连续深扫 · 背压跳列表 · 抓帖环（目标/冷却）· 启用 {enabledCount}{' '}
+            板；侧线：随机连续 / 账号爬占位 / 异常重试
           </span>
           {board ? <span className="crawl-topo-current">深扫当前 · {board.name}</span> : null}
         </div>

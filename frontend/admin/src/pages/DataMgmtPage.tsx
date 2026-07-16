@@ -1,5 +1,11 @@
 import { useCallback, useEffect, useState, type FormEvent } from 'react'
 import { api } from '../api/client'
+import {
+  fetchBackupStatus,
+  runBackupNow,
+  saveBackupConfig,
+  type BackupStatus,
+} from '../api/system'
 import { confirmDialog } from '../ui/confirm'
 import { toast } from '../ui/toast'
 
@@ -60,6 +66,13 @@ function formatCount(n: number | undefined) {
   return Number(n || 0).toLocaleString()
 }
 
+function formatBytes(n: number | undefined) {
+  const v = Number(n || 0)
+  if (v < 1024) return `${v} B`
+  if (v < 1024 * 1024) return `${(v / 1024).toFixed(1)} KB`
+  return `${(v / (1024 * 1024)).toFixed(2)} MB`
+}
+
 export function DataMgmtPage() {
   const [confirmText, setConfirmText] = useState('')
   const [overview, setOverview] = useState<Overview | null>(null)
@@ -67,6 +80,14 @@ export function DataMgmtPage() {
   const [crawlerEnabled, setCrawlerEnabled] = useState(false)
   const [loading, setLoading] = useState(true)
   const [resetting, setResetting] = useState(false)
+
+  const [backup, setBackup] = useState<BackupStatus | null>(null)
+  const [backupEnabled, setBackupEnabled] = useState(false)
+  const [backupHour, setBackupHour] = useState(3)
+  const [backupMinute, setBackupMinute] = useState(0)
+  const [backupLoading, setBackupLoading] = useState(true)
+  const [backupSaving, setBackupSaving] = useState(false)
+  const [backupRunning, setBackupRunning] = useState(false)
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -83,9 +104,26 @@ export function DataMgmtPage() {
     }
   }, [])
 
+  const loadBackup = useCallback(async () => {
+    setBackupLoading(true)
+    try {
+      const data = await fetchBackupStatus()
+      setBackup(data)
+      setBackupEnabled(Boolean(data.enabled))
+      setBackupHour(Number(data.hour ?? 3))
+      setBackupMinute(Number(data.minute ?? 0))
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : '读取备份配置失败')
+      setBackup(null)
+    } finally {
+      setBackupLoading(false)
+    }
+  }, [])
+
   useEffect(() => {
     void load()
-  }, [load])
+    void loadBackup()
+  }, [load, loadBackup])
 
   async function onReset(e: FormEvent) {
     e.preventDefault()
@@ -121,6 +159,50 @@ export function DataMgmtPage() {
     }
   }
 
+  async function onSaveBackup(e: FormEvent) {
+    e.preventDefault()
+    setBackupSaving(true)
+    try {
+      const data = await saveBackupConfig({
+        enabled: backupEnabled,
+        hour: backupHour,
+        minute: backupMinute,
+      })
+      setBackup(data)
+      toast.success('备份配置已保存')
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : '保存失败')
+    } finally {
+      setBackupSaving(false)
+    }
+  }
+
+  async function onRunBackup() {
+    const ok = await confirmDialog({
+      title: '立即备份资源库',
+      message:
+        '将覆盖磁盘上的同一份资源备份。若爬虫正在运行，会先停止，备份完成后再按原状态恢复。确定？',
+      confirmText: '开始备份',
+    })
+    if (!ok) return
+    setBackupRunning(true)
+    try {
+      const res = await runBackupNow()
+      await loadBackup()
+      await load()
+      if (res.ok) {
+        toast.success(`备份成功 · ${formatBytes(res.bytes ?? res.file?.bytes)}`)
+      } else {
+        toast.error(res.error || '备份失败')
+      }
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : '备份失败')
+      await loadBackup().catch(() => {})
+    } finally {
+      setBackupRunning(false)
+    }
+  }
+
   const o = overview
   let crawlerHint = ''
   let crawlerHintTone: 'warn' | 'info' = 'info'
@@ -132,6 +214,9 @@ export function DataMgmtPage() {
     crawlerHintTone = 'info'
   }
 
+  const file = backup?.file
+  const busy = backupRunning || Boolean(backup?.busy)
+
   return (
     <section className="page page-data active">
       <div className="page-scroll data-mgmt-page">
@@ -140,7 +225,7 @@ export function DataMgmtPage() {
             <div className="data-mgmt-intro-text">
               <h2>数据管理</h2>
               <p>
-                清空已爬取的资源、爬虫队列、板块进度与活动日志，使收集器回到初始数据状态。系统设置、论坛配置与账号不会被删除。
+                管理资源库备份与数据重置。备份只保留一份完整资源快照；清空不会删除系统设置、论坛配置与账号。
               </p>
             </div>
           </header>
@@ -151,7 +236,15 @@ export function DataMgmtPage() {
                 <h3>当前数据量</h3>
                 <p className="hint">可被重置的库表统计</p>
               </div>
-              <button type="button" className="btn ghost sm" onClick={() => void load()} disabled={loading || resetting}>
+              <button
+                type="button"
+                className="btn ghost sm"
+                onClick={() => {
+                  void load()
+                  void loadBackup()
+                }}
+                disabled={loading || resetting || busy}
+              >
                 {loading ? '刷新中…' : '刷新'}
               </button>
             </div>
@@ -171,6 +264,94 @@ export function DataMgmtPage() {
               {crawlerHint ? (
                 <p className={`data-mgmt-banner data-mgmt-banner--${crawlerHintTone}`}>{crawlerHint}</p>
               ) : null}
+            </div>
+          </div>
+
+          <div className="card data-mgmt-card">
+            <div className="data-mgmt-card-head">
+              <div>
+                <h3>资源库备份</h3>
+                <p className="hint">
+                  每日覆盖同一份完整资源备份（不含爬虫队列）。执行时若爬虫在跑会先停再备再开。
+                </p>
+              </div>
+            </div>
+            <div className="data-mgmt-card-body">
+              <form className="data-backup-form" onSubmit={(e) => void onSaveBackup(e)}>
+                <label className="data-backup-switch">
+                  <input
+                    type="checkbox"
+                    checked={backupEnabled}
+                    disabled={backupLoading || backupSaving || busy}
+                    onChange={(e) => setBackupEnabled(e.target.checked)}
+                  />
+                  <span>每日自动备份</span>
+                </label>
+                <div className="data-backup-time">
+                  <label>
+                    <span className="lbl">时</span>
+                    <input
+                      type="number"
+                      min={0}
+                      max={23}
+                      value={backupHour}
+                      disabled={backupLoading || backupSaving || busy}
+                      onChange={(e) => setBackupHour(Math.max(0, Math.min(23, Number(e.target.value) || 0)))}
+                    />
+                  </label>
+                  <label>
+                    <span className="lbl">分</span>
+                    <input
+                      type="number"
+                      min={0}
+                      max={59}
+                      value={backupMinute}
+                      disabled={backupLoading || backupSaving || busy}
+                      onChange={(e) =>
+                        setBackupMinute(Math.max(0, Math.min(59, Number(e.target.value) || 0)))
+                      }
+                    />
+                  </label>
+                </div>
+                <div className="data-backup-actions">
+                  <button type="submit" className="btn secondary sm" disabled={backupLoading || backupSaving || busy}>
+                    {backupSaving ? '保存中…' : '保存配置'}
+                  </button>
+                  <button
+                    type="button"
+                    className="btn primary sm"
+                    disabled={backupLoading || busy}
+                    onClick={() => void onRunBackup()}
+                  >
+                    {busy ? '备份中…' : '立即备份'}
+                  </button>
+                </div>
+              </form>
+              <div className="data-backup-status">
+                {backupLoading && !backup ? (
+                  <p className="hint">读取备份状态…</p>
+                ) : (
+                  <>
+                    <p>
+                      当前文件：
+                      {file?.exists
+                        ? `${file.filename || 'ed2k-resources.sql.gz'} · ${formatBytes(file.bytes)}`
+                        : '尚未生成'}
+                      {file?.mtime ? ` · ${file.mtime}` : ''}
+                    </p>
+                    <p>
+                      上次结果：
+                      {backup?.last_at
+                        ? `${backup.last_ok ? '成功' : '失败'} · ${backup.last_at}`
+                        : '无'}
+                      {backup?.last_ok && backup.last_bytes
+                        ? ` · ${formatBytes(backup.last_bytes)}`
+                        : ''}
+                      {!backup?.last_ok && backup?.last_error ? ` · ${backup.last_error}` : ''}
+                    </p>
+                  </>
+                )}
+              </div>
             </div>
           </div>
 

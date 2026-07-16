@@ -353,6 +353,102 @@ def delete_stub_by_source_url(conn: Any, source_url: str) -> bool:
     return ok
 
 
+# 账号 Cookie 最可能升级成功的占位 outcome（优先级从高到低）
+ACCOUNT_STUB_OUTCOMES: tuple[str, ...] = (
+    "帖子需论坛登录",
+    "无阅读权限 · 占位入库",
+    "无权限下载附件",
+)
+
+
+def _priority_stub_where(
+    *,
+    exclude_hashes: list[str] | None = None,
+) -> tuple[str, list[Any]]:
+    """WHERE 子句 + 参数（不含 ORDER/LIMIT）。"""
+    outcomes = list(ACCOUNT_STUB_OUTCOMES)
+    clauses = [
+        "lower(COALESCE(r.ed2k_link, '')) LIKE %s",
+        "COALESCE(rs.source_url, '') <> ''",
+        "rs.import_outcome IN %s",
+    ]
+    params: list[Any] = [f"{STUB_LINK_PREFIX.lower()}%", tuple(outcomes)]
+    excl = [h for h in (exclude_hashes or []) if h]
+    if excl:
+        clauses.append("r.hash NOT IN %s")
+        params.append(tuple(excl))
+    return " AND ".join(clauses), params
+
+
+def count_priority_account_stubs(
+    conn: Any,
+    *,
+    exclude_hashes: list[str] | None = None,
+) -> int:
+    """优先占位队列条数（可排除本轮已尝试 hash）。"""
+    _ensure_resource_schema(conn)
+    where_sql, params = _priority_stub_where(exclude_hashes=exclude_hashes)
+    with conn.cursor() as cur:
+        cur.execute(
+            f"""
+            SELECT COUNT(*)
+            FROM ed2k_resources r
+            JOIN resource_sources rs ON rs.hash = r.hash
+            WHERE {where_sql}
+            """,
+            tuple(params),
+        )
+        row = cur.fetchone()
+        return int(row[0] or 0) if row else 0
+
+
+def list_priority_account_stubs(
+    conn: Any,
+    *,
+    limit: int = 1,
+    exclude_hashes: list[str] | None = None,
+) -> list[dict[str, Any]]:
+    """捞出需登录 / 无阅读权限 / 无权限下载附件的占位帖，供账号重爬。"""
+    _ensure_resource_schema(conn)
+    n = max(1, int(limit or 1))
+    outcomes = list(ACCOUNT_STUB_OUTCOMES)
+    order_case = " ".join(
+        f"WHEN rs.import_outcome = %s THEN {i}" for i, _ in enumerate(outcomes)
+    )
+    where_sql, where_params = _priority_stub_where(exclude_hashes=exclude_hashes)
+    with conn.cursor() as cur:
+        cur.execute(
+            f"""
+            SELECT
+              r.hash,
+              r.ed2k_link,
+              rs.source_url,
+              rs.import_outcome,
+              rs.board_fid,
+              rs.board_name,
+              COALESCE(rs.title, r.filename, '') AS title,
+              COALESCE(r.updated_at, rs.created_at) AS updated_at
+            FROM ed2k_resources r
+            JOIN resource_sources rs ON rs.hash = r.hash
+            WHERE {where_sql}
+            ORDER BY
+              CASE
+                {order_case}
+                ELSE 99
+              END ASC,
+              COALESCE(r.updated_at, rs.created_at) ASC NULLS LAST
+            LIMIT %s
+            """,
+            (
+                *where_params,
+                *outcomes,
+                n,
+            ),
+        )
+        cols = [d[0] for d in cur.description]
+        return [dict(zip(cols, row)) for row in cur.fetchall()]
+
+
 def list_recent_resources(
     conn: Any,
     *,

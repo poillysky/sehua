@@ -181,9 +181,15 @@ function ResourceSummaryLines({
 function ResourceFooterMeta({ item }: { item: Ed2kResourceProps }) {
   const t = useTranslations();
   const linkCount = item.files_count;
+  const isStub = item.link_kind === "stub";
 
   return (
     <div className="flex min-w-0 flex-wrap items-center gap-x-4 gap-y-1 text-xs text-gray-600 md:text-sm dark:text-slate-400">
+      {isStub ? (
+        <span className="rounded bg-default-200/80 px-1.5 py-0.5 text-[11px] text-default-600 dark:bg-slate-700 dark:text-slate-300">
+          {t("Search.stub")}
+        </span>
+      ) : null}
       {item.forum_name ? (
         <span>
           {t("Search.forum")}
@@ -196,15 +202,17 @@ function ResourceFooterMeta({ item }: { item: Ed2kResourceProps }) {
           {item.board_name}
         </span>
       ) : null}
-      <span>
-        {t("Search.file_size")}
-        {linkCount > 1
-          ? t("Search.file_size_multi", {
-              count: linkCount,
-              size: formatByteSize(item.size),
-            })
-          : formatByteSize(item.size)}
-      </span>
+      {!isStub ? (
+        <span>
+          {t("Search.file_size")}
+          {linkCount > 1
+            ? t("Search.file_size_multi", {
+                count: linkCount,
+                size: formatByteSize(item.size),
+              })
+            : formatByteSize(item.size)}
+        </span>
+      ) : null}
       <ResourceMetaDate createdAt={item.created_at} />
     </div>
   );

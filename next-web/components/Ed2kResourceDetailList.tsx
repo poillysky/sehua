@@ -17,6 +17,14 @@ export function Ed2kResourceDetailList({
   const links = normalizeEd2kLinks(item.ed2k_links, item.ed2k_link);
 
   if (!links.length) {
+    if (item.link_kind === "stub") {
+      return (
+        <p className="text-sm text-default-500 dark:text-slate-400">
+          {t("Search.stub_hint")}
+        </p>
+      );
+    }
+
     return null;
   }
 

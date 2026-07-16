@@ -9,8 +9,15 @@
   data/
     postgres/               # 数据库（从旧 ed2k 拷过来）
     backend/                # cookies / 预览
+    backups/                # 资源库单份备份 ed2k-resources.sql.gz
     search/                 # 115 配置
     search-cache/           # 可空
+```
+
+首次部署可先建目录：
+
+```bash
+mkdir -p /vol1/1000/Docker/sehuatang/data/{postgres,backend,backups,search,search-cache}
 ```
 
 ## 保留旧库数据

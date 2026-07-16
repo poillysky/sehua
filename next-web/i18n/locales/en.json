@@ -34,7 +34,7 @@
   "Browse": {
     "entry": "Surprise me",
     "title": "Just browsing",
-    "subtitle": "Browse catalog with page controls below",
+    "subtitle": "Browse catalog including stubs without download links",
     "loading": "Loading resources...",
     "refresh": "Shuffle",
     "empty": "No resources yet",
@@ -82,6 +82,8 @@
     "ed2k": "Download",
     "ed2k_multi": "Download ({count})",
     "magnet": "Magnet",
+    "stub": "Stub (no link)",
+    "stub_hint": "No downloadable link yet; kept as a catalog placeholder",
     "file_size": "File size: ",
     "file_size_multi": "{count} files, {size} total",
     "file_count": "File count: ",

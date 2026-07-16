@@ -114,6 +114,12 @@ def get_crawler_status(_user: dict = Depends(require_permission("crawler.view"))
         rnd = random_progress()
     except Exception:
         rnd = {}
+    try:
+        from workers.recrawl import account_stub_progress
+
+        stub_prog = account_stub_progress()
+    except Exception:
+        stub_prog = {}
     return {
         "forum_id": cfg_forum_id,
         "active_forum_id": active,
@@ -140,6 +146,7 @@ def get_crawler_status(_user: dict = Depends(require_permission("crawler.view"))
         "last_finished_at": st.get("last_finished_at"),
         "last_result": last,
         "random_progress": rnd,
+        "account_stub_progress": stub_prog,
         "activity": st.get("activity") or [],
         "boards": boards,
         "queue": qstats or st.get("queue") or {},
@@ -160,6 +167,10 @@ def get_crawler_status(_user: dict = Depends(require_permission("crawler.view"))
             "random_budget": rnd.get("probe_budget") or 0,
             "random_imported": rnd.get("imported") or 0,
             "random_session": rnd.get("session_probed") or 0,
+            "stub_done": stub_prog.get("done") or 0,
+            "stub_budget": stub_prog.get("remaining") or stub_prog.get("budget") or 0,
+            "stub_remaining": stub_prog.get("remaining") or stub_prog.get("budget") or 0,
+            "stub_upgraded": stub_prog.get("upgraded") or 0,
         },
     }
 
@@ -396,3 +407,35 @@ async def post_retry_abnormal(_user: dict = Depends(require_permission("crawl.ru
 async def post_retry_soft_ad(_user: dict = Depends(require_permission("crawl.run"))) -> dict:
     """兼容旧接口：与异常重试相同。"""
     return await _post_queue_retry("abnormal")
+
+
+@router.post("/recrawl-stubs")
+async def post_recrawl_stubs(
+    _user: dict = Depends(require_permission("crawl.run")),
+) -> dict:
+    """用账号 Cookie 重爬全部优先占位；后台执行，进度见 status.account_stub_progress。"""
+    from workers.recrawl import start_account_stub_recrawl
+
+    st = crawl_status()
+    if st.get("looping"):
+        raise HTTPException(status_code=409, detail="连续调度进行中，请先关闭后再账号爬占位")
+    if st.get("running"):
+        raise HTTPException(status_code=409, detail="上一轮仍在执行，请稍候")
+    result = start_account_stub_recrawl()
+    if not result.get("ok") and result.get("reason") in ("busy", "loop_running"):
+        raise HTTPException(status_code=409, detail=str(result.get("error") or "爬虫正在执行"))
+    if not result.get("ok") and result.get("reason") == "no_account_cookie":
+        raise HTTPException(status_code=400, detail=str(result.get("error") or "未配置账号 Cookie"))
+    remaining = int(result.get("remaining") or result.get("budget") or 0)
+    return {
+        "message": "started" if result.get("started") else ("ok" if result.get("ok") else "failed"),
+        "started": bool(result.get("started")),
+        "remaining": remaining,
+        "budget": remaining,
+        "result": result,
+        "processed": 0,
+        "upgraded": 0,
+        "still_stub": 0,
+        "failed": 0,
+        "note": result.get("message") or result.get("error"),
+    }

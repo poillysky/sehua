@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import {
   fetchCrawlerStatus,
+  recrawlAccountStubs,
   retryAbnormalQueue,
   runCrawlerOnce,
   scanHeadOnce,
@@ -35,6 +36,8 @@ function activityLevelClass(msg: string): string {
     m.includes('随机抓帖本轮结束') ||
     m.includes('随机抓帖连续调度已启动') ||
     m.includes('本批入库已达上限') ||
+    m.includes('账号爬占位结束') ||
+    m.includes('账号爬占位升级') ||
     /重试结束/.test(m) ||
     /完成[：:]/.test(m)
   ) {
@@ -81,12 +84,33 @@ function formatResultLine(status: CrawlerStatus | null, runHint: string): string
   return ''
 }
 
+function formatStubHint(p: {
+  active: boolean
+  done: number
+  remaining: number
+  upgraded: number
+  still: number
+  failed: number
+}): string {
+  if (p.active) {
+    return (
+      `账号爬占位进行中：已处理 ${p.done} · 库内剩余 ${p.remaining}` +
+      ` · 升级 ${p.upgraded} · 仍占位 ${p.still} · 失败 ${p.failed}`
+    )
+  }
+  return (
+    `账号爬占位结束：处理 ${p.done} · 升级 ${p.upgraded}` +
+    ` · 仍占位 ${p.still} · 失败 ${p.failed} · 库内剩余 ${p.remaining}`
+  )
+}
+
 export function CrawlerPage() {
   const [status, setStatus] = useState<CrawlerStatus | null>(null)
   const [loading, setLoading] = useState(true)
   const [busy, setBusy] = useState(false)
   const [runHint, setRunHint] = useState('')
   const autoLoopTried = useRef(false)
+  const stubWasActive = useRef(false)
 
   const refresh = useCallback(async () => {
     try {
@@ -143,8 +167,66 @@ export function CrawlerPage() {
   const randomBudget = Number(rnd?.probe_budget ?? metrics?.random_budget ?? 200)
   const randomImported = Number(rnd?.imported ?? metrics?.random_imported ?? 0)
   const randomSession = Number(rnd?.session_probed ?? metrics?.random_session ?? 0)
+  const stubProg = status?.account_stub_progress
+  const stubActive =
+    !!stubProg?.active || (running && String(status?.phase || '') === 'account_stubs')
+  const stubDone = Number(stubProg?.done ?? metrics?.stub_done ?? 0)
+  const stubRemaining = Number(
+    stubProg?.remaining ?? stubProg?.budget ?? metrics?.stub_remaining ?? metrics?.stub_budget ?? 0,
+  )
+  const stubUpgraded = Number(stubProg?.upgraded ?? metrics?.stub_upgraded ?? 0)
+  const stubStill = Number(stubProg?.still_stub ?? 0)
+  const stubFailed = Number(stubProg?.failed ?? 0)
   const delayCurrent = throttle?.fetch_delay_current ?? status?.request_delay
   const riskTripped = String(status?.last_result?.reason || '').includes('cooldown_tripped')
+
+  // 账号爬占位后台跑：轮询进度刷新小字；结束后改成「结束」摘要，避免一直停在「进行中」
+  useEffect(() => {
+    if (stubActive) {
+      stubWasActive.current = true
+      setRunHint(
+        formatStubHint({
+          active: true,
+          done: stubDone,
+          remaining: stubRemaining,
+          upgraded: stubUpgraded,
+          still: stubStill,
+          failed: stubFailed,
+        }),
+      )
+      return
+    }
+    if (stubWasActive.current) {
+      stubWasActive.current = false
+      setRunHint(
+        formatStubHint({
+          active: false,
+          done: stubDone,
+          remaining: stubRemaining,
+          upgraded: stubUpgraded,
+          still: stubStill,
+          failed: stubFailed,
+        }),
+      )
+      return
+    }
+    // 页面刷新后：进度已结束但小字仍是旧的「进行中/启动中」
+    if (
+      stubDone > 0 &&
+      /账号爬占位(中|启动中|进行中|已开始)/.test(runHint)
+    ) {
+      setRunHint(
+        formatStubHint({
+          active: false,
+          done: stubDone,
+          remaining: stubRemaining,
+          upgraded: stubUpgraded,
+          still: stubStill,
+          failed: stubFailed,
+        }),
+      )
+    }
+  }, [stubActive, stubDone, stubRemaining, stubUpgraded, stubStill, stubFailed, runHint])
 
   const onToggle = async (next: boolean) => {
     setBusy(true)
@@ -328,6 +410,44 @@ export function CrawlerPage() {
     }
   }
 
+  const onRecrawlStubs = async () => {
+    if (enabled || looping || running) {
+      toast.info(
+        enabled || looping ? '请先关闭连续调度后再账号爬占位' : '请等待当前任务结束',
+      )
+      return
+    }
+    const ok = await confirmDialog({
+      title: '账号爬占位',
+      message:
+        '用账号 Cookie 重爬全部优先占位（需登录 / 无阅读权限 / 无权限下载附件），不限数量直至跑完。升级成功会删旧占位；进度按库内剩余实时刷新。需先配置账号 Cookie。确定？',
+      confirmText: '开始爬取',
+    })
+    if (!ok) return
+    setBusy(true)
+    stubWasActive.current = true
+    setRunHint('账号爬占位启动中…')
+    try {
+      const res = await recrawlAccountStubs()
+      if (res.started) {
+        const line = `账号爬占位进行中：已处理 0 · 库内剩余 ${res.remaining ?? res.budget ?? 0}`
+        setRunHint(line)
+        toast.success(`账号爬占位已开始 · 队列 ${res.remaining ?? res.budget ?? 0}`)
+      } else {
+        stubWasActive.current = false
+        const line = res.note || res.message || '无优先占位可处理'
+        setRunHint(line)
+        toast.info(line)
+      }
+      await refresh()
+    } catch (err) {
+      stubWasActive.current = false
+      toast.error(err instanceof Error ? err.message : '账号爬占位失败')
+    } finally {
+      setBusy(false)
+    }
+  }
+
   const forumName = status?.active_forum_name || status?.active_forum_id || '论坛'
 
   const runLabel = (() => {
@@ -409,12 +529,18 @@ export function CrawlerPage() {
                   </button>
                   <button
                     type="button"
-                    className="crawler-action crawler-action-danger"
-                    disabled={busy || stopping || (!running && !looping && !enabled)}
-                    title="停止爬虫并清理线程；未完成队列保留不丢"
-                    onClick={() => void onStop()}
+                    className="crawler-action"
+                    disabled={enabled || looping || running || busy || stopping}
+                    title={
+                      enabled || looping
+                        ? '连续调度进行中，请先关闭开关后再账号爬占位'
+                        : running || stopping
+                          ? '本轮仍在执行，请稍候'
+                          : '用账号 Cookie 重爬全部优先占位（不限数量）：需登录 / 无阅读权限 / 无权限下载附件；进度按库内剩余刷新。请先配置账号 Cookie'
+                    }
+                    onClick={() => void onRecrawlStubs()}
                   >
-                    {stopping ? '停止中…' : '手动停止'}
+                    账号爬占位
                   </button>
                   <button
                     type="button"
@@ -433,6 +559,15 @@ export function CrawlerPage() {
                   >
                     异常重试
                     {abnormal > 0 ? <span className="crawler-action-badge">{abnormal}</span> : null}
+                  </button>
+                  <button
+                    type="button"
+                    className="crawler-action crawler-action-danger"
+                    disabled={busy || stopping || (!running && !looping && !enabled)}
+                    title="停止爬虫并清理线程；未完成队列保留不丢"
+                    onClick={() => void onStop()}
+                  >
+                    {stopping ? '停止中…' : '手动停止'}
                   </button>
                   <button
                     type="button"
@@ -470,6 +605,26 @@ export function CrawlerPage() {
                       {randomProbed}/{randomBudget}
                     </span>
                     <span className="metric-lbl">随机进度</span>
+                  </span>
+                  <span
+                    className={`metric-pill${stubActive ? ' metric-pill-stub' : ''}`}
+                    title={
+                      stubActive
+                        ? `账号爬占位进行中：已处理 ${stubDone} · 库内剩余 ${stubRemaining} · 升级 ${stubUpgraded} · 仍占位 ${stubStill} · 失败 ${stubFailed}` +
+                          (stubProg?.current_tid
+                            ? ` · 当前 tid=${stubProg.current_tid}${stubProg.current_title ? ` ${stubProg.current_title}` : ''}`
+                            : '')
+                        : stubDone > 0 || stubRemaining > 0
+                          ? `上次：已处理 ${stubDone} · 库内剩余 ${stubRemaining} · 升级 ${stubUpgraded} · 仍占位 ${stubStill} · 失败 ${stubFailed}`
+                          : '账号爬占位进度（空闲）。点「账号爬占位」后显示已处理与库内剩余'
+                    }
+                  >
+                    <span className={`metric-val${stubActive ? ' stat-ok' : ''}`}>
+                      {stubActive || stubDone > 0 || stubRemaining > 0
+                        ? `${stubDone}/剩${stubRemaining}`
+                        : '—'}
+                    </span>
+                    <span className="metric-lbl">占位进度</span>
                   </span>
                   {riskTripped ? (
                     <span className="metric-pill metric-pill-risk">

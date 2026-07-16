@@ -24,6 +24,7 @@ LABEL_KEYS = (
     "影片码别",
     "有无水印",
     "有无第三方水印",
+    "第三方水印",
     "解压密码",
     "提取密码",
     "种子期限",
@@ -63,6 +64,7 @@ DESCRIPTION_LABEL_ALIASES = {
     "有无码": "是否有码",
     "影片码别": "是否有码",
     "有无水印": "有无第三方水印",
+    "第三方水印": "有无第三方水印",
     "提取密码": "解压密码",
 }
 
@@ -173,6 +175,24 @@ LABEL_RE = re.compile(
 
 # 下一个字段边界（截密码/字段尾巴用）
 _NEXT_FIELD_RE = re.compile(r"\s*【[^】]{1,40}】")
+# Discuz 一楼正文起点（仅数字楼 id，跳过 postmessage_attach* 注入）
+_OP_POST_START_RE = re.compile(r'id="postmessage_(\d+)"[^>]*>', re.I)
+# 一楼正文结束：下一帖 / 评论区 / 表尾
+_OP_POST_END_RE = re.compile(
+    r'id="postmessage_|id="post_\d+|id="comment_|<!--\s*end\s*post|</tbody>',
+    re.I,
+)
+# 字段值里常见的附件区 / 楼层 / 页脚噪声（非密码字段也裁）
+_FIELD_NOISE_RE = re.compile(
+    r"(?:"
+    r"下载附件|下载次数|点击文件名下载|阅读权限\s*:"
+    r"|复制代码|收起\s*理由|查看全部评分"
+    r"|发表于\s*\d{4}|只看该作者|使用道具|返回列表"
+    r"|Powered by Discuz|快速回复|本版积分规则"
+    r"|当前离线|当前在线"
+    r")",
+    re.I,
+)
 # 「解压密码是www.98T.la@」——「是/为」是系词不是密码；也兼容冒号/等号
 PASSWORD_RE = re.compile(
     r"(?:解压|提取)\s*密码\s*(?:[:：=]|是|为)?\s*([^\s【】\n，,。；;]+)",
@@ -300,8 +320,24 @@ def extract_tid(html: str, fallback: int = 0) -> int:
     return int(m.group(1)) if m else fallback
 
 
+def extract_first_postmessage_html(html: str) -> str:
+    """只取一楼 postmessage 正文，避免把回复楼/页脚揉进元数据。"""
+    src = html or ""
+    for m in _OP_POST_START_RE.finditer(src):
+        # 仅纯数字楼层 id（1、2…）；跳过异常 id
+        if not m.group(1).isdigit():
+            continue
+        start = m.end()
+        end_m = _OP_POST_END_RE.search(src, start)
+        end = end_m.start() if end_m else len(src)
+        body = src[start:end].strip()
+        if body:
+            return body
+    return src
+
+
 def _clip_field_value(value: str, *, password: bool = False) -> str:
-    """裁掉粘在后面的【下一字段】及后续噪声。"""
+    """裁掉粘在后面的【下一字段】、附件区与楼层噪声。"""
     val = " ".join((value or "").replace("\r", "\n").split())
     val = val.lstrip(":：").strip()
     if not val:
@@ -309,6 +345,9 @@ def _clip_field_value(value: str, *, password: bool = False) -> str:
     m = _NEXT_FIELD_RE.search(val)
     if m:
         val = val[: m.start()].strip()
+    noise = _FIELD_NOISE_RE.search(val)
+    if noise:
+        val = val[: noise.start()].strip()
     if password:
         # 密码通常是单 token；后面若跟中文说明再硬切
         m2 = re.search(r"\s+[\u4e00-\u9fff]", val)
@@ -316,6 +355,9 @@ def _clip_field_value(value: str, *, password: bool = False) -> str:
             val = val[: m2.start()].strip()
         if len(val) > 120:
             val = val[:120].strip()
+    elif len(val) > 200:
+        # 非密码字段被整页吞入时硬顶，避免描述爆炸
+        val = val[:200].rstrip()
     return val
 
 
@@ -474,8 +516,13 @@ def extract_blockcode_text(html: str) -> str:
 def parse_thread_content(html: str, tid: int = 0, *, base_url: str = "") -> ThreadContent:
     """Build structured content from raw thread HTML (no link parsing)."""
     title = extract_title(html)
-    plain = _clean_text(html)
-    block = extract_blockcode_text(html)
+    # 元数据 / 密码只从一楼抽；预览图仍看整页（含附件注入的图）
+    op_html = extract_first_postmessage_html(html)
+    plain = _clean_text(op_html)
+    block = extract_blockcode_text(op_html)
+    if not block:
+        # 一楼无 blockcode 时再扫整页（少数板把链放外层）
+        block = extract_blockcode_text(html)
     combined = f"{plain}\n{block}"
     metadata = extract_metadata(combined)
     return ThreadContent(

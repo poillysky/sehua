@@ -16,12 +16,12 @@ import {
   RESOURCE_HASH_REGEX,
 } from "@/utils/resource";
 
-/** 公开搜索：排除占位 stub（unavailable://） */
+/** 公开可见：磁力 / 电驴 / 占位 stub（无下载链的帖） */
 const PUBLIC_RESOURCE_FILTER = `
-  AND lower(COALESCE(r.ed2k_link, '')) NOT LIKE 'unavailable://%'
   AND (
     lower(COALESCE(r.ed2k_link, '')) LIKE 'ed2k://%'
     OR lower(COALESCE(r.ed2k_link, '')) LIKE 'magnet:%'
+    OR lower(COALESCE(r.ed2k_link, '')) LIKE 'unavailable://%'
   )
 `;
 
@@ -175,7 +175,12 @@ export function formatResource(row: Ed2kRow) {
     Array.isArray(row.preview_images) ? row.preview_images : [],
   );
   const ed2kLinks = normalizeEd2kLinks(row.ed2k_links, row.ed2k_link);
-  const primary = ed2kLinks[0] || (isPublicDownloadLink(row.ed2k_link) ? row.ed2k_link : "");
+  const rawLink = (row.ed2k_link || "").trim();
+  const isStub = rawLink.toLowerCase().startsWith("unavailable://");
+  const primary =
+    ed2kLinks[0] ||
+    (isPublicDownloadLink(rawLink) ? rawLink : "") ||
+    (isStub ? rawLink : "");
   const parsedFiles = ed2kLinks.map((link, index) => {
     const parsed = parseEd2kLink(link);
 
@@ -581,19 +586,19 @@ WITH db_size AS (
 ),
 resource_count AS (
   SELECT COUNT(*) AS total_count FROM ed2k_resources r
-  WHERE lower(COALESCE(r.ed2k_link, '')) NOT LIKE 'unavailable://%'
-    AND (
+  WHERE (
       lower(COALESCE(r.ed2k_link, '')) LIKE 'ed2k://%'
       OR lower(COALESCE(r.ed2k_link, '')) LIKE 'magnet:%'
+      OR lower(COALESCE(r.ed2k_link, '')) LIKE 'unavailable://%'
     )
 ),
 latest_resource AS (
   SELECT *
   FROM ed2k_resources r
-  WHERE lower(COALESCE(r.ed2k_link, '')) NOT LIKE 'unavailable://%'
-    AND (
+  WHERE (
       lower(COALESCE(r.ed2k_link, '')) LIKE 'ed2k://%'
       OR lower(COALESCE(r.ed2k_link, '')) LIKE 'magnet:%'
+      OR lower(COALESCE(r.ed2k_link, '')) LIKE 'unavailable://%'
     )
   ORDER BY created_at DESC
   LIMIT 1

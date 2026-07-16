@@ -3,7 +3,8 @@
 # 本机放：
 #   docker-compose.nas.yml
 #   update.sh（可选）
-#   data/postgres|backend|search|search-cache（见下方卷）
+#   data/postgres|backend|backups|search|search-cache（见下方卷）
+#   data/backups/ → 资源库单份备份 ed2k-resources.sql.gz
 #
 # 从旧 ed2k 迁移库数据（只做一次，停旧栈后执行）:
 #   mkdir -p /vol1/1000/Docker/sehuatang/data
@@ -52,7 +53,7 @@ services:
           memory: 512M
 
   backend:
-    image: poillysky/sehuatang-backend:1.0.4
+    image: poillysky/sehuatang-backend:1.0.5
     container_name: sehuatang-backend
     restart: always
     # 不对宿主机暴露 8080：浏览器走 admin:8082，由 Nginx 反代到 backend:8080
@@ -70,14 +71,18 @@ services:
       CORS_ORIGINS: ""
       WEB_CRAWLER_PROXY: ""
       SEARCH_FRONTEND_URL: http://127.0.0.1:3010
+      # 资源库备份目录（与下方卷一致；宿主机: data/backups/ed2k-resources.sql.gz）
+      BACKUP_DIR: /app/data/backups
     volumes:
       - /vol1/1000/Docker/sehuatang/data/backend:/app/data
+      # 单独挂备份目录，便于在 NAS 上单独拷贝/快照（覆盖 backend 卷内的 backups 子路径）
+      - /vol1/1000/Docker/sehuatang/data/backups:/app/data/backups
     depends_on:
       postgres:
         condition: service_healthy
 
   admin:
-    image: poillysky/sehuatang-admin:1.0.4
+    image: poillysky/sehuatang-admin:1.0.5
     container_name: sehuatang-admin
     restart: always
     ports:
@@ -86,7 +91,7 @@ services:
       - backend
 
   search:
-    image: poillysky/sehuatang-search:1.0.4
+    image: poillysky/sehuatang-search:1.0.5
     container_name: sehuatang-search
     restart: always
     ports:

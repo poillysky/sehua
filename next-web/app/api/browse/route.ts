@@ -2,14 +2,12 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 
 import { browseResources } from "@/app/api/graphql/service";
-import { SEARCH_PAGE_MAX } from "@/config/constant";
+import { BROWSE_PAGE_MAX, BROWSE_PAGE_SIZE } from "@/config/constant";
 
 export const dynamic = "force-dynamic";
 
-const BROWSE_PAGE_SIZE = 15;
-
 const schema = z.object({
-  p: z.coerce.number().min(1).max(SEARCH_PAGE_MAX).default(1),
+  p: z.coerce.number().min(1).max(BROWSE_PAGE_MAX).default(1),
   ps: z.coerce.number().min(1).max(50).default(BROWSE_PAGE_SIZE),
 });
 

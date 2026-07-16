@@ -19,6 +19,7 @@ from api.forum_routes import router as forum_router
 from api.settings_routes import router as settings_router
 from api.crawler_routes import router as crawler_router
 from api.import_routes import router as import_router
+from api.backup_routes import router as backup_router
 from auth.schema import ensure_auth_schema
 from db.connection import connect, connection_mode, try_postgres
 from db.forum_configs import SITE_CRAWLER_FORUM_ID, load_forum_configs_map, save_forum_config
@@ -64,7 +65,15 @@ async def lifespan(_app: FastAPI):
     except Exception:
         logger.exception("auth bootstrap failed")
         raise
-    yield
+
+    from workers.backup import start_backup_scheduler, stop_backup_scheduler
+
+    start_backup_scheduler()
+    logger.info("resource backup scheduler started")
+    try:
+        yield
+    finally:
+        await stop_backup_scheduler()
 
 
 app = FastAPI(title="色花堂收集器 API", version="0.2.0", lifespan=lifespan)
@@ -95,6 +104,7 @@ app.include_router(forum_router)
 app.include_router(settings_router)
 app.include_router(crawler_router)
 app.include_router(import_router)
+app.include_router(backup_router)
 
 _preview_dir = Path(__file__).resolve().parents[1] / "data" / "uploads" / "previews"
 _preview_dir.mkdir(parents=True, exist_ok=True)

@@ -35,6 +35,18 @@ export type CrawlerStatus = {
     skipped?: number
     session_probed?: number
   }
+  account_stub_progress?: {
+    active?: boolean
+    remaining?: number
+    budget?: number
+    done?: number
+    upgraded?: number
+    still_stub?: number
+    failed?: number
+    skipped_prep?: number
+    current_tid?: number | null
+    current_title?: string
+  }
   activity: CrawlerActivity[]
   boards: { fid: string; name: string; pending: string | number; done: string | number }[]
   queue?: {
@@ -61,6 +73,10 @@ export type CrawlerStatus = {
     random_budget?: number
     random_imported?: number
     random_session?: number
+    stub_done?: number
+    stub_budget?: number
+    stub_remaining?: number
+    stub_upgraded?: number
   }
 }
 
@@ -176,6 +192,26 @@ export function retryAbnormalQueue() {
 
 export function retrySoftAdQueue() {
   return api<QueueRetryResult>('/api/crawler/queue/retry-soft-ad', {
+    method: 'POST',
+    body: '{}',
+  })
+}
+
+export type RecrawlStubsResult = {
+  message: string
+  started?: boolean
+  remaining?: number
+  budget?: number
+  note?: string
+  processed: number
+  upgraded: number
+  still_stub: number
+  failed: number
+  result?: Record<string, unknown>
+}
+
+export function recrawlAccountStubs() {
+  return api<RecrawlStubsResult>('/api/crawler/recrawl-stubs', {
     method: 'POST',
     body: '{}',
   })

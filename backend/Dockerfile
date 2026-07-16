@@ -10,7 +10,8 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 ARG TARGETARCH
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends wget ca-certificates p7zip-full \
+    && apt-get install -y --no-install-recommends wget ca-certificates p7zip-full postgresql-client \
+
     && set -eu; \
        case "${TARGETARCH}" in \
          amd64) RAR_ARCH=x64 ;; \

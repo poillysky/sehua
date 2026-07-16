@@ -36,6 +36,8 @@ FORUM_CRAWLER_DEFAULTS: dict[str, Any] = {
     "web_crawler_timeout": 30,
     "web_crawler_ua": "",
     "web_crawler_cookie": "safe=1",
+    # 账号登录 Cookie：仅「账号爬占位」使用；普通爬虫仍用 web_crawler_cookie
+    "web_crawler_account_cookie": "",
     "web_crawler_auto_discover": False,
     "web_crawler_max_boards_per_run": 1,
     "web_crawler_list_pages_per_board": 15,

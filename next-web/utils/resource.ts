@@ -158,7 +158,9 @@ export function isPublicDownloadLink(link?: string | null): boolean {
   return lower.startsWith("ed2k://") || lower.startsWith("magnet:");
 }
 
-export function linkKindOf(link?: string | null): "ed2k" | "magnet" | "other" {
+export function linkKindOf(
+  link?: string | null,
+): "ed2k" | "magnet" | "stub" | "other" {
   const lower = (link || "").trim().toLowerCase();
 
   if (lower.startsWith("magnet:")) {
@@ -167,6 +169,10 @@ export function linkKindOf(link?: string | null): "ed2k" | "magnet" | "other" {
 
   if (lower.startsWith("ed2k://")) {
     return "ed2k";
+  }
+
+  if (lower.startsWith("unavailable://")) {
+    return "stub";
   }
 
   return "other";

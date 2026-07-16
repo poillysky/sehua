@@ -17,6 +17,8 @@ export type ForumCrawlerConfig = {
   web_crawler_timeout: number
   web_crawler_ua: string
   web_crawler_cookie: string
+  /** 账号登录 Cookie：仅「账号爬占位」用 */
+  web_crawler_account_cookie?: string
   web_crawler_auto_discover: boolean
   web_crawler_max_boards_per_run: number
   web_crawler_list_pages_per_board: number

@@ -17,12 +17,20 @@ from db.queue import (
     requeue_for_recrawl,
     tid_from_url,
 )
-from db.repository import delete_resource_by_hash, delete_stub_by_source_url, get_resource_by_hash
+from db.repository import (
+    count_priority_account_stubs,
+    delete_resource_by_hash,
+    delete_stub_by_source_url,
+    get_resource_by_hash,
+    list_priority_account_stubs,
+)
 from parsers.thread_gates import title_recognizable
 from db.settings_store import get_setting
 from parsers.boards import BOARD_POLICIES
 from workers.pipeline import process_thread
 from workers.runner import (
+    THROTTLE,
+    _STATE,
     _log_activity,
     crawl_status,
     end_exclusive,
@@ -33,6 +41,146 @@ from workers.session_factory import fetcher_from_config, session_from_config
 log = logging.getLogger(__name__)
 
 _IMPORT_VERDICTS = frozenset({"import", "stub"})
+
+
+def _empty_account_stub_progress(*, active: bool = False, remaining: int = 0) -> dict[str, Any]:
+    return {
+        "active": active,
+        "remaining": int(remaining),
+        "budget": int(remaining),  # 兼容旧前端字段：队列剩余
+        "done": 0,
+        "upgraded": 0,
+        "still_stub": 0,
+        "failed": 0,
+        "skipped_prep": 0,
+        "current_tid": None,
+        "current_title": "",
+    }
+
+
+def _db_priority_remaining(*, exclude_hashes: list[str] | None = None) -> int:
+    conn = connect()
+    try:
+        return count_priority_account_stubs(conn, exclude_hashes=exclude_hashes)
+    finally:
+        conn.close()
+
+
+def _publish_account_stub_progress(
+    *,
+    active: bool,
+    remaining: int | None = None,
+    done: int = 0,
+    upgraded: int = 0,
+    still_stub: int = 0,
+    failed: int = 0,
+    skipped_prep: int = 0,
+    current_tid: int | None = None,
+    current_title: str = "",
+    exclude_hashes: list[str] | None = None,
+) -> None:
+    if remaining is None:
+        try:
+            remaining = _db_priority_remaining(exclude_hashes=exclude_hashes)
+        except Exception:
+            log.exception("count priority stubs for progress")
+            remaining = 0
+    rem = int(remaining or 0)
+    _STATE["account_stub_progress"] = {
+        "active": active,
+        "remaining": rem,
+        "budget": rem,
+        "done": int(done),
+        "upgraded": int(upgraded),
+        "still_stub": int(still_stub),
+        "failed": int(failed),
+        "skipped_prep": int(skipped_prep),
+        "current_tid": current_tid,
+        "current_title": (current_title or "")[:80],
+    }
+
+
+def account_stub_progress() -> dict[str, Any]:
+    cur = _STATE.get("account_stub_progress")
+    if isinstance(cur, dict) and cur:
+        out = dict(cur)
+        if "remaining" not in out and "budget" in out:
+            out["remaining"] = out.get("budget") or 0
+        return out
+    return _empty_account_stub_progress(active=False)
+
+
+_account_stub_task: Optional[asyncio.Task[Any]] = None
+
+
+def start_account_stub_recrawl() -> dict[str, Any]:
+    """校验后后台跑账号爬占位（不限数量，直到队列清空或本轮均已尝试）。"""
+    global _account_stub_task
+    st = crawl_status()
+    if st.get("looping") or st.get("running"):
+        return {
+            "ok": False,
+            "started": False,
+            "reason": "busy" if st.get("running") else "loop_running",
+            "error": "爬虫正在执行，请先停止后再账号爬占位",
+        }
+    if _account_stub_task is not None and not _account_stub_task.done():
+        return {
+            "ok": False,
+            "started": False,
+            "reason": "busy",
+            "error": "账号爬占位正在进行中",
+        }
+
+    conn = connect()
+    try:
+        cfg = _load_crawler_cfg(conn)
+        account_cookie = str(cfg.get("web_crawler_account_cookie") or "").strip()
+        if not account_cookie:
+            return {
+                "ok": False,
+                "started": False,
+                "reason": "no_account_cookie",
+                "error": "未配置账号 Cookie，请到论坛配置 → 进站 →「账号 Cookie」填写登录态",
+            }
+        remaining = count_priority_account_stubs(conn)
+    finally:
+        conn.close()
+
+    if remaining <= 0:
+        _log_activity("账号爬占位 · 无优先占位可处理")
+        _publish_account_stub_progress(active=False, remaining=0)
+        return {
+            "ok": True,
+            "started": False,
+            "reason": "empty",
+            "remaining": 0,
+            "budget": 0,
+            "message": "无「需登录 / 无阅读权限 / 无权限下载附件」占位",
+        }
+
+    _publish_account_stub_progress(active=True, remaining=remaining)
+
+    async def _runner() -> None:
+        try:
+            await recrawl_account_stubs()
+        except Exception:
+            log.exception("account stub background failed")
+            try:
+                rem = _db_priority_remaining()
+            except Exception:
+                rem = 0
+            _publish_account_stub_progress(active=False, remaining=rem)
+
+    _account_stub_task = asyncio.get_running_loop().create_task(_runner())
+    _log_activity(f"账号爬占位已启动 · 队列 {remaining} · 跑完为止")
+    return {
+        "ok": True,
+        "started": True,
+        "remaining": remaining,
+        "budget": remaining,
+        "message": f"已开始 · 队列 {remaining} · 直至重爬完",
+    }
 
 
 def _load_crawler_cfg(conn: Any) -> dict[str, Any]:
@@ -361,4 +509,290 @@ async def recrawl_imported_resources(hashes: list[str]) -> dict[str, Any]:
         "queued": 0,
         "failed": failed_n,
         "note": "跳过无效占位会删除；正常则同 hash 覆盖",
+    }
+
+
+async def recrawl_account_stubs() -> dict[str, Any]:
+    """用账号 Cookie 重爬优先占位，不限数量：每次从库取下一条，直至无可再试。
+
+    本轮已尝试过的 hash（含仍占位）不再重复捞取，避免死循环；进度 remaining 每次查库。
+    """
+    st = crawl_status()
+    if st.get("looping") or st.get("running"):
+        _publish_account_stub_progress(active=False, remaining=_db_priority_remaining())
+        return {
+            "ok": False,
+            "skipped": True,
+            "reason": "busy" if st.get("running") else "loop_running",
+            "error": "爬虫正在执行，请先停止后再账号爬占位",
+            "processed": 0,
+            "upgraded": 0,
+            "still_stub": 0,
+            "failed": 0,
+        }
+
+    conn = connect()
+    try:
+        cfg = _load_crawler_cfg(conn)
+        account_cookie = str(cfg.get("web_crawler_account_cookie") or "").strip()
+        if not account_cookie:
+            _publish_account_stub_progress(active=False, remaining=0)
+            return {
+                "ok": False,
+                "skipped": True,
+                "reason": "no_account_cookie",
+                "error": "未配置账号 Cookie，请到论坛配置 → 进站 →「账号 Cookie」填写登录态",
+                "processed": 0,
+                "upgraded": 0,
+                "still_stub": 0,
+                "failed": 0,
+            }
+        remaining0 = count_priority_account_stubs(conn)
+    finally:
+        conn.close()
+
+    if remaining0 <= 0:
+        _log_activity("账号爬占位 · 无优先占位可处理")
+        _publish_account_stub_progress(active=False, remaining=0)
+        return {
+            "ok": True,
+            "processed": 0,
+            "upgraded": 0,
+            "still_stub": 0,
+            "failed": 0,
+            "skipped_prep": 0,
+            "items": [],
+            "note": "无「需登录 / 无阅读权限 / 无权限下载附件」占位",
+        }
+
+    lock = try_begin_exclusive("account_stubs")
+    if not lock.get("ok"):
+        _publish_account_stub_progress(active=False, remaining=remaining0)
+        return {
+            "ok": False,
+            "skipped": True,
+            "reason": lock.get("reason") or "busy",
+            "error": lock.get("error") or "爬虫正在执行，请稍候",
+            "processed": 0,
+            "upgraded": 0,
+            "still_stub": 0,
+            "failed": 0,
+        }
+
+    session: Optional[SessionManager] = None
+    items: list[dict[str, Any]] = []
+    upgraded = 0
+    still_stub = 0
+    failed = 0
+    skipped_prep = 0
+    attempted: list[str] = []
+
+    def _push_progress(*, current_tid: int | None = None, current_title: str = "", active: bool = True) -> None:
+        done = upgraded + still_stub + failed + skipped_prep
+        _publish_account_stub_progress(
+            active=active,
+            remaining=None,  # 每次重新查库
+            done=done,
+            upgraded=upgraded,
+            still_stub=still_stub,
+            failed=failed,
+            skipped_prep=skipped_prep,
+            current_tid=current_tid,
+            current_title=current_title,
+            exclude_hashes=None,  # 剩余 = 库内仍符合条件的全部优先占位
+        )
+
+    try:
+        _log_activity(f"账号爬占位开始 · 队列 {remaining0} · 登录 Cookie · 跑完为止")
+        THROTTLE.clear_stop()
+        _push_progress(active=True)
+        session = session_from_config(
+            cfg,
+            cookie_override=account_cookie,
+            account_jar=True,
+        )
+        await session.bootstrap()
+        fetcher = fetcher_from_config(session, cfg)
+
+        while True:
+            if THROTTLE.should_stop():
+                _log_activity("账号爬占位 · 收到停止请求")
+                break
+
+            conn = connect()
+            try:
+                batch = list_priority_account_stubs(
+                    conn,
+                    limit=1,
+                    exclude_hashes=attempted,
+                )
+            finally:
+                conn.close()
+            if not batch:
+                break
+
+            row = batch[0]
+            source_url = str(row.get("source_url") or "").strip()
+            stub_hash = str(row.get("hash") or "").strip()
+            title = str(row.get("title") or "")
+            outcome_label = str(row.get("import_outcome") or "")
+            if stub_hash:
+                attempted.append(stub_hash)
+
+            tid = tid_from_url(source_url)
+            if not tid:
+                skipped_prep += 1
+                items.append(
+                    {
+                        "ok": False,
+                        "hash": stub_hash,
+                        "error": f"无法解析 tid：{source_url}",
+                        "import_outcome": outcome_label,
+                    }
+                )
+                _push_progress()
+                continue
+
+            board_fid_s = str(row.get("board_fid") or "").strip()
+            if not board_fid_s:
+                board_fid_s = str(cfg.get("active_board_fid") or "")
+            if not board_fid_s.isdigit() or int(board_fid_s) not in BOARD_POLICIES:
+                skipped_prep += 1
+                items.append(
+                    {
+                        "ok": False,
+                        "hash": stub_hash,
+                        "tid": tid,
+                        "error": "缺少有效板块 fid",
+                        "import_outcome": outcome_label,
+                    }
+                )
+                _push_progress(current_tid=tid, current_title=title)
+                continue
+
+            board_fid = int(board_fid_s)
+            board_name = str(row.get("board_name") or BOARD_POLICIES[board_fid].name)
+            _push_progress(current_tid=tid, current_title=title)
+            rem_now = int((_STATE.get("account_stub_progress") or {}).get("remaining") or 0)
+            _log_activity(
+                f"账号爬占位 · tid={tid} · 剩 {rem_now} · {outcome_label[:24]} · {title[:36]}"
+            )
+
+            try:
+                outcome = await process_thread(
+                    tid,
+                    board_fid=board_fid,
+                    board_name=board_name,
+                    list_title=title,
+                    persist=True,
+                    crawler_config=cfg,
+                    session=session,
+                    fetcher=fetcher,
+                )
+            except Exception as exc:
+                log.exception("account stub recrawl tid=%s", tid)
+                failed += 1
+                items.append(
+                    {
+                        "ok": False,
+                        "hash": stub_hash,
+                        "tid": tid,
+                        "url": source_url,
+                        "error": str(exc),
+                        "import_outcome": outcome_label,
+                    }
+                )
+                _log_activity(f"账号爬占位失败 · tid={tid} · {exc}")
+                _push_progress(current_tid=tid, current_title=title)
+                await asyncio.sleep(0.8)
+                continue
+
+            verdict = str(outcome.get("verdict") or "failed")
+            label = str(outcome.get("outcome") or outcome.get("verdict_label") or verdict)
+
+            if verdict == "import":
+                conn = connect()
+                try:
+                    removed = delete_stub_by_source_url(conn, source_url)
+                finally:
+                    conn.close()
+                upgraded += 1
+                _log_activity(
+                    f"账号爬占位升级 · tid={tid} · {label}"
+                    + (" · 已删旧占位" if removed else "")
+                )
+                items.append(
+                    {
+                        "ok": True,
+                        "upgraded": True,
+                        "hash": stub_hash,
+                        "tid": tid,
+                        "url": source_url,
+                        "verdict": verdict,
+                        "outcome": label,
+                        "stub_removed": removed,
+                        "import_outcome": outcome_label,
+                    }
+                )
+            elif verdict == "stub":
+                still_stub += 1
+                items.append(
+                    {
+                        "ok": True,
+                        "upgraded": False,
+                        "still_stub": True,
+                        "hash": stub_hash,
+                        "tid": tid,
+                        "url": source_url,
+                        "verdict": verdict,
+                        "outcome": label,
+                        "import_outcome": outcome_label,
+                    }
+                )
+                _log_activity(f"账号爬占位仍占位 · tid={tid} · {label}")
+            else:
+                failed += 1
+                items.append(
+                    {
+                        "ok": False,
+                        "upgraded": False,
+                        "hash": stub_hash,
+                        "tid": tid,
+                        "url": source_url,
+                        "verdict": verdict,
+                        "outcome": label,
+                        "import_outcome": outcome_label,
+                        "error": label,
+                    }
+                )
+                _log_activity(f"账号爬占位未升级 · tid={tid} · {label}")
+
+            _push_progress(current_tid=tid, current_title=title)
+            await asyncio.sleep(0.8)
+    finally:
+        if session is not None:
+            try:
+                await session.close()
+            except Exception:
+                pass
+        _push_progress(active=False)
+        end_exclusive()
+
+    processed = upgraded + still_stub + failed
+    rem_left = _db_priority_remaining()
+    _log_activity(
+        f"账号爬占位结束 · 处理 {processed} · 升级 {upgraded} · 仍占位 {still_stub} · 失败 {failed}"
+        + f" · 库内优先占位剩 {rem_left}"
+        + (f" · 跳过准备 {skipped_prep}" if skipped_prep else "")
+    )
+    return {
+        "ok": True,
+        "processed": processed,
+        "upgraded": upgraded,
+        "still_stub": still_stub,
+        "failed": failed,
+        "skipped_prep": skipped_prep,
+        "remaining": rem_left,
+        "items": items,
+        "note": "不限数量直至本轮可尝试队列跑完；升级成功会删除旧占位",
     }

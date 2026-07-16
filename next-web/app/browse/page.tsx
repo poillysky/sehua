@@ -10,11 +10,9 @@ import { SearchInput } from "@/components/SearchInput";
 import { SiteLogoLink } from "@/components/SiteLogoLink";
 import { SettingsNavLink } from "@/components/SettingsNavLink";
 import { FloatTool } from "@/components/FloatTool";
-import { SEARCH_PAGE_MAX } from "@/config/constant";
+import { BROWSE_PAGE_MAX, BROWSE_PAGE_SIZE } from "@/config/constant";
 
 export const dynamic = "force-dynamic";
-
-const BROWSE_PAGE_SIZE = 15;
 
 export async function generateMetadata(): Promise<Metadata> {
   const t = await getTranslations();
@@ -40,7 +38,7 @@ export default async function BrowsePage({
 }) {
   const page = Math.min(
     Math.max(Number(searchParams.p) || 1, 1),
-    SEARCH_PAGE_MAX,
+    BROWSE_PAGE_MAX,
   );
   const { resources, total_count } = await browseResources(null, {
     limit: BROWSE_PAGE_SIZE,

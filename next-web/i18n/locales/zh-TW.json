@@ -32,7 +32,7 @@
   "Browse": {
     "entry": "隨便看看",
     "title": "隨便看看",
-    "subtitle": "瀏覽收錄資源，底部可翻頁",
+    "subtitle": "瀏覽收錄資源（含無下載鏈的占位帖），底部可翻頁",
     "loading": "正在載入資源...",
     "refresh": "換一批",
     "empty": "暫無資源",
@@ -80,6 +80,8 @@
     "ed2k": "下載連結",
     "ed2k_multi": "下載連結 ({count})",
     "magnet": "磁力",
+    "stub": "占位（無下載鏈）",
+    "stub_hint": "該帖暫無可用下載連結，僅作收錄占位",
     "file_size": "文件大小: ",
     "file_size_multi": "{count} 條，合計 {size}",
     "file_count": "文件數量: ",

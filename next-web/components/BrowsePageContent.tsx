@@ -11,9 +11,7 @@ import { BrowseResourceListSkeleton } from "@/components/BrowseResourceListSkele
 import { ResourceFeedItem } from "@/components/ResourceFeedItem";
 import { Ed2kResourceProps } from "@/types";
 import { $env } from "@/utils";
-import { SEARCH_PAGE_MAX } from "@/config/constant";
-
-const BROWSE_PAGE_SIZE = 15;
+import { BROWSE_PAGE_MAX, BROWSE_PAGE_SIZE } from "@/config/constant";
 
 async function fetchBrowsePage(page: number) {
   const response = await fetch(
@@ -74,7 +72,7 @@ export function BrowsePageContent({
 
   const page = Math.min(
     Math.max(Number(searchParams.get("p")) || initialPage || 1, 1),
-    SEARCH_PAGE_MAX,
+    BROWSE_PAGE_MAX,
   );
 
   const [resources, setResources] = useState(initialResources);
@@ -86,12 +84,12 @@ export function BrowsePageContent({
 
   const totalPages = Math.max(
     1,
-    Math.min(Math.ceil(totalCount / BROWSE_PAGE_SIZE) || 1, SEARCH_PAGE_MAX),
+    Math.min(Math.ceil(totalCount / BROWSE_PAGE_SIZE) || 1, BROWSE_PAGE_MAX),
   );
 
   const goToPage = useCallback(
     (nextPage: number) => {
-      const safe = Math.min(Math.max(nextPage, 1), SEARCH_PAGE_MAX);
+      const safe = Math.min(Math.max(nextPage, 1), BROWSE_PAGE_MAX);
       const params = new URLSearchParams(searchParams.toString());
 
       if (safe <= 1) {

@@ -538,7 +538,7 @@ function ConfigTab({
             <Field label="浏览器标识（UA）" hint="伪装成普通浏览器访问" full>
               <input type="text" value={draft.web_crawler_ua} onChange={(e) => setDraft({ ...draft, web_crawler_ua: e.target.value })} />
             </Field>
-            <Field label="论坛 Cookie" hint="浏览器登录后复制过来；看列表要登录时必填" full>
+            <Field label="论坛 Cookie" hint="普通爬虫用（匿名/过年龄门）；看列表要登录时可填" full>
               <textarea
                 rows={4}
                 className="forum-cookie-field"
@@ -546,6 +546,20 @@ function ConfigTab({
                 placeholder="safe=1; bbs_sid=...; 粘贴浏览器完整 Cookie"
                 value={draft.web_crawler_cookie}
                 onChange={(e) => setDraft({ ...draft, web_crawler_cookie: e.target.value })}
+              />
+            </Field>
+            <Field
+              label="账号 Cookie"
+              hint="仅「账号爬占位」使用；浏览器登录论坛后复制完整 Cookie，与上方普通 Cookie 分开"
+              full
+            >
+              <textarea
+                rows={4}
+                className="forum-cookie-field"
+                spellCheck={false}
+                placeholder="登录态 Cookie：bbs_sid=...; bbs_auth=...;"
+                value={draft.web_crawler_account_cookie || ''}
+                onChange={(e) => setDraft({ ...draft, web_crawler_account_cookie: e.target.value })}
               />
             </Field>
           </div>

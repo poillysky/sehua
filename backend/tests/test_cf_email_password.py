@@ -117,6 +117,52 @@ def test_description_only_allowlisted_labels():
     assert "下载工具" not in desc
 
 
+def test_description_strips_attach_ui_and_replies():
+    """一楼附件区 + 回复楼不得灌进【资源大小】等字段。"""
+    from parsers.links import parse_thread_dual
+
+    html = """
+    <html><body>
+    <span id="thread_subject">TD-21 大野まや 速水真保</span>
+    <div id="postmessage_1">
+      【资源名称】：TD-21 大野まや 速水真保<br/>
+      【资源类型】：视频<br/>
+      【是否有码】：无码<br/>
+      【第三方水印】：无<br/>
+      【资源大小】：2.6G/1V/1配额<br/>
+      dvd1td21 (2).jpeg (103.3 KB, 下载次数: 0)
+      下载附件 2026-03-22 05:21 上传
+      ScreenShot_2026-03-13_085622_310.jpg (725.6 KB, 下载次数: 0)
+      下载附件 2026-03-22 05:21 上传
+      www.98T.la@TD-21.txt (105 Bytes, 下载次数: 263)
+      点击文件名下载附件 阅读权限: 25
+      评分 参与人数 18 评分 +30 收起 理由
+    </div>
+    <div id="post_2">
+      <div id="postmessage_2">
+        沙发 发表于 2026-03-22 09:08:37 | 只看该作者
+        老片新看乐趣多 回复 使用道具 举报
+        亚博美女赌场 推荐大發赌场
+      </div>
+    </div>
+    Powered by Discuz! X3.4
+    </body></html>
+    """
+    parsed = parse_thread_dual(html, tid=3388894, board_fid=95)
+    desc = parsed.description
+    assert "【资源名称】：TD-21 大野まや 速水真保" in desc
+    assert "【资源类型】：视频" in desc
+    assert "【资源大小】：2.6G/1V/1配额" in desc
+    assert "【是否有码】：无码" in desc
+    assert "下载附件" not in desc
+    assert "下载次数" not in desc
+    assert "ScreenShot_" not in desc
+    assert "沙发" not in desc
+    assert "亚博" not in desc
+    assert "Powered by" not in desc
+    assert "只看该作者" not in desc
+
+
 def test_bt_board_keeps_film_labels():
     from parsers.links import parse_thread_dual
 
