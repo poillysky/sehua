@@ -84,6 +84,18 @@ function formatTime(iso: string | null): string {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`
 }
 
+/** 展示主板块 · 子分类；兼容旧库「国产原创-国产无码」 */
+export function formatSourceBoard(boardName?: string | null, boardFid?: string | null): string {
+  const raw = (boardName || '').trim()
+  if (raw) {
+    if (raw.includes(' · ')) return raw
+    const i = raw.indexOf('-')
+    if (i > 0 && i < raw.length - 1) return `${raw.slice(0, i)} · ${raw.slice(i + 1)}`
+    return raw
+  }
+  return boardFid ? `fid ${boardFid}` : '—'
+}
+
 export function mapApiResource(item: ApiResource): ResourceRow {
   const kind = (['magnet', 'ed2k', 'stub', 'failed'].includes(item.link_kind)
     ? item.link_kind
@@ -94,7 +106,7 @@ export function mapApiResource(item: ApiResource): ResourceRow {
     title: item.title || item.filename || item.hash,
     forum: item.forum_name || item.forum_id || undefined,
     forumId: item.forum_id || undefined,
-    board: item.board_name || (item.board_fid ? `fid ${item.board_fid}` : '—'),
+    board: formatSourceBoard(item.board_name, item.board_fid),
     boardFid: item.board_fid || undefined,
     outcome: formatOutcome(kind, item.import_outcome),
     result: kind,

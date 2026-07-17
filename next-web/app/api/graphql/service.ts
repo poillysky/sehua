@@ -193,6 +193,14 @@ export function formatResource(row: Ed2kRow) {
   });
   const totalSize = parsedFiles.reduce((sum, file) => sum + Number(file.size || 0), 0);
   const displaySize = ed2kLinks.length > 1 ? totalSize : Number(row.size || 0);
+  const rawBoard = row.board_name?.trim() || "";
+  const boardName = rawBoard
+    ? rawBoard.includes(" · ")
+      ? rawBoard
+      : rawBoard.includes("-")
+        ? rawBoard.replace("-", " · ")
+        : rawBoard
+    : null;
 
   return {
     hash: row.hash.toUpperCase(),
@@ -201,7 +209,7 @@ export function formatResource(row: Ed2kRow) {
     description,
     source_url: row.source_url || null,
     board_fid: row.board_fid || null,
-    board_name: row.board_name?.trim() || null,
+    board_name: boardName,
     forum_id: row.forum_id || null,
     forum_name: resolveForumName(row.forum_id, description),
     extract_password: row.extract_password?.trim() || null,
@@ -692,31 +700,82 @@ export async function browseResources(
   {
     limit = 15,
     offset = 0,
-  }: { limit?: number; offset?: number },
+    board_fid,
+    board,
+    board_parent,
+  }: {
+    limit?: number;
+    offset?: number;
+    board_fid?: string | null;
+    board?: string | null;
+    board_parent?: string | null;
+  } = {},
 ): Promise<{ resources: ReturnType<typeof formatResource>[]; total_count: number }> {
   try {
     const safeLimit = Math.min(Math.max(Number(limit) || 15, 1), 50);
     const safeOffset = Math.max(Number(offset) || 0, 0);
+    const fid = (board_fid || "").trim();
+    const boardName = (board || "").trim();
+    const parent = (board_parent || "").trim();
+
+    const where: string[] = ["TRUE", PUBLIC_RESOURCE_FILTER.trim()];
+    const params: unknown[] = [];
+    let p = 1;
+
+    if (fid) {
+      // 子版 key（2:684）或旧纯 fid；名称兼容「·」与「-」
+      const names = new Set<string>();
+      if (boardName) {
+        names.add(boardName);
+        names.add(boardName.replace(/ · /g, "-"));
+        names.add(boardName.replace(/-/g, " · "));
+      }
+      const nameList = Array.from(names).filter(Boolean);
+      if (nameList.length) {
+        where.push(
+          `AND (rs.board_fid = $${p} OR replace(COALESCE(rs.board_name, ''), '-', ' · ') = ANY($${p + 1}::text[]))`,
+        );
+        params.push(fid, nameList.map((n) => n.replace(/-/g, " · ")));
+        p += 2;
+      } else {
+        where.push(`AND rs.board_fid = $${p}`);
+        params.push(fid);
+        p += 1;
+      }
+    } else if (parent) {
+      where.push(
+        `AND (rs.board_name = $${p} OR rs.board_name LIKE $${p + 1} OR rs.board_name LIKE $${p + 2})`,
+      );
+      params.push(parent, `${parent} · %`, `${parent}-%`);
+      p += 3;
+    } else if (boardName) {
+      where.push(
+        `AND replace(COALESCE(rs.board_name, ''), '-', ' · ') = $${p}`,
+      );
+      params.push(boardName.replace(/-/g, " · "));
+      p += 1;
+    }
+
+    const whereSql = where.join("\n");
     const listSql = `
 SELECT
   ${LIST_RESOURCE_SELECT}
 FROM ed2k_resources r
 ${LIST_META_JOIN}
-WHERE TRUE
-${PUBLIC_RESOURCE_FILTER}
+WHERE ${whereSql}
 ORDER BY r.created_at DESC
-LIMIT $1 OFFSET $2
+LIMIT $${p} OFFSET $${p + 1}
 `;
     const countSql = `
 SELECT COUNT(*)::int AS total_count
 FROM ed2k_resources r
-WHERE TRUE
-${PUBLIC_RESOURCE_FILTER}
+${LIST_META_JOIN}
+WHERE ${whereSql}
 `;
 
     const [listRes, countRes] = await Promise.all([
-      query(listSql, [safeLimit, safeOffset]),
-      query(countSql, []),
+      query(listSql, [...params, safeLimit, safeOffset]),
+      query(countSql, params),
     ]);
 
     return {
@@ -725,6 +784,8 @@ ${PUBLIC_RESOURCE_FILTER}
     };
   } catch (error) {
     console.error("Error in browseResources:", error);
-    throw new Error("Failed to fetch browse resources");
+    throw new Error(
+      `Failed to fetch browse resources: ${error instanceof Error ? error.message : String(error)}`,
+    );
   }
 }

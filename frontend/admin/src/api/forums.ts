@@ -53,6 +53,8 @@ export type ForumCrawlerConfig = {
   enabled_board_fids?: string[]
   /** 深扫当前工作板块（启用队列中的游标） */
   active_board_fid: string
+  /** 各二级子版深扫列表页游标 */
+  board_list_cursors?: Record<string, number>
   board_order: string[]
 }
 
@@ -152,6 +154,20 @@ export function setEnabledBoards(forumId: string, fids: string[]) {
   }>(`/api/forum/${forumId}/enabled-boards`, {
     method: 'PUT',
     body: JSON.stringify({ fids }),
+  })
+}
+
+export function clearBoardCursor(forumId: string, boardKey: string) {
+  const key = encodeURIComponent(boardKey)
+  return api<{
+    message: string
+    forum_id: string
+    board_key: string
+    board_list_cursors: Record<string, number>
+    config: ForumCrawlerConfig
+  }>(`/api/forum/${forumId}/boards/${key}/clear-cursor`, {
+    method: 'POST',
+    body: '{}',
   })
 }
 

@@ -11,6 +11,7 @@ from db.forum_configs import (
     FORUM_CRAWLER_DEFAULTS,
     SITE_CRAWLER_FORUM_ID,
     build_forums_payload,
+    clear_board_cursor,
     load_forum_configs_map,
     save_forum_config,
     set_active_board_fid,
@@ -131,6 +132,34 @@ def put_enabled_boards(
             "forum_id": forum_id,
             "enabled_board_fids": saved.get("enabled_board_fids"),
             "active_board_fid": saved.get("active_board_fid"),
+            "config": saved,
+        }
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    finally:
+        conn.close()
+
+
+@router.post("/{forum_id}/boards/{board_key}/clear-cursor")
+def post_clear_board_cursor(
+    forum_id: str,
+    board_key: str,
+    _user: dict = Depends(require_permission("settings.write")),
+) -> dict:
+    """清除某二级子版深扫游标；下次深扫从列表第 1 页起。"""
+    if forum_id != SITE_CRAWLER_FORUM_ID:
+        raise HTTPException(status_code=400, detail="该论坛尚未接入配置")
+    key = (board_key or "").strip()
+    if not key:
+        raise HTTPException(status_code=400, detail="子版 key 不能为空")
+    conn = connect()
+    try:
+        saved = clear_board_cursor(conn, forum_id, key)
+        return {
+            "message": "success",
+            "forum_id": forum_id,
+            "board_key": key,
+            "board_list_cursors": saved.get("board_list_cursors") or {},
             "config": saved,
         }
     except ValueError as exc:

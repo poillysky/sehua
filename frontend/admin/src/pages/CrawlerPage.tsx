@@ -31,6 +31,7 @@ function activityLevelClass(msg: string): string {
     m.includes('已入库批量重爬结束') ||
     (m.includes('已入库批量重爬') && zeroFail) ||
     m.includes('扫新帖完成') ||
+    m.includes('改板块') ||
     m.includes('随机入库') ||
     m.includes('随机抓帖结束') ||
     m.includes('随机抓帖本轮结束') ||
@@ -79,7 +80,12 @@ function formatResultLine(status: CrawlerStatus | null, runHint: string): string
     )
   }
   if (status.last_finished_at || last.crawled != null) {
-    return `完成：新帖 ${last.enqueued ?? last.discovered ?? 0} · 处理 ${last.crawled ?? 0} · 入库 ${last.imports ?? 0}`
+    const upd = Number(last.board_updated ?? 0)
+    return (
+      `完成：新帖 ${last.enqueued ?? last.discovered ?? 0}` +
+      (upd > 0 ? ` · 改板块 ${upd}` : '') +
+      ` · 处理 ${last.crawled ?? 0} · 入库 ${last.imports ?? 0}`
+    )
   }
   return ''
 }
@@ -502,7 +508,7 @@ export function CrawlerPage() {
                         ? '连续调度进行中，请先关闭开关后再立即爬取'
                         : running || stopping
                           ? '本轮仍在执行，请稍候'
-                          : '执行一轮爬虫（仅深扫列表 → 抓帖 → 入库）'
+                          : '执行一轮爬虫（深扫列表 → 已有只改板块 · 缺失抓帖入库）'
                     }
                     onClick={() => void onRun()}
                   >

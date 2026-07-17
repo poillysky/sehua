@@ -36,11 +36,23 @@
     "entry": "Surprise me",
     "title": "Just browsing",
     "subtitle": "Browse catalog including stubs without download links",
+    "filtered_subtitle": "Resources in this board category",
+    "clear_filter": "Clear filter",
     "loading": "Loading resources...",
     "refresh": "Shuffle",
     "empty": "No resources yet",
     "page_of": "Page {page} / {total}",
     "total_count": "{count} items"
+  },
+  "Boards": {
+    "entry": "Boards",
+    "title": "Board navigation",
+    "subtitle": "Browse by forum board and subcategory",
+    "board_count": "boards",
+    "subtype_count": "{count} subtypes",
+    "whole_board": "Whole board",
+    "all_children": "All",
+    "back_nav": "Back to boards"
   },
   "Search": {
     "placeholder": "Search what you want...",

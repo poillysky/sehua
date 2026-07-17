@@ -84,6 +84,8 @@ FORUM_CRAWLER_DEFAULTS: dict[str, Any] = {
     "board_head_catchup_on": {},
     # 各板当日首页捕新进度页（未扫完全已知时跨轮续扫；完成后清空）
     "board_head_progress": {},
+    # 各板回填进度残留字段（已并入深扫；清游标时顺带清除）
+    "board_backfill_progress": {},
 }
 
 
@@ -149,6 +151,16 @@ def _normalize_forum_config(raw: dict | None) -> dict[str, Any]:
                     except (TypeError, ValueError):
                         continue
                 base[key] = cleaned_p
+            continue
+        if key == "board_backfill_progress":
+            if isinstance(val, dict):
+                cleaned_bf: dict[str, int] = {}
+                for bf, pg in val.items():
+                    try:
+                        cleaned_bf[str(bf)] = max(1, int(pg))
+                    except (TypeError, ValueError):
+                        continue
+                base[key] = cleaned_bf
             continue
         if isinstance(default, bool):
             base[key] = bool(val) if isinstance(val, bool) else str(val).lower() in {"1", "true", "yes", "on"}
@@ -226,21 +238,25 @@ def _normalize_forum_config(raw: dict | None) -> dict[str, Any]:
         base["active_board_fid"] = active
     base["web_crawler_max_boards_per_run"] = max(1, len(enabled))
 
-    # 游标：旧 \"95\" → 迁到该板第一个启用子版（通常为情色分享 95:716）
+    # 游标：只保留二级单位 key；纯 fid 主板旧游标直接丢弃（页码与子版列表不可对应）
     cursors = dict(base.get("board_list_cursors") or {})
     migrated_cursors: dict[str, int] = {}
     for ck, pg in cursors.items():
         ck_s = str(ck)
         if ck_s in allowed:
-            migrated_cursors[ck_s] = int(pg)
-            continue
-        if ck_s.isdigit():
-            expanded = expand_legacy_board_keys([ck_s])
-            if expanded:
-                migrated_cursors[expanded[0]] = int(pg)
+            try:
+                migrated_cursors[ck_s] = max(0, int(pg))
+            except (TypeError, ValueError):
+                continue
+        # 纯数字 fid：丢弃，不迁到任一子版
     base["board_list_cursors"] = migrated_cursors
 
-    for map_key in ("board_manual_head_pages", "board_head_catchup_on", "board_head_progress"):
+    for map_key in (
+        "board_manual_head_pages",
+        "board_head_catchup_on",
+        "board_head_progress",
+        "board_backfill_progress",
+    ):
         raw_map = base.get(map_key)
         if not isinstance(raw_map, dict):
             base[map_key] = {}
@@ -250,10 +266,7 @@ def _normalize_forum_config(raw: dict | None) -> dict[str, Any]:
             ck_s = str(ck)
             if ck_s in allowed:
                 migrated[ck_s] = val
-            elif ck_s.isdigit():
-                expanded = expand_legacy_board_keys([ck_s])
-                if expanded:
-                    migrated[expanded[0]] = val
+            # 纯 fid：丢弃，不迁移
         base[map_key] = migrated
     if not isinstance(base.get("board_list_cursors"), dict):
         base["board_list_cursors"] = {}
@@ -263,6 +276,8 @@ def _normalize_forum_config(raw: dict | None) -> dict[str, Any]:
         base["board_head_catchup_on"] = {}
     if not isinstance(base.get("board_head_progress"), dict):
         base["board_head_progress"] = {}
+    if not isinstance(base.get("board_backfill_progress"), dict):
+        base["board_backfill_progress"] = {}
     try:
         base["web_crawler_manual_head_pages"] = max(
             1, int(base.get("web_crawler_manual_head_pages") or 20)
@@ -407,6 +422,64 @@ def set_board_list_cursor(
     else:
         cursors[key] = max(0, int(page or 0))
     current["board_list_cursors"] = cursors
+    return save_forum_config(conn, forum_id, current)
+
+
+def clear_board_cursor(
+    conn: Any,
+    forum_id: str,
+    board_fid: str | int,
+) -> dict:
+    """清除某二级子版深扫游标，并清掉残留回填进度；下次深扫从列表头起。"""
+    from parsers.boards import BOARD_POLICIES, expand_legacy_board_keys
+
+    configs = load_forum_configs_map(conn)
+    current = dict(configs.get(forum_id) or default_forum_crawler_config())
+    allowed = set(BOARD_POLICIES.keys())
+    expanded = expand_legacy_board_keys([str(board_fid).strip()])
+    key = next((k for k in expanded if k in allowed), "")
+    if not key:
+        key = str(board_fid).strip()
+    if key not in allowed:
+        raise ValueError(f"子版 {board_fid} 不在白名单")
+    cursors = dict(current.get("board_list_cursors") or {})
+    cursors.pop(key, None)
+    current["board_list_cursors"] = cursors
+    progress = dict(current.get("board_backfill_progress") or {})
+    progress.pop(key, None)
+    current["board_backfill_progress"] = progress
+    return save_forum_config(conn, forum_id, current)
+
+
+def get_board_backfill_progress(cfg: dict[str, Any] | None, board_fid: str | int) -> int:
+    """回填下一页（默认 1）；独立于深扫游标。"""
+    raw = (cfg or {}).get("board_backfill_progress") or {}
+    if not isinstance(raw, dict):
+        return 1
+    try:
+        return max(1, int(raw.get(str(board_fid)) or 1))
+    except (TypeError, ValueError):
+        return 1
+
+
+def set_board_backfill_progress(
+    conn: Any,
+    forum_id: str,
+    board_fid: str | int,
+    page: int | None,
+    *,
+    clear: bool = False,
+) -> dict:
+    """持久化回填进度。clear=True 或 page=None 时清除该板进度。"""
+    configs = load_forum_configs_map(conn)
+    current = dict(configs.get(forum_id) or default_forum_crawler_config())
+    progress = dict(current.get("board_backfill_progress") or {})
+    key = str(board_fid)
+    if clear or page is None:
+        progress.pop(key, None)
+    else:
+        progress[key] = max(1, int(page))
+    current["board_backfill_progress"] = progress
     return save_forum_config(conn, forum_id, current)
 
 

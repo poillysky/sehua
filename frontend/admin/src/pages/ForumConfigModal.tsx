@@ -1,5 +1,6 @@
 import { Fragment, useEffect, useMemo, useState, type FormEvent, type ReactNode } from 'react'
 import {
+  clearBoardCursor,
   saveForumConfig,
   setActiveBoard,
   type ForumBoard,
@@ -339,17 +340,21 @@ function BoardsTab({
   boards,
   enabledFids,
   activeBoardFid,
+  cursors,
   onToggle,
   onToggleMany,
   onSetCurrent,
+  onClearCursor,
 }: {
   forumId: string
   boards: ForumBoard[]
   enabledFids: string[]
   activeBoardFid: string
+  cursors: Record<string, number>
   onToggle: (fid: string, enabled: boolean) => void
   onToggleMany?: (fids: string[], enabled: boolean) => void
   onSetCurrent: (fid: string) => void
+  onClearCursor: (fid: string) => void
 }) {
   const magnetCount = boards.filter((b) => b.primary_link === 'magnet').length
   const ed2kCount = boards.filter((b) => b.primary_link === 'ed2k').length
@@ -364,6 +369,15 @@ function BoardsTab({
   const parentCount = useMemo(() => tree.reduce((n, [, list]) => n + list.length, 0), [tree])
 
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set())
+  const [clearing, setClearing] = useState<string | null>(null)
+
+  function cursorPage(key: string): number {
+    try {
+      return Math.max(0, Number(cursors[key] || 0))
+    } catch {
+      return 0
+    }
+  }
 
   function toggleExpand(fid: string) {
     setExpanded((prev) => {
@@ -383,6 +397,35 @@ function BoardsTab({
     for (const key of keys) {
       if (enable !== enabledSet.has(key)) onToggle(key, enable)
     }
+  }
+
+  function handleClear(key: string) {
+    if (!key || clearing) return
+    setClearing(key)
+    void Promise.resolve(onClearCursor(key)).finally(() => setClearing(null))
+  }
+
+  function CursorCell({ unitKey }: { unitKey: string }) {
+    const page = cursorPage(unitKey)
+    return (
+      <div className="board-cursor-cell" onClick={(e) => e.stopPropagation()}>
+        <span className="board-cursor-page" title={page > 0 ? `深扫游标第 ${page} 页` : '尚未深扫 / 已清游标'}>
+          {page > 0 ? `P${page}` : '—'}
+        </span>
+        <button
+          type="button"
+          className="btn sm secondary"
+          disabled={page <= 0 || clearing === unitKey}
+          title="清除游标后，下次深扫从第 1 页起；已有资源只改板块名，缺失才抓帖"
+          onClick={(e) => {
+            e.stopPropagation()
+            handleClear(unitKey)
+          }}
+        >
+          {clearing === unitKey ? '清除中…' : '清游标'}
+        </button>
+      </div>
+    )
   }
 
   return (
@@ -424,6 +467,7 @@ function BoardsTab({
               <col className="col-name" />
               <col className="col-link" />
               <col className="col-count" />
+              <col className="col-cursor" />
               <col className="col-time" />
             </colgroup>
             <thead>
@@ -435,6 +479,9 @@ function BoardsTab({
                 <th className="board-col-count" title="队列顺序">
                   顺序
                 </th>
+                <th className="board-col-cursor" title="深扫列表游标页；清除后从第 1 页重扫">
+                  游标
+                </th>
                 <th className="board-col-time">深扫当前</th>
               </tr>
             </thead>
@@ -442,7 +489,7 @@ function BoardsTab({
               {tree.map(([category, parents]) => (
                 <Fragment key={category}>
                   <tr className="forum-board-category-row">
-                    <td colSpan={6}>
+                    <td colSpan={7}>
                       <span className="forum-board-category-label">{category}</span>
                       <span className="forum-board-category-count">
                         {parents.length} 主板块 · {parents.reduce((n, p) => n + p.children.length, 0)}{' '}
@@ -537,7 +584,10 @@ function BoardsTab({
                             </span>
                           </td>
                           <td className="board-col-count">
-                            {sole ? (queueIndex.get(soleKey) ?? '—') : enabledKids.length ? enabledKids.length : '—'}
+                            {sole ? (queueIndex.get(soleKey) ?? '—') : null}
+                          </td>
+                          <td className="board-col-cursor">
+                            {sole ? <CursorCell unitKey={soleKey} /> : null}
                           </td>
                           <td className="board-col-time">
                             {sole && soleSelected ? (
@@ -553,9 +603,7 @@ function BoardsTab({
                               >
                                 {soleCurrent ? '当前' : '设为当前'}
                               </button>
-                            ) : (
-                              '—'
-                            )}
+                            ) : null}
                           </td>
                         </tr>
                         {isOpen && !sole
@@ -611,6 +659,9 @@ function BoardsTab({
                                     </span>
                                   </td>
                                   <td className="board-col-count">{ord ?? '—'}</td>
+                                  <td className="board-col-cursor">
+                                    <CursorCell unitKey={unitKey} />
+                                  </td>
                                   <td className="board-col-time">
                                     {selected ? (
                                       <button
@@ -1015,6 +1066,18 @@ export function ForumConfigModal({
     )
   }
 
+  const handleClearCursor = (fid: string) => {
+    void clearBoardCursor(forum.id, fid).then(
+      (res) => {
+        const next = { ...draft, ...res.config }
+        setDraft(next)
+        onActiveBoardChange(next)
+        toast.success(`已清除游标 · ${fid} · 下次深扫从 P1 起`)
+      },
+      (err) => toast.error(err instanceof Error ? err.message : '清除游标失败'),
+    )
+  }
+
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault()
     setSaving(true)
@@ -1114,9 +1177,11 @@ export function ForumConfigModal({
                   boards={boards}
                   enabledFids={enabledBoardFids}
                   activeBoardFid={activeBoardFid}
+                  cursors={draft.board_list_cursors || forum.crawler_config.board_list_cursors || {}}
                   onToggle={handleToggleBoard}
                   onToggleMany={handleToggleMany}
                   onSetCurrent={handleSetCurrentBoard}
+                  onClearCursor={handleClearCursor}
                 />
               ) : null}
             </div>

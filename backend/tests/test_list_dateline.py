@@ -36,8 +36,8 @@ def test_counted_resume_includes_end_page():
     from workers.list_scan import counted_resume_page
 
     assert counted_resume_page(5) == 5
-    assert counted_resume_page(0) == 2
-    assert counted_resume_page(1) == 2
+    assert counted_resume_page(0) == 1
+    assert counted_resume_page(1) == 1
 
 
 def test_age_retry_after():
@@ -529,6 +529,9 @@ def test_board_141_skips_young_posts(monkeypatch):
 
     monkeypatch.setattr(ls, "connect", lambda: _C())
     monkeypatch.setattr(ls, "enqueue_thread", fake_enqueue_thread)
+    monkeypatch.setattr(ls, "known_resource_tids", lambda conn, tids: set())
+    monkeypatch.setattr(ls, "update_board_meta_by_tids", lambda *a, **k: 0)
+    monkeypatch.setattr(ls, "update_crawl_board_meta_by_tids", lambda *a, **k: 0)
     monkeypatch.setattr(
         ls,
         "is_thread_old_enough",

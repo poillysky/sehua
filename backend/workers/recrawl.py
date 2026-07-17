@@ -212,16 +212,20 @@ def _resolve_item(conn: Any, resource_hash: str, cfg: dict[str, Any]) -> dict[st
         board_fid_s = str(cfg.get("active_board_fid") or "")
     from parsers.boards import get_board_fid, get_board_policy
 
+    pol = get_board_policy(board_fid_s)
     board_fid = get_board_fid(board_fid_s)
     if board_fid <= 0:
         return {"ok": False, "hash": resource_hash, "error": "缺少有效板块 fid，无法重爬"}
-    pol = get_board_policy(board_fid)
-    board_name = str(item.get("board_name") or pol.board_name or pol.name)
+    stored_name = str(item.get("board_name") or "").strip()
+    if stored_name and (" · " in stored_name or "-" in stored_name):
+        board_name = stored_name.replace("-", " · ", 1) if " · " not in stored_name else stored_name
+    else:
+        board_name = pol.name
     title = str(item.get("title") or item.get("filename") or "")
     queued = requeue_for_recrawl(
         conn,
         url=source_url,
-        board_fid=board_fid,
+        board_fid=pol.key,
         board_name=board_name,
         title=title,
         forum_id=SITE_CRAWLER_FORUM_ID,
@@ -230,7 +234,7 @@ def _resolve_item(conn: Any, resource_hash: str, cfg: dict[str, Any]) -> dict[st
         "ok": True,
         "hash": resource_hash,
         "tid": tid,
-        "board_fid": board_fid,
+        "board_fid": pol.key,
         "board_name": board_name,
         "title": title,
         "url": str(queued["url"]),
@@ -282,7 +286,7 @@ async def _run_one(
     fetcher: Optional[Fetcher] = None,
 ) -> dict[str, Any]:
     tid = int(prepared["tid"])
-    board_fid = int(prepared["board_fid"])
+    board_fid = prepared["board_fid"]
     board_name = str(prepared["board_name"])
     title = str(prepared["title"])
     thread_url = str(prepared["url"])
@@ -674,8 +678,14 @@ async def recrawl_account_stubs() -> dict[str, Any]:
                 _push_progress(current_tid=tid, current_title=title)
                 continue
 
-            pol = get_board_policy(board_fid)
-            board_name = str(row.get("board_name") or pol.board_name or pol.name)
+            pol = get_board_policy(board_fid_s)
+            stored_name = str(row.get("board_name") or "").strip()
+            if stored_name and (" · " in stored_name or "-" in stored_name):
+                board_name = (
+                    stored_name.replace("-", " · ", 1) if " · " not in stored_name else stored_name
+                )
+            else:
+                board_name = pol.name
             _push_progress(current_tid=tid, current_title=title)
             rem_now = int((_STATE.get("account_stub_progress") or {}).get("remaining") or 0)
             _log_activity(
@@ -685,7 +695,7 @@ async def recrawl_account_stubs() -> dict[str, Any]:
             try:
                 outcome = await process_thread(
                     tid,
-                    board_fid=board_fid,
+                    board_fid=pol.key,
                     board_name=board_name,
                     list_title=title,
                     persist=True,

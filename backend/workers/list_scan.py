@@ -20,7 +20,8 @@ from crawler.parser import ThreadBrief, is_valid_forum_list, parse_forum_list
 from crawler.session import SessionManager
 from crawler.throttle import THROTTLE
 from db.connection import connect
-from db.queue import enqueue_thread
+from db.queue import enqueue_thread, update_crawl_board_meta_by_tids
+from db.repository import known_resource_tids, update_board_meta_by_tids
 from parsers.boards import get_board_policy
 from parsers.list_dates import is_thread_old_enough
 from parsers.thread_gates import is_thread_login_required
@@ -45,6 +46,7 @@ class ListScanResult:
     pages_skipped: list[int] = field(default_factory=list)  # 兼容旧字段
     threads: list[ThreadBrief] = field(default_factory=list)
     enqueued: int = 0
+    board_updated: int = 0  # 已有资源仅改板块字段
     deferred_young: int = 0  # 未满龄跳过（不入队）数
     last_list_page: int = 0  # 计数阶段最后一页（游标）
     harvest_start_page: int = 0
@@ -72,14 +74,14 @@ def _page_hard_limit(max_list_pages: int) -> int:
 
 
 def counted_resume_page(last_list_page: int) -> int:
-    """计数阶段起点：上次结束页（含），避免漏帖；无游标则从第 2 页。
+    """深扫起点：有游标则从该页（含）续扫；无游标从第 1 页。
 
-    例：last=5 → 返回 5（从第五页头读取，不是 6）。
+    例：last=5 → 返回 5；last=0/1 → 返回 1（清游标后从头）。
     """
     cursor = max(0, int(last_list_page or 0))
     if cursor >= 2:
         return cursor
-    return 2
+    return 1
 
 
 def age_retry_after(
@@ -163,7 +165,10 @@ def _enqueue_batch(
     persist_enqueue: bool,
     min_thread_age_days: int = 0,
 ) -> tuple[int, int]:
-    """入队；返回 (本页新插入数, 本页因未满龄跳过数)。未满龄帖不入队。"""
+    """入队缺失帖；已有资源只改板块字段不读帖。
+
+    返回 (本页新插入数, 本页因未满龄跳过数)。未满龄帖不入队。
+    """
     page_enqueued = 0
     page_skipped_young = 0
     if not batch:
@@ -171,10 +176,33 @@ def _enqueue_batch(
     if persist_enqueue:
         conn = connect()
         try:
+            tids = [int(t.tid) for t in batch if getattr(t, "tid", None)]
+            known = known_resource_tids(conn, tids) if tids else set()
+            to_update = [tid for tid in tids if tid in known and tid not in seen]
+            # 去重后再更新，避免同页重复 tid
+            to_update = list(dict.fromkeys(to_update))
+            if to_update:
+                n = update_board_meta_by_tids(
+                    conn,
+                    to_update,
+                    board_fid=str(board_fid),
+                    board_name=board_name,
+                )
+                update_crawl_board_meta_by_tids(
+                    conn,
+                    to_update,
+                    board_fid=board_fid,
+                    board_name=board_name,
+                )
+                out.board_updated += max(0, int(n or 0))
+                for tid in to_update:
+                    seen.add(tid)
             for t in batch:
                 if t.tid in seen:
                     continue
                 seen.add(t.tid)
+                if t.tid in known:
+                    continue
                 if min_thread_age_days > 0 and not is_thread_old_enough(
                     t.posted_at,  # type: ignore[arg-type]
                     min_age_days=min_thread_age_days,
@@ -255,6 +283,7 @@ async def scan_board_list(
 
     out = ListScanResult(board_fid=numeric_fid, last_list_page=cursor)
     seen: set[int] = set()
+    unit_key = pol.key
     name = board_name or pol.name
     page1_tids: frozenset[int] | None = None
 
@@ -341,15 +370,17 @@ async def scan_board_list(
 
             out.pages_head.append(page)
             pages_read_in_head += 1
+            upd_before = out.board_updated
             enq, young_skip = _enqueue_batch(
                 out,
                 fetched.batch,
                 seen=seen,
-                board_fid=numeric_fid,
+                board_fid=unit_key,
                 board_name=name,
                 persist_enqueue=persist_enqueue,
                 min_thread_age_days=min_age,
             )
+            page_upd = out.board_updated - upd_before
             # 未满龄跳过不算「全已知」，避免板 141 首页因年轻帖早停
             if enq == 0 and young_skip == 0:
                 known_streak += 1
@@ -357,6 +388,7 @@ async def scan_board_list(
                 known_streak = 0
             _emit(
                 f"首页捕新 P{page} · {len(fetched.batch)} 帖 · 新入队 {enq}（不计配额）"
+                + (f" · 改板块 {page_upd}" if page_upd else "")
                 + (f" · 未满龄跳过 {young_skip}" if young_skip else "")
                 + (
                     f" · 全已知连续 {known_streak}/{head_known_need}"
@@ -391,7 +423,8 @@ async def scan_board_list(
     resume = counted_resume_page(cursor)
     head_last = max(out.pages_head) if out.pages_head else 0
     deep_start = resume
-    if scan_head and head_last >= 2:
+    # 本轮已做首页捕新时，深扫从捕新之后继续，避免与首页重复
+    if scan_head and head_last >= 1:
         deep_start = max(resume, head_last + 1)
 
     out.harvest_start_page = deep_start
@@ -458,22 +491,26 @@ async def scan_board_list(
         out.last_list_page = page
         harvested += 1
         prev_tids = tids
+        upd_before = out.board_updated
         enq, young_skip = _enqueue_batch(
             out,
             fetched.batch,
             seen=seen,
-            board_fid=numeric_fid,
+            board_fid=unit_key,
             board_name=name,
             persist_enqueue=persist_enqueue,
             min_thread_age_days=min_age,
         )
+        page_upd = out.board_updated - upd_before
         if enq == 0 and young_skip == 0:
             known_streak += 1
         elif enq > 0:
             known_streak = 0
         progress = f"{harvested}/{harvest_quota}"
         _emit(
-            f"深扫 P{page} · {len(fetched.batch)} 帖 · 新入队 {enq} · {progress}"
+            f"深扫 P{page} · {len(fetched.batch)} 帖 · 新入队 {enq}"
+            + (f" · 改板块 {page_upd}" if page_upd else "")
+            + f" · {progress}"
             + (f" · 未满龄跳过 {young_skip}" if young_skip else "")
             + (f" · 全已知连续 {known_streak}" if enq == 0 and young_skip == 0 else "")
         )
@@ -485,7 +522,9 @@ async def scan_board_list(
     elif harvested >= harvest_quota and out.pages_scanned:
         _emit(
             f"本批深扫配额已满 · P{out.harvest_start_page}~P{out.last_list_page} "
-            f"共 {harvested} 页 · 合计新入队 {out.enqueued} · 游标 P{out.last_list_page}"
+            f"共 {harvested} 页 · 合计新入队 {out.enqueued}"
+            + (f" · 改板块 {out.board_updated}" if out.board_updated else "")
+            + f" · 游标 P{out.last_list_page}"
         )
     elif page > page_limit:
         _emit(f"已达翻页上限 P{page_limit} · 游标停在 P{out.last_list_page}")

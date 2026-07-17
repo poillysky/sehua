@@ -34,11 +34,23 @@
     "entry": "隨便看看",
     "title": "隨便看看",
     "subtitle": "瀏覽收錄資源（含無下載鏈的占位帖），底部可翻頁",
+    "filtered_subtitle": "目前板塊分類下的收錄資源",
+    "clear_filter": "清除篩選",
     "loading": "正在載入資源...",
     "refresh": "換一批",
     "empty": "暫無資源",
     "page_of": "第 {page} / {total} 頁",
     "total_count": "共 {count} 條"
+  },
+  "Boards": {
+    "entry": "板塊導航",
+    "title": "板塊導航",
+    "subtitle": "依論壇板塊與分類瀏覽資源，點擊即可進入該分類列表",
+    "board_count": "個主板塊",
+    "subtype_count": "{count} 個子版",
+    "whole_board": "整板瀏覽",
+    "all_children": "全部",
+    "back_nav": "返回板塊導航"
   },
   "Search": {
     "placeholder": "搜尋你想要的...",

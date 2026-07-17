@@ -20,7 +20,7 @@ log = logging.getLogger(__name__)
 async def fetch_and_parse_thread(
     tid: int,
     *,
-    board_fid: int,
+    board_fid: int | str,
     session: Optional[SessionManager] = None,
     preferred_link: Optional[str] = None,
     list_title: str = "",
@@ -66,7 +66,7 @@ async def fetch_and_parse_thread(
 async def process_thread(
     tid: int,
     *,
-    board_fid: int,
+    board_fid: int | str,
     board_name: str = "",
     session: Optional[SessionManager] = None,
     list_title: str = "",
@@ -82,6 +82,7 @@ async def process_thread(
     html: 若已取到帖页 HTML 则复用，避免重复请求。
     """
     policy = get_board_policy(board_fid)
+    persist_board_name = (board_name or policy.name or "").strip()
     link_pref = (preferred_link or policy.primary_link or "magnet").strip().lower()
     if link_pref not in {"magnet", "ed2k", "both"}:
         link_pref = policy.primary_link
@@ -267,7 +268,7 @@ async def process_thread(
                     parsed,
                     source_url=thread_url,
                     board_fid=board_fid,
-                    board_name=board_name or policy.name,
+                    board_name=persist_board_name,
                     forum_id="sehuatang",
                     import_outcome=str(outcome.outcome or outcome.label or ""),
                 )
@@ -285,7 +286,7 @@ async def process_thread(
 def persist_parsed(
     parsed: DualParseResult,
     *,
-    board_fid: int,
+    board_fid: int | str,
     board_name: str = "",
     source_url: str,
 ) -> dict:

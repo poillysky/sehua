@@ -32,7 +32,7 @@ RESOURCE_FORMAT = [
     {"no": 2, "name": "文件大小", "note": "字节数；空则用链接内大小", "key": "file_size"},
     {"no": 3, "name": "预览图", "note": "最多 5 张；可上传或粘贴 URL", "key": "preview_images"},
     {"no": 4, "name": "来源论坛名", "note": "如：色花堂", "key": "forum_name"},
-    {"no": 5, "name": "来源板块名", "note": "如：亚洲无码原创", "key": "board_name"},
+    {"no": 5, "name": "来源板块名", "note": "含子分类，如：国产原创 · 国产无码", "key": "board_name"},
     {"no": 6, "name": "magnet 或 ED2K 链接", "note": "必填；可多行", "key": "links"},
     {"no": 7, "name": "帖子原链接", "note": "可选 source_url", "key": "source_url"},
     {"no": 8, "name": "资源解压密码", "note": "可选", "key": "extract_password"},

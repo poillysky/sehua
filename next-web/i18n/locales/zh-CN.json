@@ -34,11 +34,23 @@
     "entry": "随便看看",
     "title": "随便看看",
     "subtitle": "浏览收录资源（含无下载链的占位帖），底部可翻页",
+    "filtered_subtitle": "当前板块分类下的收录资源",
+    "clear_filter": "清除筛选",
     "loading": "正在加载资源...",
     "refresh": "换一批",
     "empty": "暂无资源",
     "page_of": "第 {page} / {total} 页",
     "total_count": "共 {count} 条"
+  },
+  "Boards": {
+    "entry": "板块导航",
+    "title": "板块导航",
+    "subtitle": "按论坛板块与分类浏览资源，点击即可进入该分类列表",
+    "board_count": "个主板块",
+    "subtype_count": "{count} 个子版",
+    "whole_board": "整板浏览",
+    "all_children": "全部",
+    "back_nav": "返回板块导航"
   },
   "Search": {
     "placeholder": "搜索色花堂资源…",

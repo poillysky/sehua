@@ -34,7 +34,8 @@ const PROFILES: Record<string, Profile> = {
 }
 
 function profileForBoard(boardFid?: string): Profile {
-  const fid = (boardFid || '').trim()
+  const raw = (boardFid || '').trim()
+  const fid = raw.includes(':') ? raw.split(':')[0]! : raw
   if (PROFILES[fid]) return PROFILES[fid]
   if (BT_FIDS.has(fid)) return PROFILES.bt
   return PROFILES.default

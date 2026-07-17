@@ -353,6 +353,63 @@ def delete_stub_by_source_url(conn: Any, source_url: str) -> bool:
     return ok
 
 
+def known_resource_tids(conn: Any, tids: list[int]) -> set[int]:
+    """批量查询 resource_sources 中已有的帖 tid（按 source_url 匹配 thread-{tid}-）。"""
+    clean = sorted({int(t) for t in tids if t is not None and int(t) > 0})
+    if not clean:
+        return set()
+    _ensure_resource_schema(conn)
+    patterns = [f"%thread-{tid}-%" for tid in clean]
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT DISTINCT (regexp_match(source_url, 'thread-(\\d+)-'))[1]::int AS tid
+            FROM resource_sources
+            WHERE source_url IS NOT NULL
+              AND source_url <> ''
+              AND source_url LIKE ANY(%s)
+            """,
+            (patterns,),
+        )
+        out: set[int] = set()
+        for row in cur.fetchall():
+            if row and row[0] is not None:
+                out.add(int(row[0]))
+        return out
+
+
+def update_board_meta_by_tids(
+    conn: Any,
+    tids: list[int],
+    *,
+    board_fid: str,
+    board_name: str,
+) -> int:
+    """按 tid 批量更新资源板块字段；返回更新行数。"""
+    clean = sorted({int(t) for t in tids if t is not None and int(t) > 0})
+    if not clean:
+        return 0
+    _ensure_resource_schema(conn)
+    fid = str(board_fid or "").strip() or None
+    name = (board_name or "").strip() or None
+    patterns = [f"%thread-{tid}-%" for tid in clean]
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            UPDATE resource_sources
+            SET board_fid = %s,
+                board_name = %s
+            WHERE source_url IS NOT NULL
+              AND source_url <> ''
+              AND source_url LIKE ANY(%s)
+            """,
+            (fid, name, patterns),
+        )
+        n = int(cur.rowcount or 0)
+    conn.commit()
+    return n
+
+
 # 账号 Cookie 最可能升级成功的占位 outcome（优先级从高到低）
 ACCOUNT_STUB_OUTCOMES: tuple[str, ...] = (
     "帖子需论坛登录",

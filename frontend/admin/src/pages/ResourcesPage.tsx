@@ -528,7 +528,7 @@ export function ResourcesPage() {
                   </th>
                   <th className="col-icon">#</th>
                   <th className="col-name">帖子</th>
-                  <th className="col-board">论坛 / 板块</th>
+                  <th className="col-board">论坛 / 板块·分类</th>
                   <th className="col-outcome">判定</th>
                   <th className="col-result">结果</th>
                   <th className="col-time">处理时间</th>
@@ -1093,7 +1093,7 @@ function DetailTabs({
               <span className="val">{row.forum || '—'}</span>
             </div>
             <div className="detail-field">
-              <span className="lbl">板块</span>
+              <span className="lbl">板块 / 分类</span>
               <span className="val">{row.board}</span>
             </div>
             <div className="detail-field">
@@ -1130,7 +1130,7 @@ function DetailTabs({
               <span className="val">{row.forum || row.forumId || '—'}</span>
             </div>
             <div className="detail-field">
-              <span className="lbl">来源板块</span>
+              <span className="lbl">来源板块 / 分类</span>
               <span className="val">{row.board}</span>
             </div>
             <div className="detail-field">

@@ -28,6 +28,26 @@ PENDING_ORDER = "ORDER BY COALESCE(fetch_fail_count, 0) ASC, updated_at ASC, cre
 # 同一帖连续重试上限：超出后出队为 failed，避免永远占异常队列空转
 MAX_THREAD_RETRIES = 3
 # 正常待抓积压阈值（不含异常队列）：达到/超过则本轮不再扫列表
+
+
+def _as_board_keys(board_fid: str | int | list[str | int] | tuple[str | int, ...] | None) -> list[str]:
+    if board_fid is None:
+        return []
+    if isinstance(board_fid, (list, tuple, set)):
+        return [str(x).strip() for x in board_fid if str(x).strip()]
+    key = str(board_fid).strip()
+    return [key] if key else []
+
+
+def _board_fid_sql(
+    board_fid: str | int | list[str | int] | tuple[str | int, ...] | None,
+) -> tuple[str, list[Any]]:
+    keys = _as_board_keys(board_fid)
+    if not keys:
+        return "", []
+    if len(keys) == 1:
+        return "AND board_fid = %s", [keys[0]]
+    return "AND board_fid = ANY(%s)", [keys]
 QUEUE_LIST_BACKPRESSURE = 150
 
 _TID_RE = re.compile(r"thread-(\d+)-", re.I)
@@ -116,13 +136,12 @@ def canonical_thread_url(url: str, *, root: str = "") -> str:
     return f"https://{host}/thread-{tid}-1-1.html"
 
 
-def dedupe_pending_by_tid(conn: Any, *, board_fid: str | int | None = None) -> int:
+def dedupe_pending_by_tid(
+    conn: Any, *, board_fid: str | int | list[str | int] | tuple[str | int, ...] | None = None
+) -> int:
     """合并同 tid 多条 pending（常见于 .net/.org 双入口）。保留一条，其余标 skipped。"""
     cur = conn.cursor()
-    board_clause = "AND board_fid = %s" if board_fid is not None else ""
-    params: list[Any] = []
-    if board_fid is not None:
-        params.append(str(board_fid))
+    board_clause, params = _board_fid_sql(board_fid)
     cur.execute(
         f"""
         WITH ranked AS (
@@ -230,7 +249,7 @@ def enqueue_thread(
 def fetch_pending_threads(
     conn: Any,
     *,
-    board_fid: str | int,
+    board_fid: str | int | list[str | int] | tuple[str | int, ...],
     limit: int = 50,
     include_soft_ad: bool = False,
     include_due_abnormal: bool = True,
@@ -240,6 +259,9 @@ def fetch_pending_threads(
         extra = f"{PENDING_READY}".strip()
     else:
         extra = f"{PENDING_READY} {PENDING_NORMAL_ONLY}"
+    board_clause, params = _board_fid_sql(board_fid)
+    if not board_clause:
+        return []
     cur = conn.cursor()
     cur.execute(
         f"""
@@ -247,12 +269,12 @@ def fetch_pending_threads(
         FROM crawl_pages
         WHERE page_type = 'thread'
           AND status = 'pending'
-          AND board_fid = %s
+          {board_clause}
           {extra}
         {PENDING_ORDER}
         LIMIT %s
         """,
-        (str(board_fid), max(1, int(limit))),
+        (*params, max(1, int(limit))),
     )
     cols = [d[0] for d in cur.description]
     return [dict(zip(cols, row)) for row in cur.fetchall()]
@@ -261,10 +283,13 @@ def fetch_pending_threads(
 def fetch_pending_abnormal(
     conn: Any,
     *,
-    board_fid: str | int,
+    board_fid: str | int | list[str | int] | tuple[str | int, ...],
     limit: int = 50,
 ) -> list[dict[str, Any]]:
     """取出异常队列帖（含原软文；忽略退避，供手动重试）。"""
+    board_clause, params = _board_fid_sql(board_fid)
+    if not board_clause:
+        return []
     cur = conn.cursor()
     cur.execute(
         f"""
@@ -272,12 +297,12 @@ def fetch_pending_abnormal(
         FROM crawl_pages
         WHERE page_type = 'thread'
           AND status = 'pending'
-          AND board_fid = %s
+          {board_clause}
           {PENDING_ABNORMAL_ONLY}
         {PENDING_ORDER}
         LIMIT %s
         """,
-        (str(board_fid), max(1, int(limit))),
+        (*params, max(1, int(limit))),
     )
     cols = [d[0] for d in cur.description]
     return [dict(zip(cols, row)) for row in cur.fetchall()]
@@ -293,12 +318,11 @@ def fetch_pending_soft_ad(
     return fetch_pending_abnormal(conn, board_fid=board_fid, limit=limit)
 
 
-def count_pending(conn: Any, *, board_fid: str | int | None = None) -> dict[str, int]:
+def count_pending(
+    conn: Any, *, board_fid: str | int | list[str | int] | tuple[str | int, ...] | None = None
+) -> dict[str, int]:
     cur = conn.cursor()
-    board_clause = "AND board_fid = %s" if board_fid is not None else ""
-    params: list[Any] = []
-    if board_fid is not None:
-        params.append(str(board_fid))
+    board_clause, params = _board_fid_sql(board_fid)
 
     def _count(extra: str) -> int:
         cur.execute(
@@ -373,6 +397,35 @@ def mark_thread_done(
 
 def mark_thread_skipped(conn: Any, url: str, outcome: str) -> None:
     mark_thread_done(conn, url, outcome=outcome, status="skipped")
+
+
+def update_crawl_board_meta_by_tids(
+    conn: Any,
+    tids: list[int],
+    *,
+    board_fid: str | int,
+    board_name: str = "",
+) -> int:
+    """按 tid 批量更新 crawl_pages 板块字段（与资源回填对齐）。"""
+    clean = sorted({int(t) for t in tids if t is not None and int(t) > 0})
+    if not clean:
+        return 0
+    cur = conn.cursor()
+    cur.execute(
+        """
+        UPDATE crawl_pages
+        SET board_fid = %s,
+            board_name = %s,
+            updated_at = now()
+        WHERE page_type = 'thread'
+          AND tid = ANY(%s)
+        """,
+        (str(board_fid), board_name or None, clean),
+    )
+    n = int(cur.rowcount or 0)
+    if n:
+        conn.commit()
+    return n
 
 
 def requeue_for_recrawl(

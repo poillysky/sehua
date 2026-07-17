@@ -317,7 +317,7 @@ function StepDetail({
       20
     const knownStop = cfg.web_crawler_list_known_stop_pages || 2
     return (
-      <ChartShell hint={`扫列表前先看队列背压；连续/立即：每轮深扫 ${pages} 页至板底；扫新帖：每板上限 ${headPages} 页（可板级覆盖），连续 ${knownStop} 页全已知早停，且本板扫完后同轮进入抓帖`}>
+      <ChartShell hint={`扫列表前先看队列背压；连续/立即：每轮深扫 ${pages} 页至板底（已知资源只改二级板块名，缺失才抓帖）；扫新帖：每板上限 ${headPages} 页（可板级覆盖），连续 ${knownStop} 页全已知早停，且本板扫完后同轮进入抓帖`}>
         <Decision text="正常待抓 ≥ 150？" />
         <ArrowDown />
         <Junction pair>
@@ -364,7 +364,7 @@ function StepDetail({
                 </Branch>
                 <Branch label="否 · 深扫" main>
                   <Spine>
-                    <Process text="浏览器打开列表" sub={`自游标向更旧推进 · 本轮 ${pages} 页`} />
+                    <Process text="浏览器打开列表" sub={`自游标向更旧推进 · 本轮 ${pages} 页 · 已有只改板块 · 缺失才入队`} />
                     <ArrowDown />
                     <Decision text="网页内容是否正常？" />
                     <ArrowDown />

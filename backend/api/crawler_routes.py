@@ -153,6 +153,7 @@ def get_crawler_status(_user: dict = Depends(require_permission("crawler.view"))
         "last_result": last,
         "random_progress": rnd,
         "account_stub_progress": stub_prog,
+        "board_list_cursors": cfg.get("board_list_cursors") or {},
         "activity": st.get("activity") or [],
         "boards": boards,
         "queue": qstats or st.get("queue") or {},
@@ -177,6 +178,7 @@ def get_crawler_status(_user: dict = Depends(require_permission("crawler.view"))
             "stub_budget": stub_prog.get("remaining") or stub_prog.get("budget") or 0,
             "stub_remaining": stub_prog.get("remaining") or stub_prog.get("budget") or 0,
             "stub_upgraded": stub_prog.get("upgraded") or 0,
+            "board_updated": last.get("board_updated") or 0,
         },
     }
 

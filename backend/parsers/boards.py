@@ -77,7 +77,7 @@ def _unit(
 ) -> BoardPolicy:
     key = board_unit_key(fid, typeid)
     if typeid and type_name:
-        name = f"{board_name}-{type_name}"
+        name = f"{board_name} · {type_name}"
     else:
         name = board_name
     return BoardPolicy(
@@ -393,6 +393,25 @@ def expand_legacy_board_keys(keys: list[str] | None) -> list[str]:
                 if uk not in seen:
                     out.append(uk)
                     seen.add(uk)
+    return out
+
+
+def board_display_name(pol: BoardPolicy) -> str:
+    """资源/队列展示名：主板块 · 子分类。"""
+    return (pol.name or pol.board_name or "").strip()
+
+
+def queue_board_keys(unit_key: str | int) -> list[str]:
+    """当前子版 key；附带旧纯 fid，便于消化历史入队。"""
+    key = str(unit_key).strip()
+    out: list[str] = []
+    if key:
+        out.append(key)
+    fid, _ = parse_board_key(key)
+    if fid:
+        bare = str(fid)
+        if bare not in out:
+            out.append(bare)
     return out
 
 

@@ -47,6 +47,7 @@ export type CrawlerStatus = {
     current_tid?: number | null
     current_title?: string
   }
+  board_list_cursors?: Record<string, number>
   activity: CrawlerActivity[]
   boards: { fid: string; name: string; pending: string | number; done: string | number }[]
   queue?: {
@@ -77,6 +78,7 @@ export type CrawlerStatus = {
     stub_budget?: number
     stub_remaining?: number
     stub_upgraded?: number
+    board_updated?: number
   }
 }
 

@@ -187,3 +187,46 @@ input:-webkit-autofill:active {
   background-color: transparent !important;
   background-clip: text;
 }
+
+/* 板块导航：单列上下流 + iOS Safari / 全屏安全区 */
+.boards-page {
+  width: 100%;
+  min-height: 100dvh;
+  padding-left: max(0.75rem, var(--safe-left));
+  padding-right: max(0.75rem, var(--safe-right));
+  padding-top: 0.75rem;
+  /* 底部预留：Home Indicator + Safari 标签栏 / 工具栏 */
+  padding-bottom: max(2rem, calc(var(--safe-bottom) + 4.25rem));
+}
+
+.boards-page-top {
+  top: 0;
+}
+
+@media (min-width: 768px) {
+  .boards-page {
+    /* 桌面与随便看看同宽节奏，底部不必为 Safari 标签栏加厚 */
+    padding-bottom: 2.5rem;
+  }
+}
+
+@media all and (display-mode: standalone) {
+  .boards-page {
+    padding-bottom: max(1.5rem, calc(var(--safe-bottom) + 1.25rem));
+  }
+
+  .boards-page-top {
+    top: 0;
+  }
+}
+
+html.ios-standalone .boards-page,
+html[data-standalone="true"] .boards-page {
+  padding-bottom: max(1.5rem, calc(var(--safe-bottom) + 1.25rem));
+}
+
+html.ios-standalone .boards-page-top,
+html[data-standalone="true"] .boards-page-top {
+  top: 0;
+}
+

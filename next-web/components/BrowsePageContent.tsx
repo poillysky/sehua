@@ -13,11 +13,20 @@ import { Ed2kResourceProps } from "@/types";
 import { $env } from "@/utils";
 import { BROWSE_PAGE_MAX, BROWSE_PAGE_SIZE } from "@/config/constant";
 
-async function fetchBrowsePage(page: number) {
-  const response = await fetch(
-    `/api/browse?p=${page}&ps=${BROWSE_PAGE_SIZE}`,
-    { cache: "no-store" },
-  );
+async function fetchBrowsePage(
+  page: number,
+  filter?: { board_fid?: string; board?: string; board_parent?: string },
+) {
+  const params = new URLSearchParams();
+  params.set("p", String(page));
+  params.set("ps", String(BROWSE_PAGE_SIZE));
+  if (filter?.board_fid) params.set("board_fid", filter.board_fid);
+  if (filter?.board) params.set("board", filter.board);
+  if (filter?.board_parent) params.set("board_parent", filter.board_parent);
+
+  const response = await fetch(`/api/browse?${params.toString()}`, {
+    cache: "no-store",
+  });
 
   if (!response.ok) {
     throw new Error("Failed to fetch browse resources");
@@ -59,10 +68,16 @@ export function BrowsePageContent({
   initialResources = [],
   initialTotalCount = 0,
   initialPage = 1,
+  boardFid,
+  boardLabel,
+  boardParent,
 }: {
   initialResources?: Ed2kResourceProps[];
   initialTotalCount?: number;
   initialPage?: number;
+  boardFid?: string;
+  boardLabel?: string;
+  boardParent?: string;
 }) {
   const t = useTranslations();
   const router = useRouter();
@@ -75,12 +90,28 @@ export function BrowsePageContent({
     BROWSE_PAGE_MAX,
   );
 
+  const activeBoardFid = (searchParams.get("board_fid") || boardFid || "").trim();
+  const activeBoard = (searchParams.get("board") || boardLabel || "").trim();
+  const activeParent = (
+    searchParams.get("board_parent") ||
+    boardParent ||
+    ""
+  ).trim();
+  const filterLabel = activeBoard || activeParent || undefined;
+  const browseFilter = {
+    board_fid: activeBoardFid || undefined,
+    board: activeBoard || undefined,
+    board_parent: activeParent || undefined,
+  };
+
   const [resources, setResources] = useState(initialResources);
   const [totalCount, setTotalCount] = useState(initialTotalCount);
   const [loading, setLoading] = useState(false);
   const [failed, setFailed] = useState(false);
   const skipFirstFetch = useRef(true);
   const loadedPageRef = useRef(initialPage);
+  const filterKey = `${activeBoardFid}|${activeBoard}|${activeParent}`;
+  const loadedFilterRef = useRef(filterKey);
 
   const totalPages = Math.max(
     1,
@@ -106,7 +137,12 @@ export function BrowsePageContent({
   );
 
   useEffect(() => {
-    if (skipFirstFetch.current && page === loadedPageRef.current) {
+    const filterChanged = loadedFilterRef.current !== filterKey;
+    if (
+      skipFirstFetch.current &&
+      page === loadedPageRef.current &&
+      !filterChanged
+    ) {
       skipFirstFetch.current = false;
 
       return;
@@ -118,12 +154,13 @@ export function BrowsePageContent({
     setLoading(true);
     setFailed(false);
 
-    fetchBrowsePage(page)
+    fetchBrowsePage(page, browseFilter)
       .then((data) => {
         if (cancelled) return;
         setResources(data.resources);
         setTotalCount(data.totalCount);
         loadedPageRef.current = page;
+        loadedFilterRef.current = filterKey;
         window.scrollTo({ top: 0, behavior: "smooth" });
       })
       .catch(() => {
@@ -138,7 +175,8 @@ export function BrowsePageContent({
     return () => {
       cancelled = true;
     };
-  }, [page]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- browseFilter fields covered by filterKey
+  }, [page, filterKey]);
 
   const handleRefresh = () => {
     const jump =
@@ -149,11 +187,12 @@ export function BrowsePageContent({
       loadedPageRef.current = -1;
       goToPage(jump);
       setLoading(true);
-      void fetchBrowsePage(jump)
+      void fetchBrowsePage(jump, browseFilter)
         .then((data) => {
           setResources(data.resources);
           setTotalCount(data.totalCount);
           loadedPageRef.current = jump;
+          loadedFilterRef.current = filterKey;
           window.scrollTo({ top: 0, behavior: "smooth" });
         })
         .catch(() => {
@@ -171,6 +210,7 @@ export function BrowsePageContent({
   return (
     <div className="flex flex-col gap-4 md:gap-5">
       <BrowsePageToolbar
+        boardLabel={filterLabel}
         loading={loading}
         totalCount={totalCount}
         onRefresh={handleRefresh}

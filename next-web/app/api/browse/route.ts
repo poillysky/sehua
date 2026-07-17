@@ -9,6 +9,9 @@ export const dynamic = "force-dynamic";
 const schema = z.object({
   p: z.coerce.number().min(1).max(BROWSE_PAGE_MAX).default(1),
   ps: z.coerce.number().min(1).max(50).default(BROWSE_PAGE_SIZE),
+  board_fid: z.string().optional(),
+  board: z.string().optional(),
+  board_parent: z.string().optional(),
 });
 
 export async function GET(request: Request) {
@@ -16,9 +19,15 @@ export async function GET(request: Request) {
   const params = Object.fromEntries(searchParams.entries());
 
   try {
-    const { p, ps } = schema.parse(params);
+    const { p, ps, board_fid, board, board_parent } = schema.parse(params);
     const offset = (p - 1) * ps;
-    const data = await browseResources(null, { limit: ps, offset });
+    const data = await browseResources(null, {
+      limit: ps,
+      offset,
+      board_fid,
+      board,
+      board_parent,
+    });
 
     return NextResponse.json(
       {
@@ -26,6 +35,9 @@ export async function GET(request: Request) {
         total_count: data.total_count,
         page: p,
         page_size: ps,
+        board_fid: board_fid || null,
+        board: board || null,
+        board_parent: board_parent || null,
         message: "success",
         status: 200,
       },

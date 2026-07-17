@@ -38,7 +38,7 @@ from db.queue import (
     tid_from_url,
 )
 from db.settings_store import get_setting
-from parsers.boards import BOARD_POLICIES, get_board_policy
+from parsers.boards import BOARD_POLICIES, get_board_policy, queue_board_keys
 from workers.list_scan import scan_board_list
 from workers.pipeline import process_thread
 from workers.session_factory import (
@@ -132,6 +132,7 @@ async def run_crawl_once(
     from_loop: bool = False,
     require_enabled: bool = True,
     queue_kind: str | None = None,
+    hold_lock: bool = False,
 ) -> dict[str, Any]:
     """执行拓扑一轮：选板→进站→扫列表入队→取待抓→抓帖入库。
 
@@ -139,6 +140,7 @@ async def run_crawl_once(
     - 手动「扫新帖」：scan_head=True, deep_scan=False；可由 run_scan_head_once 按启用队列逐板调用。
     - 连续循环：scan_head=False, deep_scan=True, from_loop=True；当前板 list_exhausted 后切下一启用板。
     - queue_kind=abnormal|soft_ad：只在该队列内重爬，成功才出队，不扫列表。
+    - hold_lock=True：调用方已占用 running，本函数不抢锁/不释放。
     """
     kind = (queue_kind or "").strip().lower() or None
     if kind not in {None, "abnormal", "soft_ad"}:
@@ -146,28 +148,40 @@ async def run_crawl_once(
     if kind:
         scan_list = False
 
-    if _STATE.get("looping") and not from_loop:
-        return {
-            "ok": False,
-            "skipped": True,
-            "reason": "loop_running",
-            "error": "连续调度进行中，请先关闭后再操作",
-        }
-    if _STATE.get("running") and not _STATE.get("looping"):
-        return {"ok": False, "skipped": True, "reason": "already_running", **crawl_status()}
-    if _STATE.get("running") and _STATE.get("loop_inner"):
-        return {"ok": False, "skipped": True, "reason": "already_running"}
+    if hold_lock:
+        if not _STATE.get("running"):
+            return {
+                "ok": False,
+                "skipped": True,
+                "reason": "no_lock",
+                "error": "内部调用缺少运行锁",
+            }
+        _ensure_queue_schema()
+        _STATE["loop_inner"] = True
+        _STATE["phase"] = "switch"
+    else:
+        if _STATE.get("looping") and not from_loop:
+            return {
+                "ok": False,
+                "skipped": True,
+                "reason": "loop_running",
+                "error": "连续调度进行中，请先关闭后再操作",
+            }
+        if _STATE.get("running") and not _STATE.get("looping"):
+            return {"ok": False, "skipped": True, "reason": "already_running", **crawl_status()}
+        if _STATE.get("running") and _STATE.get("loop_inner"):
+            return {"ok": False, "skipped": True, "reason": "already_running"}
 
-    _ensure_queue_schema()
-    _STATE["running"] = True
-    _STATE["loop_inner"] = True
-    _STATE["phase"] = "switch"
-    _STATE["last_started_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
-    global _round_task
-    _round_task = asyncio.current_task()
-    # 手动开跑清停止标志；连续循环内保留（由 loop/start 清理）
-    if not from_loop:
-        THROTTLE.clear_stop()
+        _ensure_queue_schema()
+        _STATE["running"] = True
+        _STATE["loop_inner"] = True
+        _STATE["phase"] = "switch"
+        _STATE["last_started_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
+        global _round_task
+        _round_task = asyncio.current_task()
+        # 手动开跑清停止标志；连续循环内保留（由 loop/start 清理）
+        if not from_loop:
+            THROTTLE.clear_stop()
 
     result: dict[str, Any] = {
         "ok": True,
@@ -176,6 +190,7 @@ async def run_crawl_once(
         "board_fid": None,
         "discovered": 0,
         "enqueued": 0,
+        "board_updated": 0,
         "crawled": 0,
         "imports": 0,
         "stubs": 0,
@@ -257,6 +272,7 @@ async def run_crawl_once(
         unit_key = board_fid_s
         pol = get_board_policy(unit_key)
         board_fid = int(pol.fid)
+        queue_keys = queue_board_keys(unit_key)
         result["board_key"] = unit_key
         result["board_fid"] = board_fid
         result["board_typeid"] = pol.list_typeid
@@ -289,7 +305,7 @@ async def run_crawl_once(
             try:
                 qconn = connect()
                 try:
-                    pre_q = count_pending(qconn, board_fid=board_fid)
+                    pre_q = count_pending(qconn, board_fid=queue_keys)
                 finally:
                     qconn.close()
             except Exception as qexc:
@@ -343,6 +359,7 @@ async def run_crawl_once(
                 result["pages_skipped"] = list(scan.pages_skipped)
                 result["discovered"] = len(scan.threads)
                 result["enqueued"] = scan.enqueued
+                result["board_updated"] = int(getattr(scan, "board_updated", 0) or 0)
                 result["list_cursor"] = scan.last_list_page
                 result["harvest_start_page"] = scan.harvest_start_page
                 result["deep_early_stop"] = bool(getattr(scan, "deep_early_stop", False))
@@ -422,6 +439,11 @@ async def run_crawl_once(
                 _log_activity(
                     f"扫列表(发帖时间) · {head_label} · {deep_label}"
                     + f" · 发现 {len(scan.threads)} · 新入队 {scan.enqueued}"
+                    + (
+                        f" · 改板块 {scan.board_updated}"
+                        if getattr(scan, "board_updated", 0)
+                        else ""
+                    )
                     + (f" · 游标 P{scan.last_list_page}" if scan.last_list_page else "")
                 )
 
@@ -432,15 +454,15 @@ async def run_crawl_once(
         conn = connect()
         try:
             # .net/.org 等同 tid 双 URL 先合并，避免一轮里抓两次同一帖
-            merged = dedupe_pending_by_tid(conn, board_fid=board_fid)
+            merged = dedupe_pending_by_tid(conn, board_fid=queue_keys)
             if merged:
                 _log_activity(f"队列去重 · 合并同帖重复 URL {merged} 条")
-            qstats = count_pending(conn, board_fid=board_fid)
+            qstats = count_pending(conn, board_fid=queue_keys)
             _STATE["queue"] = qstats
             if kind in {"abnormal", "soft_ad"}:
-                pending = fetch_pending_abnormal(conn, board_fid=board_fid, limit=500)
+                pending = fetch_pending_abnormal(conn, board_fid=queue_keys, limit=500)
             else:
-                pending = fetch_pending_threads(conn, board_fid=board_fid, limit=500)
+                pending = fetch_pending_threads(conn, board_fid=queue_keys, limit=500)
         finally:
             conn.close()
 
@@ -507,6 +529,16 @@ async def run_crawl_once(
             seen_tids.add(tid)
             title = str(row.get("thread_title") or "")
             thread_url = str(row["url"])
+            stored_key = str(row.get("board_fid") or "").strip()
+            stored_name = str(row.get("board_name") or "").strip()
+            # 旧队列纯 fid：归到当前子版；新队列用子版 key
+            if stored_key and ":" in stored_key:
+                thread_key = stored_key
+                thread_pol = get_board_policy(thread_key)
+                thread_name = stored_name or thread_pol.name
+            else:
+                thread_key = unit_key
+                thread_name = stored_name if (" · " in stored_name or "-" in stored_name) else pol.name
 
             try:
                 await THROTTLE.sleep()
@@ -515,8 +547,8 @@ async def run_crawl_once(
                     break
                 outcome = await process_thread(
                     tid,
-                    board_fid=board_fid,
-                    board_name=pol.name,
+                    board_fid=thread_key,
+                    board_name=thread_name,
                     session=session,
                     list_title=title,
                     persist=persist,
@@ -647,7 +679,7 @@ async def run_crawl_once(
         try:
             conn = connect()
             try:
-                _STATE["queue"] = count_pending(conn, board_fid=board_fid)
+                _STATE["queue"] = count_pending(conn, board_fid=queue_keys)
             finally:
                 conn.close()
         except Exception:
@@ -681,37 +713,43 @@ async def run_crawl_once(
                 await session.close()
             except Exception:
                 pass
-        if _round_task is asyncio.current_task():
-            _round_task = None
-        _STATE["loop_inner"] = False
-        if not _STATE.get("looping"):
-            _STATE["running"] = False
-            _STATE["phase"] = "idle"
-        _STATE["last_finished_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
-        _STATE["throttle"] = THROTTLE.status()
-        _STATE["last_result"] = {
-            k: result.get(k)
-            for k in (
-                "ok",
-                "enabled",
-                "board_fid",
-                "board_name",
-                "discovered",
-                "enqueued",
-                "crawled",
-                "imports",
-                "stubs",
-                "retries",
-                "skipped",
-                "failed",
-                "soft_browser_retried",
-                "pages_scanned",
-                "reason",
-                "error",
-                "list_sort",
-                "queue_kind",
-            )
-        }
+        if hold_lock:
+            # 调用方继续持有 running，不写 last_result / 不置 idle
+            _STATE["loop_inner"] = False
+            _STATE["throttle"] = THROTTLE.status()
+        else:
+            if _round_task is asyncio.current_task():
+                _round_task = None
+            _STATE["loop_inner"] = False
+            if not _STATE.get("looping"):
+                _STATE["running"] = False
+                _STATE["phase"] = "idle"
+            _STATE["last_finished_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
+            _STATE["throttle"] = THROTTLE.status()
+            _STATE["last_result"] = {
+                k: result.get(k)
+                for k in (
+                    "ok",
+                    "enabled",
+                    "board_fid",
+                    "board_name",
+                    "discovered",
+                    "enqueued",
+                    "board_updated",
+                    "crawled",
+                    "imports",
+                    "stubs",
+                    "retries",
+                    "skipped",
+                    "failed",
+                    "soft_browser_retried",
+                    "pages_scanned",
+                    "reason",
+                    "error",
+                    "list_sort",
+                    "queue_kind",
+                )
+            }
 
 
 async def run_scan_head_once(
