@@ -1,10 +1,12 @@
-import { startTransition, useCallback, useEffect, useRef, useState } from 'react'
+import { startTransition, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { fetchImportSpec, importText, uploadPreviewImages, type ImportSpec } from '../api/importApi'
 import {
+  buildBoardFacetTree,
   fetchRecentResources,
   mapApiResource,
   PAGE_SIZE,
   recrawlResourcesBatch,
+  splitBoardParentChild,
   type ResourceFacets,
   type ResourceRow,
 } from '../api/resources'
@@ -42,6 +44,7 @@ export function ResourcesPage() {
   const [filterOpen, setFilterOpen] = useState(false)
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
   const [openDims, setOpenDims] = useState({ source: true, board: true, result: true })
+  const [expandedBoardParents, setExpandedBoardParents] = useState<Set<string>>(() => new Set())
   const [source, setSource] = useState<'all' | 'web' | 'upload'>('all')
   const [board, setBoard] = useState('all')
   const [result, setResult] = useState<'all' | 'magnet' | 'ed2k' | 'stub' | 'failed'>('all')
@@ -241,6 +244,34 @@ export function ResourcesPage() {
     setOpenDims((prev) => ({ ...prev, [key]: !prev[key] }))
   }
 
+  const boardTree = useMemo(() => {
+    const items = facets.boards.length
+      ? facets.boards
+      : boards.map((name) => ({ name, count: 0 }))
+    return buildBoardFacetTree(items)
+  }, [facets.boards, boards])
+
+  useEffect(() => {
+    if (board === 'all') return
+    const { parent } = splitBoardParentChild(board)
+    if (!parent) return
+    setExpandedBoardParents((prev) => {
+      if (prev.has(parent)) return prev
+      const next = new Set(prev)
+      next.add(parent)
+      return next
+    })
+  }, [board])
+
+  function toggleBoardParent(parent: string) {
+    setExpandedBoardParents((prev) => {
+      const next = new Set(prev)
+      if (next.has(parent)) next.delete(parent)
+      else next.add(parent)
+      return next
+    })
+  }
+
   const onRecrawlSelected = async () => {
     // 优先批量勾选；未勾选时回退到当前高亮行
     let targets = recrawlableChecked
@@ -377,17 +408,86 @@ export function ResourcesPage() {
                   <span className="dim-item-label">全部板块</span>
                   <span className="dim-item-count">{boardTotal}</span>
                 </button>
-                {(facets.boards.length ? facets.boards : boards.map((name) => ({ name, count: 0 }))).map((b) => (
-                  <button
-                    key={b.name}
-                    type="button"
-                    className={board === b.name ? 'dim-item active' : 'dim-item'}
-                    onClick={() => changeBoard(b.name)}
-                  >
-                    <span className="dim-item-label">{b.name}</span>
-                    <span className="dim-item-count">{b.count}</span>
-                  </button>
-                ))}
+                {boardTree.map((node) => {
+                  const open = expandedBoardParents.has(node.parent)
+                  const hasKids = Boolean(node.self) || node.children.length > 0
+                  const parentActive =
+                    board === node.parent ||
+                    (node.self && board === node.self.name) ||
+                    node.children.some((c) => c.name === board)
+                  const onlyParent = !node.children.length && node.self
+                  return (
+                    <div
+                      key={node.parent}
+                      className={`dim-board-group${open ? ' is-open' : ''}${parentActive ? ' has-active' : ''}`}
+                    >
+                      <div className="dim-board-parent-row">
+                        {hasKids && !onlyParent ? (
+                          <button
+                            type="button"
+                            className={`dim-board-expand${open ? ' is-open' : ''}`}
+                            aria-expanded={open}
+                            title={open ? '收起子分类' : '展开子分类'}
+                            onClick={() => toggleBoardParent(node.parent)}
+                          >
+                            <span className="dim-caret" aria-hidden />
+                          </button>
+                        ) : (
+                          <span className="dim-board-expand-spacer" aria-hidden />
+                        )}
+                        <button
+                          type="button"
+                          className={
+                            board === (node.self?.name || node.parent) && !node.children.some((c) => c.name === board)
+                              ? 'dim-item dim-board-parent active'
+                              : 'dim-item dim-board-parent'
+                          }
+                          onClick={() => {
+                            if (node.self) changeBoard(node.self.name)
+                            else if (onlyParent) changeBoard(node.parent)
+                            else toggleBoardParent(node.parent)
+                          }}
+                          title={
+                            node.self
+                              ? `筛选：${node.self.name}`
+                              : onlyParent
+                                ? `筛选：${node.parent}`
+                                : '展开查看子分类'
+                          }
+                        >
+                          <span className="dim-item-label">{node.parent}</span>
+                          <span className="dim-item-count">{node.total}</span>
+                        </button>
+                      </div>
+                      {open && !onlyParent ? (
+                        <div className="dim-board-children">
+                          {node.self ? (
+                            <button
+                              type="button"
+                              className={board === node.self.name ? 'dim-item dim-board-child active' : 'dim-item dim-board-child'}
+                              onClick={() => changeBoard(node.self!.name)}
+                            >
+                              <span className="dim-item-label">未分子类</span>
+                              <span className="dim-item-count">{node.self.count}</span>
+                            </button>
+                          ) : null}
+                          {node.children.map((c) => (
+                            <button
+                              key={c.name}
+                              type="button"
+                              className={board === c.name ? 'dim-item dim-board-child active' : 'dim-item dim-board-child'}
+                              onClick={() => changeBoard(c.name)}
+                              title={c.name}
+                            >
+                              <span className="dim-item-label">{c.label}</span>
+                              <span className="dim-item-count">{c.count}</span>
+                            </button>
+                          ))}
+                        </div>
+                      ) : null}
+                    </div>
+                  )
+                })}
               </div>
             ) : null}
           </div>

@@ -85,11 +85,12 @@ def get_crawler_status(_user: dict = Depends(require_permission("crawler.view"))
         cfg = dict(configs.get(cfg_forum_id) or configs.get(SITE_CRAWLER_FORUM_ID) or {})
         board_fid = str(cfg.get("active_board_fid") or "")
         enabled_fids = resolve_enabled_board_fids(cfg)
-        from parsers.boards import get_board_fid, get_board_policy
+        from parsers.boards import get_board_policy, queue_board_keys
 
-        queue_fid = str(get_board_fid(board_fid)) if board_fid else None
+        # 队列已按二级 key（fid:typeid）入库；附带旧纯 fid 兼容历史行
+        queue_keys = queue_board_keys(board_fid) if board_fid else None
         try:
-            qstats = count_pending(conn, board_fid=queue_fid or None)
+            qstats = count_pending(conn, board_fid=queue_keys or None)
         except Exception:
             qstats = {}
     finally:

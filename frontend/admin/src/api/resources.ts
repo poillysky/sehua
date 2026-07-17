@@ -96,6 +96,67 @@ export function formatSourceBoard(boardName?: string | null, boardFid?: string |
   return boardFid ? `fid ${boardFid}` : '—'
 }
 
+/** 从板块展示名拆出主板块 / 子分类 */
+export function splitBoardParentChild(name: string): { parent: string; child: string | null } {
+  const raw = (name || '').trim()
+  if (!raw) return { parent: '', child: null }
+  const mid = raw.indexOf(' · ')
+  if (mid > 0) {
+    return { parent: raw.slice(0, mid).trim(), child: raw.slice(mid + 3).trim() || null }
+  }
+  const dash = raw.indexOf('-')
+  if (dash > 0 && dash < raw.length - 1) {
+    return { parent: raw.slice(0, dash).trim(), child: raw.slice(dash + 1).trim() || null }
+  }
+  return { parent: raw, child: null }
+}
+
+export type BoardFacetItem = { name: string; count: number }
+
+export type BoardFacetTreeNode = {
+  parent: string
+  total: number
+  /** 恰好等于主板块名的旧数据行 */
+  self: BoardFacetItem | null
+  children: { name: string; label: string; count: number }[]
+}
+
+/** 资源侧栏：按主板块分组，子分类挂在下面 */
+export function buildBoardFacetTree(items: BoardFacetItem[]): BoardFacetTreeNode[] {
+  const map = new Map<string, BoardFacetTreeNode>()
+
+  const ensure = (parent: string) => {
+    let node = map.get(parent)
+    if (!node) {
+      node = { parent, total: 0, self: null, children: [] }
+      map.set(parent, node)
+    }
+    return node
+  }
+
+  for (const item of items) {
+    const name = (item.name || '').trim()
+    if (!name) continue
+    const count = Number(item.count) || 0
+    const { parent, child } = splitBoardParentChild(name)
+    if (!parent) continue
+    const node = ensure(parent)
+    if (child) {
+      node.children.push({ name, label: child, count })
+      node.total += count
+    } else {
+      node.self = { name, count }
+      node.total += count
+    }
+  }
+
+  for (const node of map.values()) {
+    node.children.sort((a, b) => b.count - a.count || a.label.localeCompare(b.label, 'zh'))
+  }
+
+  return [...map.values()].sort((a, b) => b.total - a.total || a.parent.localeCompare(b.parent, 'zh'))
+}
+
 export function mapApiResource(item: ApiResource): ResourceRow {
   const kind = (['magnet', 'ed2k', 'stub', 'failed'].includes(item.link_kind)
     ? item.link_kind

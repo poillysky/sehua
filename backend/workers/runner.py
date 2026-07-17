@@ -369,6 +369,15 @@ async def run_crawl_once(
                 result["scan_head"] = do_head
                 result["deep_scan"] = do_deep
                 result["fetch_failures"] += scan.fetch_failures
+                # 列表入队后立刻刷新队列计数，供状态页轮询
+                try:
+                    qconn = connect()
+                    try:
+                        _STATE["queue"] = count_pending(qconn, board_fid=queue_keys)
+                    finally:
+                        qconn.close()
+                except Exception:
+                    pass
                 # 持久化游标；手动扫新帖不写每日捕新闸门
                 cursor_conn = connect()
                 try:

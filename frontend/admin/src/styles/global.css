@@ -683,6 +683,73 @@ a {
   color: var(--primary);
 }
 
+.dim-board-group {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.dim-board-parent-row {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  min-width: 0;
+}
+
+.dim-board-expand,
+.dim-board-expand-spacer {
+  flex: 0 0 22px;
+  width: 22px;
+  height: 28px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.dim-board-expand {
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  border-radius: 6px;
+  padding: 0;
+}
+
+.dim-board-expand:hover {
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.dim-board-expand .dim-caret {
+  transform: rotate(-90deg);
+  transition: transform 0.15s ease;
+}
+
+.dim-board-expand.is-open .dim-caret {
+  transform: rotate(0deg);
+}
+
+.dim-board-parent {
+  flex: 1;
+  min-width: 0;
+}
+
+.dim-board-children {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding-left: 24px;
+}
+
+.dim-board-child {
+  font-size: 12px;
+  padding: 6px 10px;
+}
+
+.dim-board-group.has-active > .dim-board-parent-row .dim-board-parent:not(.active) {
+  color: var(--text);
+}
+
 .filter-actions {
   padding: 0 2px;
 }
