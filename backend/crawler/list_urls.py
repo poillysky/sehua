@@ -54,7 +54,8 @@ def list_url_for_board(
     root: str = "",
     policy: BoardPolicy | None = None,
 ) -> str:
-    pol = policy or get_board_policy(int(board_fid))
+    """board_fid 可为纯 fid 或爬取单位 key（如 95:716）。"""
+    pol = policy or get_board_policy(board_fid)
     return build_list_url(
         root or BASE_URL,
         pol.fid,

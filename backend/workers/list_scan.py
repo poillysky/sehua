@@ -107,7 +107,7 @@ class _PageFetch:
 async def _fetch_list_page(
     fetcher: Fetcher,
     *,
-    board_fid: int,
+    board_fid: int | str,
     page: int,
     root: str,
     pol,
@@ -158,7 +158,7 @@ def _enqueue_batch(
     batch: list[ThreadBrief],
     *,
     seen: set[int],
-    board_fid: int,
+    board_fid: int | str,
     board_name: str,
     persist_enqueue: bool,
     min_thread_age_days: int = 0,
@@ -214,7 +214,7 @@ def _enqueue_batch(
 async def scan_board_list(
     fetcher: Fetcher,
     *,
-    board_fid: int,
+    board_fid: int | str,
     pages_per_board: int = 15,
     max_list_pages: int = 0,
     head_pages: int = DEFAULT_HEAD_PAGES,
@@ -239,6 +239,7 @@ async def scan_board_list(
     6. 龄期板仅入队已满龄帖；未满龄跳过，不入队。
     """
     pol = get_board_policy(board_fid)
+    numeric_fid = int(pol.fid)
     root = site_root(entry_url)
     harvest_quota = resolve_page_cap(pages_per_board, max_list_pages)
     page_limit = _page_hard_limit(max_list_pages)
@@ -252,7 +253,7 @@ async def scan_board_list(
     min_age = int(pol.min_thread_age_days or 0)
     head_from = max(1, int(head_start_page or 1))
 
-    out = ListScanResult(board_fid=board_fid, last_list_page=cursor)
+    out = ListScanResult(board_fid=numeric_fid, last_list_page=cursor)
     seen: set[int] = set()
     name = board_name or pol.name
     page1_tids: frozenset[int] | None = None
@@ -300,7 +301,7 @@ async def scan_board_list(
 
             fetched = await _fetch_list_page(
                 fetcher,
-                board_fid=board_fid,
+                board_fid=pol.key,
                 page=page,
                 root=root,
                 pol=pol,
@@ -344,7 +345,7 @@ async def scan_board_list(
                 out,
                 fetched.batch,
                 seen=seen,
-                board_fid=board_fid,
+                board_fid=numeric_fid,
                 board_name=name,
                 persist_enqueue=persist_enqueue,
                 min_thread_age_days=min_age,
@@ -407,7 +408,7 @@ async def scan_board_list(
 
         fetched = await _fetch_list_page(
             fetcher,
-            board_fid=board_fid,
+            board_fid=pol.key,
             page=page,
             root=root,
             pol=pol,
@@ -461,7 +462,7 @@ async def scan_board_list(
             out,
             fetched.batch,
             seen=seen,
-            board_fid=board_fid,
+            board_fid=numeric_fid,
             board_name=name,
             persist_enqueue=persist_enqueue,
             min_thread_age_days=min_age,

@@ -1,8 +1,13 @@
 import { api } from './client'
 
 export type ForumBoard = {
+  /** 爬取单位 key，如 95:716；无分类板为纯 fid */
+  key?: string
   fid: string
+  typeid?: string
   name: string
+  board_name?: string
+  type_name?: string
   primary_link: string
   enabled?: boolean
   category?: string

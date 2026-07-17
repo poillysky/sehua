@@ -85,8 +85,11 @@ def get_crawler_status(_user: dict = Depends(require_permission("crawler.view"))
         cfg = dict(configs.get(cfg_forum_id) or configs.get(SITE_CRAWLER_FORUM_ID) or {})
         board_fid = str(cfg.get("active_board_fid") or "")
         enabled_fids = resolve_enabled_board_fids(cfg)
+        from parsers.boards import get_board_fid, get_board_policy
+
+        queue_fid = str(get_board_fid(board_fid)) if board_fid else None
         try:
-            qstats = count_pending(conn, board_fid=board_fid or None)
+            qstats = count_pending(conn, board_fid=queue_fid or None)
         except Exception:
             qstats = {}
     finally:
@@ -94,17 +97,20 @@ def get_crawler_status(_user: dict = Depends(require_permission("crawler.view"))
 
     boards: list[dict] = []
     for efid in enabled_fids:
-        if efid.isdigit() and int(efid) in BOARD_POLICIES:
-            pol = BOARD_POLICIES[int(efid)]
-            boards.append(
-                {
-                    "fid": str(pol.fid),
-                    "name": pol.name,
-                    "pending": qstats.get("ready", "—") if efid == board_fid else "—",
-                    "done": "—",
-                    "current": efid == board_fid,
-                }
-            )
+        if efid not in BOARD_POLICIES:
+            continue
+        pol = BOARD_POLICIES[efid]
+        boards.append(
+            {
+                "key": pol.key,
+                "fid": str(pol.fid),
+                "typeid": pol.list_typeid or "",
+                "name": pol.name,
+                "pending": qstats.get("ready", "—") if efid == board_fid else "—",
+                "done": "—",
+                "current": efid == board_fid,
+            }
+        )
 
     st = crawl_status()
     last = st.get("last_result") or {}

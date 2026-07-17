@@ -38,7 +38,7 @@ class ActiveForumBody(BaseModel):
 
 
 class ActiveBoardBody(BaseModel):
-    fid: str = Field(..., min_length=1, max_length=32)
+    fid: str = Field(..., min_length=1, max_length=64)
 
 
 class EnabledBoardsBody(BaseModel):

@@ -725,7 +725,7 @@ function buildPipeline(
 ): PipelineNode[] {
   const cfg = forum.crawler_config
   const enabled = !!cfg.web_crawler_enabled && activeForumId === forum.id
-  const board = boards.find((b) => b.fid === activeBoardFid)
+  const board = boards.find((b) => (b.key || (b.typeid ? `${b.fid}:${b.typeid}` : b.fid)) === activeBoardFid)
   const pages = cfg.web_crawler_list_pages_per_board || 15
   const headPages =
     (activeBoardFid && cfg.board_manual_head_pages?.[activeBoardFid]) ||
@@ -813,7 +813,7 @@ export function ForumTopology({ forum, activeForumId, boards, activeBoardFid }: 
   const cfg = forum.crawler_config
   const enabled = !!cfg.web_crawler_enabled && activeForumId === forum.id
   const isActiveForum = activeForumId === forum.id
-  const board = boards.find((b) => b.fid === activeBoardFid)
+  const board = boards.find((b) => (b.key || (b.typeid ? `${b.fid}:${b.typeid}` : b.fid)) === activeBoardFid)
   const enabledCount = cfg.enabled_board_fids?.length || (activeBoardFid ? 1 : 0)
   const nodes = useMemo(
     () => buildPipeline(forum, activeForumId, boards, activeBoardFid),

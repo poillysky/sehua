@@ -8,7 +8,12 @@ from datetime import date, datetime
 from typing import Any
 
 from db.settings_store import get_setting, save_settings
-from parsers.boards import BOARD_POLICIES, default_board_order
+from parsers.boards import (
+    BOARD_POLICIES,
+    default_board_order,
+    expand_legacy_board_keys,
+    get_board_policy,
+)
 
 FORUM_CONFIG_KEY = "forum_configs"
 ACTIVE_FORUM_KEY = "active_forum_id"
@@ -69,9 +74,9 @@ FORUM_CRAWLER_DEFAULTS: dict[str, Any] = {
     "web_crawler_random_tid_probe": 200,
     "web_crawler_random_tid_import_target": 0,
     "board_order": default_board_order(),
-    # 勾选参与爬取的板块（按 board_order 排序依次爬）
-    "enabled_board_fids": default_board_order()[:1],
-    # 深扫当前工作板块（启用队列中的游标）
+    # 勾选参与爬取的子版（按 board_order 排序依次爬）；默认全开非版务
+    "enabled_board_fids": default_board_order(),
+    # 深扫当前工作子版（启用队列中的游标）
     "active_board_fid": default_board_order()[0],
     # 各板列表翻页游标：深扫向后推进；空页或内容重复则 list_exhausted 并重置
     "board_list_cursors": {},
@@ -179,36 +184,77 @@ def _normalize_forum_config(raw: dict | None) -> dict[str, Any]:
     crawl_urls = [u.strip() for u in str(base.get("web_crawl_urls") or "").split(",") if u.strip()]
     if not crawl_urls or (len(crawl_urls) == 1 and crawl_urls[0].rstrip("/") in _LEGACY_WEB_CRAWL_URLS):
         base["web_crawl_urls"] = DEFAULT_WEB_CRAWL_URLS
-    allowed = {str(fid) for fid in BOARD_POLICIES}
-    # 合并新增白名单 fid 到 board_order（旧配置升级时自动补齐）
-    order = [str(x) for x in (base.get("board_order") or []) if str(x) in allowed]
-    for fid in default_board_order():
-        if fid not in order:
-            order.append(fid)
+    # 爬取单位 key（如 95:716）；旧纯 fid 自动展开为全部子版
+    allowed = set(BOARD_POLICIES.keys())
+    default_order = default_board_order()
+    raw_order = expand_legacy_board_keys(
+        [str(x) for x in (base.get("board_order") or [])]
+    )
+    order = [k for k in raw_order if k in allowed]
+    for key in default_order:
+        if key not in order:
+            order.append(key)
     base["board_order"] = order
-    # 启用队列：按 board_order 排序；旧配置无 enabled 时用 active_board_fid 迁移
+
+    # 启用队列：按 board_order 排序；旧配置无 enabled 时用 active 迁移并展开
     if "enabled_board_fids" not in (raw or {}):
         legacy_active = str(base.get("active_board_fid") or "").strip()
-        if legacy_active in allowed:
-            enabled = [legacy_active]
-        else:
-            enabled = [order[0]] if order else [default_board_order()[0]]
+        expanded = expand_legacy_board_keys([legacy_active] if legacy_active else [])
+        enabled = [k for k in order if k in set(expanded)]
+        if not enabled:
+            enabled = [order[0]] if order else [default_order[0]]
     else:
-        raw_enabled = [str(x) for x in (base.get("enabled_board_fids") or []) if str(x) in allowed]
-        enabled = [fid for fid in order if fid in set(raw_enabled)]
+        raw_enabled = expand_legacy_board_keys(
+            [str(x) for x in (base.get("enabled_board_fids") or [])]
+        )
+        enabled = [k for k in order if k in set(raw_enabled)]
         if not enabled:
             legacy_active = str(base.get("active_board_fid") or "").strip()
-            if legacy_active in allowed:
-                enabled = [legacy_active]
-            else:
-                enabled = [order[0]] if order else [default_board_order()[0]]
+            expanded = expand_legacy_board_keys([legacy_active] if legacy_active else [])
+            enabled = [k for k in order if k in set(expanded)]
+            if not enabled:
+                enabled = [order[0]] if order else [default_order[0]]
     base["enabled_board_fids"] = enabled
+
+    # active：纯 fid → 展开后的第一子版
     active = str(base.get("active_board_fid") or "").strip()
     if active not in enabled:
-        base["active_board_fid"] = enabled[0]
+        expanded_active = expand_legacy_board_keys([active] if active else [])
+        pick = next((k for k in enabled if k in set(expanded_active)), None)
+        base["active_board_fid"] = pick or enabled[0]
     else:
         base["active_board_fid"] = active
     base["web_crawler_max_boards_per_run"] = max(1, len(enabled))
+
+    # 游标：旧 \"95\" → 迁到该板第一个启用子版（通常为情色分享 95:716）
+    cursors = dict(base.get("board_list_cursors") or {})
+    migrated_cursors: dict[str, int] = {}
+    for ck, pg in cursors.items():
+        ck_s = str(ck)
+        if ck_s in allowed:
+            migrated_cursors[ck_s] = int(pg)
+            continue
+        if ck_s.isdigit():
+            expanded = expand_legacy_board_keys([ck_s])
+            if expanded:
+                migrated_cursors[expanded[0]] = int(pg)
+    base["board_list_cursors"] = migrated_cursors
+
+    for map_key in ("board_manual_head_pages", "board_head_catchup_on", "board_head_progress"):
+        raw_map = base.get(map_key)
+        if not isinstance(raw_map, dict):
+            base[map_key] = {}
+            continue
+        migrated: dict[str, Any] = {}
+        for ck, val in raw_map.items():
+            ck_s = str(ck)
+            if ck_s in allowed:
+                migrated[ck_s] = val
+            elif ck_s.isdigit():
+                expanded = expand_legacy_board_keys([ck_s])
+                if expanded:
+                    migrated[expanded[0]] = val
+        base[map_key] = migrated
     if not isinstance(base.get("board_list_cursors"), dict):
         base["board_list_cursors"] = {}
     if not isinstance(base.get("board_manual_head_pages"), dict):
@@ -227,18 +273,25 @@ def _normalize_forum_config(raw: dict | None) -> dict[str, Any]:
 
 
 def resolve_enabled_board_fids(cfg: dict[str, Any] | None) -> list[str]:
-    """启用爬取队列：按 board_order 排序后的 enabled_board_fids。"""
-    allowed = {str(fid) for fid in BOARD_POLICIES}
-    order = [str(x) for x in ((cfg or {}).get("board_order") or []) if str(x) in allowed]
+    """启用爬取队列：按 board_order 排序后的 enabled_board_fids（单位 key）。"""
+    allowed = set(BOARD_POLICIES.keys())
+    order = expand_legacy_board_keys(
+        [str(x) for x in ((cfg or {}).get("board_order") or [])]
+    )
+    order = [k for k in order if k in allowed]
     if not order:
-        order = [fid for fid in default_board_order() if fid in allowed]
-    raw = [str(x) for x in ((cfg or {}).get("enabled_board_fids") or []) if str(x) in allowed]
-    enabled = [fid for fid in order if fid in set(raw)]
+        order = [k for k in default_board_order() if k in allowed]
+    raw = expand_legacy_board_keys(
+        [str(x) for x in ((cfg or {}).get("enabled_board_fids") or [])]
+    )
+    enabled = [k for k in order if k in set(raw)]
     if enabled:
         return enabled
     active = str((cfg or {}).get("active_board_fid") or "").strip()
-    if active in allowed:
-        return [active]
+    expanded = expand_legacy_board_keys([active] if active else [])
+    pick = [k for k in order if k in set(expanded)]
+    if pick:
+        return pick
     return [order[0]] if order else []
 
 
@@ -358,18 +411,20 @@ def set_board_list_cursor(
 
 
 def set_active_board_fid(conn: Any, forum_id: str, board_fid: str) -> dict:
-    """设置深扫当前板；若不在启用队列中则加入。"""
-    fid = str(board_fid or "").strip()
-    if fid not in {str(x) for x in BOARD_POLICIES}:
-        raise ValueError(f"板块 fid={fid} 不在白名单")
     configs = load_forum_configs_map(conn)
     current = dict(configs.get(forum_id) or default_forum_crawler_config())
+    allowed = set(BOARD_POLICIES.keys())
+    expanded = expand_legacy_board_keys([str(board_fid).strip()])
+    fid = next((k for k in expanded if k in allowed), "")
+    if not fid:
+        fid = str(board_fid).strip()
+    if fid not in allowed:
+        raise ValueError(f"子版 {board_fid} 不在白名单")
     enabled = list(resolve_enabled_board_fids(current))
     if fid not in enabled:
         enabled.append(fid)
-        # 保持按 board_order 排序
         order = [str(x) for x in (current.get("board_order") or [])]
-        enabled = [x for x in order if x in set(enabled)] or enabled
+        enabled = [k for k in order if k in set(enabled)] or enabled
     current["enabled_board_fids"] = enabled
     current["active_board_fid"] = fid
     current["web_crawler_max_boards_per_run"] = max(1, len(enabled))
@@ -377,15 +432,18 @@ def set_active_board_fid(conn: Any, forum_id: str, board_fid: str) -> dict:
 
 
 def set_enabled_board_fids(conn: Any, forum_id: str, board_fids: list[str]) -> dict:
-    """设置多选启用队列；当前板若不在队列内则切到首板。"""
-    allowed = {str(x) for x in BOARD_POLICIES}
     configs = load_forum_configs_map(conn)
     current = dict(configs.get(forum_id) or default_forum_crawler_config())
-    order = [str(x) for x in (current.get("board_order") or default_board_order())]
-    wanted = {str(x).strip() for x in (board_fids or []) if str(x).strip() in allowed}
-    enabled = [fid for fid in order if fid in wanted]
+    allowed = set(BOARD_POLICIES.keys())
+    order = expand_legacy_board_keys(
+        [str(x) for x in (current.get("board_order") or default_board_order())]
+    )
+    order = [k for k in order if k in allowed] or default_board_order()
+    wanted = set(expand_legacy_board_keys([str(x) for x in (board_fids or [])]))
+    enabled = [k for k in order if k in wanted and k in allowed]
     if not enabled:
-        raise ValueError("至少选择一个工作板块")
+        raise ValueError("请至少启用一个子版")
+    current["board_order"] = order
     current["enabled_board_fids"] = enabled
     active = str(current.get("active_board_fid") or "").strip()
     if active not in enabled:
@@ -473,26 +531,26 @@ FORMAT_GUIDES: list[dict[str, Any]] = [
     },
     {
         "id": "discuz_95",
-        "title": "综合讨论区 · 情色分享",
+        "title": "综合讨论区（情色分享）",
         "primary_link": "ed2k",
         "fids": ["95"],
-        "summary": "只爬情色分享一类帖；电驴链在正文或帖尾附件。",
+        "summary": "仅爬取 typeid=716 情色分享；列表带分类过滤。",
         "fields": [
             "【资源名称】【资源类型】【资源大小】【是否有码】",
             "【有无第三方水印】【解压密码】（可选）",
         ],
         "notes": [
-            "其它主题分类不爬；列表按发帖时间",
+            "列表带 typeid 过滤；按发帖时间翻页",
             "正文无链再读帖尾附件；无权限或无链则占位入库",
             "不写预览、剧情截图、证明图",
         ],
     },
     {
         "id": "discuz_141",
-        "title": "网友原创区",
+        "title": "网友原创区（按分类子版）",
         "primary_link": "ed2k",
         "fids": ["141"],
-        "summary": "多为合集帖；电驴链常在附件里，需浏览器下载。",
+        "summary": "国产/欧美/日本合集等分类分爬；电驴链常在附件。",
         "fields": [
             "【资源名称】【资源类型】【资源数量】【资源大小】",
             "【有无水印】或【是否有码】【解压密码】（如有）",
@@ -504,10 +562,10 @@ FORMAT_GUIDES: list[dict[str, Any]] = [
     },
     {
         "id": "discuz_142",
-        "title": "转帖交流区",
+        "title": "转帖交流区（按分类子版）",
         "primary_link": "magnet",
         "fids": ["142"],
-        "summary": "转帖标签常不齐；磁力在正文、折叠区或附件都可能出现。",
+        "summary": "国产自拍/亚洲有码等分类分爬；磁力可能在正文或附件。",
         "fields": [
             "【资源名称】或【影片名称】",
             "【文件大小】或【影片大小】【是否有码】（均可选）",
@@ -524,8 +582,12 @@ def build_forums_payload(conn: Any) -> dict:
     configs = load_forum_configs_map(conn)
     boards = [
         {
+            "key": b.key,
             "fid": str(b.fid),
+            "typeid": b.list_typeid or "",
             "name": b.name,
+            "board_name": b.board_name or b.name,
+            "type_name": b.type_name or "",
             "category": b.category,
             "primary_link": b.primary_link,
             "hot": b.hot,

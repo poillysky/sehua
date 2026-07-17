@@ -48,22 +48,67 @@ function boardLinkLabel(kind: string) {
   return kind
 }
 
-function groupBoards(boards: ForumBoard[]) {
-  const order = ['综合讨论区', '原创BT电影']
-  const groups = new Map<string, ForumBoard[]>()
+/** 爬取单位 key：优先 API 的 key，否则 fid:typeid */
+function boardUnitKey(b: ForumBoard): string {
+  if (b.key) return b.key
+  if (b.typeid) return `${b.fid}:${b.typeid}`
+  return String(b.fid)
+}
+
+function boardUnitCode(b: ForumBoard): string {
+  if (b.typeid) return `${b.fid}/${b.typeid}`
+  return String(b.fid)
+}
+
+function boardParentName(b: ForumBoard): string {
+  return (b.board_name || b.name.split('-')[0] || b.name).trim()
+}
+
+type ParentBoardGroup = {
+  fid: string
+  name: string
+  category: string
+  primary_link: string
+  children: ForumBoard[]
+}
+
+function groupParentBoards(boards: ForumBoard[]): [string, ParentBoardGroup[]][] {
+  const categoryOrder = ['综合讨论区', '原创BT电影']
+  const parents = new Map<string, ParentBoardGroup>()
   for (const board of boards) {
-    const key = board.category || '其他'
-    if (!groups.has(key)) groups.set(key, [])
-    groups.get(key)!.push(board)
+    const fid = String(board.fid)
+    let parent = parents.get(fid)
+    if (!parent) {
+      parent = {
+        fid,
+        name: boardParentName(board),
+        category: board.category || '其他',
+        primary_link: board.primary_link,
+        children: [],
+      }
+      parents.set(fid, parent)
+    }
+    parent.children.push(board)
   }
-  const result: [string, ForumBoard[]][] = []
-  for (const key of order) {
-    if (groups.has(key)) {
-      result.push([key, groups.get(key)!])
-      groups.delete(key)
+  for (const p of parents.values()) {
+    p.children.sort((a, b) => (a.priority ?? 50) - (b.priority ?? 50) || a.name.localeCompare(b.name, 'zh-CN'))
+  }
+  const byCat = new Map<string, ParentBoardGroup[]>()
+  for (const p of parents.values()) {
+    if (!byCat.has(p.category)) byCat.set(p.category, [])
+    byCat.get(p.category)!.push(p)
+  }
+  for (const list of byCat.values()) {
+    list.sort((a, b) => Number(a.fid) - Number(b.fid) || a.name.localeCompare(b.name, 'zh-CN'))
+  }
+  const result: [string, ParentBoardGroup[]][] = []
+  for (const key of categoryOrder) {
+    if (byCat.has(key)) {
+      result.push([key, byCat.get(key)!])
+      byCat.delete(key)
     }
   }
-  for (const entry of groups.entries()) result.push(entry)
+  for (const entry of byCat.entries()) result.push(entry)
   return result
 }
 
@@ -104,7 +149,7 @@ function OverviewTab({
       <div className="forum-modal-stats">
         <div className="forum-stat-pill forum-stat-pill--boards">
           <span className="forum-stat-val">{boards.length}</span>
-          <span className="forum-stat-lbl">白名单板块</span>
+          <span className="forum-stat-lbl">白名单子版</span>
         </div>
         <div className="forum-stat-pill forum-stat-pill--magnet">
           <span className="forum-stat-val">{magnetCount}</span>
@@ -140,7 +185,7 @@ function OverviewTab({
               <span className="val">连续无间隔 · 延迟 {cfg.web_crawler_request_delay}s</span>
             </div>
             <div className="forum-config-summary-item">
-              <span className="lbl">工作板块</span>
+              <span className="lbl">工作子版</span>
               <span className="val">
                 {(() => {
                   const enabled = cfg.enabled_board_fids?.length
@@ -150,11 +195,14 @@ function OverviewTab({
                       : []
                   if (!enabled.length) return '—'
                   const names = enabled.map(
-                    (fid) => boards.find((b) => b.fid === fid)?.name || fid,
+                    (fid) => boards.find((b) => boardUnitKey(b) === fid)?.name || fid,
                   )
                   const current =
-                    boards.find((b) => b.fid === cfg.active_board_fid)?.name || cfg.active_board_fid
-                  return `${enabled.length} 板启用 · 深扫当前 ${current || '—'} · ${names.join(' → ')}`
+                    boards.find((b) => boardUnitKey(b) === cfg.active_board_fid)?.name ||
+                    cfg.active_board_fid
+                  const shown = names.slice(0, 6).join(' → ')
+                  const more = names.length > 6 ? ` …(+${names.length - 6})` : ''
+                  return `${enabled.length} 子版启用 · 深扫当前 ${current || '—'} · ${shown}${more}`
                 })()}
               </span>
             </div>
@@ -292,6 +340,7 @@ function BoardsTab({
   enabledFids,
   activeBoardFid,
   onToggle,
+  onToggleMany,
   onSetCurrent,
 }: {
   forumId: string
@@ -299,6 +348,7 @@ function BoardsTab({
   enabledFids: string[]
   activeBoardFid: string
   onToggle: (fid: string, enabled: boolean) => void
+  onToggleMany?: (fids: string[], enabled: boolean) => void
   onSetCurrent: (fid: string) => void
 }) {
   const magnetCount = boards.filter((b) => b.primary_link === 'magnet').length
@@ -309,8 +359,31 @@ function BoardsTab({
     enabledFids.forEach((fid, i) => map.set(String(fid), i + 1))
     return map
   }, [enabledFids])
-  const active = boards.find((b) => b.fid === activeBoardFid)
-  const groups = groupBoards(boards)
+  const active = boards.find((b) => boardUnitKey(b) === activeBoardFid)
+  const tree = useMemo(() => groupParentBoards(boards), [boards])
+  const parentCount = useMemo(() => tree.reduce((n, [, list]) => n + list.length, 0), [tree])
+
+  const [expanded, setExpanded] = useState<Set<string>>(() => new Set())
+
+  function toggleExpand(fid: string) {
+    setExpanded((prev) => {
+      const next = new Set(prev)
+      if (next.has(fid)) next.delete(fid)
+      else next.add(fid)
+      return next
+    })
+  }
+
+  function toggleParentAll(parent: ParentBoardGroup, enable: boolean) {
+    const keys = parent.children.map(boardUnitKey)
+    if (onToggleMany) {
+      onToggleMany(keys, enable)
+      return
+    }
+    for (const key of keys) {
+      if (enable !== enabledSet.has(key)) onToggle(key, enable)
+    }
+  }
 
   return (
     <div className="forum-tab-content forum-tab-content--boards">
@@ -318,32 +391,33 @@ function BoardsTab({
         <div className="forum-boards-toolbar">
           <div className="forum-boards-toolbar-main">
             <p className="hint">
-              共 {boards.length} 个白名单板块 · 磁力 {magnetCount} · ED2K {ed2kCount} · 多选启用，按列表排序依次爬取
+              {parentCount} 个主板块 · {boards.length} 个分类子版 · 磁力 {magnetCount} · ED2K {ed2kCount}
+              · 点击主板块展开子版
             </p>
             <div className="forum-boards-active-card">
-              <span className="forum-boards-active-lbl">启用队列 · {enabledFids.length} 板</span>
+              <span className="forum-boards-active-lbl">启用队列 · {enabledFids.length} 子版</span>
               {enabledFids.length ? (
                 <div className="forum-boards-active-val">
-                  <strong>
+                  <strong className="forum-boards-queue-path" title={enabledFids.join(' → ')}>
                     {enabledFids
-                      .map((fid) => boards.find((b) => b.fid === fid)?.name || fid)
+                      .map((fid) => boards.find((b) => boardUnitKey(b) === fid)?.name || fid)
                       .join(' → ')}
                   </strong>
                   {active ? (
-                    <span className="tag tag-active" title="深扫当前板">
+                    <span className="tag tag-active" title="深扫当前子版">
                       深扫当前 · {active.name}
                     </span>
                   ) : null}
                 </div>
               ) : (
-                <span className="hint warn">请至少勾选一个工作板块</span>
+                <span className="hint warn">请至少勾选一个工作子版</span>
               )}
             </div>
           </div>
         </div>
 
         <div className="table-wrap forum-boards-table-wrap">
-          <table className="data-table forum-boards-table">
+          <table className="data-table forum-boards-table forum-boards-table--tree">
             <colgroup>
               <col className="col-select" />
               <col className="col-fid" />
@@ -355,8 +429,8 @@ function BoardsTab({
             <thead>
               <tr>
                 <th className="board-select-cell">启用</th>
-                <th className="board-col-fid">fid</th>
-                <th className="board-col-name">名称</th>
+                <th className="board-col-fid">分类</th>
+                <th className="board-col-name">板块 / 分类</th>
                 <th className="board-col-link">主链接</th>
                 <th className="board-col-count" title="队列顺序">
                   顺序
@@ -365,80 +439,201 @@ function BoardsTab({
               </tr>
             </thead>
             <tbody data-forum-boards={forumId}>
-              {groups.map(([category, items]) => (
+              {tree.map(([category, parents]) => (
                 <Fragment key={category}>
                   <tr className="forum-board-category-row">
                     <td colSpan={6}>
                       <span className="forum-board-category-label">{category}</span>
-                      <span className="forum-board-category-count">{items.length} 板</span>
+                      <span className="forum-board-category-count">
+                        {parents.length} 主板块 · {parents.reduce((n, p) => n + p.children.length, 0)}{' '}
+                        子版
+                      </span>
                     </td>
                   </tr>
-                  {items.map((b) => {
-                    const selected = enabledSet.has(b.fid)
-                    const isCurrent = b.fid === activeBoardFid
-                    const ord = queueIndex.get(b.fid)
+                  {parents.map((parent) => {
+                    const childKeys = parent.children.map(boardUnitKey)
+                    const enabledKids = childKeys.filter((k) => enabledSet.has(k))
+                    const allOn = enabledKids.length === childKeys.length && childKeys.length > 0
+                    const someOn = enabledKids.length > 0 && !allOn
+                    const isOpen = expanded.has(parent.fid)
+                    const hasSubTypes = parent.children.some((c) => Boolean(c.typeid))
+                    const sole = parent.children.length === 1 && !hasSubTypes ? parent.children[0] : null
+                    const soleKey = sole ? boardUnitKey(sole) : ''
+                    const soleSelected = sole ? enabledSet.has(soleKey) : false
+                    const soleCurrent = sole ? soleKey === activeBoardFid : false
+                    const parentHasActive = childKeys.includes(activeBoardFid)
+
                     return (
-                      <tr
-                        key={b.fid}
-                        className={`forum-board-row${selected ? ' is-active-board' : ''}`}
-                        data-board-fid={b.fid}
-                        onClick={() => onToggle(b.fid, !selected)}
-                        style={{ cursor: 'pointer' }}
-                      >
-                        <td className="board-select-cell">
-                          <label
-                            className="board-select-check"
-                            title="勾选加入爬取队列"
-                            onClick={(e) => e.stopPropagation()}
-                          >
-                            <input
-                              type="checkbox"
-                              checked={selected}
-                              onChange={(e) => {
-                                e.stopPropagation()
-                                onToggle(b.fid, e.target.checked)
-                              }}
+                      <Fragment key={parent.fid}>
+                        <tr
+                          className={`forum-board-row forum-board-parent-row${allOn || someOn ? ' is-active-board' : ''}${parentHasActive ? ' is-current-parent' : ''}${soleCurrent ? ' is-current-board' : ''}`}
+                          data-board-fid={parent.fid}
+                          onClick={() => {
+                            if (sole) onToggle(soleKey, !soleSelected)
+                            else toggleExpand(parent.fid)
+                          }}
+                          style={{ cursor: 'pointer' }}
+                        >
+                          <td className="board-select-cell">
+                            <label
+                              className="board-select-check"
+                              title={sole ? '启用本板块' : allOn ? '取消全部子版' : '启用全部子版'}
                               onClick={(e) => e.stopPropagation()}
-                            />
-                            <span className="board-select-box" aria-hidden />
-                          </label>
-                        </td>
-                        <td className="board-col-fid">
-                          <code>{b.fid}</code>
-                        </td>
-                        <td className="board-col-name">
-                          <span className="board-name-text">{b.name}</span>
-                          {b.hot ? <span className="tag tag-pending">热门</span> : null}
-                          {selected ? <span className="tag tag-active">启用</span> : null}
-                          {isCurrent ? <span className="tag tag-pending">深扫中</span> : null}
-                        </td>
-                        <td className="board-col-link">
-                          <span
-                            className={`tag tag-${b.primary_link === 'ed2k' ? 'ed2k' : b.primary_link === 'magnet' ? 'magnet' : 'stub'}`}
-                          >
-                            {boardLinkLabel(b.primary_link)}
-                          </span>
-                        </td>
-                        <td className="board-col-count">{ord ?? '—'}</td>
-                        <td className="board-col-time">
-                          {selected ? (
-                            <button
-                              type="button"
-                              className={`btn sm ${isCurrent ? 'primary' : 'secondary'}`}
-                              disabled={isCurrent}
-                              title="设为深扫当前板"
-                              onClick={(e) => {
-                                e.stopPropagation()
-                                onSetCurrent(b.fid)
-                              }}
                             >
-                              {isCurrent ? '当前' : '设为当前'}
-                            </button>
-                          ) : (
-                            '—'
-                          )}
-                        </td>
-                      </tr>
+                              <input
+                                type="checkbox"
+                                checked={sole ? soleSelected : allOn}
+                                ref={(el) => {
+                                  if (el && !sole) el.indeterminate = someOn
+                                }}
+                                onChange={(e) => {
+                                  e.stopPropagation()
+                                  if (sole) onToggle(soleKey, e.target.checked)
+                                  else toggleParentAll(parent, e.target.checked)
+                                }}
+                                onClick={(e) => e.stopPropagation()}
+                              />
+                              <span className="board-select-box" aria-hidden />
+                            </label>
+                          </td>
+                          <td className="board-col-fid">
+                            <code>{parent.fid}</code>
+                          </td>
+                          <td className="board-col-name">
+                            <div className="board-name-inner">
+                              {!sole ? (
+                                <button
+                                  type="button"
+                                  className={`forum-board-expand${isOpen ? ' is-open' : ''}`}
+                                  aria-expanded={isOpen}
+                                  title={isOpen ? '收起子版' : '展开子版'}
+                                  onClick={(e) => {
+                                    e.stopPropagation()
+                                    toggleExpand(parent.fid)
+                                  }}
+                                >
+                                  <span className="forum-board-expand-icon" aria-hidden />
+                                </button>
+                              ) : (
+                                <span className="forum-board-expand-spacer" aria-hidden />
+                              )}
+                              <span className="board-name-text">{parent.name}</span>
+                              <span className="board-name-meta">
+                                {!sole ? (
+                                  <span className="tag tag-muted">
+                                    {enabledKids.length}/{parent.children.length} 子版
+                                  </span>
+                                ) : null}
+                                {someOn ? <span className="tag tag-partial">部分</span> : null}
+                                {parentHasActive ? <span className="tag tag-scan">深扫中</span> : null}
+                              </span>
+                            </div>
+                          </td>
+                          <td className="board-col-link">
+                            <span
+                              className={`tag tag-${parent.primary_link === 'ed2k' ? 'ed2k' : parent.primary_link === 'magnet' ? 'magnet' : 'stub'}`}
+                            >
+                              {boardLinkLabel(parent.primary_link)}
+                            </span>
+                          </td>
+                          <td className="board-col-count">
+                            {sole ? (queueIndex.get(soleKey) ?? '—') : enabledKids.length ? enabledKids.length : '—'}
+                          </td>
+                          <td className="board-col-time">
+                            {sole && soleSelected ? (
+                              <button
+                                type="button"
+                                className={`btn sm ${soleCurrent ? 'primary' : 'secondary'}`}
+                                disabled={soleCurrent}
+                                title="设为深扫当前"
+                                onClick={(e) => {
+                                  e.stopPropagation()
+                                  onSetCurrent(soleKey)
+                                }}
+                              >
+                                {soleCurrent ? '当前' : '设为当前'}
+                              </button>
+                            ) : (
+                              '—'
+                            )}
+                          </td>
+                        </tr>
+                        {isOpen && !sole
+                          ? parent.children.map((b) => {
+                              const unitKey = boardUnitKey(b)
+                              const selected = enabledSet.has(unitKey)
+                              const isCurrent = unitKey === activeBoardFid
+                              const ord = queueIndex.get(unitKey)
+                              const typeLabel = b.type_name || b.name
+                              return (
+                                <tr
+                                  key={unitKey}
+                                  className={`forum-board-row forum-board-child-row${selected ? ' is-active-board' : ''}${isCurrent ? ' is-current-board' : ''}`}
+                                  data-board-fid={unitKey}
+                                  onClick={() => onToggle(unitKey, !selected)}
+                                  style={{ cursor: 'pointer' }}
+                                >
+                                  <td className="board-select-cell">
+                                    <label
+                                      className="board-select-check"
+                                      title="勾选加入爬取队列"
+                                      onClick={(e) => e.stopPropagation()}
+                                    >
+                                      <input
+                                        type="checkbox"
+                                        checked={selected}
+                                        onChange={(e) => {
+                                          e.stopPropagation()
+                                          onToggle(unitKey, e.target.checked)
+                                        }}
+                                        onClick={(e) => e.stopPropagation()}
+                                      />
+                                      <span className="board-select-box" aria-hidden />
+                                    </label>
+                                  </td>
+                                  <td className="board-col-fid">
+                                    <code>{boardUnitCode(b)}</code>
+                                  </td>
+                                  <td className="board-col-name">
+                                    <div className="board-name-inner board-name-inner--child">
+                                      <span className="forum-board-child-indent" aria-hidden />
+                                      <span className="board-name-text">{typeLabel}</span>
+                                      <span className="board-name-meta">
+                                        {isCurrent ? <span className="tag tag-scan">深扫中</span> : null}
+                                      </span>
+                                    </div>
+                                  </td>
+                                  <td className="board-col-link">
+                                    <span
+                                      className={`tag tag-${b.primary_link === 'ed2k' ? 'ed2k' : b.primary_link === 'magnet' ? 'magnet' : 'stub'}`}
+                                    >
+                                      {boardLinkLabel(b.primary_link)}
+                                    </span>
+                                  </td>
+                                  <td className="board-col-count">{ord ?? '—'}</td>
+                                  <td className="board-col-time">
+                                    {selected ? (
+                                      <button
+                                        type="button"
+                                        className={`btn sm ${isCurrent ? 'primary' : 'secondary'}`}
+                                        disabled={isCurrent}
+                                        title="设为深扫当前子版"
+                                        onClick={(e) => {
+                                          e.stopPropagation()
+                                          onSetCurrent(unitKey)
+                                        }}
+                                      >
+                                        {isCurrent ? '当前' : '设为当前'}
+                                      </button>
+                                    ) : (
+                                      '—'
+                                    )}
+                                  </td>
+                                </tr>
+                              )
+                            })
+                          : null}
+                      </Fragment>
                     )
                   })}
                 </Fragment>
@@ -706,21 +901,26 @@ export function ForumConfigModal({
   const boards = useMemo(() => {
     const list = [...(forum.boards || [])]
     const order = forum.crawler_config.board_order || []
-    if (!order.length) return list
-    const byFid = new Map(list.map((b) => [b.fid, b]))
+    if (!order.length) {
+      return list.sort((a, b) => (a.priority ?? 50) - (b.priority ?? 50))
+    }
+    const byKey = new Map(list.map((b) => [boardUnitKey(b), b]))
     const sorted: ForumBoard[] = []
-    for (const fid of order) {
-      const board = byFid.get(String(fid))
+    for (const id of order) {
+      const board = byKey.get(String(id))
       if (board) {
         sorted.push(board)
-        byFid.delete(String(fid))
+        byKey.delete(String(id))
       }
     }
-    for (const board of byFid.values()) sorted.push(board)
+    for (const board of byKey.values()) sorted.push(board)
     return sorted
   }, [forum.boards, forum.crawler_config.board_order])
 
-  const activeBoardFid = draft.active_board_fid || forum.crawler_config.active_board_fid || boards[0]?.fid || ''
+  const activeBoardFid =
+    draft.active_board_fid ||
+    forum.crawler_config.active_board_fid ||
+    (boards[0] ? boardUnitKey(boards[0]) : '')
   const enabledBoardFids = useMemo(() => {
     const raw = draft.enabled_board_fids?.length
       ? draft.enabled_board_fids
@@ -729,7 +929,7 @@ export function ForumConfigModal({
         : activeBoardFid
           ? [activeBoardFid]
           : []
-    const order = draft.board_order || forum.crawler_config.board_order || boards.map((b) => b.fid)
+    const order = draft.board_order || forum.crawler_config.board_order || boards.map((b) => boardUnitKey(b))
     const wanted = new Set(raw.map(String))
     return order.map(String).filter((fid) => wanted.has(fid))
   }, [
@@ -749,7 +949,34 @@ export function ForumConfigModal({
       toast.info('至少保留一个启用板块')
       return
     }
-    const order = draft.board_order || forum.crawler_config.board_order || boards.map((b) => b.fid)
+    const order = draft.board_order || forum.crawler_config.board_order || boards.map((b) => boardUnitKey(b))
+    const nextEnabled = order.map(String).filter((id) => wanted.has(id))
+    const nextActive = nextEnabled.includes(activeBoardFid) ? activeBoardFid : nextEnabled[0]
+    const next = {
+      ...draft,
+      enabled_board_fids: nextEnabled,
+      active_board_fid: nextActive,
+      web_crawler_max_boards_per_run: Math.max(1, nextEnabled.length),
+    }
+    setDraft(next)
+    onActiveBoardChange(next)
+    void saveForumConfig(forum.id, next).then(
+      (res) => onActiveBoardChange({ ...next, ...res.config }),
+      (err) => toast.error(err instanceof Error ? err.message : '更新启用板块失败'),
+    )
+  }
+
+  const handleToggleMany = (fids: string[], enabled: boolean) => {
+    const wanted = new Set(enabledBoardFids)
+    for (const fid of fids) {
+      if (enabled) wanted.add(fid)
+      else wanted.delete(fid)
+    }
+    if (!wanted.size) {
+      toast.info('至少保留一个启用板块')
+      return
+    }
+    const order = draft.board_order || forum.crawler_config.board_order || boards.map((b) => boardUnitKey(b))
     const nextEnabled = order.map(String).filter((id) => wanted.has(id))
     const nextActive = nextEnabled.includes(activeBoardFid) ? activeBoardFid : nextEnabled[0]
     const next = {
@@ -888,6 +1115,7 @@ export function ForumConfigModal({
                   enabledFids={enabledBoardFids}
                   activeBoardFid={activeBoardFid}
                   onToggle={handleToggleBoard}
+                  onToggleMany={handleToggleMany}
                   onSetCurrent={handleSetCurrentBoard}
                 />
               ) : null}

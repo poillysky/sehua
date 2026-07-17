@@ -26,7 +26,7 @@ from db.repository import (
 )
 from parsers.thread_gates import title_recognizable
 from db.settings_store import get_setting
-from parsers.boards import BOARD_POLICIES
+from parsers.boards import get_board_fid, get_board_policy
 from workers.pipeline import process_thread
 from workers.runner import (
     THROTTLE,
@@ -210,10 +210,13 @@ def _resolve_item(conn: Any, resource_hash: str, cfg: dict[str, Any]) -> dict[st
     board_fid_s = str(item.get("board_fid") or "").strip()
     if not board_fid_s:
         board_fid_s = str(cfg.get("active_board_fid") or "")
-    if not board_fid_s.isdigit() or int(board_fid_s) not in BOARD_POLICIES:
+    from parsers.boards import get_board_fid, get_board_policy
+
+    board_fid = get_board_fid(board_fid_s)
+    if board_fid <= 0:
         return {"ok": False, "hash": resource_hash, "error": "缺少有效板块 fid，无法重爬"}
-    board_fid = int(board_fid_s)
-    board_name = str(item.get("board_name") or BOARD_POLICIES[board_fid].name)
+    pol = get_board_policy(board_fid)
+    board_name = str(item.get("board_name") or pol.board_name or pol.name)
     title = str(item.get("title") or item.get("filename") or "")
     queued = requeue_for_recrawl(
         conn,
@@ -656,7 +659,8 @@ async def recrawl_account_stubs() -> dict[str, Any]:
             board_fid_s = str(row.get("board_fid") or "").strip()
             if not board_fid_s:
                 board_fid_s = str(cfg.get("active_board_fid") or "")
-            if not board_fid_s.isdigit() or int(board_fid_s) not in BOARD_POLICIES:
+            board_fid = get_board_fid(board_fid_s)
+            if board_fid <= 0:
                 skipped_prep += 1
                 items.append(
                     {
@@ -670,8 +674,8 @@ async def recrawl_account_stubs() -> dict[str, Any]:
                 _push_progress(current_tid=tid, current_title=title)
                 continue
 
-            board_fid = int(board_fid_s)
-            board_name = str(row.get("board_name") or BOARD_POLICIES[board_fid].name)
+            pol = get_board_policy(board_fid)
+            board_name = str(row.get("board_name") or pol.board_name or pol.name)
             _push_progress(current_tid=tid, current_title=title)
             rem_now = int((_STATE.get("account_stub_progress") or {}).get("remaining") or 0)
             _log_activity(

@@ -244,25 +244,30 @@ async def run_crawl_once(
             board_fid_s = str(cfg.get("active_board_fid") or "").strip()
             if board_fid_s not in enabled and enabled:
                 board_fid_s = enabled[0]
-        if board_fid_s not in {str(f) for f in BOARD_POLICIES}:
+        if board_fid_s not in BOARD_POLICIES:
             result["ok"] = False
-            result["error"] = f"工作板 fid={board_fid_s} 不在白名单"
+            result["error"] = f"工作子版 {board_fid_s} 不在白名单"
             _log_activity(result["error"])
             return result
         if enabled and board_fid_s not in enabled:
             result["ok"] = False
-            result["error"] = f"工作板 fid={board_fid_s} 未在启用队列中"
+            result["error"] = f"工作子版 {board_fid_s} 未在启用队列中"
             _log_activity(result["error"])
             return result
-        board_fid = int(board_fid_s)
-        pol = get_board_policy(board_fid)
+        unit_key = board_fid_s
+        pol = get_board_policy(unit_key)
+        board_fid = int(pol.fid)
+        result["board_key"] = unit_key
         result["board_fid"] = board_fid
+        result["board_typeid"] = pol.list_typeid
         result["board_name"] = pol.name
-        queue_label = " → ".join(enabled) if enabled else board_fid_s
+        queue_label = " → ".join(enabled[:8])
+        if len(enabled) > 8:
+            queue_label += f" …(+{len(enabled) - 8})"
         _log_activity(
-            f"选板 · {pol.name}（{board_fid}）· 主链 {pol.primary_link}"
+            f"选板 · {pol.name}（{unit_key}）· 主链 {pol.primary_link}"
             + (f" · 满 {pol.min_thread_age_days} 天" if pol.min_thread_age_days else "")
-            + f" · 启用队列 {len(enabled)} 板 [{queue_label}]"
+            + f" · 启用队列 {len(enabled)} 子版 [{queue_label}]"
             + " · 发帖时间序"
         )
 
@@ -304,22 +309,22 @@ async def run_crawl_once(
                 pages_per = int(cfg.get("web_crawler_list_pages_per_board") or 15)
                 max_pages = int(cfg.get("web_crawler_max_list_pages") or 0)
                 known_stop = int(cfg.get("web_crawler_list_known_stop_pages") or 2)
-                list_cursor = get_board_list_cursor(cfg, board_fid)
+                list_cursor = get_board_list_cursor(cfg, unit_key)
                 if scan_head is None:
-                    do_head = not is_board_head_done_today(cfg, board_fid)
+                    do_head = not is_board_head_done_today(cfg, unit_key)
                 else:
                     do_head = bool(scan_head)
                 do_deep = bool(deep_scan)
                 if head_pages_override is not None:
                     head_pages = max(1, int(head_pages_override))
                 elif do_head and not do_deep:
-                    head_pages = resolve_manual_head_pages(cfg, board_fid)
+                    head_pages = resolve_manual_head_pages(cfg, unit_key)
                 else:
                     head_pages = int(cfg.get("web_crawler_list_head_pages") or 50)
-                head_start = get_board_head_progress(cfg, board_fid) if do_head else 1
+                head_start = get_board_head_progress(cfg, unit_key) if do_head else 1
                 scan = await scan_board_list(
                     fetcher,
-                    board_fid=board_fid,
+                    board_fid=unit_key,
                     pages_per_board=pages_per,
                     max_list_pages=max_pages,
                     head_pages=head_pages,
@@ -353,41 +358,41 @@ async def run_crawl_once(
                     set_board_list_cursor(
                         cursor_conn,
                         forum_id,
-                        board_fid,
+                        unit_key,
                         scan.last_list_page,
                         reset=bool(scan.list_exhausted),
                     )
                     if do_deep and scan.list_exhausted:
                         saved = advance_active_board_fid(
-                            cursor_conn, forum_id, from_fid=board_fid
+                            cursor_conn, forum_id, from_fid=unit_key
                         )
                         nxt = str(saved.get("active_board_fid") or "")
                         result["board_advanced"] = True
                         result["next_board_fid"] = nxt
                         _log_activity(
-                            f"板 {board_fid} 深扫到底 · 下轮切换为 fid={nxt or '—'}"
+                            f"子版 {unit_key} 深扫到底 · 下轮切换为 {nxt or '—'}"
                         )
                     if do_head and scan.head_completed:
                         if do_deep:
                             set_board_head_catchup_state(
                                 cursor_conn,
                                 forum_id,
-                                board_fid,
+                                unit_key,
                                 done_today=True,
                             )
                         else:
                             set_board_head_catchup_state(
                                 cursor_conn,
                                 forum_id,
-                                board_fid,
+                                unit_key,
                                 clear_progress=True,
                             )
-                            _log_activity("本板扫新帖结束 · 未写入每日捕新闸门")
+                            _log_activity("本子版扫新帖结束 · 未写入每日捕新闸门")
                     elif do_head and scan.head_incomplete and scan.head_progress_page:
                         set_board_head_catchup_state(
                             cursor_conn,
                             forum_id,
-                            board_fid,
+                            unit_key,
                             progress_page=int(scan.head_progress_page),
                         )
                 except Exception as cursor_exc:

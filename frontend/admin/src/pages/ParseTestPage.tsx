@@ -291,23 +291,22 @@ export function ParseTestPage() {
         const forum = data.forums?.find((f) => f.id === active) || data.forums?.[0]
         const cfg = data.forum_configs?.[active] || forum?.crawler_config
         const list = [...(forum?.boards || [])]
-        const order = cfg?.board_order || []
-        if (order.length) {
-          const byFid = new Map(list.map((b) => [String(b.fid), b]))
-          const ordered: ForumBoard[] = []
-          for (const id of order) {
-            const b = byFid.get(String(id))
-            if (b) {
-              ordered.push(b)
-              byFid.delete(String(id))
-            }
+        // 解析测试只需板块级偏好，按 fid 去重
+        const byFid = new Map<string, ForumBoard>()
+        for (const b of list) {
+          const fid = String(b.fid)
+          if (!byFid.has(fid)) {
+            byFid.set(fid, {
+              ...b,
+              name: b.board_name || b.name.split('-')[0] || b.name,
+              key: fid,
+              typeid: '',
+            })
           }
-          ordered.push(...byFid.values())
-          setBoards(ordered)
-        } else {
-          list.sort((a, b) => (a.priority ?? 50) - (b.priority ?? 50) || a.name.localeCompare(b.name, 'zh-CN'))
-          setBoards(list)
         }
+        const deduped = Array.from(byFid.values())
+        deduped.sort((a, b) => (a.priority ?? 50) - (b.priority ?? 50) || a.name.localeCompare(b.name, 'zh-CN'))
+        setBoards(deduped)
       })
       .catch(() => {})
     return () => {

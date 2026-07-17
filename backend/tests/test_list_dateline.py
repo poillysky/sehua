@@ -12,14 +12,14 @@ from parsers.list_dates import is_thread_old_enough, parse_discuz_list_datetime
 
 
 def test_list_urls_always_dateline():
-    u95 = list_url_for_board(95, 1)
+    u95 = list_url_for_board("95:716", 1)
     assert "orderby=dateline" in u95
     assert "typeid=716" in u95
     assert "heats" not in u95
 
-    u36 = list_url_for_board(36, 2)
+    u36 = list_url_for_board("36:368", 2)
     assert "orderby=dateline" in u36
-    assert "filter=author" in u36 or "filter=typeid" in u36
+    assert "typeid=368" in u36
     assert "heats" not in u36
 
     u = build_list_url("https://www.sehuatang.net/", 2, 1, hot=True)
