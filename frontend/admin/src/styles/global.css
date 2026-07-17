@@ -4728,9 +4728,8 @@ a {
   }
 
   /*
-   * 移动端隐藏「已爬取 / 上次爬取」；保留「主链接」。
-   * display:none 单元格不会回收 colgroup 宽度，必须把对应 <col> 也关掉，
-   * 并把名称列设为剩余宽度，否则表格右侧会留出大块空白。
+   * 移动端：启用 | 板块(+内联主链接) | 游标
+   * 独立「主链接」列在窄屏会与名称抢宽叠字，故并入名称行。
    */
   .forum-boards-table {
     width: 100% !important;
@@ -4738,72 +4737,142 @@ a {
     table-layout: fixed;
   }
 
+  .forum-boards-table col.col-fid,
+  .forum-boards-table col.col-link,
   .forum-boards-table col.col-count,
   .forum-boards-table col.col-time {
     width: 0 !important;
     display: none;
   }
 
+  .forum-boards-table .board-col-fid,
+  .forum-boards-table .board-col-link,
   .forum-boards-table .board-col-count,
   .forum-boards-table .board-col-time {
-    display: none;
-  }
-
-  .forum-boards-table col.col-cursor {
-    width: 108px;
+    display: none !important;
   }
 
   .forum-boards-table col.col-select {
-    width: 44px;
-  }
-
-  .forum-boards-table col.col-fid {
-    width: 52px;
-  }
-
-  .forum-boards-table col.col-link {
-    width: 72px;
+    width: 12%;
   }
 
   .forum-boards-table col.col-name {
-    width: 100%;
+    width: 66%;
   }
 
-  .forum-boards-table .board-col-name {
-    width: 100%;
+  .forum-boards-table col.col-cursor {
+    width: 22%;
   }
 
   .forum-boards-table .board-select-cell {
-    width: 44px;
     padding-left: 6px;
-    padding-right: 6px;
+    padding-right: 2px;
+    overflow: visible;
   }
 
   .forum-boards-table th,
   .forum-boards-table td {
-    padding: 5px 8px;
+    padding: 6px 4px;
+    overflow: hidden;
+    vertical-align: middle;
   }
 
-  .forum-boards-table .board-col-name .board-name-text {
-    white-space: normal;
+  .forum-boards-table td.board-select-cell {
     overflow: visible;
-    text-overflow: unset;
-    word-break: break-word;
+  }
+
+  .forum-boards-table .board-col-name {
+    /* fixed 表格强制内容不撑破列宽 */
+    width: 66%;
+    max-width: 0;
+    overflow: hidden;
+  }
+
+  .forum-boards-table .board-name-inner {
+    gap: 6px;
+    min-width: 0;
+    max-width: 100%;
+    overflow: hidden;
+  }
+
+  .forum-boards-table .board-name-text {
+    flex: 1 1 auto;
+    min-width: 0;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .forum-boards-table .board-name-meta {
+    display: none;
+  }
+
+  .forum-boards-table .board-link-inline {
+    display: inline-flex !important;
+    flex: 0 0 auto;
+    max-width: 4.5em;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 10px;
+    padding: 1px 5px;
+    line-height: 1.35;
+  }
+
+  .forum-boards-table .board-col-cursor {
+    width: 22%;
+    max-width: 0;
+    overflow: hidden;
+  }
+
+  .forum-boards-table .board-cursor-cell {
+    flex-direction: column;
+    gap: 2px;
+    width: 100%;
+  }
+
+  .forum-boards-table .board-cursor-page {
+    min-width: 0;
+    font-size: 11px;
+  }
+
+  .forum-boards-table .board-cursor-cell .btn.sm {
+    padding: 1px 5px;
+    font-size: 10px;
+    min-height: 20px;
+    max-width: 100%;
+  }
+
+  .forum-boards-table .board-name-inner--child {
+    padding-left: 8px;
   }
 
   .forum-boards-toolbar {
     flex-wrap: wrap;
   }
 
+  .forum-boards-toolbar-main > .hint {
+    font-size: 8px;
+    line-height: 1.35;
+    margin: 0;
+  }
+
   .forum-modal-backdrop {
-    padding: 0;
+    /* 接近全屏：留小边距 + 安全区，避免 100dvh 溢出导致触摸异常 */
+    padding: max(8px, env(safe-area-inset-top, 0px))
+      max(8px, env(safe-area-inset-right, 0px))
+      max(8px, env(safe-area-inset-bottom, 0px))
+      max(8px, env(safe-area-inset-left, 0px));
+    box-sizing: border-box;
   }
 
   .forum-modal-panel {
-    width: 100vw;
-    height: 100dvh;
-    max-height: 100dvh;
-    border-radius: 0;
+    width: 100%;
+    max-width: 100%;
+    height: 100%;
+    max-height: 100%;
+    margin: 0;
+    border-radius: 12px;
   }
 
   .forum-tab-content {
@@ -5207,10 +5276,13 @@ a {
 }
 
 .forum-modal-backdrop {
-  z-index: 90;
+  z-index: 300;
   align-items: stretch;
   place-items: stretch;
   padding: 20px;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+  pointer-events: auto;
 }
 
 .forum-modal-panel {
@@ -5225,6 +5297,19 @@ a {
   border: 1px solid var(--border);
   border-radius: 14px;
   box-shadow: var(--shadow);
+  pointer-events: auto;
+  touch-action: manipulation;
+  overscroll-behavior: contain;
+}
+
+body.modal-open {
+  overflow: hidden !important;
+  overscroll-behavior: none;
+}
+
+html:has(body.modal-open) {
+  overflow: hidden !important;
+  overscroll-behavior: none;
 }
 
 .forum-modal-panel .modal-head {
@@ -5800,53 +5885,67 @@ a {
 }
 
 .forum-boards-table col.col-select {
-  width: 48px;
+  /* 启用勾选 */
+  width: 42px;
 }
 
 .forum-boards-table col.col-fid {
-  width: 72px;
+  /* 分类 typeid / fid 短码 */
+  width: 64px;
+}
+
+.forum-boards-table col.col-name {
+  /* 板块名吃掉剩余宽度 */
+  width: auto;
 }
 
 .forum-boards-table col.col-link {
-  width: 80px;
+  /* 磁力 / ED2K 标签 */
+  width: 64px;
 }
 
 .forum-boards-table col.col-count {
-  width: 56px;
+  /* 队列顺序数字 */
+  width: 44px;
 }
 
 .forum-boards-table col.col-cursor {
-  width: 132px;
+  /* P页 + 清游标 */
+  width: 118px;
 }
 
 .forum-boards-table col.col-time {
+  /* 设为当前 */
   width: 96px;
 }
 
 .forum-boards-table th,
 .forum-boards-table td {
   vertical-align: middle;
-  padding: 5px 10px;
+  padding: 5px 8px;
   line-height: 1.3;
   border-bottom: 1px solid rgba(42, 53, 68, 0.72);
 }
 
 .forum-boards-table .board-select-cell {
   text-align: center;
-  width: 48px;
-  padding-left: 8px;
-  padding-right: 8px;
+  width: 42px;
+  padding-left: 6px;
+  padding-right: 4px;
+  overflow: visible;
+  border-left: 3px solid transparent;
+  box-sizing: border-box;
 }
 
 .forum-boards-table .board-select-check {
-  width: 18px;
-  height: 18px;
+  width: 28px;
+  height: 28px;
 }
 
 .forum-boards-table .board-select-box {
-  width: 14px;
-  height: 14px;
-  border-radius: 4px;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
 }
 
 .forum-boards-table .board-col-fid {
@@ -5897,6 +5996,11 @@ a {
   flex-shrink: 0;
 }
 
+/* 窄屏内联主链接；桌面仍用独立列 */
+.forum-boards-table .board-link-inline {
+  display: none;
+}
+
 .forum-boards-table .board-col-name .tag {
   margin-left: 0;
   vertical-align: middle;
@@ -5926,12 +6030,12 @@ a {
 }
 
 .forum-boards-table .board-col-link {
-  text-align: left;
+  text-align: center;
 }
 
 .forum-boards-table .board-col-link .tag {
   font-size: 10px;
-  padding: 1px 7px;
+  padding: 1px 6px;
   border-radius: 999px;
 }
 
@@ -5945,42 +6049,50 @@ a {
 
 .forum-boards-table .board-col-count {
   text-align: center;
+  padding-left: 4px;
+  padding-right: 4px;
 }
 
 .forum-boards-table .board-col-cursor {
   text-align: center;
   white-space: nowrap;
+  padding-left: 4px;
+  padding-right: 4px;
 }
 
 .forum-boards-table .board-cursor-cell {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  gap: 6px;
+  gap: 4px;
+  max-width: 100%;
 }
 
 .forum-boards-table .board-cursor-page {
-  min-width: 28px;
+  min-width: 24px;
   font-weight: 600;
   color: var(--text, #e8edf5);
 }
 
 .forum-boards-table .board-cursor-cell .btn.sm {
-  padding: 2px 6px;
-  font-size: 11px;
+  padding: 2px 5px;
+  font-size: 10.5px;
   min-height: 22px;
   border-radius: 6px;
+  white-space: nowrap;
 }
 
 .forum-boards-table .board-col-time {
-  text-align: right;
-  padding-right: 12px;
+  text-align: center;
+  padding-left: 4px;
+  padding-right: 8px;
 }
 
 .forum-boards-table .board-col-time .btn.sm {
-  padding: 2px 8px;
-  font-size: 11px;
+  padding: 2px 6px;
+  font-size: 10.5px;
   min-height: 22px;
+  white-space: nowrap;
   border-radius: 6px;
 }
 
@@ -6011,7 +6123,9 @@ a {
 
 .forum-board-parent-row.is-current-parent td:first-child,
 .forum-board-row.is-current-board td:first-child {
-  box-shadow: inset 3px 0 0 var(--success);
+  /* iOS 上 inset box-shadow 在 table-cell 会画成绿色横线，改用左边框 */
+  box-shadow: none;
+  border-left: 3px solid var(--success);
 }
 
 .forum-board-parent-row.is-current-parent td,
@@ -6121,17 +6235,18 @@ a {
 
 .forum-board-parent-row.is-current-parent:hover td:first-child,
 .forum-board-row.is-current-board:hover td:first-child {
-  box-shadow: inset 3px 0 0 var(--success);
+  box-shadow: none;
+  border-left: 3px solid var(--success);
 }
 
 .board-select-check input:indeterminate + .board-select-box {
-  border-color: var(--warn);
-  background: var(--warn);
-  box-shadow: inset 0 0 0 2px var(--panel);
-  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none'%3E%3Cpath d='M4 8h8' stroke='%230a0e12' stroke-width='2.2' stroke-linecap='round'/%3E%3C/svg%3E");
-  background-size: 12px 12px;
+  border-color: color-mix(in srgb, var(--warn) 70%, #0a0e12);
+  background-color: var(--warn);
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none'%3E%3Cpath d='M4 8h8' stroke='%230a0e12' stroke-width='2.4' stroke-linecap='round'/%3E%3C/svg%3E");
+  background-size: 11px 11px;
   background-position: center;
   background-repeat: no-repeat;
+  box-shadow: none;
 }
 
 .board-select-radio,
@@ -6139,21 +6254,44 @@ a {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 24px;
-  height: 24px;
+  width: 28px;
+  height: 28px;
   cursor: pointer;
   position: relative;
+  border-radius: 50%;
+  transition: background 0.15s ease;
+}
+
+.board-select-check:hover {
+  background: rgba(52, 211, 153, 0.08);
+}
+
+.board-select-check:active {
+  transform: scale(0.94);
 }
 
 .board-select-radio input,
 .board-select-check input {
+  /* 视觉完全移除；点击仍走 label */
   position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
   opacity: 0;
-  width: 100%;
-  height: 100%;
-  margin: 0;
-  cursor: pointer;
-  z-index: 1;
+  appearance: none;
+  -webkit-appearance: none;
+  background: transparent;
+  box-shadow: none;
+  outline: none;
+  accent-color: transparent;
+  -webkit-tap-highlight-color: transparent;
+  pointer-events: none;
 }
 
 .board-select-dot {
@@ -6166,16 +6304,17 @@ a {
 }
 
 .board-select-box {
-  width: 16px;
-  height: 16px;
-  border-radius: 4px;
-  border: 1.5px solid var(--muted);
-  background: rgba(255, 255, 255, 0.03);
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  border: 1.5px solid color-mix(in srgb, var(--muted) 70%, transparent);
+  background: rgba(255, 255, 255, 0.04);
   box-sizing: border-box;
+  box-shadow: none;
   transition:
-    background 0.12s ease,
-    border-color 0.12s ease,
-    box-shadow 0.12s ease;
+    background-color 0.16s ease,
+    border-color 0.16s ease,
+    transform 0.12s ease;
 }
 
 .board-select-radio input:checked + .board-select-dot {
@@ -6185,13 +6324,13 @@ a {
 }
 
 .board-select-check input:checked + .board-select-box {
-  border-color: var(--success);
-  background: var(--success);
-  box-shadow: inset 0 0 0 2px var(--panel);
-  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none'%3E%3Cpath d='M3.5 8.2L6.6 11.2L12.5 4.8' stroke='%230a0e12' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
-  background-size: 12px 12px;
+  border-color: color-mix(in srgb, var(--success) 70%, #0a0e12);
+  background-color: var(--success);
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none'%3E%3Cpath d='M3.6 8.2L6.7 11.1L12.5 4.7' stroke='%230a0e12' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  background-size: 11px 11px;
   background-position: center;
   background-repeat: no-repeat;
+  box-shadow: none;
 }
 
 .board-select-radio input:disabled + .board-select-dot,
@@ -6200,7 +6339,7 @@ a {
 }
 
 .board-select-check:hover .board-select-box {
-  border-color: rgba(52, 211, 153, 0.7);
+  border-color: color-mix(in srgb, var(--success) 65%, var(--muted));
 }
 
 .data-table {
@@ -6556,12 +6695,45 @@ a {
   .format-guide-grid {
     grid-template-columns: 1fr;
   }
+
+  /* iPhone / iPad：弹窗接近全屏，仍保留薄边距便于点遮罩关闭 */
+  .forum-modal-backdrop {
+    padding: max(8px, env(safe-area-inset-top, 0px))
+      max(8px, env(safe-area-inset-right, 0px))
+      max(8px, env(safe-area-inset-bottom, 0px))
+      max(8px, env(safe-area-inset-left, 0px));
+    box-sizing: border-box;
+  }
+
+  .forum-modal-panel {
+    width: 100%;
+    max-width: 100%;
+    height: 100%;
+    max-height: 100%;
+    margin: 0;
+    border-radius: 12px;
+  }
+
+  .forum-boards-toolbar-main > .hint {
+    font-size: 8px;
+    line-height: 1.35;
+    margin: 0;
+  }
+
+  /* 概览 / 结构化 / 拓扑 / 爬虫配置：窄屏默认字号 8 */
+  .forum-modal-panel .forum-tab-content:not(.forum-tab-content--boards),
+  .forum-modal-panel .forum-tab-content:not(.forum-tab-content--boards) * {
+    font-size: 8px !important;
+    line-height: 1.4 !important;
+  }
 }
 
 @media (max-width: 960px) and (min-width: 769px) {
-  .forum-modal-panel {
-    width: min(100vw, 100%);
-    height: min(96vh, 100%);
+  .forum-modal-backdrop {
+    padding: max(10px, env(safe-area-inset-top, 0px))
+      max(10px, env(safe-area-inset-right, 0px))
+      max(10px, env(safe-area-inset-bottom, 0px))
+      max(10px, env(safe-area-inset-left, 0px));
   }
 }
 

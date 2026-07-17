@@ -1,4 +1,5 @@
 import { Fragment, useEffect, useMemo, useState, type FormEvent, type ReactNode } from 'react'
+import { createPortal } from 'react-dom'
 import { fetchCrawlerStatus } from '../api/crawler'
 import {
   clearBoardCursor,
@@ -423,7 +424,7 @@ function BoardsTab({
             handleClear(unitKey)
           }}
         >
-          {clearing === unitKey ? '清除中…' : '清游标'}
+          {clearing === unitKey ? '…' : '清除'}
         </button>
       </div>
     )
@@ -475,7 +476,7 @@ function BoardsTab({
               <tr>
                 <th className="board-select-cell">启用</th>
                 <th className="board-col-fid">分类</th>
-                <th className="board-col-name">板块 / 分类</th>
+                <th className="board-col-name">板块</th>
                 <th className="board-col-link">主链接</th>
                 <th className="board-col-count" title="队列顺序">
                   顺序
@@ -566,6 +567,11 @@ function BoardsTab({
                                 <span className="forum-board-expand-spacer" aria-hidden />
                               )}
                               <span className="board-name-text">{parent.name}</span>
+                              <span
+                                className={`tag board-link-inline tag-${parent.primary_link === 'ed2k' ? 'ed2k' : parent.primary_link === 'magnet' ? 'magnet' : 'stub'}`}
+                              >
+                                {boardLinkLabel(parent.primary_link)}
+                              </span>
                               <span className="board-name-meta">
                                 {!sole ? (
                                   <span className="tag tag-muted">
@@ -647,6 +653,11 @@ function BoardsTab({
                                     <div className="board-name-inner board-name-inner--child">
                                       <span className="forum-board-child-indent" aria-hidden />
                                       <span className="board-name-text">{typeLabel}</span>
+                                      <span
+                                        className={`tag board-link-inline tag-${b.primary_link === 'ed2k' ? 'ed2k' : b.primary_link === 'magnet' ? 'magnet' : 'stub'}`}
+                                      >
+                                        {boardLinkLabel(b.primary_link)}
+                                      </span>
                                       <span className="board-name-meta">
                                         {isCurrent ? <span className="tag tag-scan">深扫中</span> : null}
                                       </span>
@@ -954,6 +965,33 @@ export function ForumConfigModal({
     setLiveCursors({ ...(forum.crawler_config.board_list_cursors || {}) })
   }, [forum])
 
+  /** 锁住下层滚动/触摸，避免 iOS 穿透到底栏与设置页 */
+  useEffect(() => {
+    const html = document.documentElement
+    const body = document.body
+    const prevHtmlOverflow = html.style.overflow
+    const prevBodyOverflow = body.style.overflow
+    const scrollY = window.scrollY
+    html.style.overflow = 'hidden'
+    body.style.overflow = 'hidden'
+    body.classList.add('modal-open')
+
+    const blockUnderlyingTouch = (e: TouchEvent) => {
+      const target = e.target as Element | null
+      if (target?.closest?.('.forum-modal-panel')) return
+      e.preventDefault()
+    }
+    document.addEventListener('touchmove', blockUnderlyingTouch, { passive: false })
+
+    return () => {
+      html.style.overflow = prevHtmlOverflow
+      body.style.overflow = prevBodyOverflow
+      body.classList.remove('modal-open')
+      document.removeEventListener('touchmove', blockUnderlyingTouch)
+      window.scrollTo(0, scrollY)
+    }
+  }, [])
+
   useEffect(() => {
     let cancelled = false
     const pull = async () => {
@@ -1132,7 +1170,7 @@ export function ForumConfigModal({
   }
 
   if (forum.status !== 'active') {
-    return (
+    return createPortal(
       <div className="modal-backdrop forum-modal-backdrop" onClick={onClose}>
         <div className="modal-card forum-modal-panel" onClick={(e) => e.stopPropagation()}>
           <div className="modal-head">
@@ -1145,11 +1183,12 @@ export function ForumConfigModal({
             <p className="hint">{(forum.policies || [])[0] || '该论坛尚未接入'}</p>
           </div>
         </div>
-      </div>
+      </div>,
+      document.body,
     )
   }
 
-  return (
+  return createPortal(
     <div className="modal-backdrop forum-modal-backdrop" onClick={onClose}>
       <div className="modal-card forum-modal-panel" onClick={(e) => e.stopPropagation()}>
         <div className="modal-head">
@@ -1241,6 +1280,7 @@ export function ForumConfigModal({
           </div>
         </div>
       </div>
-    </div>
+    </div>,
+    document.body,
   )
 }
