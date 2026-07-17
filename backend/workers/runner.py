@@ -326,6 +326,23 @@ async def run_crawl_once(
                 max_pages = int(cfg.get("web_crawler_max_list_pages") or 0)
                 known_stop = int(cfg.get("web_crawler_list_known_stop_pages") or 2)
                 list_cursor = get_board_list_cursor(cfg, unit_key)
+                # 供状态接口在本轮扫完前也能读到推进中的游标
+                live_cursors = dict(cfg.get("board_list_cursors") or {})
+                _STATE["board_list_cursors"] = live_cursors
+
+                def _on_list_cursor(key: str, page: int) -> None:
+                    live = dict(_STATE.get("board_list_cursors") or {})
+                    live[str(key)] = max(0, int(page or 0))
+                    _STATE["board_list_cursors"] = live
+                    try:
+                        cconn = connect()
+                        try:
+                            set_board_list_cursor(cconn, forum_id, key, page, reset=False)
+                        finally:
+                            cconn.close()
+                    except Exception as cexc:
+                        log.warning("live cursor persist %s P%s: %s", key, page, cexc)
+
                 if scan_head is None:
                     do_head = not is_board_head_done_today(cfg, unit_key)
                 else:
@@ -353,6 +370,7 @@ async def run_crawl_once(
                     board_name=pol.name,
                     persist_enqueue=True,
                     on_log=_log_activity,
+                    on_cursor=_on_list_cursor,
                 )
                 result["pages_scanned"] = scan.pages_scanned
                 result["pages_head"] = list(getattr(scan, "pages_head", None) or [])
@@ -388,6 +406,12 @@ async def run_crawl_once(
                         scan.last_list_page,
                         reset=bool(scan.list_exhausted),
                     )
+                    live = dict(_STATE.get("board_list_cursors") or {})
+                    if scan.list_exhausted:
+                        live.pop(str(unit_key), None)
+                    else:
+                        live[str(unit_key)] = max(0, int(scan.last_list_page or 0))
+                    _STATE["board_list_cursors"] = live
                     if do_deep and scan.list_exhausted:
                         saved = advance_active_board_fid(
                             cursor_conn, forum_id, from_fid=unit_key

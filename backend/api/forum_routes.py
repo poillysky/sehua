@@ -155,6 +155,14 @@ def post_clear_board_cursor(
     conn = connect()
     try:
         saved = clear_board_cursor(conn, forum_id, key)
+        try:
+            from workers.runner import _STATE
+
+            live = dict(_STATE.get("board_list_cursors") or {})
+            live.pop(key, None)
+            _STATE["board_list_cursors"] = live
+        except Exception:
+            pass
         return {
             "message": "success",
             "forum_id": forum_id,

@@ -127,6 +127,16 @@ def get_crawler_status(_user: dict = Depends(require_permission("crawler.view"))
         stub_prog = account_stub_progress()
     except Exception:
         stub_prog = {}
+
+    # 列表扫进行中：内存游标优先（每页已同步落库，这里再叠一层防读库延迟）
+    board_cursors = dict(cfg.get("board_list_cursors") or {})
+    if str(st.get("phase") or "") == "list_scan":
+        for ck, pg in dict(st.get("board_list_cursors") or {}).items():
+            try:
+                board_cursors[str(ck)] = max(0, int(pg or 0))
+            except (TypeError, ValueError):
+                continue
+
     return {
         "forum_id": cfg_forum_id,
         "active_forum_id": active,
@@ -154,7 +164,7 @@ def get_crawler_status(_user: dict = Depends(require_permission("crawler.view"))
         "last_result": last,
         "random_progress": rnd,
         "account_stub_progress": stub_prog,
-        "board_list_cursors": cfg.get("board_list_cursors") or {},
+        "board_list_cursors": board_cursors,
         "activity": st.get("activity") or [],
         "boards": boards,
         "queue": qstats or st.get("queue") or {},

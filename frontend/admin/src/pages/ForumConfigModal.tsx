@@ -1,4 +1,5 @@
 import { Fragment, useEffect, useMemo, useState, type FormEvent, type ReactNode } from 'react'
+import { fetchCrawlerStatus } from '../api/crawler'
 import {
   clearBoardCursor,
   saveForumConfig,
@@ -943,10 +944,37 @@ export function ForumConfigModal({
 }: Props) {
   const [draft, setDraft] = useState<ForumCrawlerConfig>(() => ({ ...forum.crawler_config }))
   const [saving, setSaving] = useState(false)
+  /** 弹窗打开期间从爬虫状态轮询，避免板块列表游标停在打开瞬间 */
+  const [liveCursors, setLiveCursors] = useState<Record<string, number>>(
+    () => ({ ...(forum.crawler_config.board_list_cursors || {}) }),
+  )
 
   useEffect(() => {
     setDraft({ ...forum.crawler_config })
+    setLiveCursors({ ...(forum.crawler_config.board_list_cursors || {}) })
   }, [forum])
+
+  useEffect(() => {
+    let cancelled = false
+    const pull = async () => {
+      try {
+        const st = await fetchCrawlerStatus()
+        if (cancelled) return
+        if (st.forum_id && st.forum_id !== forum.id) return
+        setLiveCursors({ ...(st.board_list_cursors || {}) })
+      } catch {
+        /* 静默：配置弹窗不必因状态接口失败弹 toast */
+      }
+    }
+    void pull()
+    const timer = window.setInterval(() => {
+      void pull()
+    }, 2000)
+    return () => {
+      cancelled = true
+      window.clearInterval(timer)
+    }
+  }, [forum.id])
 
   const isEnabled = activeForumId === forum.id
   const boards = useMemo(() => {
@@ -1071,6 +1099,7 @@ export function ForumConfigModal({
       (res) => {
         const next = { ...draft, ...res.config }
         setDraft(next)
+        setLiveCursors({ ...(res.config.board_list_cursors || {}) })
         onActiveBoardChange(next)
         toast.success(`已清除游标 · ${fid} · 下次深扫从 P1 起`)
       },
@@ -1177,7 +1206,7 @@ export function ForumConfigModal({
                   boards={boards}
                   enabledFids={enabledBoardFids}
                   activeBoardFid={activeBoardFid}
-                  cursors={draft.board_list_cursors || forum.crawler_config.board_list_cursors || {}}
+                  cursors={liveCursors}
                   onToggle={handleToggleBoard}
                   onToggleMany={handleToggleMany}
                   onSetCurrent={handleSetCurrentBoard}

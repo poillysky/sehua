@@ -29,6 +29,7 @@ from parsers.thread_gates import is_thread_login_required
 log = logging.getLogger(__name__)
 
 LogFn = Callable[[str], None]
+CursorFn = Callable[[str, int], None]  # (unit_key, page) 深扫页推进时回调，供 UI 实时游标
 
 # 深扫连续「全已知」页数达到该值则早停（可配置覆盖；深扫已不再用此硬停）
 DEFAULT_KNOWN_STOP_PAGES = 2
@@ -255,6 +256,7 @@ async def scan_board_list(
     board_name: str = "",
     persist_enqueue: bool = True,
     on_log: Optional[LogFn] = None,
+    on_cursor: Optional[CursorFn] = None,
 ) -> ListScanResult:
     """扫列表并入队。
 
@@ -291,6 +293,15 @@ async def scan_board_list(
         if on_log:
             on_log(msg)
         log.info("%s", msg)
+
+    def _set_cursor(page: int) -> None:
+        """深扫游标推进：写结果并回调（runner 可即时落库 / 推状态）。"""
+        out.last_list_page = max(0, int(page or 0))
+        if on_cursor:
+            try:
+                on_cursor(unit_key, out.last_list_page)
+            except Exception:
+                log.exception("on_cursor failed · %s P%s", unit_key, out.last_list_page)
 
     quota_label = f"本轮 {harvest_quota} 页 · 跨轮续扫至板底"
     head_stop_label = f"连续 {head_known_need} 页全已知即停"
@@ -354,7 +365,7 @@ async def scan_board_list(
                 out.pages_head.append(page)
                 if page == 1:
                     out.list_exhausted = True
-                    out.last_list_page = 1
+                    _set_cursor(1)
                     out.head_completed = True
                     _emit("第 1 页无主题 · 列表可能到底；扫新帖视为完成")
                     await THROTTLE.sleep()
@@ -461,7 +472,7 @@ async def scan_board_list(
 
         if fetched.empty_list:
             out.list_exhausted = True
-            out.last_list_page = page
+            _set_cursor(page)
             _emit(f"列表到底 · 第 {page} 页无主题，下轮从头计数")
             break
 
@@ -470,7 +481,7 @@ async def scan_board_list(
         # Discuz 超页：内容与上一页完全相同 → 到头
         if prev_tids is not None and tids and tids == prev_tids:
             out.list_exhausted = True
-            out.last_list_page = max(0, page - 1)
+            _set_cursor(max(0, page - 1))
             _emit(
                 f"列表到底 · P{page} 与 P{page - 1} 主题完全重复（已到翻页尽头）· "
                 f"游标 P{out.last_list_page}"
@@ -480,7 +491,7 @@ async def scan_board_list(
         # Discuz threadmaxpages：超限页夹回第 1 页内容
         if page1_tids and page > 1 and tids and tids == page1_tids:
             out.list_exhausted = True
-            out.last_list_page = max(0, page - 1)
+            _set_cursor(max(0, page - 1))
             _emit(
                 f"列表到底 · P{page} 内容与第 1 页重复（站点页码上限夹回）· "
                 f"游标 P{out.last_list_page}"
@@ -488,7 +499,7 @@ async def scan_board_list(
             break
 
         out.pages_scanned.append(page)
-        out.last_list_page = page
+        _set_cursor(page)
         harvested += 1
         prev_tids = tids
         upd_before = out.board_updated
