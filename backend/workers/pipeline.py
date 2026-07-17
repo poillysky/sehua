@@ -108,6 +108,16 @@ async def process_thread(
             html = await fetcher.get_thread_html(thread_url, retries=retries)
             soft_browser_retried = fetcher.last_soft_browser_retried
 
+        # 按帖页回写二级板块（已入库重爬常带旧纯 fid / 空名）
+        from parsers.thread_gates import resolve_thread_board_meta
+
+        board_fid, persist_board_name = resolve_thread_board_meta(
+            html,
+            fallback_key=board_fid,
+            fallback_name=persist_board_name,
+        )
+        policy = get_board_policy(board_fid)
+
         outcome = judge_thread_html(
             html,
             board_fid=board_fid,
@@ -121,6 +131,12 @@ async def process_thread(
             log.info("tid=%s soft-ad → force browser page read", tid)
             html = await fetcher.get_html(thread_url, mode="browser", retries=min(2, retries))
             soft_browser_retried = True
+            board_fid, persist_board_name = resolve_thread_board_meta(
+                html,
+                fallback_key=board_fid,
+                fallback_name=persist_board_name,
+            )
+            policy = get_board_policy(board_fid)
             outcome = judge_thread_html(
                 html,
                 board_fid=board_fid,
@@ -246,6 +262,8 @@ async def process_thread(
             "magnets": len(parsed.magnets),
             "ed2k": len(parsed.ed2k_links),
             "primary": parsed.primary_link_kind,
+            "board_fid": str(board_fid),
+            "board_name": persist_board_name,
             "persisted": None,
         }
 

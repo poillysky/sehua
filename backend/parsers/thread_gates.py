@@ -8,6 +8,10 @@ ED2K_RE = re.compile(r"ed2k://\|file\|", re.I)
 MAGNET_RE = re.compile(r"magnet:\?xt=urn:btih:", re.I)
 TITLE_RE = re.compile(r"<title[^>]*>(.*?)</title>", re.I | re.S)
 POSTMESSAGE_RE = re.compile(r'id="postmessage_[^"]*"[^>]*>(.*?)</div>', re.I | re.S)
+_FID_RE = re.compile(
+    r"(?:fid=|/forum-)(\d+)|forum\.php\?[^\"'\s<>]*fid=(\d+)",
+    re.I,
+)
 
 LOGIN_MARKERS = (
     "请先登录后",
@@ -278,15 +282,84 @@ def is_genuine_non_resource(*, html: str, title: str, link_kind: str, text: str)
     return True
 
 
-def extract_thread_typeid(html: str, board_fid: str) -> str | None:
-    if not html or not board_fid:
+def extract_board_fid(html: str) -> int | None:
+    """从帖页抽真实 fid。"""
+    if not html:
         return None
-    pattern = re.compile(
-        rf"fid={re.escape(str(board_fid))}(?:&amp;|&)[^\"'<>]*?typeid=(\d+)",
-        re.I,
-    )
-    m = pattern.search(html)
-    return m.group(1) if m else None
+    for m in _FID_RE.finditer(html):
+        raw = m.group(1) or m.group(2)
+        if not raw:
+            continue
+        fid = int(raw)
+        if 1 <= fid <= 9999:
+            return fid
+    return None
+
+
+def extract_thread_typeid(html: str, board_fid: str) -> str | None:
+    """从帖页抽 typeid；优先带 fid 的链接，其次已知子版白名单。"""
+    if not html:
+        return None
+    fid = str(board_fid or "").strip()
+    if fid:
+        m = re.search(
+            rf"fid={re.escape(fid)}(?:&amp;|&)[^\"'<>]{{0,120}}?typeid=(\d+)",
+            html,
+            re.I,
+        )
+        if m:
+            return m.group(1)
+        m = re.search(
+            rf"typeid=(\d+)(?:&amp;|&)[^\"'<>]{{0,120}}?fid={re.escape(fid)}",
+            html,
+            re.I,
+        )
+        if m:
+            return m.group(1)
+    m = re.search(r"filter=typeid(?:&amp;|&)typeid=(\d+)", html, re.I)
+    if m:
+        return m.group(1)
+    if fid:
+        from parsers.boards import BOARD_POLICIES, board_unit_key
+
+        for tm in re.finditer(r"typeid=(\d+)", html, re.I):
+            tid = tm.group(1)
+            if board_unit_key(fid, tid) in BOARD_POLICIES:
+                return tid
+    return None
+
+
+def resolve_thread_board_meta(
+    html: str,
+    *,
+    fallback_key: int | str = "",
+    fallback_name: str = "",
+) -> tuple[str, str]:
+    """从帖页解析二级板块 key / 展示名；解析不到则保留 fallback。
+
+    用于已入库重爬等场景：库里可能是旧纯 fid 或空名，需按帖页回写「主板块 · 子分类」。
+    """
+    from parsers.boards import board_unit_key, get_board_policy, parse_board_key
+
+    fb_key = str(fallback_key or "").strip()
+    fb_name = (fallback_name or "").strip()
+    fid = extract_board_fid(html or "")
+    if not fid:
+        fid, _ = parse_board_key(fb_key)
+    if not fid:
+        return fb_key, fb_name
+
+    typeid = extract_thread_typeid(html or "", str(fid))
+    if not typeid:
+        if ":" in fb_key:
+            pol = get_board_policy(fb_key)
+            return pol.key, fb_name or pol.name
+        pol = get_board_policy(fid)
+        return pol.key, pol.name or fb_name
+
+    key = board_unit_key(fid, typeid)
+    pol = get_board_policy(key)
+    return pol.key, pol.name or fb_name
 
 
 def thread_typeid_mismatch(html: str, board_fid: str, required_typeid: str | None) -> bool:

@@ -20,7 +20,7 @@ from db.connection import connect
 from db.forum_configs import SITE_CRAWLER_FORUM_ID, load_forum_configs_map
 from db.queue import canonical_thread_url, is_thread_known
 from parsers.boards import get_board_policy
-from parsers.thread_gates import page_title
+from parsers.thread_gates import extract_board_fid, page_title
 from workers.pipeline import process_thread
 from workers.runner import (
     _STATE,
@@ -102,10 +102,6 @@ def clear_random_session_state() -> None:
     _publish_random_progress(active=False)
 
 
-FID_RE = re.compile(
-    r"(?:fid=|/forum-)(\d+)|forum\.php\?[^\"'\s<>]*fid=(\d+)",
-    re.I,
-)
 MISSING_MARKERS = (
     "主题不存在",
     "抱歉，指定的主题不存在",
@@ -162,20 +158,6 @@ def is_missing_thread(html: str, title: str = "") -> bool:
     ):
         return True
     return False
-
-
-def extract_board_fid(html: str) -> int | None:
-    """从帖页抽真实 fid；取第一个合理数字。"""
-    if not html:
-        return None
-    for m in FID_RE.finditer(html):
-        raw = m.group(1) or m.group(2)
-        if not raw:
-            continue
-        fid = int(raw)
-        if 1 <= fid <= 9999:
-            return fid
-    return None
 
 
 def is_tid_known(conn: Any, tid: int, thread_url: str) -> bool:
