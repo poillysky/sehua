@@ -2,7 +2,7 @@ import { startTransition, useCallback, useEffect, useMemo, useRef, useState } fr
 import { fetchImportSpec, importText, uploadPreviewImages, type ImportSpec } from '../api/importApi'
 import {
   buildBoardFacetTree,
-  deleteResource,
+  deleteResourcesBatch,
   fetchRecentResources,
   mapApiResource,
   PAGE_SIZE,
@@ -175,6 +175,7 @@ export function ResourcesPage() {
   const selected = items.find((r) => r.id === selectedId) ?? null
   const checkedRows = items.filter((r) => checkedIds.includes(r.id))
   const recrawlableChecked = checkedRows.filter((r) => r.sourceUrl && r.hash)
+  const deletableChecked = checkedRows.filter((r) => Boolean(r.hash))
   const allPageChecked = items.length > 0 && items.every((r) => checkedIds.includes(r.id))
   const somePageChecked = items.some((r) => checkedIds.includes(r.id))
   const rowOffset = (page - 1) * PAGE_SIZE
@@ -336,24 +337,53 @@ export function ResourcesPage() {
   }
 
   const onDeleteSelected = async () => {
-    if (!selected?.hash) {
-      toast.warn('当前记录无 hash，无法删除')
+    let targets = deletableChecked
+    if (targets.length === 0 && selected?.hash) {
+      targets = [selected]
+    }
+    if (targets.length === 0) {
+      if (checkedRows.length > 0) {
+        toast.warn('勾选的条目均无 hash，无法删除')
+      } else {
+        toast.info('请先勾选要删除的资源')
+      }
       return
     }
+    const skipped = checkedRows.length - deletableChecked.length
+    const preview = targets
+      .slice(0, 5)
+      .map((r) => r.title)
+      .join('\n')
+    const more = targets.length > 5 ? `\n…另有 ${targets.length - 5} 条` : ''
     const ok = await confirmDialog({
-      title: '删除资源',
-      message: `确定删除「${selected.title}」？\n此操作不可恢复。`,
-      confirmText: '删除该资源',
+      title: targets.length > 1 ? '批量删除资源' : '删除资源',
+      message:
+        `确定删除 ${targets.length} 条资源？此操作不可恢复。` +
+        (skipped > 0 ? `\n（跳过无 hash ${skipped} 条）` : '') +
+        `\n${preview}${more}`,
+      confirmText: targets.length > 1 ? `删除 ${targets.length} 条` : '删除该资源',
       danger: true,
     })
     if (!ok) return
     setDeleteBusy(true)
     try {
-      await deleteResource(selected.hash)
-      toast.success('已删除该资源')
-      setCheckedIds((prev) => prev.filter((id) => id !== selected.id))
-      setSelectedId('')
-      setDetailOpen(false)
+      const hashes = targets.map((r) => r.hash!).filter(Boolean)
+      const result = await deleteResourcesBatch(hashes)
+      const deleted = Number(result.deleted || 0)
+      const missing = Number(result.missing || 0)
+      if (deleted > 0 && missing === 0) {
+        toast.success(`已删除 ${deleted} 条`)
+      } else if (deleted > 0) {
+        toast.warn(`已删除 ${deleted} 条 · 未找到 ${missing} 条`)
+      } else {
+        toast.error('未删除任何资源（可能已不存在）')
+      }
+      const removedIds = new Set(targets.map((r) => r.id))
+      setCheckedIds((prev) => prev.filter((id) => !removedIds.has(id)))
+      if (selected && removedIds.has(selected.id)) {
+        setSelectedId('')
+        setDetailOpen(false)
+      }
       await load({ silent: true })
     } catch (err) {
       toast.error(err instanceof Error ? err.message : '删除失败')
@@ -616,6 +646,7 @@ export function ResourcesPage() {
               disabled={
                 busy ||
                 recrawlBusy ||
+                deleteBusy ||
                 (recrawlableChecked.length === 0 && !(selected?.sourceUrl && selected.hash))
               }
               title={
@@ -633,7 +664,31 @@ export function ResourcesPage() {
                   ? `重爬选中 ${recrawlableChecked.length}`
                   : '重爬选中'}
             </button>
-            <button type="button" className="btn secondary sm" onClick={() => void load({ silent: true })} disabled={busy || recrawlBusy}>
+            <button
+              type="button"
+              className="btn danger sm"
+              disabled={
+                busy ||
+                recrawlBusy ||
+                deleteBusy ||
+                (deletableChecked.length === 0 && !selected?.hash)
+              }
+              title={
+                deletableChecked.length > 0
+                  ? `删除已勾选 ${deletableChecked.length} 条`
+                  : selected?.hash
+                    ? '删除当前高亮行'
+                    : '请先勾选要删除的资源'
+              }
+              onClick={() => void onDeleteSelected()}
+            >
+              {deleteBusy
+                ? '删除中…'
+                : deletableChecked.length > 1
+                  ? `删除选中 ${deletableChecked.length}`
+                  : '删除选中'}
+            </button>
+            <button type="button" className="btn secondary sm" onClick={() => void load({ silent: true })} disabled={busy || recrawlBusy || deleteBusy}>
               {refreshing ? '刷新中' : '刷新'}
             </button>
           </div>

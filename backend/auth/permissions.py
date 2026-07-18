@@ -21,6 +21,7 @@ ROUTE_PERMISSIONS: dict[tuple[str, str], str] = {
     ("GET", "/api/resources/recent"): "resources.view",
     ("GET", "/api/resources/filters"): "resources.view",
     ("POST", "/api/resources/delete"): "resources.delete",
+    ("POST", "/api/resources/delete-batch"): "resources.delete",
     ("GET", "/api/crawl/status"): "crawler.view",
     ("GET", "/api/boards"): "settings.read",
     ("GET", "/api/system/info"): "resources.view",

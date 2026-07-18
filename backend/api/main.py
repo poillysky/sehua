@@ -308,6 +308,42 @@ def resources_delete(
     return {"message": "ok", "hash": h, "deleted": True}
 
 
+@app.post("/api/resources/delete-batch")
+def resources_delete_batch(
+    body: RecrawlBatchBody,
+    _user: dict = Depends(require_permission("resources.delete")),
+) -> dict:
+    """按 hash 批量删除资源。"""
+    hashes = []
+    seen: set[str] = set()
+    for raw in body.hashes:
+        h = str(raw or "").strip()
+        if len(h) < 8 or h in seen:
+            continue
+        seen.add(h)
+        hashes.append(h)
+    if not hashes:
+        raise HTTPException(status_code=400, detail="缺少有效 hash")
+
+    deleted = 0
+    missing = 0
+    conn = connect()
+    try:
+        for h in hashes:
+            if delete_resource_by_hash(conn, h):
+                deleted += 1
+            else:
+                missing += 1
+    finally:
+        conn.close()
+    return {
+        "message": "ok",
+        "deleted": deleted,
+        "missing": missing,
+        "requested": len(hashes),
+    }
+
+
 @app.post("/api/resources/recrawl")
 async def resources_recrawl(
     body: RecrawlBody,

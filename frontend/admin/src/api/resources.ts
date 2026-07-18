@@ -256,6 +256,18 @@ export function deleteResource(hash: string) {
   })
 }
 
+export function deleteResourcesBatch(hashes: string[]) {
+  return api<{
+    message: string
+    deleted: number
+    missing: number
+    requested: number
+  }>('/api/resources/delete-batch', {
+    method: 'POST',
+    body: JSON.stringify({ hashes }),
+  })
+}
+
 export function recrawlResource(hash: string) {
   return api<{
     message: string
