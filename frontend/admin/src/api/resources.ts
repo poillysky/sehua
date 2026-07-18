@@ -84,16 +84,24 @@ function formatTime(iso: string | null): string {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`
 }
 
-/** 展示主板块 · 子分类；兼容旧库「国产原创-国产无码」 */
+/** 展示主板块 · 子分类；兼容旧库「国产原创-国产无码」；无名称时尽量不显示裸 fid */
 export function formatSourceBoard(boardName?: string | null, boardFid?: string | null): string {
   const raw = (boardName || '').trim()
   if (raw) {
     if (raw.includes(' · ')) return raw
     const i = raw.indexOf('-')
     if (i > 0 && i < raw.length - 1) return `${raw.slice(0, i)} · ${raw.slice(i + 1)}`
-    return raw
+    if (/^fid[-\s]?\d+/i.test(raw)) {
+      // 旧脏数据「fid-2」当作无名称
+    } else {
+      return raw
+    }
   }
-  return boardFid ? `fid ${boardFid}` : '—'
+  const fid = (boardFid || '').trim()
+  if (!fid) return '—'
+  // 有子版 key 时至少展示 key，避免「fid 2」这种空名
+  if (fid.includes(':')) return fid
+  return `fid ${fid}`
 }
 
 /** 从板块展示名拆出主板块 / 子分类 */
@@ -239,6 +247,13 @@ export type RecrawlItemResult = {
   outcome?: string
   note?: string
   error?: string
+}
+
+export function deleteResource(hash: string) {
+  return api<{ message: string; hash: string; deleted: boolean }>('/api/resources/delete', {
+    method: 'POST',
+    body: JSON.stringify({ hash }),
+  })
 }
 
 export function recrawlResource(hash: string) {

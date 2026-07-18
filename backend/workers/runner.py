@@ -396,7 +396,7 @@ async def run_crawl_once(
                         qconn.close()
                 except Exception:
                     pass
-                # 持久化游标；手动扫新帖不写每日捕新闸门
+                # 持久化游标：到底也不清空，仅手动「清除游标」才删；下次再扫该板从该页续判
                 cursor_conn = connect()
                 try:
                     set_board_list_cursor(
@@ -404,13 +404,10 @@ async def run_crawl_once(
                         forum_id,
                         unit_key,
                         scan.last_list_page,
-                        reset=bool(scan.list_exhausted),
+                        reset=False,
                     )
                     live = dict(_STATE.get("board_list_cursors") or {})
-                    if scan.list_exhausted:
-                        live.pop(str(unit_key), None)
-                    else:
-                        live[str(unit_key)] = max(0, int(scan.last_list_page or 0))
+                    live[str(unit_key)] = max(0, int(scan.last_list_page or 0))
                     _STATE["board_list_cursors"] = live
                     if do_deep and scan.list_exhausted:
                         saved = advance_active_board_fid(
@@ -420,7 +417,8 @@ async def run_crawl_once(
                         result["board_advanced"] = True
                         result["next_board_fid"] = nxt
                         _log_activity(
-                            f"子版 {unit_key} 深扫到底 · 下轮切换为 {nxt or '—'}"
+                            f"子版 {unit_key} 深扫到底 · 游标保留 P{scan.last_list_page} · "
+                            f"下轮切换为 {nxt or '—'}"
                         )
                     if do_head and scan.head_completed:
                         if do_deep:

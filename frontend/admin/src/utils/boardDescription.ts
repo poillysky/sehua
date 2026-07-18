@@ -5,20 +5,50 @@ const BT_FIDS = new Set(['2', '36', '37', '103', '107', '160', '104', '38', '151
 type Profile = {
   labels: string[]
   exclusive: string[][]
+  /** 入库别名 → 展示键（兼容旧库用「资源名称」存 BT 帖） */
+  aliases: Record<string, string>
 }
 
 const PROFILES: Record<string, Profile> = {
   bt: {
     labels: ['影片名称', '出演女优', '影片容量', '影片大小', '是否有码', '影片格式', '影片码别', '解压密码'],
     exclusive: [['影片容量', '影片大小']],
+    aliases: {
+      资源名称: '影片名称',
+      有无码: '是否有码',
+      文件大小: '影片大小',
+      资源大小: '影片大小',
+      提取密码: '解压密码',
+    },
   },
   '95': {
     labels: ['资源名称', '资源类型', '资源大小', '是否有码', '有无第三方水印', '解压密码'],
     exclusive: [],
+    aliases: {
+      影片名称: '资源名称',
+      影片格式: '资源类型',
+      文件大小: '资源大小',
+      影片容量: '资源大小',
+      影片大小: '资源大小',
+      有无码: '是否有码',
+      影片码别: '是否有码',
+      有无水印: '有无第三方水印',
+      第三方水印: '有无第三方水印',
+      提取密码: '解压密码',
+    },
   },
   '141': {
     labels: ['资源名称', '资源类型', '资源数量', '资源大小', '有无水印', '是否有码', '解压密码'],
     exclusive: [],
+    aliases: {
+      影片名称: '资源名称',
+      文件大小: '资源大小',
+      影片容量: '资源大小',
+      影片大小: '资源大小',
+      有无第三方水印: '有无水印',
+      有无码: '是否有码',
+      提取密码: '解压密码',
+    },
   },
   '142': {
     labels: ['资源名称', '影片名称', '文件大小', '影片大小', '是否有码', '解压密码'],
@@ -26,10 +56,28 @@ const PROFILES: Record<string, Profile> = {
       ['资源名称', '影片名称'],
       ['文件大小', '影片大小'],
     ],
+    aliases: {
+      资源大小: '文件大小',
+      影片容量: '影片大小',
+      有无码: '是否有码',
+      提取密码: '解压密码',
+    },
   },
   default: {
     labels: ['资源名称', '资源类型', '资源大小', '是否有码', '有无第三方水印', '解压密码'],
     exclusive: [],
+    aliases: {
+      影片名称: '资源名称',
+      影片格式: '资源类型',
+      文件大小: '资源大小',
+      影片容量: '资源大小',
+      影片大小: '资源大小',
+      有无码: '是否有码',
+      影片码别: '是否有码',
+      有无水印: '有无第三方水印',
+      第三方水印: '有无第三方水印',
+      提取密码: '解压密码',
+    },
   },
 }
 
@@ -51,10 +99,12 @@ export function formatBoardDescription(description: string | undefined, boardFid
   for (const line of raw.split(/\r?\n/)) {
     const m = line.match(/^【\s*([^】]+?)\s*】\s*[:：]?\s*(.*)$/)
     if (!m) continue
-    const key = m[1].trim()
+    const rawKey = m[1].trim()
     const val = m[2].trim()
+    const key = profile.aliases[rawKey] || rawKey
     if (!allowed.has(key) || !val || byLabel.has(key)) continue
-    byLabel.set(key, line.trim())
+    // 统一成当前卡片标签名展示
+    byLabel.set(key, `【${key}】：${val}`)
   }
   for (const group of profile.exclusive) {
     const hit = group.find((k) => byLabel.has(k))

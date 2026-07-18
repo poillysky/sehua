@@ -1176,6 +1176,12 @@ a {
 .detail-field.full {
   grid-column: 1 / -1;
 }
+.detail-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
 
 .detail-field .lbl {
   font-size: 11px;

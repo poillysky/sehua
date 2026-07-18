@@ -197,7 +197,10 @@ def upsert_resource(
                 resource_sources.extract_password
               ),
               board_fid = COALESCE(EXCLUDED.board_fid, resource_sources.board_fid),
-              board_name = COALESCE(EXCLUDED.board_name, resource_sources.board_name),
+              board_name = COALESCE(
+                NULLIF(EXCLUDED.board_name, ''),
+                resource_sources.board_name
+              ),
               forum_id = COALESCE(EXCLUDED.forum_id, resource_sources.forum_id),
               import_outcome = COALESCE(
                 NULLIF(EXCLUDED.import_outcome, ''),
@@ -397,13 +400,13 @@ def update_board_meta_by_tids(
         cur.execute(
             """
             UPDATE resource_sources
-            SET board_fid = %s,
-                board_name = %s
+            SET board_fid = COALESCE(%s, board_fid),
+                board_name = COALESCE(NULLIF(%s, ''), board_name)
             WHERE source_url IS NOT NULL
               AND source_url <> ''
               AND source_url LIKE ANY(%s)
             """,
-            (fid, name, patterns),
+            (fid, name or "", patterns),
         )
         n = int(cur.rowcount or 0)
     conn.commit()

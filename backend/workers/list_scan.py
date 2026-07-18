@@ -473,7 +473,7 @@ async def scan_board_list(
         if fetched.empty_list:
             out.list_exhausted = True
             _set_cursor(page)
-            _emit(f"列表到底 · 第 {page} 页无主题，下轮从头计数")
+            _emit(f"列表到底 · 第 {page} 页无主题 · 游标保留 P{out.last_list_page}")
             break
 
         tids = _tid_set(fetched.batch)
@@ -484,7 +484,7 @@ async def scan_board_list(
             _set_cursor(max(0, page - 1))
             _emit(
                 f"列表到底 · P{page} 与 P{page - 1} 主题完全重复（已到翻页尽头）· "
-                f"游标 P{out.last_list_page}"
+                f"游标保留 P{out.last_list_page}"
             )
             break
 
@@ -494,7 +494,7 @@ async def scan_board_list(
             _set_cursor(max(0, page - 1))
             _emit(
                 f"列表到底 · P{page} 内容与第 1 页重复（站点页码上限夹回）· "
-                f"游标 P{out.last_list_page}"
+                f"游标保留 P{out.last_list_page}"
             )
             break
 

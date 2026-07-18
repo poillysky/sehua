@@ -4,6 +4,7 @@ ROLE_PERMISSIONS: dict[str, set[str]] = {
     "admin": {"*"},
     "operator": {
         "resources.view",
+        "resources.delete",
         "crawler.view",
         "import",
         "crawl.run",
@@ -19,6 +20,7 @@ ROUTE_PERMISSIONS: dict[tuple[str, str], str] = {
     ("GET", "/api/stats"): "resources.view",
     ("GET", "/api/resources/recent"): "resources.view",
     ("GET", "/api/resources/filters"): "resources.view",
+    ("POST", "/api/resources/delete"): "resources.delete",
     ("GET", "/api/crawl/status"): "crawler.view",
     ("GET", "/api/boards"): "settings.read",
     ("GET", "/api/system/info"): "resources.view",

@@ -411,7 +411,7 @@ function BoardsTab({
     const page = cursorPage(unitKey)
     return (
       <div className="board-cursor-cell" onClick={(e) => e.stopPropagation()}>
-        <span className="board-cursor-page" title={page > 0 ? `深扫游标第 ${page} 页` : '尚未深扫 / 已清游标'}>
+        <span className="board-cursor-page" title={page > 0 ? `深扫游标第 ${page} 页（到底后仍保留，仅手动清除）` : '尚未深扫 / 已清游标'}>
           {page > 0 ? `P${page}` : '—'}
         </span>
         <button
@@ -481,7 +481,7 @@ function BoardsTab({
                 <th className="board-col-count" title="队列顺序">
                   顺序
                 </th>
-                <th className="board-col-cursor" title="深扫列表游标页；清除后从第 1 页重扫">
+                <th className="board-col-cursor" title="深扫列表游标页；到底后仍保留，仅手动清除后从第 1 页重扫">
                   游标
                 </th>
                 <th className="board-col-time">深扫当前</th>

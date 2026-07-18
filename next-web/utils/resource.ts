@@ -292,3 +292,36 @@ export function getEd2kDisplaySize(
 
   return totalSize || Number(item.size || 0);
 }
+
+const ARCHIVE_EXT_RE = /\.(zip|rar|7z)(?:\.[a-z0-9]+)?$/i;
+
+/** 文件名是否为可云解压压缩包（zip / rar / 7z） */
+export function isArchiveFilename(name?: string | null): boolean {
+  const raw = decodeURIComponent((name || "").trim());
+
+  return ARCHIVE_EXT_RE.test(raw);
+}
+
+/** 链接或资源是否指向压缩包（供转存后一键云解压） */
+export function isArchiveDownloadLink(link?: string | null): boolean {
+  const parsed = parseEd2kLink(link || "");
+
+  if (parsed?.filename) {
+    return isArchiveFilename(parsed.filename);
+  }
+  const lower = (link || "").trim().toLowerCase();
+
+  return ARCHIVE_EXT_RE.test(lower);
+}
+
+export function hasArchiveEd2k(
+  item: Pick<Ed2kResourceProps, "name" | "ed2k_link" | "ed2k_links">,
+): boolean {
+  if (isArchiveFilename(item.name)) {
+    return true;
+  }
+
+  return normalizeEd2kLinks(item.ed2k_links, item.ed2k_link).some((link) =>
+    isArchiveDownloadLink(link),
+  );
+}

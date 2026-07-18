@@ -6,7 +6,13 @@ import { Button } from "@nextui-org/react";
 import { useTranslations } from "next-intl";
 
 import { Ed2kResourceProps } from "@/types";
-import { getDisplayTitle, getExtractPassword, normalizeEd2kLinks } from "@/utils/resource";
+import {
+  getDisplayTitle,
+  getExtractPassword,
+  hasArchiveEd2k,
+  isArchiveDownloadLink,
+  normalizeEd2kLinks,
+} from "@/utils/resource";
 import { Toast } from "@/utils";
 
 export function P115SaveButton({
@@ -35,6 +41,10 @@ export function P115SaveButton({
   const urls = normalizeEd2kLinks(source.ed2k_links, source.ed2k_link);
   const password = item ? getExtractPassword(item) : null;
   const titleHint = item ? getDisplayTitle(item) : "";
+  const isArchive = item
+    ? hasArchiveEd2k(item)
+    : urls.some((u) => isArchiveDownloadLink(u));
+  const wantExtract = Boolean(password) || isArchive;
 
   if (!urls.length) {
     return null;
@@ -51,7 +61,7 @@ export function P115SaveButton({
           urls,
           password: password || undefined,
           titleHint: titleHint || undefined,
-          autoExtract: Boolean(password),
+          autoExtract: wantExtract,
         }),
       });
       const json = await res.json();
@@ -99,14 +109,16 @@ export function P115SaveButton({
       radius="sm"
       size={compact ? "sm" : size}
       title={
-        password
-          ? "转存后轮询，完成后立即云解压到同名文件夹（保留压缩包，不删除转存目录）"
+        wantExtract
+          ? password
+            ? "转存后轮询，完成后立即云解压到同名文件夹（保留压缩包，不删除转存目录）"
+            : "检测到压缩包，转存完成后自动云解压到同名文件夹（保留压缩包）"
           : "转存到 115 云下载"
       }
       variant="flat"
       onPress={() => void onSave()}
     >
-      {password ? t("Search.p115_save_extract") : t("Search.p115_save")}
+      {wantExtract ? t("Search.p115_save_extract") : t("Search.p115_save")}
     </Button>
   );
 }

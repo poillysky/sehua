@@ -538,18 +538,14 @@ async function extractReadyTargets(
   return { ok: false, message: lastErr || "解压未成功", extracted: 0 };
 }
 
-/** 轮询转存完成 → 立即解压 */
+/** 轮询转存完成 → 立即解压（无密码压缩包 secret 可为空） */
 export async function runPollThenExtract(
   job: DeferredExtractJob,
 ): Promise<ExtractRunResult> {
   const cookie = p115NormalizeCookie(job.cookie);
-  const password = (job.password || "").trim();
 
   if (!cookie) {
     return { ok: false, message: "无 Cookie", extracted: 0 };
-  }
-  if (!password) {
-    return { ok: false, message: "无解压密码", extracted: 0 };
   }
 
   const ready = await waitUntilTransferReady(job);

@@ -149,7 +149,9 @@ BOARD_DESCRIPTION_PROFILES: dict[str, dict] = {
 
 
 def description_profile_for_board(board_fid: str | int | None) -> dict:
-    fid = str(board_fid or "").strip()
+    """按主板块 fid 选结构卡片；兼容子版 key「151:823」。"""
+    raw = str(board_fid or "").strip()
+    fid = raw.split(":", 1)[0].strip() if raw else ""
     if fid in BOARD_DESCRIPTION_PROFILES:
         return BOARD_DESCRIPTION_PROFILES[fid]
     if fid in _BT_FIDS:

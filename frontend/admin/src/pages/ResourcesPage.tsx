@@ -2,6 +2,7 @@ import { startTransition, useCallback, useEffect, useMemo, useRef, useState } fr
 import { fetchImportSpec, importText, uploadPreviewImages, type ImportSpec } from '../api/importApi'
 import {
   buildBoardFacetTree,
+  deleteResource,
   fetchRecentResources,
   mapApiResource,
   PAGE_SIZE,
@@ -50,6 +51,7 @@ export function ResourcesPage() {
   const [result, setResult] = useState<'all' | 'magnet' | 'ed2k' | 'stub' | 'failed'>('all')
   const [importOpen, setImportOpen] = useState(false)
   const [recrawlBusy, setRecrawlBusy] = useState(false)
+  const [deleteBusy, setDeleteBusy] = useState(false)
   const [filterBtnHidden, setFilterBtnHidden] = useState(false)
   const reqSeq = useRef(0)
   const hasLoaded = useRef(false)
@@ -176,7 +178,7 @@ export function ResourcesPage() {
   const allPageChecked = items.length > 0 && items.every((r) => checkedIds.includes(r.id))
   const somePageChecked = items.some((r) => checkedIds.includes(r.id))
   const rowOffset = (page - 1) * PAGE_SIZE
-  const busy = loading || refreshing || recrawlBusy
+  const busy = loading || refreshing || recrawlBusy || deleteBusy
 
   function toggleChecked(id: string, next?: boolean) {
     setCheckedIds((prev) => {
@@ -330,6 +332,33 @@ export function ResourcesPage() {
       toast.error(err instanceof Error ? err.message : '批量重爬失败')
     } finally {
       setRecrawlBusy(false)
+    }
+  }
+
+  const onDeleteSelected = async () => {
+    if (!selected?.hash) {
+      toast.warn('当前记录无 hash，无法删除')
+      return
+    }
+    const ok = await confirmDialog({
+      title: '删除资源',
+      message: `确定删除「${selected.title}」？\n此操作不可恢复。`,
+      confirmText: '删除该资源',
+      danger: true,
+    })
+    if (!ok) return
+    setDeleteBusy(true)
+    try {
+      await deleteResource(selected.hash)
+      toast.success('已删除该资源')
+      setCheckedIds((prev) => prev.filter((id) => id !== selected.id))
+      setSelectedId('')
+      setDetailOpen(false)
+      await load({ silent: true })
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : '删除失败')
+    } finally {
+      setDeleteBusy(false)
     }
   }
 
@@ -728,7 +757,9 @@ export function ResourcesPage() {
           <DetailTabs
             row={selected}
             recrawlBusy={recrawlBusy}
+            deleteBusy={deleteBusy}
             onRecrawl={() => void onRecrawlSelected()}
+            onDelete={() => void onDeleteSelected()}
             onCollapse={() => setDetailOpen(false)}
           />
         </div>
@@ -1131,12 +1162,16 @@ function DetailPreviewGrid({ urls }: { urls: string[] }) {
 function DetailTabs({
   row,
   recrawlBusy,
+  deleteBusy,
   onRecrawl,
+  onDelete,
   onCollapse,
 }: {
   row: ResourceRow | null
   recrawlBusy?: boolean
+  deleteBusy?: boolean
   onRecrawl?: () => void
+  onDelete?: () => void
   onCollapse?: () => void
 }) {
   const [tab, setTab] = useState<'verdict' | 'source' | 'content'>('verdict')
@@ -1206,18 +1241,28 @@ function DetailTabs({
                 <span className="val mono">{row.hash}</span>
               </div>
             ) : null}
-            {row.sourceUrl ? (
-              <div className="detail-field full">
+            <div className="detail-field full detail-actions">
+              {row.sourceUrl ? (
                 <button
                   type="button"
                   className="btn secondary sm"
-                  disabled={Boolean(recrawlBusy)}
+                  disabled={Boolean(recrawlBusy || deleteBusy)}
                   onClick={() => onRecrawl?.()}
                 >
                   {recrawlBusy ? '重爬中…' : '已入库重爬'}
                 </button>
-              </div>
-            ) : null}
+              ) : null}
+              {row.hash ? (
+                <button
+                  type="button"
+                  className="btn danger sm"
+                  disabled={Boolean(recrawlBusy || deleteBusy)}
+                  onClick={() => onDelete?.()}
+                >
+                  {deleteBusy ? '删除中…' : '删除该资源'}
+                </button>
+              ) : null}
+            </div>
           </div>
         ) : tab === 'source' ? (
           <div className="detail-grid">

@@ -26,6 +26,7 @@ from db.forum_configs import SITE_CRAWLER_FORUM_ID, load_forum_configs_map, save
 from db.migrate import ensure_ed2k_schema
 from db.persist import persist_from_html
 from db.repository import (
+    delete_resource_by_hash,
     get_data_overview,
     list_recent_resources,
     list_resource_boards,
@@ -286,6 +287,25 @@ class RecrawlBody(BaseModel):
 
 class RecrawlBatchBody(BaseModel):
     hashes: list[str] = Field(..., min_length=1, max_length=200)
+
+
+@app.post("/api/resources/delete")
+def resources_delete(
+    body: RecrawlBody,
+    _user: dict = Depends(require_permission("resources.delete")),
+) -> dict:
+    """按 hash 删除单条资源（含来源与标签）。"""
+    h = (body.hash or "").strip()
+    if not h:
+        raise HTTPException(status_code=400, detail="缺少 hash")
+    conn = connect()
+    try:
+        ok = delete_resource_by_hash(conn, h)
+    finally:
+        conn.close()
+    if not ok:
+        raise HTTPException(status_code=404, detail="资源不存在或已删除")
+    return {"message": "ok", "hash": h, "deleted": True}
 
 
 @app.post("/api/resources/recrawl")

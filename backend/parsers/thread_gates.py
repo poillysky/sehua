@@ -282,24 +282,32 @@ def is_genuine_non_resource(*, html: str, title: str, link_kind: str, text: str)
     return True
 
 
-def extract_board_fid(html: str) -> int | None:
-    """从帖页抽真实 fid。"""
+def extract_board_fid(html: str, preferred_fid: int | None = None) -> int | None:
+    """从帖页抽真实 fid；若 preferred 出现在页内则优先（避免侧栏/热帖链抢走）。"""
     if not html:
         return None
+    found: list[int] = []
     for m in _FID_RE.finditer(html):
         raw = m.group(1) or m.group(2)
         if not raw:
             continue
         fid = int(raw)
-        if 1 <= fid <= 9999:
-            return fid
-    return None
+        if 1 <= fid <= 9999 and fid not in found:
+            found.append(fid)
+    if not found:
+        return None
+    pref = int(preferred_fid) if preferred_fid else 0
+    if pref and pref in found:
+        return pref
+    return found[0]
 
 
 def extract_thread_typeid(html: str, board_fid: str) -> str | None:
-    """从帖页抽 typeid；优先带 fid 的链接，其次已知子版白名单。"""
+    """从帖页抽 typeid；只接受带 fid 的链接，或该板白名单子版。"""
     if not html:
         return None
+    from parsers.boards import BOARD_POLICIES, board_unit_key
+
     fid = str(board_fid or "").strip()
     if fid:
         m = re.search(
@@ -307,21 +315,18 @@ def extract_thread_typeid(html: str, board_fid: str) -> str | None:
             html,
             re.I,
         )
-        if m:
+        if m and board_unit_key(fid, m.group(1)) in BOARD_POLICIES:
             return m.group(1)
         m = re.search(
             rf"typeid=(\d+)(?:&amp;|&)[^\"'<>]{{0,120}}?fid={re.escape(fid)}",
             html,
             re.I,
         )
-        if m:
+        if m and board_unit_key(fid, m.group(1)) in BOARD_POLICIES:
             return m.group(1)
-    m = re.search(r"filter=typeid(?:&amp;|&)typeid=(\d+)", html, re.I)
-    if m:
-        return m.group(1)
-    if fid:
-        from parsers.boards import BOARD_POLICIES, board_unit_key
-
+        m = re.search(r"filter=typeid(?:&amp;|&)typeid=(\d+)", html, re.I)
+        if m and board_unit_key(fid, m.group(1)) in BOARD_POLICIES:
+            return m.group(1)
         for tm in re.finditer(r"typeid=(\d+)", html, re.I):
             tid = tm.group(1)
             if board_unit_key(fid, tid) in BOARD_POLICIES:
@@ -339,27 +344,39 @@ def resolve_thread_board_meta(
 
     用于已入库重爬等场景：库里可能是旧纯 fid 或空名，需按帖页回写「主板块 · 子分类」。
     """
-    from parsers.boards import board_unit_key, get_board_policy, parse_board_key
+    from parsers.boards import BOARD_POLICIES, board_unit_key, get_board_policy, parse_board_key
 
     fb_key = str(fallback_key or "").strip()
     fb_name = (fallback_name or "").strip()
-    fid = extract_board_fid(html or "")
+    if fb_name.lower().startswith("fid-") or fb_name.lower().startswith("fid "):
+        fb_name = ""
+    fb_fid, fb_tid = parse_board_key(fb_key)
+
+    fid = extract_board_fid(html or "", preferred_fid=fb_fid or None)
     if not fid:
-        fid, _ = parse_board_key(fb_key)
+        fid = fb_fid
     if not fid:
         return fb_key, fb_name
 
     typeid = extract_thread_typeid(html or "", str(fid))
-    if not typeid:
-        if ":" in fb_key:
-            pol = get_board_policy(fb_key)
-            return pol.key, fb_name or pol.name
-        pol = get_board_policy(fid)
-        return pol.key, pol.name or fb_name
+    if typeid and board_unit_key(fid, typeid) not in BOARD_POLICIES:
+        typeid = None
+    # 帖页抽不到合法子版时：同 fid 的入库/队列子版 key 继续用
+    if not typeid and fb_fid == fid and fb_tid:
+        typeid = fb_tid
 
-    key = board_unit_key(fid, typeid)
+    if typeid:
+        key = board_unit_key(fid, typeid)
+    elif fb_fid == fid and ":" in fb_key:
+        key = fb_key
+    else:
+        key = str(fid)
+
     pol = get_board_policy(key)
-    return pol.key, pol.name or fb_name
+    name = (pol.name or "").strip() or fb_name or (pol.board_name or "").strip()
+    if name.lower().startswith("fid-") or name.lower().startswith("fid "):
+        name = fb_name or (pol.board_name or "").strip()
+    return pol.key, name
 
 
 def thread_typeid_mismatch(html: str, board_fid: str, required_typeid: str | None) -> bool:

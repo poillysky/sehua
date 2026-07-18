@@ -78,7 +78,7 @@ FORUM_CRAWLER_DEFAULTS: dict[str, Any] = {
     "enabled_board_fids": default_board_order(),
     # 深扫当前工作子版（启用队列中的游标）
     "active_board_fid": default_board_order()[0],
-    # 各板列表翻页游标：深扫向后推进；空页或内容重复则 list_exhausted 并重置
+    # 各板列表翻页游标：深扫向后推进；到底切板时仍保留，仅手动清除才删
     "board_list_cursors": {},
     # 各板「今日首页捕新已完成」日期 YYYY-MM-DD（上海时区）
     "board_head_catchup_on": {},
@@ -412,7 +412,7 @@ def set_board_list_cursor(
     *,
     reset: bool = False,
 ) -> dict:
-    """持久化列表翻页游标；reset=True 时清零（列表到底后下一轮从头）。"""
+    """持久化列表翻页游标；reset=True 时清零（仅手动清除游标时使用）。"""
     configs = load_forum_configs_map(conn)
     current = dict(configs.get(forum_id) or default_forum_crawler_config())
     cursors = dict(current.get("board_list_cursors") or {})

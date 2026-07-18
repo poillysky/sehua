@@ -390,7 +390,7 @@ function StepDetail({
                           <ArrowDown />
                           <Junction cols={3}>
                             <Branch label="空页 / 夹页 · 板底">
-                              <Terminal text="切下一启用板" sub="仅 list_exhausted 切板" kind="muted" />
+                              <Terminal text="切下一启用板" sub="到底切板 · 游标保留" kind="muted" />
                             </Branch>
                             <Branch label="本轮配额已满">
                               <Terminal text="同板续扫" sub={`游标保留 · 下轮再扫 ${pages} 页`} kind="ok" />
