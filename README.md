@@ -2,12 +2,12 @@
 
 家庭 NAS 上的 **论坛资源采集与检索全栈**：爬虫入库 · 管理运维 · 全文搜索，一套 Compose 跑通。
 
-[![Version](https://img.shields.io/badge/version-1.0.16-0ea5e9?style=flat-square)](./VERSION)
+[![Version](https://img.shields.io/badge/version-1.0.17-0ea5e9?style=flat-square)](./VERSION)
 [![Stack](https://img.shields.io/badge/stack-FastAPI%20%7C%20React%20%7C%20Next.js%20%7C%20Postgres-64748b?style=flat-square)](#技术栈)
 [![Deploy](https://img.shields.io/badge/deploy-Docker%20Hub%20pull%20only-22c55e?style=flat-square)](#nas-部署)
 [![License](https://img.shields.io/badge/use-personal%20%2F%20LAN-f59e0b?style=flat-square)](#声明)
 
-镜像由 GitHub Actions 构建并推送 **Docker Hub**（及 GHCR）；NAS **只 pull，不本地 build**。发版递增叠加（`1.0.1` … `1.0.16`），历史标签保留，`latest` 始终指向当前版。
+镜像由 GitHub Actions 构建并推送 **Docker Hub**（及 GHCR）；NAS **只 pull，不本地 build**。发版递增叠加（`1.0.1` … `1.0.17`），历史标签保留，`latest` 始终指向当前版。
 
 ---
 
@@ -77,18 +77,18 @@ flowchart LR
 
 | 服务 | 镜像 |
 |------|------|
-| 后端 | [`poillysky/sehuatang-backend:1.0.16`](https://hub.docker.com/r/poillysky/sehuatang-backend) |
-| 管理 | [`poillysky/sehuatang-admin:1.0.16`](https://hub.docker.com/r/poillysky/sehuatang-admin) |
-| 搜索 | [`poillysky/sehuatang-search:1.0.16`](https://hub.docker.com/r/poillysky/sehuatang-search) |
+| 后端 | [`poillysky/sehuatang-backend:1.0.17`](https://hub.docker.com/r/poillysky/sehuatang-backend) |
+| 管理 | [`poillysky/sehuatang-admin:1.0.17`](https://hub.docker.com/r/poillysky/sehuatang-admin) |
+| 搜索 | [`poillysky/sehuatang-search:1.0.17`](https://hub.docker.com/r/poillysky/sehuatang-search) |
 
 Hub：[poillysky](https://hub.docker.com/u/poillysky) · 每次发版同时推送版本号与 `latest`。NAS Compose 请钉死版本号，勿盲追未验证的 `latest` 行为变更。
 
 ### GHCR（可选）
 
 ```text
-ghcr.io/poillysky/sehuatang-backend:1.0.16
-ghcr.io/poillysky/sehuatang-admin:1.0.16
-ghcr.io/poillysky/sehuatang-search:1.0.16
+ghcr.io/poillysky/sehuatang-backend:1.0.17
+ghcr.io/poillysky/sehuatang-admin:1.0.17
+ghcr.io/poillysky/sehuatang-search:1.0.17
 ```
 
 CI：[`.github/workflows/docker.yml`](./.github/workflows/docker.yml)
@@ -231,7 +231,7 @@ Backend 启动时自动执行待跑 SQL 迁移。
 
 仓库：https://github.com/poillysky/sehua
 
-下一版 **1.0.17**：同步改 `VERSION`、`deploy/docker-compose.nas.yml` 镜像标签、workflow `RELEASE_TAG`，提交并打 `v1.0.17`。
+下一版 **1.0.18**：同步改 `VERSION`、`deploy/docker-compose.nas.yml` 镜像标签、workflow `RELEASE_TAG`，提交并打 `v1.0.18`。
 Hub / GHCR 保留全部历史版本号；`latest` = 最近一次发版。
 
 ---

@@ -78,6 +78,9 @@ export async function importBackupFile(file: File): Promise<BackupImportResult> 
     throw new Error('未登录或登录已过期')
   }
   if (!res.ok) {
+    if (res.status === 413) {
+      throw new Error('上传文件过大（413）。请更新管理端镜像，或确认 Nginx client_max_body_size 已放宽')
+    }
     let detail: unknown = `HTTP ${res.status}`
     try {
       const data = await res.json()
