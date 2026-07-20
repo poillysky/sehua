@@ -43,6 +43,26 @@ def test_extract_and_filter_tail():
     assert len(torrents) == 1 and torrents[0].kind == "torrent"
 
 
+def test_cf_email_obfuscated_attachment_name():
+    """含 @ 的附件名被 CF 混淆成 [email protected] 时仍应识别为 txt。"""
+    enc = "d3a4a4a4fdeaeb87fdbfb29383a1baa5b2a7b690b2a0a7babdb4fe8bfda7aba7"
+    html = f"""
+    <ignore_js_op>
+      <a href="forum.php?mod=attachment&amp;aid=AAA">
+        <span class="__cf_email__" data-cfemail="{enc}">[email&#160;protected]</span>
+      </a>
+      <a href="forum.php?mod=attachment&amp;aid=BBB">xxx_目录树.txt</a>
+      <a href="forum.php?mod=attachment&amp;aid=CCC">shot_115链接.png</a>
+    </ignore_js_op>
+    """
+    all_a = extract_download_attachments("https://www.sehuatang.net/", html)
+    names = [a.name for a in all_a]
+    assert "www.98T.la@PrivateCasting-X.txt" in names
+    assert not any(n.endswith(".png") for n in names)
+    tail = filter_tail_attachments(all_a, limit=3)
+    assert [a.name for a in tail] == ["www.98T.la@PrivateCasting-X.txt"]
+
+
 def test_zip_inner_txt_and_ed2k_parse():
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w") as zf:

@@ -8,7 +8,6 @@ tsconfig.tsbuildinfo
 README.md
 README_zh-CN.md
 docker-compose*.yml
-moke/
 transferring/
 CACHED/
 .next/cache
