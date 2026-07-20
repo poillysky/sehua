@@ -41,6 +41,12 @@ from workers.session_factory import fetcher_from_config, session_from_config
 log = logging.getLogger(__name__)
 
 _IMPORT_VERDICTS = frozenset({"import", "stub"})
+_ACCOUNT_STUB_SKIP_OUTCOMES = frozenset({"需回复贴", "需购买贴"})
+
+
+def _is_reply_or_purchase_outcome(label: str) -> bool:
+    s = str(label or "")
+    return s in _ACCOUNT_STUB_SKIP_OUTCOMES or "需回复" in s or "需购买" in s
 
 
 def _empty_account_stub_progress(*, active: bool = False, remaining: int = 0) -> dict[str, Any]:
@@ -702,6 +708,7 @@ async def recrawl_account_stubs() -> dict[str, Any]:
                     crawler_config=cfg,
                     session=session,
                     fetcher=fetcher,
+                    account_stub_pass=True,
                 )
             except Exception as exc:
                 log.exception("account stub recrawl tid=%s", tid)
@@ -748,6 +755,29 @@ async def recrawl_account_stubs() -> dict[str, Any]:
                         "import_outcome": outcome_label,
                     }
                 )
+            elif verdict == "stub" and _is_reply_or_purchase_outcome(label):
+                # 兜底：未走 account_stub_pass 时也不保留需回复/需购买占位
+                conn = connect()
+                try:
+                    removed = delete_stub_by_source_url(conn, source_url)
+                finally:
+                    conn.close()
+                skipped_prep += 1
+                items.append(
+                    {
+                        "ok": True,
+                        "upgraded": False,
+                        "skipped": True,
+                        "hash": stub_hash,
+                        "tid": tid,
+                        "url": source_url,
+                        "verdict": "skipped",
+                        "outcome": label,
+                        "stub_removed": removed,
+                        "import_outcome": outcome_label,
+                    }
+                )
+                _log_activity(f"账号爬占位跳过 · tid={tid} · {label} · 已删占位")
             elif verdict == "stub":
                 still_stub += 1
                 items.append(
@@ -764,6 +794,31 @@ async def recrawl_account_stubs() -> dict[str, Any]:
                     }
                 )
                 _log_activity(f"账号爬占位仍占位 · tid={tid} · {label}")
+            elif verdict == "skipped" and _is_reply_or_purchase_outcome(label):
+                conn = connect()
+                try:
+                    removed = delete_stub_by_source_url(conn, source_url)
+                finally:
+                    conn.close()
+                skipped_prep += 1
+                items.append(
+                    {
+                        "ok": True,
+                        "upgraded": False,
+                        "skipped": True,
+                        "hash": stub_hash,
+                        "tid": tid,
+                        "url": source_url,
+                        "verdict": verdict,
+                        "outcome": label,
+                        "stub_removed": removed,
+                        "import_outcome": outcome_label,
+                    }
+                )
+                _log_activity(
+                    f"账号爬占位跳过 · tid={tid} · {label}"
+                    + (" · 已删旧占位" if removed else "")
+                )
             else:
                 failed += 1
                 items.append(
@@ -792,12 +847,12 @@ async def recrawl_account_stubs() -> dict[str, Any]:
         _push_progress(active=False)
         end_exclusive()
 
-    processed = upgraded + still_stub + failed
+    processed = upgraded + still_stub + failed + skipped_prep
     rem_left = _db_priority_remaining()
     _log_activity(
         f"账号爬占位结束 · 处理 {processed} · 升级 {upgraded} · 仍占位 {still_stub} · 失败 {failed}"
         + f" · 库内优先占位剩 {rem_left}"
-        + (f" · 跳过准备 {skipped_prep}" if skipped_prep else "")
+        + (f" · 跳过 {skipped_prep}" if skipped_prep else "")
     )
     return {
         "ok": True,

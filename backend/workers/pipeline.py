@@ -63,6 +63,9 @@ async def fetch_and_parse_thread(
             await session.close()
 
 
+_ACCOUNT_STUB_SKIP_OUTCOMES = frozenset({"需回复贴", "需购买贴"})
+
+
 async def process_thread(
     tid: int,
     *,
@@ -75,11 +78,13 @@ async def process_thread(
     fetcher: Optional[Fetcher] = None,
     preferred_link: Optional[str] = None,
     html: Optional[str] = None,
+    account_stub_pass: bool = False,
 ) -> dict[str, Any]:
     """Full single-thread path: HTTP fetch → soft-browser retry → outcome → optional persist.
 
     preferred_link: 覆盖板块主链（如随机抓帖用 \"both\"）。
     html: 若已取到帖页 HTML 则复用，避免重复请求。
+    account_stub_pass: 账号爬占位时，需回复/需购买改为跳过且不写占位。
     """
     policy = get_board_policy(board_fid)
     persist_board_name = (board_name or policy.name or "").strip()
@@ -245,6 +250,19 @@ async def process_thread(
                         if parsed.description
                         else extra
                     )
+
+        # 账号爬占位：登录后仍是需回复/需购买 → 跳过，不落新占位
+        if (
+            account_stub_pass
+            and outcome.verdict == "stub"
+            and str(outcome.outcome or "") in _ACCOUNT_STUB_SKIP_OUTCOMES
+        ):
+            outcome = ThreadOutcome(
+                "skipped",
+                f"{outcome.outcome}（账号爬跳过）",
+                outcome.link_kind,
+                outcome.title or list_title,
+            )
 
         result: dict[str, Any] = {
             "tid": tid,

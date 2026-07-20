@@ -413,7 +413,7 @@ def update_board_meta_by_tids(
     return n
 
 
-# 账号 Cookie 最可能升级成功的占位 outcome（优先级从高到低）
+# 账号 Cookie 优先重爬的占位（需回复/需购买不入队；登录后若判为该类则跳过删占位）
 ACCOUNT_STUB_OUTCOMES: tuple[str, ...] = (
     "帖子需论坛登录",
     "无阅读权限 · 占位入库",

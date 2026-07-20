@@ -14,8 +14,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Literal
 
-from parsers.boards import DISCUZ_BOARD_FID, get_board_policy
+from parsers.boards import DISCUZ_BOARD_FID, get_board_policy, parse_board_key
 from parsers.links import DualParseResult, parse_thread_dual
+from parsers.list_dates import extract_thread_posted_at, is_thread_old_enough
 from parsers.thread_gates import (
     has_115_sha_link,
     has_target_link,
@@ -80,8 +81,9 @@ def judge_thread_html(
 
     preferred_link: 覆盖板块主链偏好；解析测试留空板块时传 \"both\"。
     """
-    fid = int(board_fid) if str(board_fid).isdigit() else 0
-    pol = get_board_policy(fid) if fid else None
+    # 兼容子版 key「141:689」：龄期/主链偏好必须落到正确策略
+    pol = get_board_policy(board_fid)
+    fid = int(pol.fid or 0) or parse_board_key(board_fid)[0]
     link_kind = (preferred_link or (pol.primary_link if pol else "magnet") or "magnet").strip().lower()
     if link_kind not in {"magnet", "ed2k", "both"}:
         link_kind = "magnet"
@@ -90,6 +92,7 @@ def judge_thread_html(
     required_typeid = (
         pol.list_typeid if pol and fid == DISCUZ_BOARD_FID and link_kind != "both" else None
     )
+    min_age = int(getattr(pol, "min_thread_age_days", 0) or 0)
 
     page_tit = page_title(html)
     # 列表标题仅作展示补全；登录/无权页判定必须用页内标题，避免「提示信息」被列表名抬成可占位
@@ -98,6 +101,7 @@ def judge_thread_html(
         title = list_title
     text = post_text(html)
 
+    # 软文 / 安全壳优先（真帖有一楼正文时不会误进这里）
     if is_safe_or_soft_shell(html):
         if soft_browser_retried:
             return ThreadOutcome(
@@ -131,11 +135,30 @@ def judge_thread_html(
             page_tit or title,
         )
 
+    # 龄期板（网友原创区等）：未满龄一律跳过，不占位、不抓附件
+    if min_age > 0:
+        posted_at = extract_thread_posted_at(html)
+        if posted_at is not None and not is_thread_old_enough(
+            posted_at, min_age_days=min_age
+        ):
+            return ThreadOutcome(
+                "skipped",
+                f"未满 {min_age} 天（跳过）",
+                link_kind,
+                title,
+            )
+
     # 115sha 直链（正文或已注入的附件语料）：无法按 magnet/ed2k 入库，立即跳过
     if has_115_sha_link(text) or has_115_sha_link(html):
         from_attach = attachments_already_tried or "postmessage_attach" in (html or "")
         tip = "115sha 链接（附件，跳过）" if from_attach else "115sha 链接（跳过）"
         return ThreadOutcome("skipped", tip, link_kind, title)
+
+    # 需回复：满龄（或非龄期板）→ 占位显示；未满龄已在上一步跳过
+    if is_reply_required_post(html):
+        return ThreadOutcome("stub", "需回复贴", link_kind, title)
+    if is_purchase_required_post(html):
+        return ThreadOutcome("stub", "需购买贴", link_kind, title)
 
     # Body has target link?
     if has_target_link(text, link_kind) or has_target_link(html, link_kind):
@@ -174,8 +197,6 @@ def judge_thread_html(
                 attachment_kind="torrent",
             )
         if link_kind == "ed2k":
-            if is_reply_required_post(html):
-                return ThreadOutcome("stub", "需回复贴", link_kind, title)
             return ThreadOutcome(
                 "need_attachments",
                 "正文无电驴/磁力，尝试尾部 txt/压缩包附件",
@@ -185,10 +206,6 @@ def judge_thread_html(
                 attachment_kind="txt_tail",
             )
 
-    if is_reply_required_post(html):
-        return ThreadOutcome("stub", "需回复贴", link_kind, title)
-    if is_purchase_required_post(html):
-        return ThreadOutcome("stub", "需购买贴", link_kind, title)
     if attachment_denied:
         return ThreadOutcome("stub", "无权限下载附件", link_kind, title)
     if attachment_failed:

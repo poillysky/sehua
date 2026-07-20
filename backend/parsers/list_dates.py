@@ -64,3 +64,40 @@ def is_thread_old_enough(
     cutoff = ref.replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(days=min_age_days)
     compare = posted_at.replace(hour=0, minute=0, second=0, microsecond=0)
     return compare <= cutoff
+
+
+_THREAD_POSTED_RE = re.compile(
+    r"发表于\s*(\d{4}-\d{1,2}-\d{1,2}(?:\s+\d{1,2}:\d{2}(?::\d{2})?)?)"
+    r'|title="(\d{4}-\d{1,2}-\d{1,2}\s+\d{1,2}:\d{2}(?::\d{2})?)"',
+    re.I,
+)
+
+
+def extract_thread_posted_at(html: str, *, now: datetime | None = None) -> datetime | None:
+    """从帖页抽一楼发帖时间（发表于 / title 绝对时间）。"""
+    if not html:
+        return None
+    m = _THREAD_POSTED_RE.search(html)
+    if not m:
+        return None
+    raw = (m.group(1) or m.group(2) or "").strip()
+    if not raw:
+        return None
+    # 绝对日期可走列表解析；带时分秒时先取日期部分再附时间
+    abs_full = re.match(
+        r"^(\d{4})-(\d{1,2})-(\d{1,2})(?:\s+(\d{1,2}):(\d{2})(?::(\d{2}))?)?$",
+        raw,
+    )
+    if abs_full:
+        try:
+            return datetime(
+                int(abs_full.group(1)),
+                int(abs_full.group(2)),
+                int(abs_full.group(3)),
+                int(abs_full.group(4) or 0),
+                int(abs_full.group(5) or 0),
+                int(abs_full.group(6) or 0),
+            )
+        except ValueError:
+            return None
+    return parse_discuz_list_datetime(raw, now=now)

@@ -479,75 +479,97 @@ function StepDetail({
                       </Branch>
                       <Branch label="正常正文" main>
                         <Spine>
-                          <Decision text="正文含 115sha 直链？" />
+                          <Decision text="龄期板未满龄？（如原创区 3 天）" />
                           <ArrowDown />
                           <Junction pair>
-                            <Branch label="是">
-                              <Terminal text="跳过" sub="115://…|size|hash|hash · 立即出队" kind="muted" />
+                            <Branch label="未满龄">
+                              <Terminal text="跳过" sub="不占位 · 列表入队时也会拦" kind="muted" />
                             </Branch>
-                            <Branch label="否" main>
+                            <Branch label="已满龄 / 非龄期板" main>
                               <Spine>
-                                <Process text="抽正文 + 双链解析" sub={`目标主链：${prefer}`} />
-                                <ArrowDown />
-                                <Decision text="正文已有目标链接？" />
+                                <Decision text="正文含 115sha 直链？" />
                                 <ArrowDown />
                                 <Junction pair>
-                                  <Branch label="有" main>
-                                    <Spine>
-                                      <Decision text="解析出主资源？" />
-                                      <ArrowDown />
-                                      <Junction pair>
-                                        <Branch label="是" main>
-                                          <Terminal text="进入入库" sub="正常候选" kind="ok" />
-                                        </Branch>
-                                        <Branch label="否">
-                                          <Terminal text="失败出队" sub="有链无主资源 · 不写库" kind="fail" />
-                                        </Branch>
-                                      </Junction>
-                                    </Spine>
+                                  <Branch label="是">
+                                    <Terminal text="跳过" sub="115://…|size|hash|hash · 立即出队" kind="muted" />
                                   </Branch>
-                                  <Branch label="无">
+                                  <Branch label="否" main>
                                     <Spine>
-                                      <Process text="附件策略" sub={attachHint} />
-                                      <ArrowDown />
-                                      <Decision text="附件结果？" />
+                                      <Decision text="需回复 / 需购买？" />
                                       <ArrowDown />
                                       <Junction cols={3}>
-                                        <Branch label="含 115sha">
-                                          <Terminal text="跳过" sub="附件识别到亦立即出队" kind="muted" />
+                                        <Branch label="需回复">
+                                          <Terminal text="占位入库" sub="需回复贴" kind="warn" />
                                         </Branch>
-                                        <Branch label="解析出目标链" main>
-                                          <Terminal text="进入入库" sub="正文+附件合并" kind="ok" />
+                                        <Branch label="需购买">
+                                          <Terminal text="占位入库" sub="需购买贴" kind="warn" />
                                         </Branch>
-                                        <Branch label="未出目标链">
+                                        <Branch label="否" main>
                                           <Spine>
-                                            <Decision text="仍无目标链时？" />
+                                            <Process text="抽正文 + 双链解析" sub={`目标主链：${prefer}`} />
                                             <ArrowDown />
-                                            <Junction cols={3}>
-                                              <Branch label="无权限下载">
-                                                <Terminal text="占位入库" sub="无权限下载附件" kind="warn" />
-                                              </Branch>
-                                              <Branch label="需回复/购买">
-                                                <Terminal text="占位入库" sub="需回复贴 / 需购买贴" kind="warn" />
-                                              </Branch>
-                                              <Branch label="其它" main>
+                                            <Decision text="正文已有目标链接？" />
+                                            <ArrowDown />
+                                            <Junction pair>
+                                              <Branch label="有" main>
                                                 <Spine>
-                                                  <Decision text="网盘/非资源？" />
+                                                  <Decision text="解析出主资源？" />
                                                   <ArrowDown />
                                                   <Junction pair>
-                                                    <Branch label="是">
-                                                      <Terminal text="跳过" sub="非目标板资源 · 不再爬" kind="muted" />
+                                                    <Branch label="是" main>
+                                                      <Terminal text="进入入库" sub="正常候选" kind="ok" />
                                                     </Branch>
-                                                    <Branch label="否" main>
-                                                      <Terminal
-                                                        text="保留重试"
-                                                        sub={
-                                                          board?.fid === '95'
-                                                            ? '异常队列 · 退避约 900s · 最多 3 次'
-                                                            : '异常队列 · 附件失败约 600s / 其它约 900s · 最多 3 次'
-                                                        }
-                                                        kind="warn"
-                                                      />
+                                                    <Branch label="否">
+                                                      <Terminal text="失败出队" sub="有链无主资源 · 不写库" kind="fail" />
+                                                    </Branch>
+                                                  </Junction>
+                                                </Spine>
+                                              </Branch>
+                                              <Branch label="无">
+                                                <Spine>
+                                                  <Process text="附件策略" sub={attachHint} />
+                                                  <ArrowDown />
+                                                  <Decision text="附件结果？" />
+                                                  <ArrowDown />
+                                                  <Junction cols={3}>
+                                                    <Branch label="含 115sha">
+                                                      <Terminal text="跳过" sub="附件识别到亦立即出队" kind="muted" />
+                                                    </Branch>
+                                                    <Branch label="解析出目标链" main>
+                                                      <Terminal text="进入入库" sub="正文+附件合并" kind="ok" />
+                                                    </Branch>
+                                                    <Branch label="未出目标链">
+                                                      <Spine>
+                                                        <Decision text="仍无目标链时？" />
+                                                        <ArrowDown />
+                                                        <Junction pair>
+                                                          <Branch label="无权限下载">
+                                                            <Terminal text="占位入库" sub="无权限下载附件" kind="warn" />
+                                                          </Branch>
+                                                          <Branch label="其它" main>
+                                                            <Spine>
+                                                              <Decision text="网盘/非资源？" />
+                                                              <ArrowDown />
+                                                              <Junction pair>
+                                                                <Branch label="是">
+                                                                  <Terminal text="跳过" sub="非目标板资源 · 不再爬" kind="muted" />
+                                                                </Branch>
+                                                                <Branch label="否" main>
+                                                                  <Terminal
+                                                                    text="保留重试"
+                                                                    sub={
+                                                                      board?.fid === '95'
+                                                                        ? '异常队列 · 退避约 900s · 最多 3 次'
+                                                                        : '异常队列 · 附件失败约 600s / 其它约 900s · 最多 3 次'
+                                                                    }
+                                                                    kind="warn"
+                                                                  />
+                                                                </Branch>
+                                                              </Junction>
+                                                            </Spine>
+                                                          </Branch>
+                                                        </Junction>
+                                                      </Spine>
                                                     </Branch>
                                                   </Junction>
                                                 </Spine>
@@ -682,7 +704,7 @@ function StepDetail({
       <ArrowDown />
       <Process
         text="查库优先占位队列"
-        sub="需登录 / 无阅读权限 / 无权限下载附件 · remaining 每次重算"
+        sub="需登录 / 无阅读权限 / 无权限下载附件 · 登录后需回复/需购买跳过删占位 · remaining 每次重算"
       />
       <ArrowDown />
       <Decision text="还有未尝试的优先占位？" />

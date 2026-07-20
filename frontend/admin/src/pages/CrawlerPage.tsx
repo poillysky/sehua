@@ -426,7 +426,7 @@ export function CrawlerPage() {
     const ok = await confirmDialog({
       title: '账号爬占位',
       message:
-        '用账号 Cookie 重爬全部优先占位（需登录 / 无阅读权限 / 无权限下载附件），不限数量直至跑完。升级成功会删旧占位；进度按库内剩余实时刷新。需先配置账号 Cookie。确定？',
+        '用账号 Cookie 重爬全部优先占位（需登录 / 无阅读权限 / 无权限下载附件），不限数量直至跑完。升级成功会删旧占位；若登录后为需回复/需购买则跳过并删占位。需先配置账号 Cookie。确定？',
       confirmText: '开始爬取',
     })
     if (!ok) return
@@ -553,7 +553,7 @@ export function CrawlerPage() {
                         ? '连续调度进行中，请先关闭开关后再账号爬占位'
                         : running || stopping
                           ? '本轮仍在执行，请稍候'
-                          : '用账号 Cookie 重爬全部优先占位（不限数量）：需登录 / 无阅读权限 / 无权限下载附件；进度按库内剩余刷新。请先配置账号 Cookie'
+                          : '用账号 Cookie 重爬优先占位（不限数量）：需登录 / 无阅读权限 / 无权限下载附件；登录后需回复/需购买会跳过。请先配置账号 Cookie'
                     }
                     onClick={() => void onRecrawlStubs()}
                   >

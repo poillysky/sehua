@@ -7,7 +7,10 @@ import re
 ED2K_RE = re.compile(r"ed2k://\|file\|", re.I)
 MAGNET_RE = re.compile(r"magnet:\?xt=urn:btih:", re.I)
 TITLE_RE = re.compile(r"<title[^>]*>(.*?)</title>", re.I | re.S)
-POSTMESSAGE_RE = re.compile(r'id="postmessage_[^"]*"[^>]*>(.*?)</div>', re.I | re.S)
+POSTMESSAGE_RE = re.compile(
+    r"""id=['"]postmessage_[^'"]*['"][^>]*>(.*?)</div>""",
+    re.I | re.S,
+)
 _FID_RE = re.compile(
     r"(?:fid=|/forum-)(\d+)|forum\.php\?[^\"'\s<>]*fid=(\d+)",
     re.I,
@@ -33,6 +36,19 @@ REPLY_MARKERS = (
     "游客，如果您要查看本帖隐藏内容请回复",
     "如果您要查看本帖隐藏内容请回复",
     "隐藏内容请回复",
+    "本帖隐藏的内容需要回复",
+    "需要回复才可以浏览",
+    "需要回复才能查看",
+    "回复后才能查看隐藏",
+    "回复之后才能看到",
+)
+# Discuz 模板常写成「请<a href>回复</a>」，中间夹标签/空白
+_REPLY_GATE_RE = re.compile(
+    r"(?:如果您要查看本帖)?隐藏内容请\s*(?:<[^>]+>\s*)*回复"
+    r"|隐藏内容需要回复"
+    r"|需要回复才(?:可以|能)(?:浏览|查看)"
+    r"|回复后才能查看",
+    re.I,
 )
 PURCHASE_MARKERS = (
     "本主题需向作者支付",
@@ -162,14 +178,25 @@ def title_recognizable(title: str) -> bool:
 
 
 def is_safe_or_soft_shell(html: str) -> bool:
+    """站点软文 / R18 安全壳 / CF 中间页。
+
+    真帖（有一楼 postmessage）即使较短、页脚未抓全，也不得当成软文壳。
+    """
     if not html:
         return True
-    if len(html) < 12000 and ("var safeid" in html or "static/safe/" in html.lower()):
+    # 安全壳脚本（名人名言 / R18 门）
+    if "var safeid" in html or "static/safe/" in html.lower():
         return True
     title = page_title(html)
     if any(h in title for h in SOFT_AD_TITLE_HINTS):
         return True
-    if "Powered by Discuz" not in html and len(html) < 5000:
+    # 无 Discuz 页脚的短页：仅当也无一楼正文时才视为中间页
+    # （旧逻辑只要 <5KB 且无 Powered by 就判软文，会误伤「需回复」等真帖片段）
+    if (
+        "Powered by Discuz" not in html
+        and len(html) < 5000
+        and not has_thread_post_body(html)
+    ):
         return True
     return False
 
@@ -205,11 +232,34 @@ def is_thread_access_denied(html: str) -> bool:
 
 
 def is_reply_required_post(html: str) -> bool:
+    """需回复才看隐藏内容（调用方：满龄/非龄期板 → 占位；龄期未满 → 先跳过）。
+
+    线上文案示例：``poilly，如果您要查看本帖隐藏内容请<a>回复</a>``
+    （登录用户名 / 游客前缀均可；「请」与「回复」常被链接拆开。）
+    """
     if not html:
         return False
     if any(m in html for m in REPLY_MARKERS):
         return True
-    return "隐藏内容" in html and "请回复" in html and "如果您要查看本帖" in html
+    if _REPLY_GATE_RE.search(html):
+        return True
+    # 去标签后：请<a>回复</a> → 「请 回复」，再压掉空白便于匹配
+    plain = re.sub(r"<[^>]+>", " ", html)
+    plain = re.sub(r"\s+", " ", plain)
+    plain_compact = plain.replace(" ", "")
+    if any(m in plain for m in REPLY_MARKERS) or any(m in plain_compact for m in REPLY_MARKERS):
+        return True
+    if (
+        "隐藏内容" in plain
+        and "如果您要查看本帖" in plain
+        and ("请回复" in plain_compact or "请回复" in plain)
+    ):
+        return True
+    if "showhide" in html.lower() and (
+        "请回复" in plain_compact or "回复后才能" in plain_compact
+    ):
+        return True
+    return False
 
 
 def is_purchase_required_post(html: str) -> bool:
