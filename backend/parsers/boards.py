@@ -415,6 +415,18 @@ def queue_board_keys(unit_key: str | int) -> list[str]:
     return out
 
 
+def enabled_queue_board_keys(enabled_fids: list[str] | tuple[str, ...] | None) -> list[str]:
+    """启用队列全部子版的待抓统计 key（去重，含旧纯 fid）。"""
+    out: list[str] = []
+    seen: set[str] = set()
+    for efid in enabled_fids or []:
+        for k in queue_board_keys(efid):
+            if k not in seen:
+                seen.add(k)
+                out.append(k)
+    return out
+
+
 def get_board_policy(fid_or_key: int | str) -> BoardPolicy:
     """按爬取单位 key 或纯 fid 取策略。
 

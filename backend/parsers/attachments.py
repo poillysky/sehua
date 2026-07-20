@@ -72,7 +72,10 @@ def _attachment_kind(name: str) -> str | None:
     return None
 
 
-def _looks_like_directory_attachment(name: str) -> bool:
+def _looks_like_directory_attachment(name: str, *, kind: str = "txt") -> bool:
+    """仅对 txt 判断目录树；zip/rar 文件名常带「文件夹」仍是资源包。"""
+    if kind != "txt":
+        return False
     lower = name.lower()
     if lower.endswith("/") or lower.endswith("\\"):
         return True
@@ -152,7 +155,9 @@ def filter_tail_attachments(
     """尾部 txt/zip/rar；优先非目录树，跳过纯目录树类。"""
     candidates = [item for item in attachments if item.kind in ("txt", "zip", "rar")]
     filtered = [
-        item for item in candidates if not _looks_like_directory_attachment(item.name)
+        item
+        for item in candidates
+        if not _looks_like_directory_attachment(item.name, kind=item.kind)
     ]
     # 没有链接类附件时，才退回目录树 txt（少数帖只有目录）
     if not filtered:

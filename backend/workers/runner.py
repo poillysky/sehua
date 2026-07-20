@@ -409,16 +409,13 @@ async def run_crawl_once(
                     live = dict(_STATE.get("board_list_cursors") or {})
                     live[str(unit_key)] = max(0, int(scan.last_list_page or 0))
                     _STATE["board_list_cursors"] = live
+                    # 深扫到底：本轮仍抓当前子板队列，抓完后再切板，避免状态页提前显示下一板队列 0
                     if do_deep and scan.list_exhausted:
-                        saved = advance_active_board_fid(
-                            cursor_conn, forum_id, from_fid=unit_key
-                        )
-                        nxt = str(saved.get("active_board_fid") or "")
-                        result["board_advanced"] = True
-                        result["next_board_fid"] = nxt
+                        result["board_will_advance"] = True
+                        result["board_advance_from"] = unit_key
                         _log_activity(
                             f"子版 {unit_key} 深扫到底 · 游标保留 P{scan.last_list_page} · "
-                            f"下轮切换为 {nxt or '—'}"
+                            f"本轮抓完后切换下一子版"
                         )
                     if do_head and scan.head_completed:
                         if do_deep:
@@ -450,6 +447,23 @@ async def run_crawl_once(
                 if scan.login_required:
                     _log_activity("列表需登录 · 停板，请补 Cookie")
                     result["reason"] = "list_login_required"
+                    if result.get("board_will_advance"):
+                        try:
+                            adv_conn = connect()
+                            try:
+                                saved = advance_active_board_fid(
+                                    adv_conn,
+                                    forum_id,
+                                    from_fid=str(result.get("board_advance_from") or unit_key),
+                                )
+                                nxt = str(saved.get("active_board_fid") or "")
+                                result["board_advanced"] = True
+                                result["next_board_fid"] = nxt
+                                _log_activity(f"列表需登录 · 仍切换下一子版 → {nxt or '—'}")
+                            finally:
+                                adv_conn.close()
+                        except Exception as adv_exc:
+                            log.warning("advance board after list login: %s", adv_exc)
                     return result
                 head_n = len(getattr(scan, "pages_head", None) or [])
                 if scan.head_skipped:
@@ -715,6 +729,24 @@ async def run_crawl_once(
                 conn.close()
         except Exception:
             pass
+        # 深扫到底：抓帖结束后再切板，状态页本轮内仍对应当前子板
+        if result.get("board_will_advance") and not result.get("board_advanced"):
+            try:
+                adv_conn = connect()
+                try:
+                    saved = advance_active_board_fid(
+                        adv_conn,
+                        forum_id,
+                        from_fid=str(result.get("board_advance_from") or unit_key),
+                    )
+                    nxt = str(saved.get("active_board_fid") or "")
+                    result["board_advanced"] = True
+                    result["next_board_fid"] = nxt
+                    _log_activity(f"本轮抓帖结束 · 切换下一子版 → {nxt or '—'}")
+                finally:
+                    adv_conn.close()
+            except Exception as adv_exc:
+                log.warning("advance board after crawl: %s", adv_exc)
         if result.get("reason") == "stopped":
             _log_activity(
                 f"本轮已手动停止 · 抓 {result['crawled']} · 入库 {result['imports']} · "

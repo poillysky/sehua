@@ -63,6 +63,22 @@ def test_cf_email_obfuscated_attachment_name():
     assert [a.name for a in tail] == ["www.98T.la@PrivateCasting-X.txt"]
 
 
+def test_rar_with_文件夹_in_name_not_skipped():
+    """「新建文件夹.rar」是资源包，不能当目录树跳过，否则无权包会反复重试。"""
+    html = """
+    <ignore_js_op>
+      <a href="forum.php?mod=attachment&amp;aid=1">www.98T.la  新建文件夹      下载麻烦顺手评评分.rar</a>
+      <a href="forum.php?mod=attachment&amp;aid=2">目录树.txt</a>
+    </ignore_js_op>
+    """
+    all_a = extract_download_attachments("https://www.sehuatang.net/", html)
+    assert any(a.kind == "rar" for a in all_a)
+    tail = filter_tail_attachments(all_a, limit=3)
+    assert len(tail) == 1
+    assert tail[0].kind == "rar"
+    assert "文件夹" in tail[0].name
+
+
 def test_zip_inner_txt_and_ed2k_parse():
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w") as zf:

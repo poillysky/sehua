@@ -597,7 +597,7 @@ export function CrawlerPage() {
                     <span className="metric-val stat-warn">{abnormal}</span>
                     <span className="metric-lbl">异常帖</span>
                   </span>
-                  <span className="metric-pill" title="尚未失败过的正常待抓帖（立即爬取/连续调度会吃这个队列）">
+                  <span className="metric-pill" title="启用子板全部「尚未失败」的待抓帖合计（实时）。连续调度多子板时不再只显示当前板，避免切板瞬间变成 0 却仍在入库">
                     <span className="metric-val">{readyQueue}</span>
                     <span className="metric-lbl">正常队列</span>
                   </span>

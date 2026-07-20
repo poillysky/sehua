@@ -68,7 +68,16 @@ class RandomTidLoopBody(BaseModel):
 
 @router.get("/status")
 def get_crawler_status(_user: dict = Depends(require_permission("crawler.view"))) -> dict:
-    from parsers.boards import BOARD_POLICIES
+    from parsers.boards import BOARD_POLICIES, enabled_queue_board_keys, queue_board_keys
+
+    active = SITE_CRAWLER_FORUM_ID
+    active_forum_name = SITE_CRAWLER_FORUM_ID
+    cfg_forum_id = SITE_CRAWLER_FORUM_ID
+    cfg: dict = {}
+    board_fid = ""
+    enabled_fids: list[str] = []
+    qstats: dict = {}
+    active_ready = 0
 
     conn = connect()
     try:
@@ -85,14 +94,22 @@ def get_crawler_status(_user: dict = Depends(require_permission("crawler.view"))
         cfg = dict(configs.get(cfg_forum_id) or configs.get(SITE_CRAWLER_FORUM_ID) or {})
         board_fid = str(cfg.get("active_board_fid") or "")
         enabled_fids = resolve_enabled_board_fids(cfg)
-        from parsers.boards import get_board_policy, queue_board_keys
 
-        # 队列已按二级 key（fid:typeid）入库；附带旧纯 fid 兼容历史行
-        queue_keys = queue_board_keys(board_fid) if board_fid else None
+        # 正常队列 = 启用子板全部待抓合计（实时），避免切板瞬间显示 0 却仍在入库
+        queue_keys = enabled_queue_board_keys(enabled_fids)
+        if not queue_keys and board_fid:
+            queue_keys = queue_board_keys(board_fid)
         try:
             qstats = count_pending(conn, board_fid=queue_keys or None)
         except Exception:
             qstats = {}
+        if board_fid:
+            try:
+                active_ready = int(
+                    count_pending(conn, board_fid=queue_board_keys(board_fid)).get("ready") or 0
+                )
+            except Exception:
+                active_ready = 0
     finally:
         conn.close()
 
@@ -107,7 +124,7 @@ def get_crawler_status(_user: dict = Depends(require_permission("crawler.view"))
                 "fid": str(pol.fid),
                 "typeid": pol.list_typeid or "",
                 "name": pol.name,
-                "pending": qstats.get("ready", "—") if efid == board_fid else "—",
+                "pending": active_ready if efid == board_fid else "—",
                 "done": "—",
                 "current": efid == board_fid,
             }
@@ -178,6 +195,7 @@ def get_crawler_status(_user: dict = Depends(require_permission("crawler.view"))
             "retries": last.get("retries") or 0,
             "soft_browser_retried": last.get("soft_browser_retried") or 0,
             "queue_ready": (qstats or {}).get("ready") or 0,
+            "queue_ready_active": active_ready,
             "queue_soft_ad": (qstats or {}).get("soft_ad") or 0,
             "queue_abnormal": (qstats or {}).get("abnormal") or 0,
             "queue_deferred": (qstats or {}).get("deferred") or 0,
