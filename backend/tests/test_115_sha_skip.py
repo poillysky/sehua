@@ -68,3 +68,45 @@ def test_judge_skips_115_sha_from_attachment_corpus():
     )
     assert out.verdict == "skipped"
     assert "附件" in out.outcome
+
+
+def test_title_115sha_only_skips_without_trying_attachments():
+    from parsers.thread_gates import title_is_115sha_without_ed2k_magnet
+
+    assert title_is_115sha_without_ed2k_magnet("【115SHA1】欧美合集 37V") is True
+    assert title_is_115sha_without_ed2k_magnet("【115sha1】【ed2k】合集") is False
+    assert title_is_115sha_without_ed2k_magnet("【磁力】合集") is False
+
+    html = """
+    <html><head><title>【115SHA1】欧美4K SheIsNerdy【37V】 - 论坛</title></head>
+    <body>
+    <div id="postmessage_1">只有预览图，无直链</div>
+    <div class="pattl"><ignore_js_op>x</ignore_js_op></div>
+    Powered by Discuz!
+    </body></html>
+    """
+    html = html + ("x" * 15000)
+    out = judge_thread_html(html, board_fid="141:690", list_title="")
+    assert out.verdict == "skipped"
+    assert "115sha" in out.outcome.lower() or "115" in out.outcome
+    assert out.need_attachments is False
+
+
+def test_no_ed2k_magnet_after_attach_try_skips():
+    html = """
+    <html><head><title>资源合集 98T - 论坛</title></head>
+    <body>
+    <div id="postmessage_1">见附件</div>
+    Powered by Discuz!
+    </body></html>
+    """
+    html = html + ("x" * 15000)
+    out = judge_thread_html(
+        html,
+        board_fid=36,
+        list_title="资源合集",
+        attachments_already_tried=True,
+        had_attachments=False,
+    )
+    assert out.verdict == "skipped"
+    assert "ed2k" in out.outcome or "磁力" in out.outcome

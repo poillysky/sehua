@@ -32,6 +32,7 @@ from parsers.thread_gates import (
     post_text,
     thread_typeid_mismatch,
     title_implies_resource,
+    title_is_115sha_without_ed2k_magnet,
     title_recognizable,
 )
 
@@ -154,6 +155,12 @@ def judge_thread_html(
         tip = "115sha 链接（附件，跳过）" if from_attach else "115sha 链接（跳过）"
         return ThreadOutcome("skipped", tip, link_kind, title)
 
+    # 标题仅 115sha、未写 ed2k/磁力：不下附件、不重试
+    if title_is_115sha_without_ed2k_magnet(title) or title_is_115sha_without_ed2k_magnet(
+        list_title
+    ):
+        return ThreadOutcome("skipped", "115sha 标题（无 ed2k/磁力，跳过）", link_kind, title)
+
     # 需回复：满龄（或非龄期板）→ 占位显示；未满龄已在上一步跳过
     if is_reply_required_post(html):
         return ThreadOutcome("stub", "需回复贴", link_kind, title)
@@ -210,11 +217,17 @@ def judge_thread_html(
         return ThreadOutcome("stub", "无权限下载附件", link_kind, title)
     if attachment_failed:
         return ThreadOutcome("retry", "附件下载失败，待重试", link_kind, title)
-    # 已尝试附件仍无目标链：有下载痕迹时不再无限重试，改为占位（常见：链接在无权附件里）
+    # 已尝试附件仍无目标链：有下载痕迹时占位（链接可能在无权附件里）
     if attachments_already_tried and had_attachments:
         return ThreadOutcome("stub", "无权限下载附件", link_kind, title)
-    if had_attachments:
-        return ThreadOutcome("retry", "附件未解析出链接，待重试", link_kind, title)
+    # 附件下到了但抽不出 ed2k/磁力 → 跳过，不再重试
+    if had_attachments or attachments_already_tried:
+        return ThreadOutcome(
+            "skipped",
+            "未解析到 ed2k/磁力（跳过）",
+            link_kind,
+            title,
+        )
 
     if is_non_target_cloud_share(link_kind=link_kind, text=text) and not title_implies_resource(
         title, link_kind
@@ -236,9 +249,10 @@ def judge_thread_html(
 
     if wrong_typeid:
         return ThreadOutcome("retry", "非情色分享分类，待复核", link_kind, title)
+    # 正文/附件均无 ed2k、magnet → 跳过（含标题暗示资源）
     if title_implies_resource(title, link_kind):
-        return ThreadOutcome("retry", "标题暗示有资源但未解析到链接", link_kind, title)
+        return ThreadOutcome("skipped", "未解析到 ed2k/磁力（跳过）", link_kind, title)
     if len(html or "") < 8000:
         return ThreadOutcome("retry", "页面过短/未正常加载", link_kind, title)
 
-    return ThreadOutcome("retry", "未发现资源链接，待重试", link_kind, title)
+    return ThreadOutcome("skipped", "未发现 ed2k/磁力链接（跳过）", link_kind, title)

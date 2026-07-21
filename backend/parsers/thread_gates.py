@@ -160,6 +160,22 @@ def has_115_sha_link(text: str) -> bool:
     return compact != text and bool(RE_115_SHA.search(compact))
 
 
+def title_is_115sha_without_ed2k_magnet(title: str) -> bool:
+    """标题标明 115sha，且未写 ed2k / magnet / 磁力 / 电驴 → 直接跳过。"""
+    t = (title or "").strip()
+    if not t:
+        return False
+    lower = re.sub(r"\s+", "", t.lower())
+    has_115 = "115sha" in lower or bool(re.search(r"\[?\s*115\s*sha", t, re.I))
+    if not has_115:
+        return False
+    if any(x in lower for x in ("ed2k", "magnet")):
+        return False
+    if "磁力" in t or "电驴" in t:
+        return False
+    return True
+
+
 def title_recognizable(title: str) -> bool:
     raw = (title or "").strip()
     if len(raw) < 2:

@@ -38,7 +38,7 @@ from db.queue import (
     tid_from_url,
 )
 from db.settings_store import get_setting
-from parsers.boards import BOARD_POLICIES, get_board_policy, queue_board_keys
+from parsers.boards import BOARD_POLICIES, enabled_queue_board_keys, get_board_policy, queue_board_keys
 from workers.list_scan import scan_board_list
 from workers.pipeline import process_thread
 from workers.session_factory import (
@@ -300,12 +300,13 @@ async def run_crawl_once(
         root = site_root(start)
 
         if scan_list:
-            # 队列积压：超过阈值则本轮不读列表，先清空/消化待抓
+            # 启用子板正常待抓合计背压：超过阈值则本轮不读列表，先消化队列
             pre_q = {}
+            backpressure_keys = enabled_queue_board_keys(enabled) or queue_keys
             try:
                 qconn = connect()
                 try:
-                    pre_q = count_pending(qconn, board_fid=queue_keys)
+                    pre_q = count_pending(qconn, board_fid=backpressure_keys)
                 finally:
                     qconn.close()
             except Exception as qexc:
@@ -315,8 +316,8 @@ async def run_crawl_once(
             result["queue_before_list"] = pending_ready
             if pending_ready >= QUEUE_LIST_BACKPRESSURE:
                 _log_activity(
-                    f"正常待抓已有 {pending_ready}（≥{QUEUE_LIST_BACKPRESSURE}）· "
-                    f"本轮跳过列表读取，先清空正常队列（异常/软文不计）"
+                    f"启用子板正常待抓合计 {pending_ready}（≥{QUEUE_LIST_BACKPRESSURE}）· "
+                    f"本轮跳过列表入队，先消化队列（异常/软文不计）"
                 )
                 result["list_skipped"] = True
                 result["reason"] = "queue_backpressure"

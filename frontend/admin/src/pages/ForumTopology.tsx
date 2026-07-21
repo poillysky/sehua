@@ -318,11 +318,11 @@ function StepDetail({
     const knownStop = cfg.web_crawler_list_known_stop_pages || 2
     return (
       <ChartShell hint={`扫列表前先看队列背压；连续/立即：每轮深扫 ${pages} 页至板底（已知资源只改二级板块名，缺失才抓帖）；扫新帖：每板上限 ${headPages} 页（可板级覆盖），连续 ${knownStop} 页全已知早停，且本板扫完后同轮进入抓帖`}>
-        <Decision text="正常待抓 ≥ 150？" />
+        <Decision text="启用子板正常待抓合计 ≥ 150？" />
         <ArrowDown />
         <Junction pair>
           <Branch label="是 · 背压">
-            <Terminal text="跳过列表" sub="先消化正常队列 · 异常/软文不计背压" kind="warn" />
+            <Terminal text="跳过列表入队" sub="先消化启用队列合计 · 异常/软文不计背压" kind="warn" />
           </Branch>
           <Branch label="否" main>
             <Spine>
@@ -787,7 +787,7 @@ function buildPipeline(
     {
       id: 'list_scan',
       label: '扫列表',
-      detail: `背压≥150 · 深扫每轮 ${pages} 页 · 扫新帖 ≤${headPages}`,
+      detail: `启用合计背压≥150 · 深扫每轮 ${pages} 页 · 扫新帖 ≤${headPages}`,
       status: 'idle',
     },
     {

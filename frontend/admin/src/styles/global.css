@@ -4863,6 +4863,25 @@ a {
     margin: 0;
   }
 
+  /* 启用队列路径过长时限高约一半，内部可滚动，避免挤占子版表格 */
+  .forum-boards-active-card {
+    padding: 8px 10px;
+    align-items: flex-start;
+  }
+
+  .forum-boards-active-val {
+    max-height: min(16vh, 120px);
+    overflow-x: hidden;
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
+    overscroll-behavior: contain;
+  }
+
+  .forum-boards-queue-path {
+    font-size: 11px;
+    line-height: 1.35;
+  }
+
   .forum-modal-backdrop {
     /* 接近全屏：留小边距 + 安全区，避免 100dvh 溢出导致触摸异常 */
     padding: max(8px, env(safe-area-inset-top, 0px))
@@ -6724,6 +6743,24 @@ html:has(body.modal-open) {
     font-size: 8px;
     line-height: 1.35;
     margin: 0;
+  }
+
+  .forum-boards-active-card {
+    padding: 8px 10px;
+    align-items: flex-start;
+  }
+
+  .forum-boards-active-val {
+    max-height: min(16vh, 120px);
+    overflow-x: hidden;
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
+    overscroll-behavior: contain;
+  }
+
+  .forum-boards-queue-path {
+    font-size: 11px;
+    line-height: 1.35;
   }
 
   /* 概览 / 结构化 / 拓扑 / 爬虫配置：窄屏默认字号 8 */
