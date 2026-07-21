@@ -497,31 +497,48 @@ async def run_crawl_once(
         fetcher.set_referer(list_url)
 
         _STATE["phase"] = "thread_crawl"
+        # 与状态栏一致：按启用子板合计取待抓（列表仍只扫当前工作子板）
+        # 避免「角标有异常/背压有积压，但当前板 0」导致重试/消化空转
+        digest_enabled = bool(
+            result.get("list_skipped") and result.get("reason") == "queue_backpressure"
+        )
+        retry_abnormal = kind in {"abnormal", "soft_ad"}
+        crawl_keys = enabled_queue_board_keys(enabled) or queue_keys
         conn = connect()
         try:
             # .net/.org 等同 tid 双 URL 先合并，避免一轮里抓两次同一帖
-            merged = dedupe_pending_by_tid(conn, board_fid=queue_keys)
+            merged = dedupe_pending_by_tid(conn, board_fid=crawl_keys)
             if merged:
                 _log_activity(f"队列去重 · 合并同帖重复 URL {merged} 条")
-            qstats = count_pending(conn, board_fid=queue_keys)
+            qstats = count_pending(conn, board_fid=crawl_keys)
             _STATE["queue"] = qstats
-            if kind in {"abnormal", "soft_ad"}:
-                pending = fetch_pending_abnormal(conn, board_fid=queue_keys, limit=500)
+            if retry_abnormal:
+                pending = fetch_pending_abnormal(conn, board_fid=crawl_keys, limit=500)
             else:
-                pending = fetch_pending_threads(conn, board_fid=queue_keys, limit=500)
+                pending = fetch_pending_threads(conn, board_fid=crawl_keys, limit=500)
         finally:
             conn.close()
 
-        if kind in {"abnormal", "soft_ad"}:
-            _log_activity(f"异常队列重爬 · {len(pending)} 条（含原软文；成功才出队）")
+        if retry_abnormal:
+            _log_activity(
+                f"异常队列重爬 · 启用合计 {len(pending)} 条"
+                f"（库内异常 {qstats.get('abnormal', 0)}；成功才出队）"
+            )
         else:
             deferred = int(qstats.get("deferred") or 0)
             workable = int(qstats.get("workable") or len(pending))
-            _log_activity(
-                f"待抓队列 · 可抓 {workable}（正常 {qstats.get('ready', 0)}）· "
-                f"异常 {qstats.get('abnormal', 0)}"
-                + (f" · 退避中 {deferred}" if deferred else "")
-            )
+            if digest_enabled:
+                _log_activity(
+                    f"背压消化 · 启用合计可抓 {workable}（正常 {qstats.get('ready', 0)}）· "
+                    f"本批取 {len(pending)} · 异常 {qstats.get('abnormal', 0)}"
+                    + (f" · 退避中 {deferred}" if deferred else "")
+                )
+            else:
+                _log_activity(
+                    f"待抓队列 · 启用合计可抓 {workable}（正常 {qstats.get('ready', 0)}）· "
+                    f"异常 {qstats.get('abnormal', 0)}"
+                    + (f" · 退避中 {deferred}" if deferred else "")
+                )
             if not pending and int(result.get("discovered") or 0) > 0 and int(result.get("enqueued") or 0) == 0:
                 if deferred > 0:
                     _log_activity(
@@ -529,6 +546,10 @@ async def run_crawl_once(
                     )
                 else:
                     _log_activity("本轮无可抓帖 · 列表所见均已入库，队列为空")
+            elif not pending and digest_enabled:
+                _log_activity(
+                    "背压合计>0 但本批未取到可抓帖 · 可能均在退避，稍后自动重试"
+                )
 
         consecutive_fail = 0
         cooldowns = 0

@@ -322,7 +322,7 @@ function StepDetail({
         <ArrowDown />
         <Junction pair>
           <Branch label="是 · 背压">
-            <Terminal text="跳过列表入队" sub="先消化启用队列合计 · 异常/软文不计背压" kind="warn" />
+            <Terminal text="跳过列表入队" sub="按启用合计取待抓消化 · 异常/软文不计背压" kind="warn" />
           </Branch>
           <Branch label="否" main>
             <Spine>
@@ -421,13 +421,13 @@ function StepDetail({
         : '正文无磁力 → 下 .torrent 转磁力'
     return (
       <ChartShell hint="主链路抓帖：取待抓队列 → 单帖判定 → 回写 → 检查入库+占位目标/失败冷却。「随机抓帖」「账号爬占位」是独立侧线，见总览后两步。">
-        <Process text="取待抓队列" sub="正常 ready + 已到期异常（一并消化）" />
+        <Process text="取待抓队列" sub="启用子板合计 · 正常 ready + 已到期异常" />
         <ArrowDown />
         <Decision text="本轮来源？" />
         <ArrowDown />
         <Junction cols={2}>
           <Branch label="异常专重试">
-            <Terminal text="只取异常队列" sub="忽略退避 · 成功才出队 · 不扫列表" kind="warn" />
+            <Terminal text="只取异常队列" sub="启用子板合计 · 忽略退避 · 成功才出队 · 不扫列表" kind="warn" />
           </Branch>
           <Branch label="正常抓帖" main>
             <Terminal text="正常+到期异常" sub="列表已扫或背压跳过后再抓" kind="ok" />
