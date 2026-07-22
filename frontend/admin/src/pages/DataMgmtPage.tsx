@@ -31,6 +31,7 @@ type DataOverviewResponse = {
   crawler_running: boolean
   crawler_enabled: boolean
   resource_db?: ResourceDbConfig
+  resource_db_error?: string | null
 }
 
 type ResetResult = {
@@ -136,7 +137,9 @@ export function DataMgmtPage() {
       setCrawlerRunning(Boolean(data.crawler_running))
       setCrawlerEnabled(Boolean(data.crawler_enabled))
       if (data.resource_db) applyResourceDb(data.resource_db)
-    } catch (err) {
+      if (data.resource_db_error) {
+        toast.warn(data.resource_db_error)
+      }    } catch (err) {
       toast.error(err instanceof Error ? err.message : '加载失败')
       setOverview(null)
     } finally {
@@ -203,11 +206,18 @@ export function DataMgmtPage() {
       const data = await saveResourceDbConfig(resourceDbBody())
       applyResourceDb(data)
       await load()
-      toast.success(
-        data.using_primary
-          ? '已保存 · 资源仍写入主库（与项目源数据同库）'
-          : `已保存 · 资源写入 ${data.effective?.host}:${data.effective?.port}/${data.effective?.dbname}`,
-      )
+      if (data.connection_ok === false) {
+        toast.warn(
+          data.connection_error ||
+            '配置已保存，但独立资源库连不上。跨网络请填对方宿主机/NAS IP + bridge 映射端口。',
+        )
+      } else {
+        toast.success(
+          data.using_primary
+            ? '已保存 · 资源仍写入主库（与项目源数据同库）'
+            : `已保存 · 资源写入 ${data.effective?.host}:${data.effective?.port}/${data.effective?.dbname}`,
+        )
+      }
     } catch (err) {
       toast.error(err instanceof Error ? err.message : '保存失败')
     } finally {
@@ -407,7 +417,9 @@ export function DataMgmtPage() {
               <div>
                 <h3>资源数据库</h3>
                 <p className="hint">
-                  关闭时资源写入主库（与项目源数据同库）。开启后仅资源读写走下方库；保存时不会建表/迁移，读写时仅可安全补缺列（不改已有数据）。密码留空则沿用已保存密码或主库密码。
+                  关闭时资源写入主库。开启后资源读写走下方库；不自动建表。跨 Docker / bridge
+                  网络请填对方<strong>宿主机或 NAS IP</strong> + <strong>映射端口</strong>
+                  （例如 192.168.x.x:5433），不要填本服务 compose 内的主机名 postgres。密码留空则沿用已保存或主库密码。
                 </p>
               </div>
             </div>
@@ -423,7 +435,17 @@ export function DataMgmtPage() {
                       setRdbEnabled(on)
                       if (!on) return
                       const p = rdb?.primary
-                      setRdbHost((h) => h.trim() || String(p?.host || ''))
+                      // 跨网络独立库：不自动填本服务内网主机名（如 postgres），避免连错
+                      const primaryHost = String(p?.host || '').trim().toLowerCase()
+                      const dockerLocal =
+                        !primaryHost ||
+                        primaryHost === 'postgres' ||
+                        primaryHost === 'localhost' ||
+                        primaryHost === '127.0.0.1'
+                      setRdbHost((h) => {
+                        if (h.trim()) return h
+                        return dockerLocal ? '' : String(p?.host || '')
+                      })
                       setRdbPort((port) => {
                         const n = Number(port)
                         if (n > 0) return n
@@ -441,7 +463,7 @@ export function DataMgmtPage() {
                     <input
                       type="text"
                       value={rdbHost}
-                      placeholder={rdb?.primary?.host || '127.0.0.1'}
+                      placeholder="NAS 或宿主机 IP（勿填 postgres）"
                       disabled={!rdbEnabled || rdbLoading || rdbBusy || busy}
                       onChange={(e) => setRdbHost(e.target.value)}
                       autoComplete="off"

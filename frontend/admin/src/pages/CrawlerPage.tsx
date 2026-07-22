@@ -1,8 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import {
   fetchCrawlerStatus,
+  fetchDiscardedTids,
   fetchQueueBrowse,
   recrawlAccountStubs,
+  requeueDiscardedTids,
   retryAbnormalQueue,
   runCrawlerOnce,
   scanHeadOnce,
@@ -77,6 +79,13 @@ function rowTitle(row: QueueBrowseItem): string {
   return (row.thread_title || row.title || '').trim() || '—'
 }
 
+function rowTid(row: QueueBrowseItem): number | null {
+  const raw = row.tid
+  if (raw == null) return null
+  const n = typeof raw === 'number' ? raw : Number(raw)
+  return Number.isFinite(n) && n > 0 ? n : null
+}
+
 function rowStatus(row: QueueBrowseItem, kind: QueueBrowseKind): string {
   if (kind === 'stubs') return 'stub'
   if (kind === 'ready' || kind === 'abnormal') return 'pending'
@@ -109,6 +118,10 @@ function activityLevelClass(msg: string): string {
     m.includes('账号爬占位结束') ||
     m.includes('账号爬占位升级') ||
     m.includes('账号爬未处理') ||
+    m.includes('未处理重入队') ||
+    m.includes('未处理批量重入队') ||
+    m.includes('未处理批量重爬') ||
+    m.includes('未处理重爬') ||
     /重试结束/.test(m) ||
     /完成[：:]/.test(m)
   ) {
@@ -200,6 +213,10 @@ export function CrawlerPage() {
   const [discKindCounts, setDiscKindCounts] = useState<Record<string, number>>({})
   const [discLoading, setDiscLoading] = useState(false)
   const [queueModal, setQueueModal] = useState<QueueBrowseKind | null>(null)
+  const [discSelected, setDiscSelected] = useState<Set<number>>(() => new Set())
+  const [discRequeueBusy, setDiscRequeueBusy] = useState(false)
+  const [discRequeueNote, setDiscRequeueNote] = useState('')
+  const [discSelectAllBusy, setDiscSelectAllBusy] = useState(false)
 
   const refresh = useCallback(async () => {
     try {
@@ -278,12 +295,18 @@ export function CrawlerPage() {
     return () => window.clearTimeout(t)
   }, [discQInput, queueModal])
 
+  useEffect(() => {
+    setDiscSelected(new Set())
+  }, [queueModal, discStatus, discReason, discQ])
+
   const openQueueModal = (kind: QueueBrowseKind) => {
     setDiscQInput('')
     setDiscQ('')
     setDiscReason('')
     setDiscReasons([])
     setDiscOffset(0)
+    setDiscSelected(new Set())
+    setDiscRequeueNote('')
     if (kind === 'discarded') setDiscStatus('failed')
     setQueueModal(kind)
   }
@@ -332,12 +355,13 @@ export function CrawlerPage() {
   const discHasPrev = discOffset > 0
   const discHasNext = discOffset + DISCARDED_PAGE < discTotal
   const modalMeta = queueModal ? QUEUE_MODAL_META[queueModal] : null
+  const discActivity = (status?.activity || []).slice(0, 40)
   const searchPlaceholder =
     queueModal === 'stubs'
       ? 'hash / 标题 / 原因…'
       : queueModal === 'ready' || queueModal === 'abnormal'
         ? 'tid / 标题 / 错误…'
-        : 'tid / 标题 / 原因…'
+        : '标题…'
   const idColLabel = queueModal === 'stubs' ? 'hash' : 'tid'
   const rnd = status?.random_progress
   const randomActive = !!rnd?.active || (looping && loopKind === 'random_tid')
@@ -586,6 +610,103 @@ export function CrawlerPage() {
       toast.error(err instanceof Error ? err.message : '异常重试失败')
     } finally {
       setBusy(false)
+    }
+  }
+
+  const canSelectDiscarded = queueModal === 'discarded'
+  const pageSelectableTids = canSelectDiscarded
+    ? discItems.map(rowTid).filter((t): t is number => t != null)
+    : []
+  const pageSelectedCount = pageSelectableTids.filter((t) => discSelected.has(t)).length
+  const allPageSelected =
+    pageSelectableTids.length > 0 && pageSelectedCount === pageSelectableTids.length
+  const somePageSelected = pageSelectedCount > 0 && !allPageSelected
+
+  const toggleDiscTid = (tid: number) => {
+    setDiscSelected((prev) => {
+      const next = new Set(prev)
+      if (next.has(tid)) next.delete(tid)
+      else next.add(tid)
+      return next
+    })
+  }
+
+  const toggleSelectPage = () => {
+    setDiscSelected((prev) => {
+      const next = new Set(prev)
+      if (allPageSelected) {
+        for (const tid of pageSelectableTids) next.delete(tid)
+      } else {
+        for (const tid of pageSelectableTids) next.add(tid)
+      }
+      return next
+    })
+  }
+
+  const onSelectAllFiltered = async () => {
+    if (!canSelectDiscarded || discSelectAllBusy || discRequeueBusy) return
+    if (discTotal <= 0) {
+      toast.info('当前筛选下没有可选项')
+      return
+    }
+    setDiscSelectAllBusy(true)
+    try {
+      const res = await fetchDiscardedTids({
+        status: discStatus,
+        q: discQ || undefined,
+        reason: discReason || undefined,
+        limit: 2000,
+      })
+      const tids = (res.tids || []).filter((t) => Number.isFinite(t) && t > 0)
+      setDiscSelected(new Set(tids))
+      if (!tids.length) {
+        toast.info('当前筛选下没有有效 tid')
+      } else if (res.truncated) {
+        toast.info(`已选前 ${tids.length} 条（共 ${res.total}，单次上限 ${res.limit}）`)
+      } else {
+        toast.success(`已全选当前筛选 ${tids.length} 条`)
+      }
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : '全选筛选失败')
+    } finally {
+      setDiscSelectAllBusy(false)
+    }
+  }
+
+  const onBatchRequeueSelected = async () => {
+    if (!canSelectDiscarded || discRequeueBusy) return
+    const tids = Array.from(discSelected)
+    if (!tids.length) {
+      toast.info('请先勾选要重爬的帖')
+      return
+    }
+    const ok = await confirmDialog({
+      title: '批量重爬',
+      message: `将直接重爬选中的 ${tids.length} 条失败/跳过帖（不依赖当前板队列）。连续调度开启时仅入队。确定？`,
+      confirmText: '重爬选中',
+    })
+    if (!ok) return
+    setDiscRequeueBusy(true)
+    setDiscRequeueNote('重爬进行中…')
+    try {
+      const res = await requeueDiscardedTids({ tids })
+      const line = res.note || `已重新入队 ${res.requeued} 条`
+      setRunHint(line)
+      setDiscRequeueNote(line)
+      if ((res.imports ?? 0) > 0 || (res.crawled ?? 0) > 0 || res.requeued > 0) {
+        toast.success(line)
+      } else {
+        toast.info(line)
+      }
+      setDiscSelected(new Set())
+      await refresh()
+      await loadDiscarded()
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : '批量重爬失败'
+      setDiscRequeueNote(msg)
+      toast.error(msg)
+    } finally {
+      setDiscRequeueBusy(false)
     }
   }
 
@@ -889,7 +1010,9 @@ export function CrawlerPage() {
                   ))
                 ) : (
                   <div className="activity-empty">
-                    {enabled ? '暂无活动日志 · 点「立即爬取」或等待连续调度' : '暂无活动日志 · 开启论坛爬虫后开始执行'}
+                    {enabled
+                      ? '暂无活动日志 · 点「立即爬取」或等待连续调度'
+                      : '暂无活动日志 · 点「立即爬取」「扫新帖」或明细里「重爬选中」后会出现'}
                   </div>
                 )}
               </div>
@@ -956,58 +1079,117 @@ export function CrawlerPage() {
                     ))}
                   </div>
                 ) : null}
-                <input
-                  type="search"
-                  className="crawler-discarded-search"
-                  placeholder={searchPlaceholder}
-                  value={discQInput}
-                  onChange={(e) => setDiscQInput(e.target.value)}
-                  enterKeyHint="search"
-                />
-                <button
-                  type="button"
-                  className="crawler-action crawler-action-muted"
-                  disabled={discLoading}
-                  title="刷新明细"
-                  onClick={() => void loadDiscarded()}
+                <div className="crawler-discarded-tools-row">
+                  <input
+                    type="search"
+                    className="crawler-discarded-search"
+                    placeholder={searchPlaceholder}
+                    value={discQInput}
+                    onChange={(e) => setDiscQInput(e.target.value)}
+                    enterKeyHint="search"
+                  />
+                  {canSelectDiscarded ? (
+                    <>
+                      <button
+                        type="button"
+                        className="crawler-action crawler-action-muted"
+                        disabled={
+                          discSelectAllBusy ||
+                          discRequeueBusy ||
+                          discLoading ||
+                          discTotal <= 0
+                        }
+                        title={
+                          discTotal > 0
+                            ? `按当前筛选（状态/搜索/原因）全选全部页，共约 ${discTotal} 条`
+                            : '当前筛选无记录'
+                        }
+                        onClick={() => void onSelectAllFiltered()}
+                      >
+                        {discSelectAllBusy
+                          ? '全选中…'
+                          : discSelected.size > 0 && discSelected.size >= discTotal
+                            ? `已全选 ${discSelected.size}`
+                            : `全选筛选${discTotal > 0 ? ` ${discTotal}` : ''}`}
+                      </button>
+                      <button
+                        type="button"
+                        className="crawler-action"
+                        disabled={discRequeueBusy || discSelected.size === 0}
+                        title={
+                          discSelected.size
+                            ? `重爬已勾选 ${discSelected.size} 条`
+                            : '先勾选要重爬的帖'
+                        }
+                        onClick={() => void onBatchRequeueSelected()}
+                      >
+                        {discRequeueBusy
+                          ? '重爬中…'
+                          : discSelected.size
+                            ? `重爬选中 ${discSelected.size}`
+                            : '重爬选中'}
+                      </button>
+                    </>
+                  ) : null}
+                  <button
+                    type="button"
+                    className="crawler-action crawler-action-muted"
+                    disabled={discLoading || discRequeueBusy}
+                    title="刷新明细"
+                    onClick={() => void loadDiscarded()}
+                  >
+                    {discLoading ? '读取中…' : '刷新'}
+                  </button>
+                </div>
+                <select
+                  className="crawler-discarded-reason-filter crawler-discarded-reason-filter-bar"
+                  value={discReason}
+                  title={`按${modalMeta.reasonLabel}筛选`}
+                  aria-label={`按${modalMeta.reasonLabel}筛选`}
+                  onChange={(e) => {
+                    setDiscReason(e.target.value)
+                    setDiscOffset(0)
+                  }}
                 >
-                  {discLoading ? '读取中…' : '刷新'}
-                </button>
+                  <option value="">全部{modalMeta.reasonLabel}</option>
+                  {discReasons.map((item) => (
+                    <option key={item.reason} value={item.reason}>
+                      {item.reason}（{item.count}）
+                    </option>
+                  ))}
+                  {discReason && !discReasons.some((item) => item.reason === discReason) ? (
+                    <option value={discReason}>{discReason}</option>
+                  ) : null}
+                </select>
               </div>
 
-              <div className={`crawler-discarded-table-wrap${discLoading ? ' is-loading' : ''}`}>
+              <div className={`crawler-discarded-table-wrap desktop-only${discLoading ? ' is-loading' : ''}`}>
                 <table className="crawler-discarded-table">
                   <thead>
                     <tr>
+                      {canSelectDiscarded ? (
+                        <th className="crawler-discarded-check-th">
+                          <input
+                            type="checkbox"
+                            className="crawler-discarded-check"
+                            checked={allPageSelected}
+                            ref={(el) => {
+                              if (el) el.indeterminate = somePageSelected
+                            }}
+                            disabled={!pageSelectableTids.length || discRequeueBusy}
+                            onChange={toggleSelectPage}
+                            aria-label="全选本页"
+                            title="仅全选本页；跨页请用「全选筛选」"
+                          />
+                        </th>
+                      ) : null}
                       <th>时间</th>
                       <th>状态</th>
                       <th>板块</th>
                       <th>{idColLabel}</th>
                       <th>标题</th>
                       {queueModal === 'stubs' ? null : <th>重试</th>}
-                      <th className="crawler-discarded-reason-th">
-                        <select
-                          className="crawler-discarded-reason-filter"
-                          value={discReason}
-                          title={`按${modalMeta.reasonLabel}筛选`}
-                          aria-label={`按${modalMeta.reasonLabel}筛选`}
-                          onChange={(e) => {
-                            setDiscReason(e.target.value)
-                            setDiscOffset(0)
-                          }}
-                        >
-                          <option value="">全部{modalMeta.reasonLabel}</option>
-                          {discReasons.map((item) => (
-                            <option key={item.reason} value={item.reason}>
-                              {item.reason}（{item.count}）
-                            </option>
-                          ))}
-                          {discReason &&
-                          !discReasons.some((item) => item.reason === discReason) ? (
-                            <option value={discReason}>{discReason}</option>
-                          ) : null}
-                        </select>
-                      </th>
+                      <th>{modalMeta.reasonLabel}</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -1017,13 +1199,41 @@ export function CrawlerPage() {
                         const st = rowStatus(row, queueModal)
                         const title = rowTitle(row)
                         const reason = discardedReason(row)
+                        const tid = rowTid(row)
                         const idText =
                           queueModal === 'stubs'
                             ? (row.hash || '').slice(0, 12) || '—'
                             : row.tid || '—'
                         const rowKey = url || row.hash || `${idx}-${idText}`
+                        const checked = tid != null && discSelected.has(tid)
                         return (
-                          <tr key={rowKey}>
+                          <tr
+                            key={rowKey}
+                            className={checked ? 'is-selected' : undefined}
+                            onClick={
+                              canSelectDiscarded && tid != null
+                                ? (e) => {
+                                    const t = e.target as HTMLElement
+                                    if (t.closest('a, input, button, label')) return
+                                    toggleDiscTid(tid)
+                                  }
+                                : undefined
+                            }
+                          >
+                            {canSelectDiscarded ? (
+                              <td className="crawler-discarded-check-td">
+                                <input
+                                  type="checkbox"
+                                  className="crawler-discarded-check"
+                                  checked={checked}
+                                  disabled={tid == null || discRequeueBusy}
+                                  onChange={() => {
+                                    if (tid != null) toggleDiscTid(tid)
+                                  }}
+                                  aria-label={tid != null ? `选择 tid ${tid}` : '不可选'}
+                                />
+                              </td>
+                            ) : null}
                             <td className="mono">
                               {formatWhen(row.crawled_at || row.updated_at)}
                             </td>
@@ -1067,7 +1277,9 @@ export function CrawlerPage() {
                     ) : (
                       <tr>
                         <td
-                          colSpan={queueModal === 'stubs' ? 6 : 7}
+                          colSpan={
+                            (queueModal === 'stubs' ? 6 : 7) + (canSelectDiscarded ? 1 : 0)
+                          }
                           className="crawler-discarded-empty"
                         >
                           {discLoading ? '加载中…' : '暂无记录'}
@@ -1078,17 +1290,148 @@ export function CrawlerPage() {
                 </table>
               </div>
 
+              <div
+                className={`crawler-discarded-cards mobile-only${discLoading ? ' is-loading' : ''}`}
+              >
+                {discItems.length ? (
+                  discItems.map((row, idx) => {
+                    const url = rowUrl(row)
+                    const st = rowStatus(row, queueModal)
+                    const title = rowTitle(row)
+                    const reason = discardedReason(row)
+                    const tid = rowTid(row)
+                    const idText =
+                      queueModal === 'stubs'
+                        ? (row.hash || '').slice(0, 12) || '—'
+                        : row.tid || '—'
+                    const rowKey = url || row.hash || `m-${idx}-${idText}`
+                    const checked = tid != null && discSelected.has(tid)
+                    return (
+                      <article
+                        key={rowKey}
+                        className={`crawler-discarded-card${checked ? ' is-selected' : ''}`}
+                        onClick={
+                          canSelectDiscarded && tid != null
+                            ? (e) => {
+                                const t = e.target as HTMLElement
+                                if (t.closest('a, input, button, label')) return
+                                toggleDiscTid(tid)
+                              }
+                            : undefined
+                        }
+                      >
+                        <div className="crawler-discarded-card-top">
+                          {canSelectDiscarded ? (
+                            <input
+                              type="checkbox"
+                              className="crawler-discarded-check"
+                              checked={checked}
+                              disabled={tid == null || discRequeueBusy}
+                              onChange={() => {
+                                if (tid != null) toggleDiscTid(tid)
+                              }}
+                              aria-label={tid != null ? `选择 tid ${tid}` : '不可选'}
+                            />
+                          ) : null}
+                          <span
+                            className={`crawler-discarded-badge ${
+                              st === 'failed' ? 'is-failed' : 'is-skipped'
+                            }`}
+                          >
+                            {STATUS_LABEL[st] || st}
+                          </span>
+                          <time className="mono crawler-discarded-card-time">
+                            {formatWhen(row.crawled_at || row.updated_at)}
+                          </time>
+                        </div>
+                        <h4 className="crawler-discarded-card-title">{title}</h4>
+                        <div className="crawler-discarded-card-meta">
+                          <span className="crawler-discarded-card-board">
+                            {row.board_name || row.board_fid || '—'}
+                          </span>
+                          {url && idText !== '—' ? (
+                            <a
+                              className="mono crawler-discarded-card-id"
+                              href={url}
+                              target="_blank"
+                              rel="noreferrer"
+                            >
+                              {idColLabel} {idText}
+                            </a>
+                          ) : (
+                            <span className="mono crawler-discarded-card-id">
+                              {idColLabel} {idText}
+                            </span>
+                          )}
+                          {queueModal === 'stubs' ? null : (
+                            <span className="crawler-discarded-card-retry">
+                              重试 {row.fetch_fail_count ?? 0}
+                            </span>
+                          )}
+                        </div>
+                        <p className="crawler-discarded-card-reason">{reason}</p>
+                      </article>
+                    )
+                  })
+                ) : (
+                  <div className="crawler-discarded-empty">
+                    {discLoading ? '加载中…' : '暂无记录'}
+                  </div>
+                )}
+              </div>
+
+              {canSelectDiscarded ? (
+                <div className="crawler-discarded-log">
+                  {discRequeueNote ? (
+                    <p className="crawler-discarded-log-note">{discRequeueNote}</p>
+                  ) : null}
+                  <div className="crawler-discarded-log-head">重爬日志</div>
+                  <div className="crawler-discarded-log-body activity-log">
+                    {discActivity.length ? (
+                      discActivity.map((a, i) => (
+                        <div
+                          key={`disc-${a.t}-${i}-${a.msg}`}
+                          className={`activity-row ${activityLevelClass(a.msg)}`}
+                        >
+                          <span className="activity-time">{a.t || '—'}</span>
+                          <span className="activity-msg">{a.msg}</span>
+                        </div>
+                      ))
+                    ) : (
+                      <div className="activity-empty">
+                        {discRequeueBusy
+                          ? '重爬进行中，日志稍后出现…'
+                          : '暂无活动日志 · 勾选后点「重爬选中」，进度会显示在这里'}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              ) : null}
+
               <div className="crawler-discarded-foot">
                 <span className="toolbar-meta">
                   {discTotal === 0
                     ? '共 0 条'
                     : `第 ${discPageStart}–${discPageEnd} 条，共 ${discTotal} 条`}
+                  {canSelectDiscarded && discSelected.size > 0
+                    ? ` · 已选 ${discSelected.size}`
+                    : ''}
                 </span>
                 <div className="crawler-discarded-pager">
+                  {canSelectDiscarded && discSelected.size > 0 ? (
+                    <button
+                      type="button"
+                      className="crawler-action crawler-action-muted"
+                      disabled={discRequeueBusy}
+                      onClick={() => setDiscSelected(new Set())}
+                    >
+                      清除选中
+                    </button>
+                  ) : null}
                   <button
                     type="button"
                     className="crawler-action crawler-action-muted"
-                    disabled={!discHasPrev || discLoading}
+                    disabled={!discHasPrev || discLoading || discRequeueBusy}
                     onClick={() => setDiscOffset((v) => Math.max(0, v - DISCARDED_PAGE))}
                   >
                     上一页
@@ -1096,7 +1439,7 @@ export function CrawlerPage() {
                   <button
                     type="button"
                     className="crawler-action crawler-action-muted"
-                    disabled={!discHasNext || discLoading}
+                    disabled={!discHasNext || discLoading || discRequeueBusy}
                     onClick={() => setDiscOffset((v) => v + DISCARDED_PAGE)}
                   >
                     下一页

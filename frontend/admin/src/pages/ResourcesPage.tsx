@@ -4,6 +4,7 @@ import {
   buildBoardFacetTree,
   deleteResourcesBatch,
   fetchRecentResources,
+  fetchResourceIds,
   mapApiResource,
   PAGE_SIZE,
   recrawlResourcesBatch,
@@ -18,6 +19,7 @@ import { formatBoardDescription } from '../utils/boardDescription'
 const RESULT_LABEL: Record<ResourceRow['result'], string> = {
   magnet: '磁力',
   ed2k: 'ED2K',
+  '115share': '115分享',
   stub: '占位',
   failed: '失败',
 }
@@ -25,7 +27,14 @@ const RESULT_LABEL: Record<ResourceRow['result'], string> = {
 const EMPTY_FACETS: ResourceFacets = {
   sources: { all: 0, web: 0, upload: 0, telegram: 0 },
   boards: [],
-  results: { all: 0, magnet: 0, ed2k: 0, stub: 0, failed: 0 },
+  results: { all: 0, magnet: 0, ed2k: 0, '115share': 0, stub: 0, failed: 0 },
+}
+
+type CheckedMeta = {
+  hash: string
+  sourceUrl?: string
+  title: string
+  result: ResourceRow['result']
 }
 
 export function ResourcesPage() {
@@ -42,13 +51,15 @@ export function ResourcesPage() {
   const [selectedId, setSelectedId] = useState('')
   const [detailOpen, setDetailOpen] = useState(false)
   const [checkedIds, setCheckedIds] = useState<string[]>([])
+  const [checkedMeta, setCheckedMeta] = useState<Record<string, CheckedMeta>>({})
+  const [selectAllBusy, setSelectAllBusy] = useState(false)
   const [filterOpen, setFilterOpen] = useState(false)
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
   const [openDims, setOpenDims] = useState({ source: true, board: true, result: true })
   const [expandedBoardParents, setExpandedBoardParents] = useState<Set<string>>(() => new Set())
   const [source, setSource] = useState<'all' | 'web' | 'upload'>('all')
   const [board, setBoard] = useState('all')
-  const [result, setResult] = useState<'all' | 'magnet' | 'ed2k' | 'stub' | 'failed'>('all')
+  const [result, setResult] = useState<'all' | 'magnet' | 'ed2k' | '115share' | 'stub' | 'failed'>('all')
   const [importOpen, setImportOpen] = useState(false)
   const [recrawlBusy, setRecrawlBusy] = useState(false)
   const [deleteBusy, setDeleteBusy] = useState(false)
@@ -107,7 +118,31 @@ export function ResourcesPage() {
             if (prev && rows.some((r) => r.id === prev)) return prev
             return ''
           })
-          setCheckedIds((prev) => prev.filter((id) => rows.some((r) => r.id === id)))
+          // 跨页勾选：保留已选；本页行刷新已选 meta
+          setCheckedMeta((prev) => {
+            let changed = false
+            const next = { ...prev }
+            for (const r of rows) {
+              if (!prev[r.id] || !r.hash) continue
+              const meta: CheckedMeta = {
+                hash: r.hash,
+                sourceUrl: r.sourceUrl,
+                title: r.title,
+                result: r.result,
+              }
+              const old = prev[r.id]
+              if (
+                old.hash !== meta.hash ||
+                old.sourceUrl !== meta.sourceUrl ||
+                old.title !== meta.title ||
+                old.result !== meta.result
+              ) {
+                next[r.id] = meta
+                changed = true
+              }
+            }
+            return changed ? next : prev
+          })
         })
         hasLoaded.current = true
       } catch (err) {
@@ -128,6 +163,12 @@ export function ResourcesPage() {
   useEffect(() => {
     void load()
   }, [load])
+
+  // 筛选条件变化：清空跨页勾选
+  useEffect(() => {
+    setCheckedIds([])
+    setCheckedMeta({})
+  }, [source, board, result, q])
 
   // 搜索防抖，避免输入卡顿
   useEffect(() => {
@@ -173,19 +214,69 @@ export function ResourcesPage() {
   }, [])
 
   const selected = items.find((r) => r.id === selectedId) ?? null
-  const checkedRows = items.filter((r) => checkedIds.includes(r.id))
+  const checkedRows = useMemo(() => {
+    return checkedIds.map((id) => {
+      const onPage = items.find((r) => r.id === id)
+      if (onPage) return onPage
+      const meta = checkedMeta[id]
+      if (!meta) {
+        return {
+          id,
+          title: id,
+          board: '—',
+          outcome: '',
+          result: 'failed' as const,
+          time: '—',
+        }
+      }
+      return {
+        id,
+        title: meta.title,
+        board: '—',
+        outcome: '',
+        result: meta.result,
+        time: '—',
+        hash: meta.hash,
+        sourceUrl: meta.sourceUrl,
+      }
+    })
+  }, [checkedIds, checkedMeta, items])
   const recrawlableChecked = checkedRows.filter((r) => r.sourceUrl && r.hash)
   const deletableChecked = checkedRows.filter((r) => Boolean(r.hash))
   const allPageChecked = items.length > 0 && items.every((r) => checkedIds.includes(r.id))
   const somePageChecked = items.some((r) => checkedIds.includes(r.id))
+  const allFilteredSelected =
+    total > 0 && checkedIds.length > 0 && checkedIds.length >= total
   const rowOffset = (page - 1) * PAGE_SIZE
-  const busy = loading || refreshing || recrawlBusy || deleteBusy
+  const busy = loading || refreshing || recrawlBusy || deleteBusy || selectAllBusy
+
+  function metaFromRow(r: ResourceRow): CheckedMeta | null {
+    if (!r.hash) return null
+    return {
+      hash: r.hash,
+      sourceUrl: r.sourceUrl,
+      title: r.title,
+      result: r.result,
+    }
+  }
 
   function toggleChecked(id: string, next?: boolean) {
+    const row = items.find((r) => r.id === id)
+    const willOn = next ?? !checkedIds.includes(id)
     setCheckedIds((prev) => {
-      const on = next ?? !prev.includes(id)
-      if (on) return prev.includes(id) ? prev : [...prev, id]
+      if (willOn) return prev.includes(id) ? prev : [...prev, id]
       return prev.filter((x) => x !== id)
+    })
+    setCheckedMeta((prev) => {
+      if (!willOn) {
+        if (!(id in prev)) return prev
+        const copy = { ...prev }
+        delete copy[id]
+        return copy
+      }
+      const meta = row ? metaFromRow(row) : prev[id]
+      if (!meta) return prev
+      return { ...prev, [id]: meta }
     })
   }
 
@@ -193,6 +284,11 @@ export function ResourcesPage() {
     if (allPageChecked) {
       const pageIds = new Set(items.map((r) => r.id))
       setCheckedIds((prev) => prev.filter((id) => !pageIds.has(id)))
+      setCheckedMeta((prev) => {
+        const next = { ...prev }
+        for (const id of pageIds) delete next[id]
+        return next
+      })
       return
     }
     setCheckedIds((prev) => {
@@ -200,6 +296,68 @@ export function ResourcesPage() {
       for (const r of items) set.add(r.id)
       return [...set]
     })
+    setCheckedMeta((prev) => {
+      const next = { ...prev }
+      for (const r of items) {
+        const meta = metaFromRow(r)
+        if (meta) next[r.id] = meta
+      }
+      return next
+    })
+  }
+
+  const onSelectAllFiltered = async () => {
+    if (busy) return
+    if (total <= 0) {
+      toast.info('当前筛选下没有可选项')
+      return
+    }
+    if (allFilteredSelected) {
+      setCheckedIds([])
+      setCheckedMeta({})
+      toast.info('已取消全选')
+      return
+    }
+    setSelectAllBusy(true)
+    try {
+      const res = await fetchResourceIds({
+        source,
+        board,
+        result,
+        q: q || undefined,
+        limit: 2000,
+      })
+      const nextIds: string[] = []
+      const nextMeta: Record<string, CheckedMeta> = {}
+      for (const it of res.items || []) {
+        const id = String(it.id)
+        const hash = (it.hash || '').trim()
+        if (!id || !hash) continue
+        nextIds.push(id)
+        const kind = (['magnet', 'ed2k', '115share', 'stub', 'failed'].includes(String(it.link_kind))
+          ? it.link_kind
+          : 'failed') as ResourceRow['result']
+        nextMeta[id] = {
+          hash,
+          sourceUrl: it.source_url || undefined,
+          title: (it.title || hash).trim() || hash,
+          result: kind,
+        }
+      }
+      setCheckedIds(nextIds)
+      setCheckedMeta(nextMeta)
+      if (!nextIds.length) {
+        toast.info('当前筛选下没有有效条目')
+      } else if (res.truncated) {
+        toast.info(`已选前 ${nextIds.length} 条（共 ${res.total}，单次上限 ${res.limit}）`)
+      } else {
+        toast.success(`已全选当前筛选 ${nextIds.length} 条`)
+      }
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : '全选筛选失败')
+    } finally {
+      setSelectAllBusy(false)
+    }
   }
 
   function closeFilterIfMobile() {
@@ -228,7 +386,7 @@ export function ResourcesPage() {
     closeFilterIfMobile()
   }
 
-  function changeResult(next: 'all' | 'magnet' | 'ed2k' | 'stub' | 'failed') {
+  function changeResult(next: 'all' | 'magnet' | 'ed2k' | '115share' | 'stub' | 'failed') {
     setResult(next)
     if (next !== 'all') {
       setSource('all')
@@ -328,6 +486,7 @@ export function ResourcesPage() {
         toast.error(result.error || `重爬未入库 · 失败 ${failed || hashes.length}`)
       }
       setCheckedIds([])
+      setCheckedMeta({})
       await load({ silent: true })
     } catch (err) {
       toast.error(err instanceof Error ? err.message : '批量重爬失败')
@@ -380,6 +539,11 @@ export function ResourcesPage() {
       }
       const removedIds = new Set(targets.map((r) => r.id))
       setCheckedIds((prev) => prev.filter((id) => !removedIds.has(id)))
+      setCheckedMeta((prev) => {
+        const next = { ...prev }
+        for (const id of removedIds) delete next[id]
+        return next
+      })
       if (selected && removedIds.has(selected.id)) {
         setSelectedId('')
         setDetailOpen(false)
@@ -571,6 +735,7 @@ export function ResourcesPage() {
                     ['all', '全部'],
                     ['magnet', '磁力'],
                     ['ed2k', 'ED2K'],
+                    ['115share', '115分享'],
                     ['stub', '占位'],
                     ['failed', '失败'],
                   ] as const
@@ -638,8 +803,27 @@ export function ResourcesPage() {
             <span className="toolbar-meta">
               {total === 0
                 ? '共 0 条'
-                : `第 ${rowOffset + 1}–${rowOffset + items.length} 条，共 ${total} 条`}
+                : checkedIds.length > 0
+                  ? `已选 ${checkedIds.length} · 第 ${rowOffset + 1}–${rowOffset + items.length} 条，共 ${total} 条`
+                  : `第 ${rowOffset + 1}–${rowOffset + items.length} 条，共 ${total} 条`}
             </span>
+            <button
+              type="button"
+              className="btn secondary sm"
+              disabled={busy || total <= 0}
+              title={
+                allFilteredSelected
+                  ? '取消当前筛选下的全选'
+                  : `按当前筛选（来源/板块/结果/搜索）全选全部页，共约 ${total} 条`
+              }
+              onClick={() => void onSelectAllFiltered()}
+            >
+              {selectAllBusy
+                ? '全选中…'
+                : allFilteredSelected
+                  ? `已全选 ${checkedIds.length}`
+                  : `全选筛选${total > 0 ? ` ${total}` : ''}`}
+            </button>
             <button
               type="button"
               className="btn secondary sm"
@@ -697,7 +881,14 @@ export function ResourcesPage() {
               <thead>
                 <tr>
                   <th className="col-check">
-                    <label className="row-check" title={allPageChecked ? '取消本页全选' : '全选本页'}>
+                    <label
+                      className="row-check"
+                      title={
+                        allPageChecked
+                          ? '取消本页全选'
+                          : '仅全选本页；跨页请用「全选筛选」'
+                      }
+                    >
                       <input
                         type="checkbox"
                         checked={allPageChecked}

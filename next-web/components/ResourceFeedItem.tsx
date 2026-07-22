@@ -254,6 +254,7 @@ export function ResourceFeedItem({
   compact = true,
   showPreview = true,
 }: ResourceFeedItemProps) {
+  const t = useTranslations();
   const router = useRouter();
   const pathname = usePathname();
   const [navigating, setNavigating] = useState(false);

@@ -46,6 +46,8 @@ export type ResourceDbConfig = {
     dbname: string
   }
   migrations_applied?: string[]
+  connection_ok?: boolean
+  connection_error?: string | null
 }
 
 export type ResourceDbBody = {

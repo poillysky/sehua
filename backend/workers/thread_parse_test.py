@@ -16,7 +16,7 @@ from parsers.links import parse_thread_dual
 from parsers.magnet import parse_magnet_text
 from parsers.ed2k import parse_ed2k_text
 from parsers.thread_gates import (
-    has_115_sha_link,
+    should_skip_as_115sha_only,
     is_mobile_thread_shell,
     is_reply_required_post,
     is_safe_or_soft_shell,
@@ -184,7 +184,7 @@ async def parse_thread_for_admin(
             attachment_downloaded = attach_res.downloaded
             attachment_text = attach_res.text or ""
             attachment_source = attachment_kind or ""
-            if attachment_text and has_115_sha_link(attachment_text):
+            if attachment_text and should_skip_as_115sha_only(attachment_text):
                 tip = "115sha 链接（附件，跳过）"
                 outcome = ThreadOutcome(
                     "skipped",
@@ -205,12 +205,15 @@ async def parse_thread_for_admin(
                     had_attachments=attachment_downloaded or bool(attachment_text),
                     preferred_link=preferred_link,
                 )
-                # 双链：种子失败再试电驴尾部；电驴板：txt/zip 无果再试种子转磁力
+                # 双链/磁力：种子失败再试 Excel/文本；电驴板：txt/zip/excel 无果再试种子
                 if (
                     outcome.verdict not in {"import", "skipped"}
                     and looks_like_attachment_zone(html)
                     and (
-                        (preferred_link == "both" and attachment_kind == "torrent")
+                        (
+                            preferred_link in {"both", "magnet"}
+                            and attachment_kind == "torrent"
+                        )
                         or (preferred_link == "ed2k" and attachment_kind == "txt_tail")
                     )
                 ):
@@ -225,7 +228,7 @@ async def parse_thread_for_admin(
                     attachment_denied = attachment_denied or attach_res2.denied
                     attachment_failed = attachment_failed or (attach_res2.failed and not attach_res2.downloaded)
                     attachment_downloaded = attachment_downloaded or attach_res2.downloaded
-                    if attach_res2.text and has_115_sha_link(attach_res2.text):
+                    if attach_res2.text and should_skip_as_115sha_only(attach_res2.text):
                         attachment_text = (attachment_text + "\n" + attach_res2.text).strip()
                         attachment_source = f"{attachment_kind}+{next_kind}" if attachment_source else next_kind
                         tip = "115sha 链接（附件，跳过）"

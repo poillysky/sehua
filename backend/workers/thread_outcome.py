@@ -33,8 +33,10 @@ from parsers.thread_gates import (
     is_thread_login_required,
     is_thread_moderator_blocked,
     looks_like_attachment_zone,
+    is_missing_thread,
     page_title,
     post_text,
+    should_skip_as_115sha_only,
     thread_typeid_mismatch,
     title_implies_resource,
     title_is_115sha_without_ed2k_magnet,
@@ -109,6 +111,14 @@ def judge_thread_html(
     if not title_recognizable(title) and title_recognizable(list_title):
         title = list_title
     text = post_text(html)
+    # 与 parse_thread_dual 对齐：目标链/网盘判定以楼主语料为准，避免回帖磁力干扰
+    try:
+        from parsers.content import extract_link_corpus_html
+
+        link_corpus = extract_link_corpus_html(html) or text
+    except Exception:
+        link_corpus = text
+    has_lz_target = has_target_link(link_corpus, link_kind)
 
     # 软文 / 安全壳优先（真帖有一楼正文时不会误进这里）
     if is_safe_or_soft_shell(html):
@@ -132,6 +142,10 @@ def judge_thread_html(
         if title_recognizable(page_tit):
             return ThreadOutcome("stub", "帖子需论坛登录", link_kind, page_tit)
         return ThreadOutcome("skipped", "帖子需论坛登录（无有效标题）", link_kind, page_tit or title)
+
+    # 帖子已删 / tid 无效：明确跳过（勿落成「非资源帖」）
+    if is_missing_thread(html, page_tit):
+        return ThreadOutcome("skipped", "帖子不存在（跳过）", link_kind, title)
 
     # 版主/管理员屏蔽：内容不可见，直接跳过（不占位、不重试）
     if is_thread_moderator_blocked(html):
@@ -166,31 +180,38 @@ def judge_thread_html(
                 title,
             )
 
-    # 115sha 直链（正文或已注入的附件语料）：无法按 magnet/ed2k 入库，立即跳过
+    # 115sha 直链：已有 magnet/ed2k 不跳；有附件区则先下附件（rar/zip 里常有磁力）
+    _sha_blob = f"{text or ''}\n{html or ''}"
     if has_115_sha_link(text) or has_115_sha_link(html):
-        from_attach = attachments_already_tried or "postmessage_attach" in (html or "")
-        tip = "115sha 链接（附件，跳过）" if from_attach else "115sha 链接（跳过）"
-        return ThreadOutcome("skipped", tip, link_kind, title)
+        if should_skip_as_115sha_only(_sha_blob):
+            has_attach_corpus = "postmessage_attach" in (html or "")
+            if not attachments_already_tried and looks_like_attachment_zone(html):
+                pass  # 先下附件
+            elif attachments_already_tried and not has_attach_corpus:
+                # 附件已试但未注入（解压失败/空包）：勿把正文 115 目录误标成「附件跳过」
+                pass
+            else:
+                tip = (
+                    "115sha 链接（附件，跳过）"
+                    if has_attach_corpus
+                    else "115sha 链接（跳过）"
+                )
+                return ThreadOutcome("skipped", tip, link_kind, title)
+        # 已有目标链：继续走正文导入 / 附件逻辑
 
     # 115 网盘分享页：有分享链则走正文解析入库（见 parse_thread_dual），不再跳过。
     # 仍跳过：仅标题写 115 分享、正文无实际链接（见下方 title 分支已移除分享标题硬跳）。
 
     # 迅雷云盘（pan.xunlei.com/s/...）：无 ed2k/磁力/115分享时直接跳过
-    if (has_xunlei_share_link(text) or has_xunlei_share_link(html)) and not (
-        has_target_link(text, link_kind) or has_target_link(html, link_kind)
-    ):
+    if (has_xunlei_share_link(text) or has_xunlei_share_link(html)) and not has_lz_target:
         return ThreadOutcome("skipped", "迅雷云盘（跳过）", link_kind, title)
 
     # PikPak（mypikpak.com/s/...）：无目标链时直接跳过
-    if (has_pikpak_share_link(text) or has_pikpak_share_link(html)) and not (
-        has_target_link(text, link_kind) or has_target_link(html, link_kind)
-    ):
+    if (has_pikpak_share_link(text) or has_pikpak_share_link(html)) and not has_lz_target:
         return ThreadOutcome("skipped", "PikPak网盘（跳过）", link_kind, title)
 
     # 百度网盘（pan.baidu.com/s/...）：无目标链时直接跳过
-    if (has_baidu_share_link(text) or has_baidu_share_link(html)) and not (
-        has_target_link(text, link_kind) or has_target_link(html, link_kind)
-    ):
+    if (has_baidu_share_link(text) or has_baidu_share_link(html)) and not has_lz_target:
         return ThreadOutcome("skipped", "百度网盘（跳过）", link_kind, title)
 
     # 标题仅 115sha / 迅雷 / PikPak / 百度、且正文无目标链：不下附件、不重试
@@ -199,7 +220,7 @@ def judge_thread_html(
         list_title
     ):
         return ThreadOutcome("skipped", "115sha 标题（无 ed2k/磁力，跳过）", link_kind, title)
-    _has_body_target = has_target_link(text, link_kind) or has_target_link(html, link_kind)
+    _has_body_target = has_lz_target
     if not _has_body_target and (
         title_is_xunlei_cloud_without_ed2k_magnet(title)
         or title_is_xunlei_cloud_without_ed2k_magnet(list_title)
@@ -222,8 +243,9 @@ def judge_thread_html(
     if is_purchase_required_post(html):
         return ThreadOutcome("stub", "需购买贴", link_kind, title)
 
-    # Body has target link?
-    if has_target_link(text, link_kind) or has_target_link(html, link_kind):
+    # Body has target link? 仅认楼主语料（与 parse_thread_dual 一致）
+    # 回帖/侧栏误检到的链不走进「有链但无主资源」失败。
+    if has_lz_target:
         parsed = parse_thread_dual(
             html,
             tid=0,
@@ -249,21 +271,51 @@ def judge_thread_html(
                 parsed.title or title,
                 parsed=parsed,
             )
-        # 全页误检到链（如封面 tip 里的 ed2k），正文解析无主资源：
-        # 未试附件且有附件区 → 继续下附件；已试附件 → 落到无权/失败分支。
+        # 楼主语料检出目标链形态但解析无主资源：
+        # 实为网盘 → 跳过；有附件区 → 继续下附件；否则失败。
         if not attachments_already_tried and not looks_like_attachment_zone(html):
+            if is_non_target_cloud_share(link_kind=link_kind, text=link_corpus):
+                return ThreadOutcome(
+                    "skipped", "非ED2K资源（网盘分享）", link_kind, title
+                )
+            if (
+                has_baidu_share_link(link_corpus)
+                or has_xunlei_share_link(link_corpus)
+                or has_pikpak_share_link(link_corpus)
+            ):
+                tip = (
+                    "百度网盘（跳过）"
+                    if has_baidu_share_link(link_corpus)
+                    else (
+                        "迅雷云盘（跳过）"
+                        if has_xunlei_share_link(link_corpus)
+                        else "PikPak网盘（跳过）"
+                    )
+                )
+                return ThreadOutcome("skipped", tip, link_kind, title)
             return ThreadOutcome("failed", "解析入库失败（有链但无主资源）", link_kind, title)
 
     # No usable body link yet — attachment strategy (ed2k-aligned)
     if not attachments_already_tried and looks_like_attachment_zone(html):
         if link_kind in {"magnet", "both"}:
+            from parsers.attachments import pick_magnet_attachment_kind
+
+            attach_kind = pick_magnet_attachment_kind(base_url or "", html)
             return ThreadOutcome(
                 "need_attachments",
-                "正文无磁力，尝试种子附件" if link_kind == "magnet" else "正文无链，尝试种子附件",
+                (
+                    "正文无磁力，尝试 Excel/文本附件"
+                    if attach_kind == "txt_tail"
+                    else (
+                        "正文无磁力，尝试种子附件"
+                        if link_kind == "magnet"
+                        else "正文无链，尝试种子附件"
+                    )
+                ),
                 link_kind,
                 title,
                 need_attachments=True,
-                attachment_kind="torrent",
+                attachment_kind=attach_kind,
             )
         if link_kind == "ed2k":
             from parsers.attachments import pick_ed2k_attachment_kind
@@ -274,7 +326,7 @@ def judge_thread_html(
                 (
                     "正文无电驴/磁力，尝试种子附件转磁力"
                     if attach_kind == "torrent"
-                    else "正文无电驴/磁力，尝试尾部 txt/压缩包附件"
+                    else "正文无电驴/磁力，尝试尾部 txt/压缩包/Excel 附件"
                 ),
                 link_kind,
                 title,

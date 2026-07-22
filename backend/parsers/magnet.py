@@ -28,16 +28,28 @@ _SPACED_MAGNET_CORE_RE = re.compile(
     re.I,
 )
 
+# 发帖/附件防和谐：去掉冒号 → magnetxt=urnbtih:HASH 或 magnet?xt=urnbtih:HASH
+_COLONLESS_MAGNET_RE = re.compile(
+    r"magnet\s*\??\s*xt\s*=\s*urn\s*btih\s*:\s*"
+    r"([A-Fa-f0-9]{40}|[a-zA-Z2-7]{32})",
+    re.I,
+)
+
 
 def normalize_magnet_corpus(text: str) -> str:
-    """把全角标点 / 被空格拆开的磁力还原成标准 magnet:?xt=urn:btih:...。"""
+    """把全角标点 / 被空格拆开 / 去冒号防和谐的磁力还原成标准形式。"""
     if not text:
         return ""
     out = text.translate(_FULLWIDTH_TRANS)
-    return _SPACED_MAGNET_CORE_RE.sub(
+    out = _SPACED_MAGNET_CORE_RE.sub(
         lambda m: f"magnet:?xt=urn:btih:{m.group(1)}",
         out,
     )
+    out = _COLONLESS_MAGNET_RE.sub(
+        lambda m: f"magnet:?xt=urn:btih:{m.group(1)}",
+        out,
+    )
+    return out
 
 
 @dataclass(slots=True)

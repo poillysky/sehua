@@ -14,10 +14,12 @@ from db.queue import (
     ACCOUNT_DISCARDED_KINDS,
     DISCARDED_REQUEUE_KINDS,
     count_discarded_kind,
+    list_discarded_by_tids,
     list_discarded_kind,
     mark_pending_retry,
     mark_thread_done,
     mark_thread_skipped,
+    requeue_discarded_by_tids,
     requeue_for_recrawl,
     tid_from_url,
 )
@@ -1074,4 +1076,274 @@ async def recrawl_account_stubs() -> dict[str, Any]:
         "remaining": rem_left,
         "items": items,
         "note": "含优先占位 + 未处理失败 + 无阅读权限跳过；升级成功会删除旧占位",
+    }
+
+
+async def recrawl_discarded_tids(tids: list[int]) -> dict[str, Any]:
+    """未处理明细批量重爬：按 tid 直接抓（不依赖当前活跃板队列）。
+
+    - 连续调度中：只重新入队，由调度吃队列
+    - 空闲：占用 running，共用会话顺序抓完，并写活动日志
+    """
+    clean: list[int] = []
+    seen: set[int] = set()
+    for raw in tids or []:
+        try:
+            tid = int(raw)
+        except (TypeError, ValueError):
+            continue
+        if tid <= 0 or tid in seen:
+            continue
+        seen.add(tid)
+        clean.append(tid)
+    if not clean:
+        return {
+            "ok": False,
+            "error": "未提供有效 tid",
+            "selected": 0,
+            "requeued": 0,
+            "crawled": 0,
+            "imports": 0,
+            "stubs": 0,
+            "skipped": 0,
+            "failed": 0,
+            "items": [],
+        }
+
+    conn = connect()
+    try:
+        cfg = _load_crawler_cfg(conn)
+        rows = list_discarded_by_tids(conn, clean)
+    finally:
+        conn.close()
+
+    if not rows:
+        _log_activity(f"未处理批量重爬 · 选中 {len(clean)} · 无可重跑（可能已处理）")
+        return {
+            "ok": True,
+            "mode": "noop",
+            "selected": len(clean),
+            "matched": 0,
+            "requeued": 0,
+            "crawled": 0,
+            "imports": 0,
+            "stubs": 0,
+            "skipped": 0,
+            "failed": 0,
+            "items": [],
+            "note": "所选 tid 均不在失败/跳过队列（可能已处理）",
+        }
+
+    st = crawl_status()
+    looping = bool(st.get("looping"))
+    if looping:
+        conn = connect()
+        try:
+            requeued = requeue_discarded_by_tids(conn, [int(r["tid"]) for r in rows])
+        finally:
+            conn.close()
+        _log_activity(
+            f"未处理批量重爬 · 入队 {requeued} 条（连续调度中）· 选中 {len(clean)}"
+        )
+        return {
+            "ok": True,
+            "mode": "queued",
+            "selected": len(clean),
+            "matched": len(rows),
+            "requeued": requeued,
+            "crawled": 0,
+            "imports": 0,
+            "stubs": 0,
+            "skipped": 0,
+            "failed": 0,
+            "items": [
+                {
+                    "ok": True,
+                    "queued": True,
+                    "tid": int(r.get("tid") or 0),
+                    "url": r.get("url"),
+                    "title": r.get("thread_title") or "",
+                }
+                for r in rows
+            ],
+            "note": f"连续调度进行中：已重新入队 {requeued} 条，由调度依次抓取",
+        }
+
+    lock = try_begin_exclusive("discarded_recrawl")
+    if not lock.get("ok"):
+        conn = connect()
+        try:
+            requeued = requeue_discarded_by_tids(conn, [int(r["tid"]) for r in rows])
+        finally:
+            conn.close()
+        _log_activity(
+            f"未处理批量重爬 · 爬虫忙 · 已入队 {requeued} 条 · 选中 {len(clean)}"
+        )
+        return {
+            "ok": True,
+            "mode": "queued",
+            "selected": len(clean),
+            "matched": len(rows),
+            "requeued": requeued,
+            "crawled": 0,
+            "imports": 0,
+            "stubs": 0,
+            "skipped": 0,
+            "failed": 0,
+            "items": [],
+            "note": f"爬虫忙：已重新入队 {requeued} 条，空闲后由队列抓取",
+            "reason": lock.get("reason") or "busy",
+        }
+
+    session: Optional[SessionManager] = None
+    fetcher: Optional[Fetcher] = None
+    items: list[dict[str, Any]] = []
+    imports_n = 0
+    stubs_n = 0
+    skipped_n = 0
+    failed_n = 0
+    crawled_n = 0
+
+    try:
+        _log_activity(f"未处理批量重爬开始 · {len(rows)} 条")
+        THROTTLE.clear_stop()
+        session = session_from_config(cfg)
+        await session.bootstrap()
+        fetcher = fetcher_from_config(session, cfg)
+
+        for i, row in enumerate(rows):
+            if THROTTLE.should_stop():
+                _log_activity("未处理批量重爬 · 收到停止请求")
+                break
+
+            thread_url = str(row.get("url") or "").strip()
+            tid = int(row.get("tid") or tid_from_url(thread_url) or 0)
+            title = str(row.get("thread_title") or "")
+            board_key = str(row.get("board_fid") or "").strip() or str(
+                cfg.get("active_board_fid") or ""
+            )
+            stored_name = str(row.get("board_name") or "").strip()
+            pol = get_board_policy(board_key)
+            if stored_name and (" · " in stored_name or "-" in stored_name):
+                board_name = (
+                    stored_name.replace("-", " · ", 1)
+                    if " · " not in stored_name
+                    else stored_name
+                )
+            else:
+                board_name = pol.name
+
+            if not tid or not thread_url:
+                failed_n += 1
+                items.append(
+                    {
+                        "ok": False,
+                        "tid": tid or None,
+                        "url": thread_url,
+                        "error": "缺少 tid/url",
+                    }
+                )
+                _log_activity("未处理重爬跳过 · 缺少 tid/url")
+                continue
+
+            _log_activity(f"未处理重爬 · tid={tid} · {title[:40]}")
+            try:
+                await THROTTLE.sleep()
+                if THROTTLE.should_stop():
+                    _log_activity("未处理批量重爬 · 收到停止请求")
+                    break
+                outcome = await process_thread(
+                    tid,
+                    board_fid=board_key,
+                    board_name=board_name,
+                    list_title=title,
+                    persist=True,
+                    crawler_config=cfg,
+                    session=session,
+                    fetcher=fetcher,
+                )
+            except Exception as exc:
+                log.exception("discarded recrawl failed tid=%s", tid)
+                conn = connect()
+                try:
+                    mark_pending_retry(conn, thread_url, str(exc)[:200], backoff_seconds=600)
+                finally:
+                    conn.close()
+                failed_n += 1
+                crawled_n += 1
+                items.append(
+                    {
+                        "ok": False,
+                        "tid": tid,
+                        "url": thread_url,
+                        "title": title,
+                        "error": str(exc),
+                    }
+                )
+                _log_activity(f"未处理重爬失败 · tid={tid} · {exc}")
+                continue
+
+            crawled_n += 1
+            verdict = str(outcome.get("verdict") or "failed")
+            label = str(outcome.get("verdict_label") or outcome.get("outcome") or verdict)
+            conn = connect()
+            try:
+                _apply_queue_outcome(conn, thread_url, outcome)
+            finally:
+                conn.close()
+
+            if verdict == "import":
+                imports_n += 1
+            elif verdict == "stub":
+                stubs_n += 1
+            elif verdict == "skipped":
+                skipped_n += 1
+            elif verdict in {"retry", "need_attachments"} or "软文" in str(
+                outcome.get("outcome") or ""
+            ):
+                # 已回异常/待抓队列
+                pass
+            else:
+                failed_n += 1
+
+            items.append(
+                {
+                    "ok": verdict in _IMPORT_VERDICTS or verdict == "skipped",
+                    "tid": tid,
+                    "url": thread_url,
+                    "title": title,
+                    "verdict": verdict,
+                    "label": label,
+                }
+            )
+            _log_activity(f"未处理重爬 · tid={tid} · {label}")
+
+            if i + 1 < len(rows):
+                await asyncio.sleep(0.6)
+    finally:
+        if session is not None:
+            try:
+                await session.close()
+            except Exception:
+                pass
+        end_exclusive()
+
+    note = (
+        f"已重爬 {crawled_n}/{len(rows)} · 入库 {imports_n} · 占位 {stubs_n}"
+        f" · 跳过 {skipped_n} · 失败 {failed_n}"
+    )
+    _log_activity(f"未处理批量重爬结束 · {note}")
+    return {
+        "ok": imports_n > 0 or stubs_n > 0 or skipped_n > 0 or failed_n == 0,
+        "mode": "immediate",
+        "selected": len(clean),
+        "matched": len(rows),
+        "requeued": 0,
+        "crawled": crawled_n,
+        "imports": imports_n,
+        "stubs": stubs_n,
+        "skipped": skipped_n,
+        "failed": failed_n,
+        "items": items,
+        "note": note,
     }

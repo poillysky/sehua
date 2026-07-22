@@ -106,13 +106,15 @@
     "forum": "论坛: ",
     "description": "资源简介",
     "p115_save": "转存115",
-    "p115_save_extract": "转存+解压"
+    "p115_save_extract": "转存+解压",
+    "p115_share_save": "转存分享"
   },
   "Detail": {
     "details": "资源详情",
     "description": "资源简介",
     "preview": "内容预览",
     "ed2k": "下载链接",
+    "share115": "115分享链接",
     "file_list": "文件列表",
     "copy": "复制下载链接",
     "back": "返回列表",
@@ -132,6 +134,7 @@
     "translate_failed": "翻译失败，请稍后重试",
     "p115_success": "已转存 {count} 条到 115 云下载",
     "p115_success_extract": "已转存 {count} 条；后台轮询转存（最长约 30 秒），完成后立即云解压",
+    "p115_share_success": "已转存 {count} 个 115 分享到网盘",
     "p115_failed": "转存 115 失败",
     "p115_need_config": "尚未配置 115，请先填写 Cookie"
   }

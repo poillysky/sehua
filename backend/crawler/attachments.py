@@ -1,10 +1,11 @@
-"""下载并解析帖内附件：txt / zip·rar 内 txt · torrent→magnet。"""
+"""下载并解析帖内附件：txt / zip·rar 内 txt·excel·doc · torrent→magnet。"""
 
 from __future__ import annotations
 
 import base64
 import io
 import logging
+import re
 import shutil
 import subprocess
 import tempfile
@@ -17,12 +18,13 @@ from crawler.session import SessionManager
 from parsers.attachments import (
     AttachmentFetchResult,
     DownloadAttachment,
+    MAX_ATTACHMENTS_PER_THREAD,
     extract_download_attachments,
+    filter_all_link_attachments,
     filter_tail_attachments,
     filter_torrent_attachments,
     is_attachment_denied,
 )
-from parsers.thread_gates import has_115_sha_link
 from parsers.torrent import parse_torrent_bytes
 
 log = logging.getLogger(__name__)
@@ -50,7 +52,7 @@ def _rar_tool_candidates() -> list[str]:
 
 
 def _archive_password_candidates(html: str) -> list[str]:
-    """从一楼正文抽解压密码，并生成常见变体（空格/@）。"""
+    """从一楼正文抽解压密码，并生成常见变体（空格/@/误粘扩展名）。"""
     from parsers.content import extract_password, parse_thread_content
 
     content = parse_thread_content(html or "")
@@ -73,6 +75,13 @@ def _archive_password_candidates(html: str) -> list[str]:
         variants.append(raw[:-1].strip())
     elif "@" not in raw and "." in raw:
         variants.append(raw + "@")
+    # CF 常把 MyBigDick@host 编成 MyBigDick@host.txt；实际解压不要 .txt
+    for base in list(variants):
+        low = base.lower()
+        for suf in (".txt", ".rar", ".zip", ".7z", ".doc", ".docx"):
+            if low.endswith(suf) and len(base) > len(suf) + 1:
+                variants.append(base[: -len(suf)].rstrip("."))
+                break
     for cand in variants:
         c = (cand or "").strip()
         if c and c not in seen:
@@ -83,6 +92,83 @@ def _archive_password_candidates(html: str) -> list[str]:
 
 def _txt_names_in_archive(names: list[str]) -> list[str]:
     return [n for n in names if n and not n.endswith("/") and n.lower().endswith(".txt")]
+
+
+def _excel_names_in_archive(names: list[str]) -> list[str]:
+    return [
+        n
+        for n in names
+        if n
+        and not n.endswith("/")
+        and n.lower().endswith((".xlsx", ".xlsm", ".xls", ".xlsb"))
+    ]
+
+
+def _csv_names_in_archive(names: list[str]) -> list[str]:
+    return [
+        n
+        for n in names
+        if n and not n.endswith("/") and n.lower().endswith(".csv")
+    ]
+
+
+def _torrent_names_in_archive(names: list[str]) -> list[str]:
+    return [
+        n
+        for n in names
+        if n and not n.endswith("/") and n.lower().endswith(".torrent")
+    ]
+
+
+def _doc_names_in_archive(names: list[str]) -> list[str]:
+    return [
+        n
+        for n in names
+        if n
+        and not n.endswith("/")
+        and n.lower().endswith((".doc", ".docx"))
+    ]
+
+
+def _link_member_names_in_archive(names: list[str]) -> list[str]:
+    """压缩包内待试文件：txt → excel/csv → doc → torrent（逐个轮询）。"""
+    return (
+        _txt_names_in_archive(names)
+        + _excel_names_in_archive(names)
+        + _csv_names_in_archive(names)
+        + _doc_names_in_archive(names)
+        + _torrent_names_in_archive(names)
+    )
+
+
+def _text_has_importable_link(text: str) -> bool:
+    low = (text or "").lower()
+    return "magnet:" in low or "ed2k://" in low
+
+
+def _pick_best_archive_texts(chunks: list[str]) -> str:
+    """合并多文件语料：有 magnet/ed2k 的优先全保留；否则保留全部非空。"""
+    cleaned = [c.strip() for c in chunks if c and c.strip()]
+    if not cleaned:
+        return ""
+    with_links = [c for c in cleaned if _text_has_importable_link(c)]
+    if with_links:
+        return "\n\n".join(with_links)
+    return "\n\n".join(cleaned)
+
+
+def _text_from_archive_member(name: str, data: bytes) -> str:
+    lower = (name or "").lower()
+    if lower.endswith(".torrent"):
+        magnet = parse_torrent_bytes(data, filename_hint=name)
+        return magnet.link if magnet else ""
+    if lower.endswith((".xlsx", ".xlsm", ".xls", ".xlsb")):
+        return _extract_text_from_excel(data, name)
+    if lower.endswith((".doc", ".docx")):
+        return _extract_text_from_doc(data, name)
+    if lower.endswith(".txt") or lower.endswith(".csv"):
+        return _decode_bytes(data)
+    return ""
 
 
 def _nested_archive_members(names: list[str]) -> list[tuple[str, str]]:
@@ -124,7 +210,7 @@ def _extract_via_7z(
     suffix: str,
     depth: int = 0,
 ) -> str:
-    """用 7z 解出压缩包内首个非空 .txt；内层 zip/rar 用同一组密码再解。"""
+    """用 7z 解出压缩包内全部 txt/excel；内层 zip/rar 用帖内密码逐个再解。"""
     if depth > 24:
         return ""
     seven = _which_7z()
@@ -160,17 +246,32 @@ def _extract_via_7z(
             if proc.returncode not in (0, 1):
                 # 0=ok 1=warning；密码错多为非 0
                 continue
+            member_texts: list[str] = []
             for path in sorted(out_dir.rglob("*")):
                 if not path.is_file():
                     continue
-                if path.suffix.lower() == ".txt":
-                    try:
-                        text = _decode_bytes(path.read_bytes())
-                    except OSError:
-                        continue
-                    if text.strip():
-                        return text
-            # 外层解开后若只有内层压缩包，继续用帖内密码解
+                suf = path.suffix.lower()
+                if suf not in {
+                    ".txt",
+                    ".csv",
+                    ".xlsx",
+                    ".xlsm",
+                    ".xls",
+                    ".xlsb",
+                    ".doc",
+                    ".docx",
+                    ".torrent",
+                }:
+                    continue
+                try:
+                    raw_member = path.read_bytes()
+                except OSError:
+                    continue
+                text = _text_from_archive_member(path.name, raw_member)
+                if text.strip():
+                    member_texts.append(text)
+                    log.debug("7z member %s → %s chars", path.name, len(text))
+            # 内层 zip/rar：逐个再解
             for path in sorted(out_dir.rglob("*")):
                 if not path.is_file():
                     continue
@@ -191,7 +292,10 @@ def _extract_via_7z(
                     nested, kind, passwords=pwds, depth=depth + 1
                 )
                 if text.strip():
-                    return text
+                    member_texts.append(text)
+            best = _pick_best_archive_texts(member_texts)
+            if best.strip():
+                return best
     return ""
 
 
@@ -212,10 +316,15 @@ def _extract_zip_pyzipper(
                 if pwd:
                     archive.setpassword(pwd.encode("utf-8"))
                 names = archive.namelist()
-                for name in _txt_names_in_archive(names):
-                    text = _decode_bytes(archive.read(name))
+                member_texts: list[str] = []
+                for name in _link_member_names_in_archive(names):
+                    try:
+                        raw_member = archive.read(name)
+                    except Exception:
+                        continue
+                    text = _text_from_archive_member(name, raw_member)
                     if text.strip():
-                        return text
+                        member_texts.append(text)
                 for name, kind in _nested_archive_members(names):
                     try:
                         nested = archive.read(name)
@@ -225,7 +334,10 @@ def _extract_zip_pyzipper(
                         nested, kind, passwords=pwds, depth=depth + 1
                     )
                     if text.strip():
-                        return text
+                        member_texts.append(text)
+                best = _pick_best_archive_texts(member_texts)
+                if best.strip():
+                    return best
         except Exception:
             continue
     return ""
@@ -255,10 +367,15 @@ def _extract_rar_text(
                         try:
                             if pwd:
                                 archive.setpassword(pwd)
-                            for name in _txt_names_in_archive(names):
-                                text = _decode_bytes(archive.read(name))
+                            member_texts: list[str] = []
+                            for name in _link_member_names_in_archive(names):
+                                try:
+                                    raw_member = archive.read(name)
+                                except Exception:
+                                    continue
+                                text = _text_from_archive_member(name, raw_member)
                                 if text.strip():
-                                    return text
+                                    member_texts.append(text)
                             for name, kind in _nested_archive_members(names):
                                 try:
                                     nested = archive.read(name)
@@ -268,7 +385,10 @@ def _extract_rar_text(
                                     nested, kind, passwords=pwds, depth=depth + 1
                                 )
                                 if text.strip():
-                                    return text
+                                    member_texts.append(text)
+                            best = _pick_best_archive_texts(member_texts)
+                            if best.strip():
+                                return best
                             # 无密码时若已列全名仍读不出，再试密码
                             if not pwd and not archive.needs_password():
                                 break
@@ -309,15 +429,17 @@ def _extract_zip_txt(
                     continue
                 if b not in pwd_attempts:
                     pwd_attempts.append(b)
-        for name in _txt_names_in_archive(names):
+        member_texts: list[str] = []
+        for name in _link_member_names_in_archive(names):
             for pwd in pwd_attempts:
                 try:
                     raw = archive.read(name, pwd=pwd) if pwd else archive.read(name)
                 except Exception:
                     continue
-                text = _decode_bytes(raw)
+                text = _text_from_archive_member(name, raw)
                 if text.strip():
-                    return text
+                    member_texts.append(text)
+                    break
         for name, kind in _nested_archive_members(names):
             for pwd in pwd_attempts:
                 try:
@@ -328,7 +450,11 @@ def _extract_zip_txt(
                     nested, kind, passwords=pwds, depth=depth + 1
                 )
                 if text.strip():
-                    return text
+                    member_texts.append(text)
+                    break
+        best = _pick_best_archive_texts(member_texts)
+        if best.strip():
+            return best
     finally:
         archive.close()
     # ZipCrypto 失败，或 AES（stdlib 不解）→ pyzipper / 7z + 帖内密码
@@ -351,6 +477,184 @@ def _extract_txt_from_archive(
     return ""
 
 
+_LINK_IN_BINARY_RE = re.compile(
+    r"(?:magnet:\?xt=urn:btih:[a-zA-Z0-9]{32,60}[^\s\"'<>]*)"
+    # ed2k 文件名常含空格/中文，不能用 [^\s]+ 截断
+    r"|(?:ed2k://\|file\|[^\|]+\|\d+\|[A-Fa-f0-9]{32}\|/?)",
+    re.I,
+)
+
+
+def _extract_text_from_xlsx_zip(data: bytes) -> str:
+    """xlsx 实为 zip+xml：扫 XML 文本拼出单元格内容。"""
+    try:
+        zf = zipfile.ZipFile(io.BytesIO(data))
+    except zipfile.BadZipFile:
+        return ""
+    chunks: list[str] = []
+    try:
+        for name in zf.namelist():
+            lower = name.lower()
+            if not (lower.endswith(".xml") or lower.endswith(".xml.rels")):
+                continue
+            if "xl/" not in lower:
+                continue
+            try:
+                raw = zf.read(name)
+            except Exception:
+                continue
+            text = _decode_bytes(raw)
+            # 去掉标签，保留属性/文本里的 magnet、ed2k
+            plain = re.sub(r"<[^>]+>", "\n", text)
+            plain = re.sub(r"&amp;", "&", plain)
+            plain = re.sub(r"&lt;", "<", plain)
+            plain = re.sub(r"&gt;", ">", plain)
+            plain = re.sub(r"&#(\d+);", lambda m: chr(int(m.group(1))), plain)
+            if "magnet:" in plain.lower() or "ed2k://" in plain.lower():
+                chunks.append(plain)
+            else:
+                # 仍保留有意义的非空行，便于其它解析
+                lines = [ln.strip() for ln in plain.splitlines() if ln.strip()]
+                if lines:
+                    chunks.extend(lines[:2000])
+    finally:
+        zf.close()
+    return "\n".join(chunks)
+
+
+def _extract_text_from_excel_openpyxl(data: bytes) -> str:
+    try:
+        import openpyxl
+    except ImportError:
+        return ""
+    try:
+        wb = openpyxl.load_workbook(io.BytesIO(data), read_only=True, data_only=True)
+    except Exception as exc:
+        log.debug("openpyxl load failed: %s", exc)
+        return ""
+    lines: list[str] = []
+    try:
+        for sheet in wb.worksheets:
+            for row in sheet.iter_rows(values_only=True):
+                for cell in row:
+                    if cell is None:
+                        continue
+                    s = str(cell).strip()
+                    if s:
+                        lines.append(s)
+    finally:
+        try:
+            wb.close()
+        except Exception:
+            pass
+    return "\n".join(lines)
+
+
+def _links_from_blob_text(blob: str) -> list[str]:
+    found = _LINK_IN_BINARY_RE.findall(blob or "")
+    out: list[str] = []
+    for item in found:
+        if isinstance(item, tuple):
+            s = next((p for p in item if p), "")
+        else:
+            s = item
+        s = (s or "").strip()
+        if s and s not in out:
+            out.append(s)
+    return out
+
+
+def _extract_links_from_binary_blob(data: bytes) -> str:
+    """旧版 .xls / .doc 等二进制里直接扫 magnet/ed2k（ASCII + UTF-16LE）。"""
+    if not data:
+        return ""
+    out: list[str] = []
+    seen: set[str] = set()
+    for blob in (
+        data.decode("latin-1", errors="ignore"),
+        data.decode("utf-16-le", errors="ignore"),
+        data.decode("utf-16-be", errors="ignore"),
+    ):
+        for s in _links_from_blob_text(blob):
+            if s not in seen:
+                seen.add(s)
+                out.append(s)
+    return "\n".join(out)
+
+
+def _xml_plain_text(xml: str) -> str:
+    """去掉 XML/Word 标签，保留段落换行与实体解码。"""
+    plain = re.sub(r"</w:p>", "\n", xml or "", flags=re.I)
+    plain = re.sub(r"<[^>]+>", "", plain)
+    plain = re.sub(r"&amp;", "&", plain)
+    plain = re.sub(r"&lt;", "<", plain)
+    plain = re.sub(r"&gt;", ">", plain)
+    plain = re.sub(r"&#(\d+);", lambda m: chr(int(m.group(1))), plain)
+    plain = re.sub(r"&#x([0-9a-fA-F]+);", lambda m: chr(int(m.group(1), 16)), plain)
+    return plain
+
+
+def _extract_text_from_docx(data: bytes) -> str:
+    """OOXML .docx：读 word/*.xml 文本，并扫内嵌 magnet/ed2k。"""
+    chunks: list[str] = []
+    try:
+        zf = zipfile.ZipFile(io.BytesIO(data))
+    except Exception:
+        return _extract_links_from_binary_blob(data)
+    try:
+        names = [
+            n
+            for n in zf.namelist()
+            if n.lower().startswith("word/") and n.lower().endswith(".xml")
+        ]
+        # document.xml 优先
+        names.sort(key=lambda n: (0 if n.lower().endswith("document.xml") else 1, n))
+        for name in names:
+            try:
+                raw = zf.read(name)
+            except Exception:
+                continue
+            plain = _xml_plain_text(_decode_bytes(raw))
+            if plain.strip():
+                chunks.append(plain)
+    finally:
+        zf.close()
+    text = "\n".join(chunks).strip()
+    binary_links = _extract_links_from_binary_blob(data)
+    if binary_links and binary_links not in text:
+        text = f"{text}\n{binary_links}".strip() if text else binary_links
+    return text
+
+
+def _extract_text_from_doc(data: bytes, filename: str = "") -> str:
+    """从 Word 附件抽出文本 / 内嵌磁力·电驴。.docx 走 OOXML；.doc 扫二进制。"""
+    if not data:
+        return ""
+    lower = (filename or "").lower()
+    if lower.endswith(".docx") or data[:2] == b"PK":
+        return _extract_text_from_docx(data)
+    return _extract_links_from_binary_blob(data)
+
+
+def _extract_text_from_excel(data: bytes, filename: str = "") -> str:
+    """从 Excel 附件抽出单元格文本 / 内嵌磁力·电驴。"""
+    if not data:
+        return ""
+    lower = (filename or "").lower()
+    # OOXML
+    if lower.endswith((".xlsx", ".xlsm", ".xlsb")) or data[:2] == b"PK":
+        text = _extract_text_from_excel_openpyxl(data)
+        if not text.strip():
+            text = _extract_text_from_xlsx_zip(data)
+        if text.strip():
+            return text
+    # 旧 BIFF .xls：二进制扫链；有 openpyxl 也读不了 xls
+    binary_links = _extract_links_from_binary_blob(data)
+    if binary_links.strip():
+        return binary_links
+    return ""
+
+
 def _text_from_attachment_bytes(
     attachment: DownloadAttachment,
     data: bytes,
@@ -361,6 +665,10 @@ def _text_from_attachment_bytes(
         return magnet.link if magnet else ""
     if attachment.kind in ("zip", "rar"):
         return _extract_txt_from_archive(data, attachment.kind, passwords=passwords)
+    if attachment.kind == "excel":
+        return _extract_text_from_excel(data, attachment.name)
+    if attachment.kind == "doc":
+        return _extract_text_from_doc(data, attachment.name)
     text = _decode_bytes(data)
     if "<html" in text.lower()[:200]:
         return ""
@@ -372,6 +680,17 @@ def _attachment_ui_suffix(attachment: DownloadAttachment) -> str:
         return ".torrent"
     if attachment.kind in ("zip", "rar"):
         return f".{attachment.kind}"
+    if attachment.kind == "excel":
+        lower = (attachment.name or "").lower()
+        for suf in (".xlsx", ".xlsm", ".xls", ".xlsb"):
+            if lower.endswith(suf):
+                return suf
+        return ".xlsx"
+    if attachment.kind == "doc":
+        lower = (attachment.name or "").lower()
+        if lower.endswith(".docx"):
+            return ".docx"
+        return ".doc"
     return ".txt"
 
 
@@ -439,19 +758,27 @@ class AttachmentDownloader:
         suffix: str,
     ) -> tuple[bytes | None, bool]:
         async def _on_page(page: Any) -> tuple[bytes | None, bool]:
+            from urllib.parse import parse_qs, unquote, urlparse
+
             locator = page.locator("a", has_text=attachment.name).first
             if await locator.count() == 0:
                 aid = ""
-                if "aid=" in attachment.url:
-                    aid = attachment.url.split("aid=")[-1][:16]
+                if "aid=" in (attachment.url or ""):
+                    qs = parse_qs(urlparse(attachment.url).query)
+                    aid = unquote((qs.get("aid") or [""])[0]).strip()
+                    if not aid:
+                        aid = unquote(attachment.url.split("aid=", 1)[-1].split("&", 1)[0])
                 if aid:
-                    locator = page.locator(f"a[href*='attachment'][href*='{aid}']").first
+                    # 完整 aid 过长时用前缀；勿截太短导致点到别的附件
+                    needle = aid[:24] if len(aid) > 24 else aid
+                    locator = page.locator(f"a[href*='attachment'][href*='{needle}']").first
             if await locator.count() == 0:
                 return None, False
 
+            wait_ms = max(8000, min(int(timeout * 1000), 60000))
             try:
-                async with page.expect_download(timeout=min(timeout, 12) * 1000) as download_info:
-                    await locator.click(timeout=4000)
+                async with page.expect_download(timeout=wait_ms) as download_info:
+                    await locator.click(timeout=5000)
                 download = await download_info.value
                 temp_path = Path(tempfile.gettempdir()) / f"sht-attach-{int(time.time() * 1000)}{suffix}"
                 await download.save_as(temp_path)
@@ -463,10 +790,10 @@ class AttachmentDownloader:
                 pass
 
             try:
-                async with page.expect_popup(timeout=min(timeout, 10) * 1000) as popup_info:
-                    await locator.click(timeout=4000)
+                async with page.expect_popup(timeout=min(wait_ms, 20000)) as popup_info:
+                    await locator.click(timeout=5000)
                 popup = await popup_info.value
-                await popup.wait_for_load_state("domcontentloaded", timeout=min(timeout, 15) * 1000)
+                await popup.wait_for_load_state("domcontentloaded", timeout=min(wait_ms, 20000))
                 html = await popup.content()
                 if is_attachment_denied(html):
                     log.info("Attachment popup denied: %s", attachment.name)
@@ -528,14 +855,17 @@ class AttachmentDownloader:
         html: str,
         base_url: str,
         *,
-        max_files: int = 3,
+        max_files: int = MAX_ATTACHMENTS_PER_THREAD,
         timeout: float = 45,
     ) -> AttachmentFetchResult:
-        """电驴板：正文无链时下尾部 txt/zip/rar 并抽出文本。"""
+        """正文无链：按 txt → excel → doc → zip/rar → torrent 逐个轮询，不提前停。
+
+        压缩包内也会逐个试 txt/excel/doc，嵌套 zip/rar 用帖内密码递归再解。
+        """
         if not self.session._ready:
             return AttachmentFetchResult(failed=True)
 
-        attachments = filter_tail_attachments(
+        attachments = filter_all_link_attachments(
             extract_download_attachments(base_url, html),
             limit=max_files,
         )
@@ -559,86 +889,45 @@ class AttachmentDownloader:
                 if downloaded:
                     any_downloaded = True
                 if not text.strip():
+                    log.info(
+                        "Attachment %s (%s) yielded no text — continue next",
+                        attachment.name,
+                        attachment.kind,
+                    )
                     continue
                 chunks.append(text)
                 log.info(
-                    "Downloaded %s attachment %s (%s chars)",
-                    attachment.kind,
+                    "Attachment %s (%s) → %s chars — continue polling",
                     attachment.name,
+                    attachment.kind,
                     len(text),
                 )
-                # 附件一旦识别 115sha，立即停止继续下其余附件
-                if has_115_sha_link(text):
-                    log.info(
-                        "115sha in attachment %s — stop further attachment downloads",
-                        attachment.name,
-                    )
-                    break
             except Exception as exc:
                 log.warning("Attachment download failed %s: %s", attachment.name, exc)
 
-        result_text = "\n\n".join(chunks)
+        result_text = _pick_best_archive_texts(chunks)
         if result_text:
-            # 保留 denied：若语料仍解析不出链，上层可占位入库
             return AttachmentFetchResult(
                 text=result_text, downloaded=True, denied=any_denied
             )
         if any_denied:
-            # 任一附件明确无权限，且没有可用链接文本 → 占位；勿被「空附件 downloaded」掩盖
             return AttachmentFetchResult(downloaded=any_downloaded, denied=True)
         if any_downloaded:
             return AttachmentFetchResult(downloaded=True)
         return AttachmentFetchResult(failed=True)
+
     async def download_torrents(
         self,
         html: str,
         base_url: str,
         *,
-        max_files: int = 3,
+        max_files: int = MAX_ATTACHMENTS_PER_THREAD,
         timeout: float = 45,
     ) -> AttachmentFetchResult:
-        """磁力板：正文无 magnet 时下 .torrent → magnet URI。"""
-        if not self.session._ready:
-            return AttachmentFetchResult(failed=True)
-
-        attachments = filter_torrent_attachments(
-            extract_download_attachments(base_url, html),
-            limit=max_files,
+        """与 download_tail 相同：全类型附件逐个轮询（含种子转磁力）。"""
+        return await self.download_tail(
+            html, base_url, max_files=max_files, timeout=timeout
         )
-        if not attachments:
-            return AttachmentFetchResult()
-
-        chunks: list[str] = []
-        any_denied = False
-        any_downloaded = False
-        for attachment in attachments:
-            try:
-                magnet_uri, denied, downloaded = await self._download_one(attachment, timeout)
-                if denied:
-                    any_denied = True
-                if downloaded:
-                    any_downloaded = True
-                if not magnet_uri.strip() or not magnet_uri.lower().startswith("magnet:"):
-                    continue
-                chunks.append(magnet_uri.strip())
-                log.info(
-                    "Torrent %s → magnet %s",
-                    attachment.name,
-                    magnet_uri[:80],
-                )
-            except Exception as exc:
-                log.warning("Torrent attachment failed %s: %s", attachment.name, exc)
-
-        result_text = "\n".join(chunks)
-        if result_text:
-            return AttachmentFetchResult(
-                text=result_text, downloaded=True, denied=any_denied
-            )
-        if any_denied:
-            return AttachmentFetchResult(downloaded=any_downloaded, denied=True)
-        if any_downloaded:
-            return AttachmentFetchResult(downloaded=True)
-        return AttachmentFetchResult(failed=True)
 
 
 async def fetch_attachments_for_outcome(

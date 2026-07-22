@@ -712,7 +712,7 @@ def list_recent_resources(
         else:
             where.append("COALESCE(rs.board_name, '') = %s")
             params.append(board_name)
-    if link_kind in ("magnet", "ed2k", "stub", "failed"):
+    if link_kind in ("magnet", "ed2k", "stub", "failed", "115share"):
         where.append(f"({LINK_KIND_SQL}) = %s")
         params.append(link_kind)
     if q:
@@ -795,6 +795,86 @@ def list_recent_resources(
     return out, total
 
 
+def list_resource_ids_for_selection(
+    conn: Any,
+    *,
+    source_type: str | None = None,
+    board_name: str | None = None,
+    link_kind: str | None = None,
+    q: str | None = None,
+    limit: int = 2000,
+) -> tuple[list[dict], int]:
+    """当前筛选下的资源 id/hash 列表（跨页全选用）。返回 (items, total)。"""
+    where: list[str] = []
+    params: list[Any] = []
+
+    if source_type in ("web", "upload", "telegram"):
+        where.append("s.source_type = %s")
+        params.append(source_type)
+    if board_name:
+        if board_name in ("未分类", "__empty__"):
+            where.append("(rs.board_name IS NULL OR rs.board_name = '')")
+        else:
+            where.append("COALESCE(rs.board_name, '') = %s")
+            params.append(board_name)
+    if link_kind in ("magnet", "ed2k", "stub", "failed", "115share"):
+        where.append(f"({LINK_KIND_SQL}) = %s")
+        params.append(link_kind)
+    if q:
+        where.append(
+            "("
+            "COALESCE(rs.title, '') ILIKE %s OR "
+            "COALESCE(r.filename, '') ILIKE %s"
+            ")"
+        )
+        like = f"%{q}%"
+        params.extend([like, like])
+
+    where_sql = (" WHERE " + " AND ".join(where)) if where else ""
+    lim = max(1, min(int(limit or 2000), 5000))
+
+    with conn.cursor() as cur:
+        cur.execute(
+            f"""
+            SELECT COUNT(*)
+            FROM ed2k_resources r
+            JOIN resource_sources rs ON rs.hash = r.hash
+            JOIN sources s ON s.id = rs.source_id
+            {where_sql}
+            """,
+            params,
+        )
+        total = int(cur.fetchone()[0])
+
+        cur.execute(
+            f"""
+            SELECT rs.id, r.hash, rs.source_url, rs.title, r.filename, r.ed2k_link
+            FROM ed2k_resources r
+            JOIN resource_sources rs ON rs.hash = r.hash
+            JOIN sources s ON s.id = rs.source_id
+            {where_sql}
+            ORDER BY r.updated_at DESC NULLS LAST, r.created_at DESC, rs.id DESC
+            LIMIT %s
+            """,
+            [*params, lim],
+        )
+        rows = cur.fetchall()
+
+    items: list[dict] = []
+    for row in rows:
+        link = row[5] or ""
+        items.append(
+            {
+                "id": int(row[0]),
+                "hash": row[1],
+                "source_url": row[2],
+                "title": row[3] or row[4] or row[1],
+                "link_kind": infer_resource_link_kind(link),
+            }
+        )
+    return items, total
+
+
 def get_resource_by_hash(conn: Any, resource_hash: str) -> dict | None:
     h = (resource_hash or "").strip()
     if not h:
@@ -875,7 +955,7 @@ def _facet_where(
         else:
             where.append("COALESCE(rs.board_name, '') = %s")
             params.append(board_name)
-    if link_kind in ("magnet", "ed2k", "stub", "failed"):
+    if link_kind in ("magnet", "ed2k", "stub", "failed", "115share"):
         where.append(f"({LINK_KIND_SQL}) = %s")
         params.append(link_kind)
     if q:
@@ -913,7 +993,7 @@ def list_resource_facets(
     result_where, result_params = _facet_where(q=q, source_type=source_type, board_name=board_name)
 
     sources = {"all": 0, "web": 0, "upload": 0, "telegram": 0}
-    results = {"all": 0, "magnet": 0, "ed2k": 0, "stub": 0, "failed": 0}
+    results = {"all": 0, "magnet": 0, "ed2k": 0, "115share": 0, "stub": 0, "failed": 0}
     boards: list[dict[str, Any]] = []
     with conn.cursor() as cur:
         cur.execute(f"SELECT COUNT(*) {base_join} {src_where}", src_params)

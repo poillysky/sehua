@@ -23,13 +23,16 @@ from db.queue import (
     count_pending_queue,
     list_discarded,
     list_discarded_reasons,
+    list_discarded_tids,
     list_pending_queue,
     list_pending_reasons,
+    requeue_discarded_by_tids,
     requeue_discarded_kind,
 )
 from workers.runner import (
     _log_activity,
     crawl_status,
+    recent_activity,
     run_crawl_once,
     run_scan_head_once,
     start_continuous_loop,
@@ -221,7 +224,7 @@ def get_crawler_status(_user: dict = Depends(require_permission("crawler.view"))
         "random_progress": rnd,
         "account_stub_progress": stub_prog,
         "board_list_cursors": board_cursors,
-        "activity": st.get("activity") or [],
+        "activity": recent_activity(120),
         "boards": boards,
         "queue": qstats or st.get("queue") or {},
         "discarded": discarded_stats or {},
@@ -658,9 +661,91 @@ def get_queue_discarded(
     }
 
 
+@router.get("/queue/discarded/tids")
+def get_discarded_tids(
+    status: str = "all",
+    q: str = "",
+    reason: str = "",
+    limit: int = 2000,
+    _user: dict = Depends(require_permission("crawler.view")),
+) -> dict:
+    """当前筛选条件下全部 tid（跨页全选）。"""
+    st = (status or "all").strip().lower()
+    if st not in {"all", "failed", "skipped"}:
+        raise HTTPException(status_code=400, detail="status 仅支持 all / failed / skipped")
+    lim = max(1, min(5000, int(limit or 2000)))
+    query = (q or "").strip()
+    reason_key = (reason or "").strip()
+    conn = connect()
+    try:
+        total = int(
+            count_discarded(conn, status=st, q=query, reason=reason_key or None).get("total")
+            or 0
+        )
+        tids = list_discarded_tids(
+            conn,
+            status=st,
+            q=query,
+            reason=reason_key or None,
+            limit=lim,
+        )
+    finally:
+        conn.close()
+    return {
+        "status": st,
+        "q": query,
+        "reason": reason_key,
+        "total": total,
+        "limit": lim,
+        "count": len(tids),
+        "truncated": total > len(tids),
+        "tids": tids,
+    }
+
+
 class DiscardedRequeueBody(BaseModel):
     kind: str = Field(default="access_denied_bad_title")
     start_crawl: bool = True
+
+
+class DiscardedRequeueTidsBody(BaseModel):
+    tids: list[int] = Field(default_factory=list)
+    start_crawl: bool = True
+
+
+async def _maybe_crawl_after_requeue(
+    *,
+    want_crawl: bool,
+    requeued: int,
+) -> tuple[dict | None, str]:
+    """重入队后可选跑一轮；返回 (crawl_result, crawl_note)。"""
+    if not want_crawl or requeued <= 0:
+        return None, ""
+    st = crawl_status()
+    if st.get("looping") or st.get("running"):
+        return None, "；爬虫忙，已入队待连续调度/空闲后抓取"
+    crawl_result = await run_crawl_once(
+        persist=True,
+        scan_list=False,
+        from_loop=False,
+        require_enabled=False,
+    )
+    if crawl_result.get("reason") == "loop_running":
+        return None, "；爬虫忙，已入队待连续调度/空闲后抓取"
+    return crawl_result, ""
+
+
+def _crawl_payload(crawl_result: dict | None) -> dict | None:
+    if crawl_result is None:
+        return None
+    return {
+        "crawled": crawl_result.get("crawled") or 0,
+        "imports": crawl_result.get("imports") or 0,
+        "stubs": crawl_result.get("stubs") or 0,
+        "skipped": crawl_result.get("skipped") or 0,
+        "retries": crawl_result.get("retries") or 0,
+        "failed": crawl_result.get("failed") or 0,
+    }
 
 
 @router.post("/queue/discarded/requeue")
@@ -677,9 +762,7 @@ async def post_discarded_requeue(
         )
     label = str(DISCARDED_REQUEUE_KINDS[kind].get("label") or kind)
 
-    st = crawl_status()
     want_crawl = bool(body.start_crawl)
-    crawl_blocked = want_crawl and bool(st.get("looping") or st.get("running"))
 
     conn = connect()
     try:
@@ -700,20 +783,9 @@ async def post_discarded_requeue(
 
     _log_activity(f"未处理重入队 · {label} · {requeued} 条")
 
-    crawl_result = None
-    crawl_note = ""
-    if want_crawl and requeued > 0 and not crawl_blocked:
-        crawl_result = await run_crawl_once(
-            persist=True,
-            scan_list=False,
-            from_loop=False,
-            require_enabled=False,
-        )
-        if crawl_result.get("reason") == "loop_running":
-            crawl_blocked = True
-            crawl_result = None
-    if crawl_blocked:
-        crawl_note = "；爬虫忙，已入队待连续调度/空闲后抓取"
+    crawl_result, crawl_note = await _maybe_crawl_after_requeue(
+        want_crawl=want_crawl, requeued=requeued
+    )
 
     pending_left = 0
     conn = connect()
@@ -731,16 +803,7 @@ async def post_discarded_requeue(
         "requeued": requeued,
         "kind_remaining": kind_left,
         "pending_ready": pending_left,
-        "crawl": {
-            "crawled": (crawl_result or {}).get("crawled") or 0,
-            "imports": (crawl_result or {}).get("imports") or 0,
-            "stubs": (crawl_result or {}).get("stubs") or 0,
-            "skipped": (crawl_result or {}).get("skipped") or 0,
-            "retries": (crawl_result or {}).get("retries") or 0,
-            "failed": (crawl_result or {}).get("failed") or 0,
-        }
-        if crawl_result is not None
-        else None,
+        "crawl": _crawl_payload(crawl_result),
         "note": (
             f"已重新入队 {requeued} 条「{label}」"
             + (
@@ -752,6 +815,110 @@ async def post_discarded_requeue(
             + crawl_note
             + (f"；待抓队列仍有 {pending_left}" if pending_left else "")
         ),
+    }
+
+
+@router.post("/queue/discarded/requeue-tids")
+async def post_discarded_requeue_tids(
+    body: DiscardedRequeueTidsBody,
+    _user: dict = Depends(require_permission("crawl.run")),
+) -> dict:
+    """勾选的未处理帖：空闲时直接重爬并写活动日志；忙碌/连续调度时仅入队。"""
+    from workers.recrawl import recrawl_discarded_tids
+
+    raw_tids = body.tids or []
+    if len(raw_tids) > 2000:
+        raise HTTPException(status_code=400, detail="一次最多选择 2000 条")
+    tids: list[int] = []
+    seen: set[int] = set()
+    for raw in raw_tids:
+        try:
+            tid = int(raw)
+        except (TypeError, ValueError):
+            continue
+        if tid <= 0 or tid in seen:
+            continue
+        seen.add(tid)
+        tids.append(tid)
+    if not tids:
+        raise HTTPException(status_code=400, detail="请至少选择一条有效 tid")
+
+    # start_crawl=False：只入队不抓（仍写日志）
+    if body.start_crawl is False:
+        conn = connect()
+        try:
+            requeued = requeue_discarded_by_tids(conn, tids)
+        finally:
+            conn.close()
+        _log_activity(f"未处理批量重入队 · 选中 {len(tids)} · 实际 {requeued} 条")
+        pending_left = 0
+        conn = connect()
+        try:
+            pending_left = int(count_pending(conn).get("ready") or 0)
+        finally:
+            conn.close()
+        return {
+            "message": "ok",
+            "mode": "queued",
+            "selected": len(tids),
+            "requeued": requeued,
+            "crawled": 0,
+            "imports": 0,
+            "stubs": 0,
+            "skipped": 0,
+            "failed": 0,
+            "pending_ready": pending_left,
+            "crawl": None,
+            "note": (
+                f"已重新入队 {requeued} 条"
+                if requeued
+                else "所选 tid 均不在失败/跳过队列（可能已处理）"
+            )
+            + (f"；待抓队列仍有 {pending_left}" if pending_left else ""),
+        }
+
+    result = await recrawl_discarded_tids(tids)
+    pending_left = 0
+    conn = connect()
+    try:
+        pending_left = int(count_pending(conn).get("ready") or 0)
+    finally:
+        conn.close()
+
+    crawled = int(result.get("crawled") or 0)
+    imports_n = int(result.get("imports") or 0)
+    stubs_n = int(result.get("stubs") or 0)
+    skipped_n = int(result.get("skipped") or 0)
+    failed_n = int(result.get("failed") or 0)
+    requeued = int(result.get("requeued") or 0)
+    note = str(result.get("note") or "")
+    if pending_left and result.get("mode") == "queued":
+        note = note + f"；待抓队列仍有 {pending_left}"
+
+    return {
+        "message": "ok",
+        "mode": result.get("mode") or "immediate",
+        "selected": int(result.get("selected") or len(tids)),
+        "matched": int(result.get("matched") or 0),
+        "requeued": requeued,
+        "crawled": crawled,
+        "imports": imports_n,
+        "stubs": stubs_n,
+        "skipped": skipped_n,
+        "failed": failed_n,
+        "pending_ready": pending_left,
+        "items": result.get("items") or [],
+        "crawl": {
+            "crawled": crawled,
+            "imports": imports_n,
+            "stubs": stubs_n,
+            "skipped": skipped_n,
+            "retries": 0,
+            "failed": failed_n,
+        }
+        if crawled or result.get("mode") == "immediate"
+        else None,
+        "note": note,
     }
 
 

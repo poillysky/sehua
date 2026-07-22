@@ -20,7 +20,7 @@ export type ApiResource = {
   source_type: string
   preview_images?: string[]
   import_outcome?: string | null
-  link_kind: 'magnet' | 'ed2k' | 'stub' | 'failed' | string
+  link_kind: 'magnet' | 'ed2k' | '115share' | 'stub' | 'failed' | string
 }
 
 export type ResourceRow = {
@@ -31,7 +31,7 @@ export type ResourceRow = {
   board: string
   boardFid?: string
   outcome: string
-  result: 'magnet' | 'ed2k' | 'stub' | 'failed'
+  result: 'magnet' | 'ed2k' | '115share' | 'stub' | 'failed'
   time: string
   sourceUrl?: string
   sourceType?: string
@@ -63,6 +63,7 @@ export type ResourcesPageResult = {
 const KIND_OUTCOME: Record<string, string> = {
   magnet: '已提取主链',
   ed2k: '已提取主链',
+  '115share': '已提取115分享',
   stub: '无下载链 · 占位入库',
   failed: '解析失败',
 }
@@ -166,7 +167,7 @@ export function buildBoardFacetTree(items: BoardFacetItem[]): BoardFacetTreeNode
 }
 
 export function mapApiResource(item: ApiResource): ResourceRow {
-  const kind = (['magnet', 'ed2k', 'stub', 'failed'].includes(item.link_kind)
+  const kind = (['magnet', 'ed2k', '115share', 'stub', 'failed'].includes(item.link_kind)
     ? item.link_kind
     : 'failed') as ResourceRow['result']
   const links = item.ed2k_links?.length ? item.ed2k_links : item.ed2k_link ? [item.ed2k_link] : []
@@ -212,6 +213,42 @@ export function fetchRecentResources(params: {
   if (params.result && params.result !== 'all') sp.set('result', params.result)
   if (params.q?.trim()) sp.set('q', params.q.trim())
   return api<ResourcesPageResult>(`/api/resources/recent?${sp}`)
+}
+
+export type ResourceSelectionItem = {
+  id: number
+  hash: string
+  source_url?: string | null
+  title?: string | null
+  link_kind?: string
+}
+
+export type ResourceIdsResult = {
+  items: ResourceSelectionItem[]
+  count: number
+  total: number
+  limit: number
+  truncated: boolean
+  ids: number[]
+  hashes: string[]
+}
+
+/** 当前筛选下全部资源 id（跨页全选） */
+export function fetchResourceIds(params: {
+  source?: string
+  board?: string
+  result?: string
+  q?: string
+  limit?: number
+}) {
+  const sp = new URLSearchParams()
+  if (params.source && params.source !== 'all') sp.set('source', params.source)
+  if (params.board && params.board !== 'all') sp.set('board', params.board)
+  if (params.result && params.result !== 'all') sp.set('result', params.result)
+  if (params.q?.trim()) sp.set('q', params.q.trim())
+  if (params.limit) sp.set('limit', String(params.limit))
+  const qs = sp.toString()
+  return api<ResourceIdsResult>(`/api/resources/ids${qs ? `?${qs}` : ''}`)
 }
 
 export function fetchDataOverview() {

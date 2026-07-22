@@ -78,3 +78,35 @@ def test_author_banned_content_masked_skips():
     assert out.verdict == "skipped"
     assert out.outcome == "作者已禁止（跳过）"
     assert out.need_attachments is False
+
+
+def test_author_banned_not_triggered_when_post_has_body():
+    """锁定提示残留但一楼已有正常正文 → 不当作作者已禁。"""
+    html = """
+    <html><head><title>【BT】有正文的帖 - 论坛</title></head>
+    <body>
+      <span id="thread_subject">【BT】有正文的帖</span>
+      <div id="postmessage_1">
+        这是正常可抓的资源说明文字，长度足够证明正文有效。
+        ed2k://|file|demo.mp4|123|ABCDEF0123456789ABCDEF0123456789|/
+      </div>
+      <div class="locked">提示: <em>作者被禁止或删除 内容自动屏蔽</em></div>
+      Powered by Discuz!
+    </body></html>
+    """
+    html = html + ("<!-- pad -->" * 900)
+    out = judge_thread_html(
+        html,
+        board_fid="2",
+        list_title="【BT】有正文的帖",
+        preferred_link="ed2k",
+    )
+    assert out.outcome != "作者已禁止（跳过）"
+    assert out.verdict in {"import", "stub", "skipped"}
+
+
+def test_locked_auto_mask_alone_not_author_banned():
+    from parsers.thread_gates import is_thread_author_banned
+
+    html = '<div class="locked">提示: <em>内容自动屏蔽</em></div>' + ("x" * 100)
+    assert is_thread_author_banned(html) is False

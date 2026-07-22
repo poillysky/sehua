@@ -106,13 +106,15 @@
     "forum": "論壇: ",
     "description": "資源簡介",
     "p115_save": "轉存115",
-    "p115_save_extract": "轉存+解壓"
+    "p115_save_extract": "轉存+解壓",
+    "p115_share_save": "轉存分享"
   },
   "Detail": {
     "details": "詳細資訊",
     "description": "資源簡介",
     "preview": "內容預覽",
     "ed2k": "下載連結",
+    "share115": "115分享連結",
     "file_list": "檔案清單",
     "copy": "複製下載連結",
     "back": "返回列表",
@@ -132,6 +134,7 @@
     "translate_failed": "翻譯失敗，請稍後重試",
     "p115_success": "已轉存 {count} 條到 115 雲下載",
     "p115_success_extract": "已轉存 {count} 條；後台輪詢轉存（最長約 30 秒），完成後立即雲解壓",
+    "p115_share_success": "已轉存 {count} 個 115 分享到網盤",
     "p115_failed": "轉存 115 失敗",
     "p115_need_config": "尚未設定 115，請先填寫 Cookie"
   }

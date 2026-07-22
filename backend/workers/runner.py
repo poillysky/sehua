@@ -110,6 +110,25 @@ def _log_activity(msg: str) -> None:
     activity.insert(0, item)
     _STATE["activity"] = activity[:120]
     log.info("%s", msg)
+    try:
+        from db.activity import append_activity
+
+        append_activity(msg)
+    except Exception:
+        pass
+
+
+def recent_activity(limit: int = 120) -> list[dict[str, Any]]:
+    """活动页日志：优先读库（跨 reload 保留），失败则回退内存。"""
+    try:
+        from db.activity import list_recent_activity
+
+        rows = list_recent_activity(limit=limit)
+        if rows:
+            return rows
+    except Exception:
+        pass
+    return list(_STATE.get("activity") or [])[: max(1, int(limit or 120))]
 
 
 def _ensure_queue_schema() -> None:

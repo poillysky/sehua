@@ -163,6 +163,25 @@ def connect_resource():
     return psycopg2.connect(**resource_dsn_kwargs())
 
 
+def open_resource_connection() -> tuple[Any | None, str | None]:
+    """打开独立资源库连接。未启用独立库时返回 (None, None)。
+
+    启用时连不上则 (None, error)。
+    """
+    if not using_separate_resource_db():
+        return None, None
+    try:
+        return connect_resource(), None
+    except Exception as exc:
+        dsn = resource_dsn_kwargs()
+        hint = (
+            f"独立资源库连不上 {dsn.get('host')}:{dsn.get('port')}/{dsn.get('dbname')}：{exc}。"
+            "跨 Docker 网络请填对方宿主机 IP（或 NAS IP）+ bridge 映射端口，"
+            "不要填本 compose 内的服务名 postgres。"
+        )
+        return None, hint
+
+
 def try_resource_postgres(kwargs: dict[str, Any] | None = None):
     import psycopg2
 

@@ -4,7 +4,7 @@ import { z } from "zod";
 import { addOfflineTasks } from "@/lib/p115";
 import { scheduleDeferredExtract } from "@/lib/p115Extract";
 import { readP115Config } from "@/lib/p115Config";
-import { isArchiveDownloadLink, isPublicDownloadLink } from "@/utils/resource";
+import { isArchiveDownloadLink, isPublicDownloadLink, linkKindOf } from "@/utils/resource";
 
 export const dynamic = "force-dynamic";
 
@@ -43,7 +43,9 @@ export async function POST(request: Request) {
     );
   }
 
-  const urls = body.urls.filter((u) => isPublicDownloadLink(u));
+  const urls = body.urls.filter(
+    (u) => isPublicDownloadLink(u) && linkKindOf(u) !== "115share",
+  );
 
   if (!urls.length) {
     return NextResponse.json(

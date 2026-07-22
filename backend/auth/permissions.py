@@ -19,6 +19,7 @@ ROLE_PERMISSIONS: dict[str, set[str]] = {
 ROUTE_PERMISSIONS: dict[tuple[str, str], str] = {
     ("GET", "/api/stats"): "resources.view",
     ("GET", "/api/resources/recent"): "resources.view",
+    ("GET", "/api/resources/ids"): "resources.view",
     ("GET", "/api/resources/filters"): "resources.view",
     ("POST", "/api/resources/delete"): "resources.delete",
     ("POST", "/api/resources/delete-batch"): "resources.delete",
@@ -52,8 +53,10 @@ ROUTE_PERMISSIONS: dict[tuple[str, str], str] = {
     ("POST", "/api/crawler/queue/retry-abnormal"): "crawl.run",
     ("POST", "/api/crawler/queue/retry-soft-ad"): "crawl.run",
     ("GET", "/api/crawler/queue/discarded"): "crawler.view",
+    ("GET", "/api/crawler/queue/discarded/tids"): "crawler.view",
     ("GET", "/api/crawler/queue/browse"): "crawler.view",
     ("POST", "/api/crawler/queue/discarded/requeue"): "crawl.run",
+    ("POST", "/api/crawler/queue/discarded/requeue-tids"): "crawl.run",
     ("POST", "/api/crawler/recrawl-stubs"): "crawl.run",
     ("POST", "/api/crawler/stop"): "crawl.run",
     ("POST", "/api/import"): "import",

@@ -10,7 +10,7 @@ from crawler.list_urls import list_url_for_board, site_root
 from crawler.session import BASE_URL, SessionManager
 from parsers.boards import get_board_policy
 from parsers.links import DualParseResult, parse_thread_dual
-from parsers.thread_gates import has_115_sha_link, looks_like_attachment_zone
+from parsers.thread_gates import looks_like_attachment_zone, should_skip_as_115sha_only
 from workers.session_factory import fetcher_from_config, session_from_config
 from workers.thread_outcome import ThreadOutcome, judge_thread_html
 
@@ -173,7 +173,7 @@ async def process_thread(
             )
             attach_tried = True
             attachment_text = attach_res.text or ""
-            if attachment_text and has_115_sha_link(attachment_text):
+            if attachment_text and should_skip_as_115sha_only(attachment_text):
                 log.info("tid=%s attachment has 115sha — skip", tid)
                 outcome = ThreadOutcome(
                     "skipped",
@@ -196,13 +196,16 @@ async def process_thread(
                     had_attachments=attach_res.downloaded or bool(attachment_text),
                     preferred_link=link_pref,
                 )
-                # 电驴板：txt/zip 无果再试种子；双链：种子无果再试 txt/zip
+                # 电驴板：txt/zip/excel 无果再试种子；磁力/双链：种子无果再试 txt/excel
                 if (
                     outcome.verdict not in {"import", "skipped"}
                     and looks_like_attachment_zone(html)
                     and (
                         (link_pref == "ed2k" and attachment_kind == "txt_tail")
-                        or (link_pref == "both" and attachment_kind == "torrent")
+                        or (
+                            link_pref in {"magnet", "both"}
+                            and attachment_kind == "torrent"
+                        )
                     )
                 ):
                     next_kind = "torrent" if attachment_kind == "txt_tail" else "txt_tail"
@@ -214,7 +217,7 @@ async def process_thread(
                         attachment_kind=next_kind,
                         timeout=max(15.0, attach_timeout),
                     )
-                    if attach_res2.text and has_115_sha_link(attach_res2.text):
+                    if attach_res2.text and should_skip_as_115sha_only(attach_res2.text):
                         attachment_text = (attachment_text + "\n" + attach_res2.text).strip()
                         outcome = ThreadOutcome(
                             "skipped",

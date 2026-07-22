@@ -193,7 +193,11 @@ export const DetailContent = ({ data }: { data: Ed2kResourceProps }) => {
 
         <Card className="bg-opacity-80 dark:brightness-95">
           <CardHeader className={cardHeaderClass}>
-            <span>{t("Detail.ed2k")}</span>
+            <span>
+              {data.link_kind === "115share"
+                ? t("Detail.share115")
+                : t("Detail.ed2k")}
+            </span>
             <div className="flex shrink-0 items-center gap-1.5">
               <P115SaveButton compact item={data} />
               <Ed2kCopyButton compact item={data} />

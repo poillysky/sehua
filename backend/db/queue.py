@@ -688,6 +688,102 @@ def requeue_discarded_kind(conn: Any, kind: str, *, forum_id: str | None = None)
     return n
 
 
+def requeue_discarded_by_tids(
+    conn: Any,
+    tids: list[int] | tuple[int, ...],
+    *,
+    forum_id: str | None = None,
+) -> int:
+    """将指定 tid 的失败/跳过帖重新置为 pending。"""
+    clean: list[int] = []
+    seen: set[int] = set()
+    for raw in tids or []:
+        try:
+            tid = int(raw)
+        except (TypeError, ValueError):
+            continue
+        if tid <= 0 or tid in seen:
+            continue
+        seen.add(tid)
+        clean.append(tid)
+    if not clean:
+        return 0
+    forum = (forum_id or "").strip()
+    forum_sql = "AND forum_id = %s" if forum else ""
+    forum_params: list[Any] = [forum] if forum else []
+    cur = conn.cursor()
+    cur.execute(
+        f"""
+        UPDATE crawl_pages
+        SET status = 'pending',
+            last_error = NULL,
+            retry_after = NULL,
+            fetch_fail_count = 0,
+            outcome = NULL,
+            crawled_at = NULL,
+            updated_at = now()
+        WHERE page_type = 'thread'
+          AND status = ANY(%s)
+          AND tid = ANY(%s)
+          {forum_sql}
+        """,
+        [list(DISCARDED_STATUSES), clean, *forum_params],
+    )
+    n = int(cur.rowcount or 0)
+    if n:
+        conn.commit()
+    return n
+
+
+def list_discarded_by_tids(
+    conn: Any,
+    tids: list[int] | tuple[int, ...],
+    *,
+    forum_id: str | None = None,
+) -> list[dict[str, Any]]:
+    """按 tid 取出仍处于失败/跳过的帖（保持传入顺序）。"""
+    clean: list[int] = []
+    seen: set[int] = set()
+    for raw in tids or []:
+        try:
+            tid = int(raw)
+        except (TypeError, ValueError):
+            continue
+        if tid <= 0 or tid in seen:
+            continue
+        seen.add(tid)
+        clean.append(tid)
+    if not clean:
+        return []
+    forum = (forum_id or "").strip()
+    forum_sql = "AND forum_id = %s" if forum else ""
+    forum_params: list[Any] = [forum] if forum else []
+    cur = conn.cursor()
+    cur.execute(
+        f"""
+        SELECT url, tid, thread_title, board_fid, board_name, forum_id,
+               status, outcome, last_error, fetch_fail_count,
+               crawled_at, created_at, updated_at
+        FROM crawl_pages
+        WHERE page_type = 'thread'
+          AND status = ANY(%s)
+          AND tid = ANY(%s)
+          {forum_sql}
+        """,
+        [list(DISCARDED_STATUSES), clean, *forum_params],
+    )
+    cols = [d[0] for d in cur.description]
+    by_tid: dict[int, dict[str, Any]] = {}
+    for row in cur.fetchall():
+        item = dict(zip(cols, row))
+        try:
+            tid = int(item.get("tid") or 0)
+        except (TypeError, ValueError):
+            continue
+        if tid > 0 and tid not in by_tid:
+            by_tid[tid] = item
+    return [by_tid[t] for t in clean if t in by_tid]
+
 def _discarded_status_clause(
     status: str | list[str] | tuple[str, ...] | None,
 ) -> tuple[str, list[Any]]:
@@ -705,43 +801,12 @@ def _discarded_status_clause(
 
 
 def _discarded_search_clause(q: str | None) -> tuple[str, list[Any]]:
+    """未处理明细搜索：仅匹配标题。"""
     text = (q or "").strip()
     if not text:
         return "", []
     like = f"%{text}%"
-    tid_num: int | None = None
-    if text.isdigit():
-        try:
-            tid_num = int(text)
-        except ValueError:
-            tid_num = None
-    if tid_num is not None and tid_num > 0:
-        return (
-            """
-            AND (
-              tid = %s
-              OR url ILIKE %s
-              OR COALESCE(thread_title, '') ILIKE %s
-              OR COALESCE(outcome, '') ILIKE %s
-              OR COALESCE(board_name, '') ILIKE %s
-              OR COALESCE(board_fid, '') ILIKE %s
-            )
-            """,
-            [tid_num, like, like, like, like, like],
-        )
-    return (
-        """
-        AND (
-          url ILIKE %s
-          OR COALESCE(thread_title, '') ILIKE %s
-          OR COALESCE(outcome, '') ILIKE %s
-          OR COALESCE(board_name, '') ILIKE %s
-          OR COALESCE(board_fid, '') ILIKE %s
-          OR CAST(COALESCE(tid, 0) AS TEXT) ILIKE %s
-        )
-        """,
-        [like, like, like, like, like, like],
-    )
+    return "AND COALESCE(thread_title, '') ILIKE %s", [like]
 
 
 # 明细「原因」列：优先 outcome，其次 last_error（与前端 discardedReason 对齐）
@@ -883,6 +948,54 @@ def list_discarded(
                 item[key] = val.isoformat()
         rows.append(item)
     return rows
+
+
+def list_discarded_tids(
+    conn: Any,
+    *,
+    status: str | list[str] | tuple[str, ...] | None = "all",
+    forum_id: str | None = None,
+    q: str | None = None,
+    reason: str | None = None,
+    limit: int = 2000,
+) -> list[int]:
+    """当前筛选条件下全部 tid（用于明细「全选筛选结果」）。"""
+    cur = conn.cursor()
+    st_sql, st_params = _discarded_status_clause(status)
+    forum = (forum_id or "").strip()
+    forum_sql = "AND forum_id = %s" if forum else ""
+    forum_params: list[Any] = [forum] if forum else []
+    q_sql, q_params = _discarded_search_clause(q)
+    reason_sql, reason_params = _exact_reason_clause(DISCARDED_REASON_EXPR, reason)
+    lim = max(1, min(5000, int(limit or 2000)))
+    cur.execute(
+        f"""
+        SELECT tid
+        FROM crawl_pages
+        WHERE page_type = 'thread'
+          AND tid IS NOT NULL
+          AND tid > 0
+          {st_sql}
+          {forum_sql}
+          {q_sql}
+          {reason_sql}
+        ORDER BY COALESCE(crawled_at, updated_at) DESC, updated_at DESC
+        LIMIT %s
+        """,
+        [*st_params, *forum_params, *q_params, *reason_params, lim],
+    )
+    out: list[int] = []
+    seen: set[int] = set()
+    for (tid,) in cur.fetchall() or []:
+        try:
+            n = int(tid)
+        except (TypeError, ValueError):
+            continue
+        if n <= 0 or n in seen:
+            continue
+        seen.add(n)
+        out.append(n)
+    return out
 
 
 def update_crawl_board_meta_by_tids(

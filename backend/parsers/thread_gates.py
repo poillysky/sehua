@@ -4,8 +4,15 @@ from __future__ import annotations
 
 import re
 
-ED2K_RE = re.compile(r"ed2k://\|file\|", re.I)
-MAGNET_RE = re.compile(r"magnet:\?xt=urn:btih:", re.I)
+# 目标链探测：须可解析入库的完整形态（勿把缺 hash 的半截 ed2k 当有链）
+ED2K_RE = re.compile(
+    r"ed2k://\|file\|[^\|]+\|\d+\|[A-Fa-f0-9]{32}\|",
+    re.I,
+)
+MAGNET_RE = re.compile(
+    r"magnet:\?xt=urn:btih:(?:[A-Fa-f0-9]{40}|[a-zA-Z2-7]{32})",
+    re.I,
+)
 TITLE_RE = re.compile(r"<title[^>]*>(.*?)</title>", re.I | re.S)
 POSTMESSAGE_RE = re.compile(
     r"""id=['"]postmessage_[^'"]*['"][^>]*>(.*?)</div>""",
@@ -40,10 +47,10 @@ MODERATOR_BLOCKED_MARKERS = (
     "本主题已被屏蔽",
 )
 # 作者被禁/删：正文自动屏蔽（Discuz locked：「作者被禁止或删除 内容自动屏蔽」）
+# 勿单独匹配「内容自动屏蔽」——其它 locked/提示也可能带这四字，易误伤正常帖
 AUTHOR_BANNED_MARKERS = (
     "作者被禁止或删除 内容自动屏蔽",
     "作者被禁止或删除",
-    "内容自动屏蔽",
 )
 
 REPLY_MARKERS = (
@@ -119,6 +126,17 @@ SOFT_AD_TITLE_HINTS = ("名人名言", "请稍候", "Just a moment")
 GENERIC_TITLES = frozenset({"提示信息", "提示", "手机版", "请稍候"})
 MOBILE_SHELL_TITLES = frozenset({"手机版", "请稍候…", "请稍候"})
 
+# Discuz 主题已删 / tid 无效
+MISSING_THREAD_MARKERS = (
+    "没有找到帖子",
+    "没有找到主题",
+    "主题不存在",
+    "抱歉，指定的主题不存在",
+    "指定的主题不存在",
+    "帖子不存在",
+    "内容不存在或已被删除",
+    "抱歉，本帖不存在",
+)
 
 def page_title(html: str) -> str:
     m = TITLE_RE.search(html or "")
@@ -209,6 +227,19 @@ def has_115_sha_link(text: str) -> bool:
         return True
     compact = re.sub(r"\s+", "", text)
     return compact != text and bool(RE_115_SHA.search(compact))
+
+
+def should_skip_as_115sha_only(text: str) -> bool:
+    """附件语料含 115sha，且没有可入库的 magnet/ed2k 时才整帖跳过。
+
+    同一压缩包内常同时有 Excel 磁力与 sha1.txt；有磁力则不应因 115sha 丢弃。
+    """
+    if not has_115_sha_link(text):
+        return False
+    low = (text or "").lower()
+    if "magnet:" in low or "ed2k://" in low:
+        return False
+    return True
 
 
 def has_115_share_link(text: str) -> bool:
@@ -371,6 +402,27 @@ def is_thread_access_denied(html: str) -> bool:
     return "postmessage_" not in html
 
 
+def is_missing_thread(html: str, title: str = "") -> bool:
+    """识别 Discuz「没有找到帖子 / 主题不存在」等空洞页。"""
+    if not html and not title:
+        return False
+    tit = (title or page_title(html) or "").strip()
+    blob = f"{tit}\n{html or ''}"
+    if any(m in blob for m in MISSING_THREAD_MARKERS):
+        return True
+    # 极短提示页且无正文
+    if len(html or "") < 12000 and "postmessage_" not in (html or "") and (
+        "提示信息" in tit or normalize_title_core(tit) in GENERIC_TITLES
+    ):
+        # 避免把登录/权限提示页误当成不存在（那些有专门分支）
+        if any(m in blob for m in LOGIN_MARKERS) or any(
+            m in blob for m in ACCESS_DENIED_MARKERS
+        ):
+            return False
+        return True
+    return False
+
+
 def is_thread_moderator_blocked(html: str) -> bool:
     """管理员/版主屏蔽：正文 locked，永久不可抓。"""
     if not html:
@@ -382,20 +434,36 @@ def is_thread_moderator_blocked(html: str) -> bool:
 
 
 def is_thread_author_banned(html: str) -> bool:
-    """作者被禁止或删除，内容自动屏蔽。"""
+    """作者被禁止或删除，内容自动屏蔽。
+
+    必须明确出现「作者被禁止」；若一楼已有有效正文/链接，视为正常帖（避免误跳过）。
+    """
     if not html:
         return False
-    # 优先认 locked 框，避免误伤正文里偶然出现的「屏蔽」字样
-    if re.search(
-        r'class=["\']locked["\'][^>]*>[^<]*(?:作者被禁止|内容自动屏蔽)',
-        html,
-        re.I,
-    ):
-        return True
-    if any(m in html for m in AUTHOR_BANNED_MARKERS[:2]):
-        return True
-    body = re.sub(r"<[^>]+>", "\n", html)
-    return any(m in body for m in AUTHOR_BANNED_MARKERS[:2])
+    plain = re.sub(r"<[^>]+>", "\n", html)
+    locked_hit = bool(
+        re.search(
+            r'class=["\']locked["\'][^>]*>[^<]*作者被禁止',
+            html,
+            re.I,
+        )
+    )
+    text_hit = any(m in html or m in plain for m in AUTHOR_BANNED_MARKERS)
+    if not (locked_hit or text_hit):
+        return False
+
+    text = post_text(html)
+    if has_target_link(text, "both"):
+        return False
+
+    # 去掉锁定提示后若仍有足够正文，说明并非「内容已屏蔽」
+    cleaned = text
+    for m in (*AUTHOR_BANNED_MARKERS, "内容自动屏蔽", "提示:", "提示："):
+        cleaned = cleaned.replace(m, "")
+    cleaned = re.sub(r"\s+", "", cleaned)
+    if len(cleaned) >= 40:
+        return False
+    return True
 
 
 def is_reply_required_post(html: str) -> bool:

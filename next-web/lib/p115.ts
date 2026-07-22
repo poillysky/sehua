@@ -584,7 +584,18 @@ export async function addOfflineTasks(
     new Set(
       urls
         .map((u) => (u || "").trim())
-        .filter((u) => /^(magnet:|ed2k:\/\/|https?:\/\/|ftp:\/\/)/i.test(u)),
+        .filter((u) => {
+          const s = (u || "").trim();
+          if (!/^(magnet:|ed2k:\/\/|https?:\/\/|ftp:\/\/)/i.test(s)) {
+            return false;
+          }
+          // 分享页走 share/receive，不进离线云下载
+          const low = s.toLowerCase();
+          if (low.includes("115cdn.com/s/") || low.includes("115.com/s/")) {
+            return false;
+          }
+          return true;
+        }),
     ),
   );
 

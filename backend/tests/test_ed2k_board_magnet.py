@@ -19,6 +19,18 @@ def test_has_target_link_ed2k_accepts_magnet():
     assert has_target_link("ed2k://|file|a.mkv|1|ABCDEFABCDEFABCDEFABCDEFABCDEFAB|/", "ed2k")
 
 
+def test_incomplete_ed2k_not_target_link():
+    """缺 hash 的半截 ed2k / d2k 不应算有目标链（常见发帖截断）。"""
+    broken = "ed2k://|file|www.98T.la@demo.zip|509285037|"
+    broken_d2k = "d2k://|file|www.98T.la@demo.zip|509285037|"
+    assert not has_target_link(broken, "ed2k")
+    assert not has_target_link(broken_d2k, "ed2k")
+    assert is_non_target_cloud_share(
+        link_kind="ed2k",
+        text=broken + "\nhttps://pan.baidu.com/s/1abcDEF?pwd=xxxx",
+    )
+
+
 def test_cloud_share_not_when_magnet_present():
     text = f"网盘 https://pan.baidu.com/s/xxx\n{MAGNET}"
     assert not is_non_target_cloud_share(link_kind="ed2k", text=text)
@@ -31,6 +43,21 @@ def test_parse_fullwidth_colon_magnet():
     links = parse_magnet_text(raw)
     assert len(links) == 1
     assert links[0].infohash == "33C4355AE4E69DB5AAA568E825A552ED29FD75BB"
+    assert has_target_link(raw, "ed2k")
+    assert has_target_link(raw, "magnet")
+
+
+def test_parse_colonless_magnet_anti_filter():
+    """附件防和谐去冒号：magnetxt=urnbtih:HASH 应还原。"""
+    raw = (
+        "magnetxt=urnbtih:2C01890375D5F1D3C91DA109F807EB680FD38D9D\n"
+        "magnetxt=urnbtih:7B9851F0E832003BD5CE0B845D3D06D44CE49EA2"
+    )
+    fixed = normalize_magnet_corpus(raw)
+    assert "magnet:?xt=urn:btih:2C01890375D5F1D3C91DA109F807EB680FD38D9D" in fixed
+    links = parse_magnet_text(raw)
+    assert len(links) == 2
+    assert links[0].infohash == "2C01890375D5F1D3C91DA109F807EB680FD38D9D"
     assert has_target_link(raw, "ed2k")
     assert has_target_link(raw, "magnet")
 

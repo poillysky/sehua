@@ -429,11 +429,21 @@ def extract_lz_posts_html(html: str, *, limit: int = 5) -> list[str]:
 
 
 def extract_link_corpus_html(html: str, *, limit: int = 5) -> str:
-    """链接抽取语料：楼主多层正文拼接。"""
+    """链接抽取语料：楼主多层正文 + 附件注入块（postmessage_attach*）。"""
     parts = extract_lz_posts_html(html, limit=limit)
-    if parts:
-        return "\n".join(parts)
-    return extract_first_postmessage_html(html)
+    if not parts:
+        first = extract_first_postmessage_html(html)
+        parts = [first] if first else []
+    # 附件下载后 inject_attachment_text 写入的块（非纯数字楼 id，楼主扫描会跳过）
+    for m in re.finditer(
+        r'id=["\']postmessage_attach\d+["\'][^>]*>(.*?)</div>',
+        html or "",
+        re.I | re.S,
+    ):
+        body = (m.group(1) or "").strip()
+        if body:
+            parts.append(body)
+    return "\n".join(parts)
 
 
 def _clip_field_value(
@@ -457,6 +467,14 @@ def _clip_field_value(
     if noise:
         val = val[: noise.start()].strip()
     if password:
+        # 附件名粘在密码后：MyBigDick@x.txt 18OnlyGirls.rar (42.29 KB,
+        m_att = re.search(
+            r"\s+\S+\.(?:rar|zip|7z|txt|docx?|xlsx?|xls|torrent)\b",
+            val,
+            re.I,
+        )
+        if m_att:
+            val = val[: m_att.start()].strip()
         # 密码通常是单 token；后面若跟中文说明再硬切
         m2 = re.search(r"\s+[\u4e00-\u9fff]", val)
         if m2:

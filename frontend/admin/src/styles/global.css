@@ -1240,6 +1240,10 @@ a {
   background: var(--warn-dim);
   color: var(--stub);
 }
+.tag-115share {
+  background: rgba(52, 211, 153, 0.15);
+  color: #34d399;
+}
 .tag-login {
   background: var(--warn-dim);
   color: var(--warn);
@@ -2194,15 +2198,111 @@ a {
   padding: 10px 14px;
   border-bottom: 1px solid var(--border);
   justify-content: flex-start;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.crawler-discarded-tools-row {
+  display: flex;
+  flex: 1 1 220px;
+  gap: 8px;
+  align-items: center;
+  min-width: 0;
+}
+
+.crawler-discarded-tools-row .crawler-discarded-search {
+  flex: 1;
+  min-width: 0;
+}
+
+.crawler-discarded-reason-filter-bar {
+  flex: 1 1 180px;
+  min-width: 140px;
+  max-width: 320px;
+  height: 34px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--bg-elevated);
+  color: var(--text);
+  padding: 0 10px;
+  font-size: 12px;
+}
+
+.crawler-discarded-cards {
+  display: none;
+}
+
+.crawler-discarded-card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--border);
+  background: var(--panel);
+}
+
+.crawler-discarded-card-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.crawler-discarded-card-time {
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.crawler-discarded-card-title {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1.4;
+  color: var(--text);
+  word-break: break-word;
+}
+
+.crawler-discarded-card-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 10px;
+  align-items: center;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.crawler-discarded-card-id {
+  color: var(--primary);
+  text-decoration: none;
+  min-height: 32px;
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 0;
+}
+
+.crawler-discarded-card-id[href]:active {
+  opacity: 0.75;
+}
+
+.crawler-discarded-card-reason {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.45;
+  color: color-mix(in srgb, var(--warn) 85%, var(--text));
+  word-break: break-word;
 }
 
 .crawler-discarded-modal-body .crawler-discarded-table-wrap {
-  flex: 1;
-  min-height: 0;
+  flex: 1 1 auto;
+  min-height: 8rem;
   max-height: none;
   overflow: auto;
   -webkit-overflow-scrolling: touch;
   overscroll-behavior: contain;
+}
+
+.crawler-discarded-table-wrap.desktop-only {
+  display: block !important;
 }
 
 .crawler-discarded-modal-body .crawler-discarded-foot {
@@ -2372,6 +2472,88 @@ a {
   text-align: center;
   color: var(--muted);
   padding: 28px 12px !important;
+}
+
+.crawler-discarded-check-th,
+.crawler-discarded-check-td {
+  width: 2.25rem;
+  text-align: center;
+  vertical-align: middle;
+}
+
+.crawler-discarded-check {
+  width: 1rem;
+  height: 1rem;
+  margin: 0;
+  cursor: pointer;
+  accent-color: var(--accent, #3b82f6);
+}
+
+.crawler-discarded-table tr.is-selected td {
+  background: color-mix(in srgb, var(--accent, #3b82f6) 12%, transparent);
+}
+
+.crawler-discarded-card.is-selected {
+  outline: 1px solid color-mix(in srgb, var(--accent, #3b82f6) 55%, transparent);
+  background: color-mix(in srgb, var(--accent, #3b82f6) 10%, transparent);
+}
+
+.crawler-discarded-card-top .crawler-discarded-check {
+  flex-shrink: 0;
+  width: 1.15rem;
+  height: 1.15rem;
+}
+
+.crawler-discarded-log {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  margin: 0;
+  padding: 10px 14px 8px;
+  min-height: 11rem;
+}
+
+.crawler-discarded-log-note {
+  margin: 0;
+  padding: 0.45rem 0.65rem;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--accent, #3b82f6) 14%, transparent);
+  color: var(--text, #e5e7eb);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.crawler-discarded-log-head {
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: var(--muted, #94a3b8);
+}
+
+.crawler-discarded-log-body,
+.crawler-discarded-log-body.activity-log {
+  flex: 0 0 auto;
+  height: 11rem;
+  min-height: 11rem;
+  max-height: min(18rem, 32vh);
+  overflow-x: hidden;
+  overflow-y: auto;
+  border: 1px solid color-mix(in srgb, var(--border, #334155) 80%, transparent);
+  border-radius: 8px;
+  background: color-mix(in srgb, #000 22%, transparent);
+  padding: 4px 0;
+  font-size: 12px;
+}
+
+.crawler-discarded-log-body .activity-row {
+  padding: 5px 10px;
+  gap: 8px;
+}
+
+.crawler-discarded-log-body .activity-empty {
+  padding: 1.25rem 0.75rem;
+  font-size: 12px;
 }
 
 .crawler-discarded-badge {
@@ -4690,6 +4872,7 @@ a {
   .crawler-discarded-modal {
     width: 100%;
     max-width: none;
+    height: min(92dvh, calc(100dvh - env(safe-area-inset-top, 0px)));
     max-height: min(92dvh, calc(100dvh - env(safe-area-inset-top, 0px)));
     margin: 0;
     border-radius: 16px 16px 0 0;
@@ -4699,12 +4882,46 @@ a {
   }
 
   .crawler-discarded-modal-head {
-    padding-top: 12px;
+    padding: 18px 14px 12px;
+    gap: 10px;
+    position: relative;
+  }
+
+  .crawler-discarded-modal-head::before {
+    content: '';
+    position: absolute;
+    top: 6px;
+    left: 50%;
+    width: 36px;
+    height: 4px;
+    margin-left: -18px;
+    border-radius: 999px;
+    background: color-mix(in srgb, var(--muted) 55%, transparent);
+  }
+
+  .crawler-discarded-modal-head h3 {
+    font-size: 16px;
+  }
+
+  .crawler-discarded-modal-head .icon-only {
+    min-width: 44px;
+    min-height: 44px;
+    width: 44px;
+    height: 44px;
+  }
+
+  .crawler-discarded-sub {
+    display: block;
+    margin-top: 4px;
+    font-size: 11px;
+    line-height: 1.4;
   }
 
   .crawler-discarded-modal-body .crawler-discarded-tools {
     flex-direction: column;
     align-items: stretch;
+    gap: 10px;
+    padding: 10px 12px;
   }
 
   .crawler-discarded-modal-body .crawler-discarded-tabs {
@@ -4715,20 +4932,72 @@ a {
   .crawler-discarded-modal-body .crawler-discarded-tab {
     flex: 1 1 0;
     text-align: center;
+    min-height: 36px;
+    font-size: 13px;
+  }
+
+  .crawler-discarded-tools-row {
+    width: 100%;
+    flex: none;
   }
 
   .crawler-discarded-modal-body .crawler-discarded-search {
     width: 100%;
     min-width: 0;
+    min-height: 40px;
+    font-size: 16px; /* iOS 避免自动放大 */
   }
 
-  .crawler-discarded-modal-body .crawler-discarded-table {
-    min-width: 640px;
+  .crawler-discarded-reason-filter-bar {
+    width: 100%;
+    max-width: none;
+    flex: none;
+    min-height: 40px;
+    font-size: 16px;
+  }
+
+  .crawler-discarded-modal-body .crawler-discarded-table-wrap {
+    display: none !important;
+  }
+
+  .crawler-discarded-cards.mobile-only {
+    display: flex !important;
+    flex-direction: column;
+    flex: 1 1 0;
+    min-height: 6rem;
+    overflow: auto;
+    -webkit-overflow-scrolling: touch;
+    overscroll-behavior: contain;
+  }
+
+  .crawler-discarded-modal-body .crawler-discarded-log {
+    min-height: 9.5rem;
+  }
+
+  .crawler-discarded-modal-body .crawler-discarded-log-body,
+  .crawler-discarded-modal-body .crawler-discarded-log-body.activity-log {
+    height: 9.5rem;
+    min-height: 9.5rem;
+    max-height: 9.5rem;
+  }
+
+  .crawler-discarded-cards.is-loading {
+    opacity: 0.65;
+  }
+
+  .crawler-discarded-card {
+    padding: 14px 14px;
+  }
+
+  .crawler-discarded-card-title {
+    font-size: 15px;
   }
 
   .crawler-discarded-modal-body .crawler-discarded-foot {
     gap: 10px;
     flex-wrap: wrap;
+    padding: 10px 12px;
+    padding-bottom: calc(12px + env(safe-area-inset-bottom, 0px));
   }
 
   .crawler-discarded-modal-body .crawler-discarded-pager {
@@ -4740,6 +5009,7 @@ a {
   .crawler-discarded-modal-body .crawler-discarded-pager .crawler-action {
     flex: 1;
     justify-content: center;
+    min-height: 44px;
   }
 
   .crawler-toolbar {
@@ -5373,6 +5643,19 @@ a {
   html.ios-pwa .drawer-backdrop {
     inset: calc(var(--header-h) + env(safe-area-inset-top, 0px)) 0
       calc(var(--bottom-h) + env(safe-area-inset-bottom, 0px)) 0;
+  }
+
+  html.ios-pwa .crawler-discarded-backdrop {
+    padding-top: env(safe-area-inset-top, 0px);
+  }
+
+  html.ios-pwa .crawler-discarded-modal {
+    height: calc(100vh - env(safe-area-inset-top, 0px) - 8px);
+    max-height: calc(100vh - env(safe-area-inset-top, 0px) - 8px);
+  }
+
+  html.ios-pwa .crawler-discarded-modal-body .crawler-discarded-foot {
+    padding-bottom: calc(14px + env(safe-area-inset-bottom, 0px));
   }
 }
 

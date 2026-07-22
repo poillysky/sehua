@@ -107,6 +107,7 @@ MISSING_MARKERS = (
     "抱歉，指定的主题不存在",
     "指定的主题不存在",
     "没有找到主题",
+    "没有找到帖子",
     "帖子不存在",
     "内容不存在或已被删除",
 )
@@ -147,17 +148,10 @@ def sample_tids(
 
 
 def is_missing_thread(html: str, title: str = "") -> bool:
-    """识别 Discuz「主题不存在」等空洞页。"""
-    tit = (title or page_title(html) or "").strip()
-    blob = f"{tit}\n{html or ''}"
-    if any(m in blob for m in MISSING_MARKERS):
-        return True
-    # 极短提示页且无正文
-    if len(html or "") < 4000 and "postmessage_" not in (html or "") and (
-        "提示信息" in tit or "错误" in tit
-    ):
-        return True
-    return False
+    """识别 Discuz「主题不存在」等空洞页（委托 thread_gates）。"""
+    from parsers.thread_gates import is_missing_thread as _gate_missing
+
+    return _gate_missing(html, title)
 
 
 def is_tid_known(conn: Any, tid: int, thread_url: str) -> bool:

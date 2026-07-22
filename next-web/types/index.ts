@@ -25,7 +25,7 @@ export type Ed2kResourceProps = {
   size: number;
   ed2k_link: string;
   ed2k_links?: string[];
-  link_kind?: "ed2k" | "magnet" | "stub" | "other";
+  link_kind?: "ed2k" | "magnet" | "stub" | "115share" | "other";
   single_file: boolean;
   files_count: number;
   files: {

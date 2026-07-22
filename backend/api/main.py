@@ -32,11 +32,13 @@ from db.repository import (
     list_recent_resources,
     list_resource_boards,
     list_resource_facets,
+    list_resource_ids_for_selection,
     purge_crawl_data,
     purge_resources,
 )
 from db.resource_db import (
     connect_resource,
+    open_resource_connection,
     resource_db_config,
     save_resource_db_config,
     test_resource_db_connection,
@@ -96,6 +98,12 @@ async def lifespan(_app: FastAPI):
 
     start_backup_scheduler()
     logger.info("resource backup scheduler started")
+    try:
+        from workers.runner import _log_activity
+
+        _log_activity("后端就绪 · 活动日志已落库，操作后可在此查看")
+    except Exception:
+        logger.debug("startup activity log skipped", exc_info=True)
     try:
         yield
     finally:
@@ -183,9 +191,15 @@ def data_overview(_user: dict = Depends(require_permission("settings.write"))) -
     from workers.runner import crawl_status
 
     conn = connect()
-    rconn = connect_resource()
+    rconn = None
+    resource_db_error: str | None = None
     try:
         separate = using_separate_resource_db()
+        if separate:
+            rconn, resource_db_error = open_resource_connection()
+            if rconn is None:
+                # 独立库暂不可达：页面仍可打开，资源计数回落主库并带回错误提示
+                separate = False
         overview = get_data_overview(conn, rconn if separate else None)
         configs = load_forum_configs_map(conn)
         cfg = dict(configs.get(SITE_CRAWLER_FORUM_ID) or {})
@@ -196,9 +210,14 @@ def data_overview(_user: dict = Depends(require_permission("settings.write"))) -
             "crawler_running": bool(st.get("running") or st.get("looping")),
             "crawler_enabled": bool(cfg.get("web_crawler_enabled")),
             "resource_db": resource_db_config(mask_password=True),
+            "resource_db_error": resource_db_error,
         }
     finally:
-        rconn.close()
+        if rconn is not None and rconn is not conn:
+            try:
+                rconn.close()
+            except Exception:
+                pass
         conn.close()
 
 
@@ -231,8 +250,28 @@ def put_resource_db(
         dbname=body.dbname or "",
         keep_password=bool(body.keep_password),
     )
-    # 独立资源库只保存连接并用于读写；不自动建表/迁移（避免改动已有库）
-    return {"message": "success", **cfg}
+    # 独立资源库只保存连接并用于读写；不自动建表/迁移。保存后探测连通性。
+    connection_ok = True
+    connection_error: str | None = None
+    if cfg.get("enabled") and cfg.get("ready"):
+        probe = test_resource_db_connection(
+            enabled=True,
+            host=str(cfg.get("host") or ""),
+            port=cfg.get("port") if isinstance(cfg.get("port"), int) else body.port,
+            user=str(cfg.get("user") or ""),
+            password=body.password,
+            dbname=str(cfg.get("dbname") or ""),
+            use_saved_password=bool(body.keep_password) and not (body.password or "").strip(),
+        )
+        connection_ok = bool(probe.get("ok"))
+        if not connection_ok:
+            connection_error = str(probe.get("message") or "独立资源库连通失败")
+    return {
+        "message": "success",
+        **cfg,
+        "connection_ok": connection_ok,
+        "connection_error": connection_error,
+    }
 
 
 @app.post("/api/system/resource-db/test")
@@ -444,12 +483,53 @@ def resources_recent(
         conn.close()
 
 
+@app.get("/api/resources/ids")
+def resources_ids(
+    source: str = "",
+    board: str = "",
+    result: str = "",
+    q: str = "",
+    limit: int = 2000,
+) -> dict:
+    """当前筛选条件下全部资源 id/hash（跨页全选）。"""
+    source_raw = source.strip()
+    board_raw = board.strip()
+    result_raw = result.strip()
+    source_type = source_raw if source_raw and source_raw != "all" else None
+    board_name = board_raw if board_raw and board_raw != "all" else None
+    link_kind = result_raw if result_raw and result_raw != "all" else None
+    query = q.strip() or None
+    lim = max(1, min(int(limit or 2000), 5000))
+
+    conn = connect_resource()
+    try:
+        items, total = list_resource_ids_for_selection(
+            conn,
+            source_type=source_type,
+            board_name=board_name,
+            link_kind=link_kind,
+            q=query,
+            limit=lim,
+        )
+        return {
+            "items": items,
+            "count": len(items),
+            "total": total,
+            "limit": lim,
+            "truncated": total > len(items),
+            "ids": [int(it["id"]) for it in items if it.get("id") is not None],
+            "hashes": [str(it["hash"]) for it in items if it.get("hash")],
+        }
+    finally:
+        conn.close()
+
+
 class RecrawlBody(BaseModel):
     hash: str = Field(..., min_length=8, max_length=128)
 
 
 class RecrawlBatchBody(BaseModel):
-    hashes: list[str] = Field(..., min_length=1, max_length=200)
+    hashes: list[str] = Field(..., min_length=1, max_length=2000)
 
 
 @app.post("/api/resources/delete")

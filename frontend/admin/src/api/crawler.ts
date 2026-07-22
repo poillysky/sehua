@@ -253,6 +253,32 @@ export function fetchDiscardedQueue(params?: {
   return api<DiscardedQueueResult>(`/api/crawler/queue/discarded${qs ? `?${qs}` : ''}`)
 }
 
+export type DiscardedTidsResult = {
+  status: string
+  q: string
+  reason: string
+  total: number
+  limit: number
+  count: number
+  truncated: boolean
+  tids: number[]
+}
+
+export function fetchDiscardedTids(params?: {
+  status?: 'all' | 'failed' | 'skipped'
+  q?: string
+  reason?: string
+  limit?: number
+}) {
+  const sp = new URLSearchParams()
+  if (params?.status) sp.set('status', params.status)
+  if (params?.q) sp.set('q', params.q)
+  if (params?.reason) sp.set('reason', params.reason)
+  if (params?.limit != null) sp.set('limit', String(params.limit))
+  const qs = sp.toString()
+  return api<DiscardedTidsResult>(`/api/crawler/queue/discarded/tids${qs ? `?${qs}` : ''}`)
+}
+
 export type QueueBrowseKind = 'ready' | 'abnormal' | 'discarded' | 'stubs'
 
 export type QueueBrowseItem = DiscardedQueueItem & {
@@ -324,6 +350,45 @@ export function requeueDiscardedKind(body?: {
     body: JSON.stringify({
       kind: body?.kind || 'access_denied_bad_title',
       start_crawl: body?.start_crawl !== false,
+    }),
+  })
+}
+
+export type DiscardedRequeueTidsResult = {
+  message: string
+  mode?: string
+  selected: number
+  matched?: number
+  requeued: number
+  crawled?: number
+  imports?: number
+  stubs?: number
+  skipped?: number
+  failed?: number
+  pending_ready?: number
+  note?: string
+  items?: Array<{
+    ok?: boolean
+    tid?: number | null
+    url?: string
+    title?: string
+    verdict?: string
+    label?: string
+    error?: string
+    queued?: boolean
+  }>
+  crawl?: DiscardedRequeueResult['crawl']
+}
+
+export function requeueDiscardedTids(body: {
+  tids: number[]
+  start_crawl?: boolean
+}) {
+  return api<DiscardedRequeueTidsResult>('/api/crawler/queue/discarded/requeue-tids', {
+    method: 'POST',
+    body: JSON.stringify({
+      tids: body.tids,
+      start_crawl: body.start_crawl !== false,
     }),
   })
 }

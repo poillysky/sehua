@@ -1,4 +1,4 @@
-"""Discuz 附件提取 / 过滤 / 合并（txt · zip · rar · torrent）。"""
+"""Discuz 附件提取 / 过滤 / 合并（txt · zip · rar · torrent · excel · doc）。"""
 
 from __future__ import annotations
 
@@ -27,13 +27,15 @@ DIRECTORY_ATTACHMENT_MARKERS = (
 )
 
 _IMAGE_SUFFIXES = (".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp")
+_EXCEL_SUFFIXES = (".xlsx", ".xlsm", ".xls", ".xlsb")
+_DOC_SUFFIXES = (".doc", ".docx")
 
 
 @dataclass(slots=True)
 class DownloadAttachment:
     name: str
     url: str
-    kind: str  # txt | zip | rar | torrent
+    kind: str  # txt | zip | rar | torrent | excel | doc
 
 
 @dataclass(slots=True)
@@ -61,6 +63,10 @@ def _attachment_kind(name: str) -> str | None:
         return "zip"
     if lower.endswith(".rar"):
         return "rar"
+    if lower.endswith(_EXCEL_SUFFIXES) or "excel" in lower or "表格" in name:
+        return "excel"
+    if lower.endswith(_DOC_SUFFIXES):
+        return "doc"
     if (
         lower.endswith(".txt")
         or "ed2k" in lower
@@ -103,7 +109,7 @@ def _anchor_attachment_name(a) -> str:
 
 
 def extract_download_attachments(base_url: str, html: str) -> list[DownloadAttachment]:
-    """提取帖子内可下载的 txt / zip / rar / torrent（DOM 顺序）。"""
+    """提取帖子内可下载的 txt / zip / rar / torrent / excel / doc（DOM 顺序）。"""
     found: dict[str, DownloadAttachment] = {}
     try:
         from bs4 import BeautifulSoup
@@ -147,46 +153,87 @@ def extract_download_attachments(base_url: str, html: str) -> list[DownloadAttac
     return list(found.values())
 
 
+# 单帖附件轮询上限（防异常帖挂几十个无关附件）
+MAX_ATTACHMENTS_PER_THREAD = 30
+
+
 def filter_tail_attachments(
     attachments: list[DownloadAttachment],
     *,
-    limit: int = 3,
+    limit: int = MAX_ATTACHMENTS_PER_THREAD,
 ) -> list[DownloadAttachment]:
-    """尾部 txt/zip/rar；优先非目录树，跳过纯目录树类。"""
-    candidates = [item for item in attachments if item.kind in ("txt", "zip", "rar")]
+    """txt / excel / doc / zip / rar：按类型排序后逐个轮询（先文本与表格，再压缩包）。"""
+    candidates = [
+        item
+        for item in attachments
+        if item.kind in ("txt", "excel", "doc", "zip", "rar")
+    ]
     filtered = [
         item
         for item in candidates
         if not _looks_like_directory_attachment(item.name, kind=item.kind)
     ]
-    # 没有链接类附件时，才退回目录树 txt（少数帖只有目录）
     if not filtered:
         filtered = [item for item in candidates if item.kind == "txt"]
-    if len(filtered) <= limit:
-        return filtered
-    # 资源链附件多在前（如 98T@xxx.txt）；目录树/截图已剔除
-    return filtered[:limit]
+    order = {"txt": 0, "excel": 1, "doc": 2, "zip": 3, "rar": 4}
+    filtered.sort(key=lambda a: (order.get(a.kind, 9), a.name))
+    lim = max(1, min(int(limit), MAX_ATTACHMENTS_PER_THREAD))
+    return filtered[:lim]
 
 
 def filter_torrent_attachments(
     attachments: list[DownloadAttachment],
     *,
-    limit: int = 3,
+    limit: int = MAX_ATTACHMENTS_PER_THREAD,
 ) -> list[DownloadAttachment]:
     filtered = [item for item in attachments if item.kind == "torrent"]
-    if len(filtered) <= limit:
+    lim = max(1, min(int(limit), MAX_ATTACHMENTS_PER_THREAD))
+    if len(filtered) <= lim:
         return filtered
-    return filtered[-limit:]
+    return filtered[:lim]
+
+
+def filter_all_link_attachments(
+    attachments: list[DownloadAttachment],
+    *,
+    limit: int = MAX_ATTACHMENTS_PER_THREAD,
+) -> list[DownloadAttachment]:
+    """全部可抽链附件：txt → excel → doc → zip/rar → torrent，逐个轮询。"""
+    tail = filter_tail_attachments(attachments, limit=limit)
+    torrents = filter_torrent_attachments(attachments, limit=limit)
+    seen: set[str] = set()
+    out: list[DownloadAttachment] = []
+    for item in [*tail, *torrents]:
+        key = f"{item.kind}:{item.name}:{item.url}"
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(item)
+        if len(out) >= limit:
+            break
+    return out
 
 
 def pick_ed2k_attachment_kind(base_url: str, html: str) -> str:
-    """电驴板附件策略：有 txt/zip/rar 优先；仅有种子则转磁力（板策略本就接受磁力）。"""
+    """电驴板附件策略：有 txt/zip/rar/excel/doc 优先；仅有种子则转磁力。"""
     atts = extract_download_attachments(base_url, html)
     if filter_tail_attachments(atts):
         return "txt_tail"
     if filter_torrent_attachments(atts):
         return "torrent"
     return "txt_tail"
+
+
+def pick_magnet_attachment_kind(base_url: str, html: str) -> str:
+    """磁力板：Excel/Word/文本附件里常有 magnet；否则下种子。"""
+    atts = extract_download_attachments(base_url, html)
+    if any(a.kind in ("excel", "doc") for a in atts):
+        return "txt_tail"
+    if filter_torrent_attachments(atts):
+        return "torrent"
+    if filter_tail_attachments(atts):
+        return "txt_tail"
+    return "torrent"
 
 
 def merge_thread_content(post_text: str, attachment_text: str) -> str:

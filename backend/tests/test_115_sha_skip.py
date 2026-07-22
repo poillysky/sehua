@@ -44,6 +44,58 @@ def test_judge_skips_115_sha_immediately():
     assert "115" in out.outcome
 
 
+def test_judge_115_sha_with_rar_attachment_tries_attachments():
+    """正文仅有 115 目录链、附件是 rar：应先下附件（rar 内常有磁力）。"""
+    html = f"""
+    <html><head><title>【磁力】合集 - 论坛</title></head>
+    <body>
+    <div id="postmessage_1">
+      目录：{SAMPLE_115}<br/>
+      【解压密码】：MyBigDick@sehuatang
+    </div>
+    <div class="tattl"><ignore_js_op>
+      <a href="forum.php?mod=attachment&aid=1">18OnlyGirls.rar</a>
+    </ignore_js_op></div>
+    Powered by Discuz!
+    </body></html>
+    """
+    html = html + ("x" * 15000)
+    out = judge_thread_html(
+        html,
+        board_fid=103,
+        list_title="【磁力】合集",
+        preferred_link="magnet",
+    )
+    assert out.verdict == "need_attachments"
+    assert out.need_attachments is True
+
+
+def test_judge_after_failed_attach_does_not_blame_body_115_as_attach():
+    """附件解压失败后，正文 115 目录不应再标成「附件跳过」。"""
+    html = f"""
+    <html><head><title>【磁力】合集 - 论坛</title></head>
+    <body>
+    <div id="postmessage_1">目录：{SAMPLE_115}</div>
+    <div class="tattl"><ignore_js_op>
+      <a href="forum.php?mod=attachment&aid=1">pack.rar</a>
+    </ignore_js_op></div>
+    Powered by Discuz!
+    </body></html>
+    """
+    html = html + ("x" * 15000)
+    out = judge_thread_html(
+        html,
+        board_fid=103,
+        list_title="【磁力】合集",
+        preferred_link="magnet",
+        attachments_already_tried=True,
+        had_attachments=True,
+    )
+    assert out.verdict == "skipped"
+    assert "附件" not in out.outcome
+    assert "未解析" in out.outcome or "115" in out.outcome
+
+
 def test_judge_skips_115_sha_from_attachment_corpus():
     """正文无目标链，附件解析出 115sha → 立即 skipped。"""
     html = """
@@ -258,3 +310,111 @@ def test_baidu_pan_share_skips():
     assert out.verdict == "skipped"
     assert "百度网盘" in out.outcome
     assert out.need_attachments is False
+
+
+def test_baidu_op_not_failed_by_reply_magnet():
+    """楼主仅百度/迅雷网盘，回帖有人贴磁力 → 应按网盘跳过，勿「有链但无主资源」失败。"""
+    html = """
+    <html><head><title>【自转】【百度云盘+迅雷云盘】示例 - 论坛</title></head>
+    <body>
+    <span id="thread_subject">【自转】【百度云盘+迅雷云盘】示例</span>
+    <div id="postlist">
+      <div id="post_1">
+        <div class="authi"><em>1#</em><img src="ico_lz.png" alt="楼主"/></div>
+        <div id="postmessage_1">
+          【资源名称】：demo<br>
+          百度：https://pan.baidu.com/s/1MRoPSDL3UBxQ7TDjNGeeFw?pwd=cgvb<br>
+          迅雷：https://pan.xunlei.com/s/VOPiNj7JQOdVHsoV-juqILVyA1#
+        </div>
+      </div>
+      <div id="post_2">
+        <div class="authi"><em>2#</em></div>
+        <div id="postmessage_2">
+          需要那么麻烦？直接链接秒就是
+          magnet:?xt=urn:btih:4801A7C1B020F7B75346A5F96EDD1AE9993C59DD
+        </div>
+      </div>
+    </div>
+    Powered by Discuz!
+    </body></html>
+    """
+    html = html + ("<!-- pad -->" * 900)
+    out = judge_thread_html(
+        html,
+        board_fid="95:716",
+        list_title="【自转】【百度云盘+迅雷云盘】示例",
+        preferred_link="ed2k",
+    )
+    assert out.verdict == "skipped"
+    assert "网盘" in out.outcome or "百度" in out.outcome or "迅雷" in out.outcome
+    assert out.outcome != "解析入库失败（有链但无主资源）"
+
+
+def test_incomplete_ed2k_with_baidu_skips_not_failed():
+    """正文半截 ed2k（无 hash）+ 百度网盘 → 网盘跳过，勿失败。"""
+    html = """
+    <html><head><title>【自转】【百度/115eD2k】示例 - 论坛</title></head>
+    <body>
+    <span id="thread_subject">【自转】【百度/115eD2k】示例</span>
+    <div id="postlist">
+      <div id="post_1">
+        <div class="authi"><em>1#</em><img src="ico_lz.png" alt="楼主"/></div>
+        <div id="postmessage_1">
+          【资源名称】：demo<br>
+          百度：https://pan.baidu.com/s/1COXim2I4c7t3FjYO5i5rsQ?pwd=7ryv<br>
+          ed2k://|file|www.98T.la@demo.zip|509285037|<br>
+        </div>
+      </div>
+    </div>
+    Powered by Discuz!
+    </body></html>
+    """
+    html = html + ("<!-- pad -->" * 900)
+    out = judge_thread_html(
+        html,
+        board_fid="95:716",
+        list_title="【自转】【百度/115eD2k】示例",
+        preferred_link="ed2k",
+    )
+    assert out.verdict == "skipped"
+    assert "百度" in out.outcome or "网盘" in out.outcome
+    assert out.outcome != "解析入库失败（有链但无主资源）"
+
+
+def test_discussion_op_skips_despite_reply_ed2k():
+    """楼主讨论帖无资源，回帖有人贴 ed2k → 非资源跳过，勿失败。"""
+    html = """
+    <html><head><title>欧美媚黑熟女系列推荐 - 论坛</title></head>
+    <body>
+    <span id="thread_subject">欧美媚黑熟女系列推荐</span>
+    <div id="postlist">
+      <div id="post_1">
+        <div class="authi"><em>1#</em><img src="ico_lz.png" alt="楼主"/></div>
+        <div id="postmessage_1">
+          第一次接触媚黑是blacked，推荐喜欢黑白配的兄弟站内搜索。
+          后面我打算整理一个帖子，大家也可以跟帖推荐。
+        </div>
+      </div>
+      <div id="post_2">
+        <div class="authi"><em>2#</em></div>
+        <div id="postmessage_2">
+          推荐一个
+          <a href="ed2k://|file|www.98T.la@OnlyFansPUNA.mp4|6785740173|07B21C098E471B87E16590310F5491F9|/">
+            www.98T.la@OnlyFansPUNA.mp4
+          </a>
+        </div>
+      </div>
+    </div>
+    Powered by Discuz!
+    </body></html>
+    """
+    html = html + ("<!-- pad -->" * 900)
+    out = judge_thread_html(
+        html,
+        board_fid="95:716",
+        list_title="欧美媚黑熟女系列推荐",
+        preferred_link="ed2k",
+    )
+    assert out.verdict == "skipped"
+    assert "非资源" in out.outcome or "未发现" in out.outcome or "无目标" in out.outcome
+    assert out.outcome != "解析入库失败（有链但无主资源）"

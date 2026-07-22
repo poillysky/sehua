@@ -562,7 +562,8 @@ export default function SettingsPage() {
           </div>
 
           <p className="px-1 text-center text-[11px] leading-relaxed text-gray-400 dark:text-slate-500">
-            配置写入 data/p115-config.json。有解压密码或资源为 zip/rar/7z
+            配置写入 data/p115-config.json。支持磁力/电驴离线转存，以及 115
+            分享码一键接收到网盘。有解压密码或资源为 zip/rar/7z
             时，会轮询离线任务（最长约 30
             秒），转存完成后立即云解压到同名文件夹（保留压缩包）。需 VIP；压缩包
             ≤20GB。

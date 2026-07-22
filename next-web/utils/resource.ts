@@ -104,7 +104,11 @@ export function getExtractPassword(
     return fromCol;
   }
 
-  return getDescriptionField(item.description, "解压密码");
+  return (
+    getDescriptionField(item.description, "解压密码") ||
+    getDescriptionField(item.description, "访问码") ||
+    getDescriptionField(item.description, "分享码")
+  );
 }
 
 const MAX_PREVIEW_IMAGES = 5;

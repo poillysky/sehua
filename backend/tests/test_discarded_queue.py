@@ -20,10 +20,20 @@ def test_discarded_status_clause_failed():
     assert params == ["failed"]
 
 
-def test_discarded_search_tid():
+def test_discarded_search_title_only():
+    sql, params = _discarded_search_clause("欧美合集")
+    assert "thread_title" in sql
+    assert "tid =" not in sql
+    assert "outcome" not in sql
+    assert params == ["%欧美合集%"]
+
+
+def test_discarded_search_digit_is_still_title():
+    """纯数字也只搜标题，不当 tid。"""
     sql, params = _discarded_search_clause("2254351")
-    assert "tid = %s" in sql
-    assert params[0] == 2254351
+    assert "thread_title" in sql
+    assert "tid =" not in sql
+    assert params == ["%2254351%"]
 
 
 def test_discarded_search_empty():
@@ -85,3 +95,47 @@ def test_unknown_discarded_kind_raises():
         assert False, "expected KeyError"
     except KeyError:
         pass
+
+
+def test_requeue_discarded_by_tids_empty():
+    from db.queue import requeue_discarded_by_tids
+
+    class FakeConn:
+        def cursor(self):
+            raise AssertionError("should not query")
+
+    assert requeue_discarded_by_tids(FakeConn(), []) == 0
+    assert requeue_discarded_by_tids(FakeConn(), [0, -1, "x"]) == 0  # type: ignore[list-item]
+
+
+def test_requeue_discarded_by_tids_updates():
+    from db.queue import DISCARDED_STATUSES, requeue_discarded_by_tids
+
+    class FakeCur:
+        def __init__(self):
+            self.sql = ""
+            self.params = None
+            self.rowcount = 3
+
+        def execute(self, sql, params=None):
+            self.sql = sql
+            self.params = params
+
+    class FakeConn:
+        def __init__(self):
+            self.cur = FakeCur()
+            self.committed = False
+
+        def cursor(self):
+            return self.cur
+
+        def commit(self):
+            self.committed = True
+
+    conn = FakeConn()
+    n = requeue_discarded_by_tids(conn, [1793969, 1793969, 100])
+    assert n == 3
+    assert conn.committed
+    assert "tid = ANY" in conn.cur.sql
+    assert conn.cur.params[0] == list(DISCARDED_STATUSES)
+    assert conn.cur.params[1] == [1793969, 100]

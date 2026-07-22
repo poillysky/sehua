@@ -599,6 +599,8 @@ resource_count AS (
   WHERE (
       lower(COALESCE(r.ed2k_link, '')) LIKE 'ed2k://%'
       OR lower(COALESCE(r.ed2k_link, '')) LIKE 'magnet:%'
+      OR lower(COALESCE(r.ed2k_link, '')) LIKE '%115cdn.com/s/%'
+      OR lower(COALESCE(r.ed2k_link, '')) LIKE '%115.com/s/%'
       OR lower(COALESCE(r.ed2k_link, '')) LIKE 'unavailable://%'
     )
 ),
@@ -608,6 +610,8 @@ latest_resource AS (
   WHERE (
       lower(COALESCE(r.ed2k_link, '')) LIKE 'ed2k://%'
       OR lower(COALESCE(r.ed2k_link, '')) LIKE 'magnet:%'
+      OR lower(COALESCE(r.ed2k_link, '')) LIKE '%115cdn.com/s/%'
+      OR lower(COALESCE(r.ed2k_link, '')) LIKE '%115.com/s/%'
       OR lower(COALESCE(r.ed2k_link, '')) LIKE 'unavailable://%'
     )
   ORDER BY created_at DESC

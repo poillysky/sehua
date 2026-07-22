@@ -107,13 +107,15 @@
     "board": "Board: ",
     "description": "Description",
     "p115_save": "Save to 115",
-    "p115_save_extract": "Save + Extract"
+    "p115_save_extract": "Save + Extract",
+    "p115_share_save": "Save share"
   },
   "Detail": {
     "details": "Resource details",
     "description": "Description",
     "preview": "Preview",
     "ed2k": "Download",
+    "share115": "115 share link",
     "file_list": "File list",
     "copy": "Copy download link",
     "back": "Back to list",
@@ -132,6 +134,7 @@
     "translate_failed": "Translation failed. Please try again later.",
     "p115_success": "Added {count} link(s) to 115 cloud download",
     "p115_success_extract": "Saved {count} link(s); polling transfer (up to ~30s), then extract immediately",
+    "p115_share_success": "Saved {count} 115 share(s) to your cloud drive",
     "p115_failed": "Failed to save to 115",
     "p115_need_config": "115 is not configured. Please set Cookie first."
   }
