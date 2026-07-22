@@ -10,7 +10,7 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from pydantic import BaseModel, Field
 
 from auth.deps import require_permission
-from db.connection import connect
+from db.resource_db import connect_resource
 from db.repository import ensure_source, upsert_resource
 from parsers.ed2k import Ed2kLink, parse_ed2k_text
 from parsers.magnet import parse_magnet_text
@@ -229,7 +229,7 @@ def import_text(
     text = (body.links or body.content or "").strip()
     if not text:
         raise HTTPException(status_code=400, detail="请填写 magnet 或 ED2K 链接")
-    conn = connect()
+    conn = connect_resource()
     try:
         return import_links(
             conn,
@@ -277,7 +277,7 @@ async def import_file(
     if str(file_size).strip().isdigit():
         size_val = int(str(file_size).strip())
 
-    conn = connect()
+    conn = connect_resource()
     try:
         return import_links(
             conn,

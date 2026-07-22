@@ -158,26 +158,14 @@ def test_pg_dump_version_mismatch_falls_back_to_python(monkeypatch, tmp_path):
     monkeypatch.setattr(bk.shutil, "which", lambda name: "/usr/bin/pg_dump")
     monkeypatch.setattr(
         bk,
-        "DatabaseConfig",
-        type(
-            "C",
-            (),
-            {
-                "from_env": staticmethod(
-                    lambda: type(
-                        "Cfg",
-                        (),
-                        {
-                            "host": "127.0.0.1",
-                            "port": 5432,
-                            "user": "postgres",
-                            "password": "x",
-                            "database": "ed2k",
-                        },
-                    )()
-                )
-            },
-        ),
+        "resource_dsn_kwargs",
+        lambda: {
+            "host": "127.0.0.1",
+            "port": 5432,
+            "user": "postgres",
+            "password": "x",
+            "dbname": "ed2k",
+        },
     )
     monkeypatch.setattr(bk.subprocess, "Popen", lambda *a, **k: _Proc())
 

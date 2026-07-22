@@ -126,7 +126,13 @@ export const DetailContent = ({ data }: { data: Ed2kResourceProps }) => {
               ))}
 
               {!hasPasswordInDesc && extractPassword && (
-                <DetailInfoRow label={trimLabel(t("Home.extract_password"))}>
+                <DetailInfoRow
+                  label={trimLabel(
+                    data.link_kind === "115share"
+                      ? t("Home.share_code")
+                      : t("Home.extract_password"),
+                  )}
+                >
                   <CopyablePassword
                     value={extractPassword}
                     hint={t("Toast.copy_password_hint")}

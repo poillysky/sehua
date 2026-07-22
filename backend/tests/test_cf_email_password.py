@@ -273,3 +273,20 @@ def test_password_shi_copula_not_captured():
         tid=9,
     )
     assert content.extract_password == "www.98T.la@"
+
+
+def test_resource_password_label():
+    """【资源密码】应识别为解压密码（如 tid=2254351）。"""
+    assert extract_password("【资源密码】：sakurakun") == "sakurakun"
+    html = """
+    <html><body>
+      <div id="postmessage_1">
+        【资源名称】：示例<br>
+        【资源密码】：sakurakun<br>
+        【资源链接】：见附件
+      </div>
+    </body></html>
+    """
+    content = parse_thread_content(html, tid=2254351)
+    assert content.extract_password == "sakurakun"
+    assert content.metadata.get("资源密码") == "sakurakun"

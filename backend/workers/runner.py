@@ -649,9 +649,14 @@ async def run_crawl_once(
                         # 无权伪标题等：清掉历史上错误占位，避免重爬后仍留在资源列表
                         try:
                             from db.repository import delete_stub_by_source_url
+                            from db.resource_db import connect_resource
 
-                            if delete_stub_by_source_url(conn, thread_url):
-                                log_label = f"{log_label} · 已删占位"
+                            rconn = connect_resource()
+                            try:
+                                if delete_stub_by_source_url(rconn, thread_url):
+                                    log_label = f"{log_label} · 已删占位"
+                            finally:
+                                rconn.close()
                         except Exception:
                             pass
                     elif verdict == "retry" or "软文" in str(outcome.get("outcome") or ""):

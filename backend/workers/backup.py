@@ -14,9 +14,9 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
 
-from db.config import DatabaseConfig
 from db.connection import connect
 from db.forum_configs import SITE_CRAWLER_FORUM_ID, load_forum_configs_map, save_forum_config
+from db.resource_db import connect_resource, resource_dsn_kwargs
 from db.settings_store import get_setting, set_setting
 
 log = logging.getLogger(__name__)
@@ -182,7 +182,7 @@ def _sql_literal(value: Any) -> str:
 
 def _run_python_dump(tables: list[str], dest_tmp: Path) -> None:
     """无 pg_dump 时的回退：按表导出 DELETE+INSERT（gzip）。"""
-    conn = connect()
+    conn = connect_resource()
     try:
         with gzip.open(dest_tmp, "wt", encoding="utf-8", compresslevel=1) as gz:
             gz.write("-- sehuatang resource backup (python fallback)\n")
@@ -222,17 +222,17 @@ def _run_pg_dump(tables: list[str], dest_tmp: Path) -> None:
         _run_python_dump(tables, dest_tmp)
         return
 
-    cfg = DatabaseConfig.from_env()
+    dsn = resource_dsn_kwargs()
     cmd = [
         "pg_dump",
         "-h",
-        cfg.host,
+        str(dsn["host"]),
         "-p",
-        str(cfg.port),
+        str(dsn["port"]),
         "-U",
-        cfg.user,
+        str(dsn["user"]),
         "-d",
-        cfg.database,
+        str(dsn["dbname"]),
         "--no-owner",
         "--no-acl",
         "--format=plain",
@@ -241,7 +241,7 @@ def _run_pg_dump(tables: list[str], dest_tmp: Path) -> None:
         cmd.extend(["--table", t])
 
     env = os.environ.copy()
-    env["PGPASSWORD"] = cfg.password or ""
+    env["PGPASSWORD"] = str(dsn.get("password") or "")
 
     proc = subprocess.Popen(
         cmd,
@@ -363,7 +363,7 @@ async def run_backup_once(*, trigger: str = "manual") -> dict[str, Any]:
         snap = _crawler_snapshot()
         await _pause_crawler(snap)
 
-        conn = connect()
+        conn = connect_resource()
         try:
             tables = _existing_tables(conn)
         finally:

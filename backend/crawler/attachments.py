@@ -49,75 +49,318 @@ def _rar_tool_candidates() -> list[str]:
     return [item for item in candidates if item and Path(item).exists()]
 
 
-def _extract_rar_text(data: bytes) -> str:
-    try:
-        import rarfile
-    except ImportError:
-        log.debug("rarfile not installed, skip rar attachment")
-        return ""
+def _archive_password_candidates(html: str) -> list[str]:
+    """从一楼正文抽解压密码，并生成常见变体（空格/@）。"""
+    from parsers.content import extract_password, parse_thread_content
 
-    for tool in _rar_tool_candidates():
-        rarfile.UNRAR_TOOL = tool
-        try:
-            with rarfile.RarFile(io.BytesIO(data)) as archive:
-                for name in archive.namelist():
-                    if name.endswith("/") or not name.lower().endswith(".txt"):
+    content = parse_thread_content(html or "")
+    raw = (content.extract_password or "").strip()
+    if not raw:
+        # 标签拆开后「密码」与 www.98T.la@ 仍可能被漏抽，再扫一遍纯文本
+        blob = f"{content.plain_text or ''}\n{content.blockcode_text or ''}"
+        raw = (extract_password(blob) or "").strip()
+    if not raw:
+        return []
+    out: list[str] = []
+    seen: set[str] = set()
+    variants = [
+        raw,
+        raw.replace(" ", ""),
+        raw.replace("＠", "@"),
+    ]
+    # www.98T.la@ ↔ www.98T.la
+    if raw.endswith("@") and len(raw) > 1:
+        variants.append(raw[:-1].strip())
+    elif "@" not in raw and "." in raw:
+        variants.append(raw + "@")
+    for cand in variants:
+        c = (cand or "").strip()
+        if c and c not in seen:
+            seen.add(c)
+            out.append(c)
+    return out
+
+
+def _txt_names_in_archive(names: list[str]) -> list[str]:
+    return [n for n in names if n and not n.endswith("/") and n.lower().endswith(".txt")]
+
+
+def _nested_archive_members(names: list[str]) -> list[tuple[str, str]]:
+    """压缩包内嵌套的 zip/rar → (name, kind)。"""
+    out: list[tuple[str, str]] = []
+    for name in names:
+        if not name or name.endswith("/"):
+            continue
+        lower = name.lower()
+        if lower.endswith(".zip"):
+            out.append((name, "zip"))
+        elif lower.endswith(".rar"):
+            out.append((name, "rar"))
+    return out
+
+
+def _which_7z() -> str | None:
+    found = (
+        shutil.which("7z")
+        or shutil.which("7z.exe")
+        or shutil.which("7za")
+        or shutil.which("7za.exe")
+    )
+    if found:
+        return found
+    for path in (
+        r"C:\Program Files\7-Zip\7z.exe",
+        r"C:\Program Files (x86)\7-Zip\7z.exe",
+    ):
+        if Path(path).exists():
+            return path
+    return None
+
+
+def _extract_via_7z(
+    data: bytes,
+    passwords: list[str] | None = None,
+    *,
+    suffix: str,
+    depth: int = 0,
+) -> str:
+    """用 7z 解出压缩包内首个非空 .txt；内层 zip/rar 用同一组密码再解。"""
+    if depth > 24:
+        return ""
+    seven = _which_7z()
+    if not seven:
+        return ""
+    pwds = [p for p in (passwords or []) if p]
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = Path(tmp)
+        arc_path = tmp_path / f"attach{suffix}"
+        out_dir = tmp_path / "out"
+        arc_path.write_bytes(data)
+        attempts: list[list[str]] = [
+            [seven, "x", "-y", f"-o{out_dir}", "-p-", str(arc_path)]
+        ]
+        for pwd in pwds:
+            attempts.append(
+                [seven, "x", "-y", f"-o{out_dir}", f"-p{pwd}", str(arc_path)]
+            )
+        for cmd in attempts:
+            if out_dir.exists():
+                shutil.rmtree(out_dir, ignore_errors=True)
+            out_dir.mkdir(parents=True, exist_ok=True)
+            try:
+                proc = subprocess.run(
+                    cmd,
+                    capture_output=True,
+                    timeout=45,
+                    check=False,
+                )
+            except (OSError, subprocess.TimeoutExpired) as exc:
+                log.debug("7z extract failed: %s", exc)
+                continue
+            if proc.returncode not in (0, 1):
+                # 0=ok 1=warning；密码错多为非 0
+                continue
+            for path in sorted(out_dir.rglob("*")):
+                if not path.is_file():
+                    continue
+                if path.suffix.lower() == ".txt":
+                    try:
+                        text = _decode_bytes(path.read_bytes())
+                    except OSError:
                         continue
+                    if text.strip():
+                        return text
+            # 外层解开后若只有内层压缩包，继续用帖内密码解
+            for path in sorted(out_dir.rglob("*")):
+                if not path.is_file():
+                    continue
+                kind = (
+                    "zip"
+                    if path.suffix.lower() == ".zip"
+                    else ("rar" if path.suffix.lower() == ".rar" else "")
+                )
+                if not kind:
+                    continue
+                try:
+                    nested = path.read_bytes()
+                except OSError:
+                    continue
+                if len(nested) < 32:
+                    continue
+                text = _extract_txt_from_archive(
+                    nested, kind, passwords=pwds, depth=depth + 1
+                )
+                if text.strip():
+                    return text
+    return ""
+
+
+def _extract_zip_pyzipper(
+    data: bytes, passwords: list[str] | None = None, *, depth: int = 0
+) -> str:
+    """AES zip（stdlib 不解）优先走 pyzipper；支持内层 zip/rar。"""
+    if depth > 24:
+        return ""
+    try:
+        import pyzipper
+    except ImportError:
+        return ""
+    pwds = [p for p in (passwords or []) if p]
+    for pwd in [None, *pwds]:
+        try:
+            with pyzipper.AESZipFile(io.BytesIO(data)) as archive:
+                if pwd:
+                    archive.setpassword(pwd.encode("utf-8"))
+                names = archive.namelist()
+                for name in _txt_names_in_archive(names):
                     text = _decode_bytes(archive.read(name))
+                    if text.strip():
+                        return text
+                for name, kind in _nested_archive_members(names):
+                    try:
+                        nested = archive.read(name)
+                    except Exception:
+                        continue
+                    text = _extract_txt_from_archive(
+                        nested, kind, passwords=pwds, depth=depth + 1
+                    )
                     if text.strip():
                         return text
         except Exception:
             continue
+    return ""
 
-    seven = shutil.which("7z") or shutil.which("7z.exe")
-    if not seven:
+
+def _extract_rar_text(
+    data: bytes, passwords: list[str] | None = None, *, depth: int = 0
+) -> str:
+    if depth > 24:
+        return ""
+    pwds = [p for p in (passwords or []) if p]
+    try:
+        import rarfile
+    except ImportError:
+        log.debug("rarfile not installed, skip rar attachment")
+        rarfile = None  # type: ignore[assignment]
+
+    if rarfile is not None:
+        tools = _rar_tool_candidates() or [None]
+        for tool in tools:
+            if tool:
+                rarfile.UNRAR_TOOL = tool
+            try:
+                with rarfile.RarFile(io.BytesIO(data)) as archive:
+                    names = archive.namelist()
+                    for pwd in [None, *pwds]:
+                        try:
+                            if pwd:
+                                archive.setpassword(pwd)
+                            for name in _txt_names_in_archive(names):
+                                text = _decode_bytes(archive.read(name))
+                                if text.strip():
+                                    return text
+                            for name, kind in _nested_archive_members(names):
+                                try:
+                                    nested = archive.read(name)
+                                except Exception:
+                                    continue
+                                text = _extract_txt_from_archive(
+                                    nested, kind, passwords=pwds, depth=depth + 1
+                                )
+                                if text.strip():
+                                    return text
+                            # 无密码时若已列全名仍读不出，再试密码
+                            if not pwd and not archive.needs_password():
+                                break
+                        except Exception:
+                            continue
+            except Exception:
+                continue
+
+    text = _extract_via_7z(data, passwords=pwds, suffix=".rar", depth=depth)
+    if text:
+        return text
+    if not (_which_7z() or _rar_tool_candidates()):
         log.info("RAR downloaded but no unrar/7z tool available")
-        return ""
-
-    with tempfile.TemporaryDirectory() as tmp:
-        rar_path = Path(tmp) / "attach.rar"
-        rar_path.write_bytes(data)
-        try:
-            proc = subprocess.run(
-                [seven, "e", "-so", "-y", str(rar_path)],
-                capture_output=True,
-                timeout=30,
-                check=False,
-            )
-        except (OSError, subprocess.TimeoutExpired) as exc:
-            log.debug("7z rar extract failed: %s", exc)
-            return ""
-        if proc.returncode == 0 and proc.stdout:
-            text = _decode_bytes(proc.stdout)
-            if text.strip():
-                return text
     return ""
 
 
-def _extract_txt_from_archive(data: bytes, kind: str) -> str:
+def _extract_zip_txt(
+    data: bytes, passwords: list[str] | None = None, *, depth: int = 0
+) -> str:
+    if depth > 24:
+        return ""
+    pwds = [p for p in (passwords or []) if p]
+    try:
+        archive = zipfile.ZipFile(io.BytesIO(data))
+    except zipfile.BadZipFile:
+        log.info("Attachment is not a valid zip archive")
+        return _extract_zip_pyzipper(data, passwords=pwds, depth=depth) or _extract_via_7z(
+            data, passwords=pwds, suffix=".zip", depth=depth
+        )
+    try:
+        names = archive.namelist()
+        pwd_attempts: list[bytes | None] = [None]
+        for p in pwds:
+            for enc in ("utf-8", "gbk"):
+                try:
+                    b = p.encode(enc)
+                except UnicodeEncodeError:
+                    continue
+                if b not in pwd_attempts:
+                    pwd_attempts.append(b)
+        for name in _txt_names_in_archive(names):
+            for pwd in pwd_attempts:
+                try:
+                    raw = archive.read(name, pwd=pwd) if pwd else archive.read(name)
+                except Exception:
+                    continue
+                text = _decode_bytes(raw)
+                if text.strip():
+                    return text
+        for name, kind in _nested_archive_members(names):
+            for pwd in pwd_attempts:
+                try:
+                    nested = archive.read(name, pwd=pwd) if pwd else archive.read(name)
+                except Exception:
+                    continue
+                text = _extract_txt_from_archive(
+                    nested, kind, passwords=pwds, depth=depth + 1
+                )
+                if text.strip():
+                    return text
+    finally:
+        archive.close()
+    # ZipCrypto 失败，或 AES（stdlib 不解）→ pyzipper / 7z + 帖内密码
+    return _extract_zip_pyzipper(data, passwords=pwds, depth=depth) or _extract_via_7z(
+        data, passwords=pwds, suffix=".zip", depth=depth
+    )
+
+
+def _extract_txt_from_archive(
+    data: bytes,
+    kind: str,
+    passwords: list[str] | None = None,
+    *,
+    depth: int = 0,
+) -> str:
     if kind == "zip":
-        try:
-            with zipfile.ZipFile(io.BytesIO(data)) as archive:
-                for name in archive.namelist():
-                    if name.endswith("/") or not name.lower().endswith(".txt"):
-                        continue
-                    text = _decode_bytes(archive.read(name))
-                    if text.strip():
-                        return text
-        except zipfile.BadZipFile:
-            log.info("Attachment is not a valid zip archive")
-        return ""
+        return _extract_zip_txt(data, passwords=passwords, depth=depth)
     if kind == "rar":
-        return _extract_rar_text(data)
+        return _extract_rar_text(data, passwords=passwords, depth=depth)
     return ""
 
 
-def _text_from_attachment_bytes(attachment: DownloadAttachment, data: bytes) -> str:
+def _text_from_attachment_bytes(
+    attachment: DownloadAttachment,
+    data: bytes,
+    passwords: list[str] | None = None,
+) -> str:
     if attachment.kind == "torrent":
         magnet = parse_torrent_bytes(data, filename_hint=attachment.name)
         return magnet.link if magnet else ""
     if attachment.kind in ("zip", "rar"):
-        return _extract_txt_from_archive(data, attachment.kind)
+        return _extract_txt_from_archive(data, attachment.kind, passwords=passwords)
     text = _decode_bytes(data)
     if "<html" in text.lower()[:200]:
         return ""
@@ -251,7 +494,11 @@ class AttachmentDownloader:
         return await self.session.run_on_page(_on_page)
 
     async def _download_one(
-        self, attachment: DownloadAttachment, timeout: float
+        self,
+        attachment: DownloadAttachment,
+        timeout: float,
+        *,
+        passwords: list[str] | None = None,
     ) -> tuple[str, bool, bool]:
         denied = False
         downloaded = False
@@ -259,7 +506,7 @@ class AttachmentDownloader:
         denied = denied or fetch_denied
         if data:
             downloaded = True
-            text = _text_from_attachment_bytes(attachment, data)
+            text = _text_from_attachment_bytes(attachment, data, passwords=passwords)
             if text.strip():
                 return text, denied, downloaded
 
@@ -270,7 +517,7 @@ class AttachmentDownloader:
         denied = denied or ui_denied
         if ui_data:
             downloaded = True
-            text = _text_from_attachment_bytes(attachment, ui_data)
+            text = _text_from_attachment_bytes(attachment, ui_data, passwords=passwords)
             if text.strip():
                 return text, denied, downloaded
 
@@ -295,12 +542,18 @@ class AttachmentDownloader:
         if not attachments:
             return AttachmentFetchResult()
 
+        passwords = _archive_password_candidates(html)
+        if passwords:
+            log.info("Archive extract passwords from post: %s", passwords[0])
+
         chunks: list[str] = []
         any_denied = False
         any_downloaded = False
         for attachment in attachments:
             try:
-                text, denied, downloaded = await self._download_one(attachment, timeout)
+                text, denied, downloaded = await self._download_one(
+                    attachment, timeout, passwords=passwords
+                )
                 if denied:
                     any_denied = True
                 if downloaded:
@@ -336,7 +589,6 @@ class AttachmentDownloader:
         if any_downloaded:
             return AttachmentFetchResult(downloaded=True)
         return AttachmentFetchResult(failed=True)
-
     async def download_torrents(
         self,
         html: str,

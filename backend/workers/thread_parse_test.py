@@ -185,9 +185,10 @@ async def parse_thread_for_admin(
             attachment_text = attach_res.text or ""
             attachment_source = attachment_kind or ""
             if attachment_text and has_115_sha_link(attachment_text):
+                tip = "115sha 链接（附件，跳过）"
                 outcome = ThreadOutcome(
                     "skipped",
-                    "115sha 链接（附件，跳过）",
+                    tip,
                     outcome.link_kind,
                     outcome.title,
                 )
@@ -204,18 +205,21 @@ async def parse_thread_for_admin(
                     had_attachments=attachment_downloaded or bool(attachment_text),
                     preferred_link=preferred_link,
                 )
-                # 双链模式下：种子失败再试电驴尾部附件
+                # 双链：种子失败再试电驴尾部；电驴板：txt/zip 无果再试种子转磁力
                 if (
                     outcome.verdict not in {"import", "skipped"}
-                    and preferred_link == "both"
-                    and attachment_kind == "torrent"
                     and looks_like_attachment_zone(html)
+                    and (
+                        (preferred_link == "both" and attachment_kind == "torrent")
+                        or (preferred_link == "ed2k" and attachment_kind == "txt_tail")
+                    )
                 ):
+                    next_kind = "txt_tail" if attachment_kind == "torrent" else "torrent"
                     attach_res2 = await fetch_attachments_for_outcome(
                         session,
                         html=html,
                         thread_url=thread_url,
-                        attachment_kind="txt_tail",
+                        attachment_kind=next_kind,
                         timeout=max(15.0, attach_timeout),
                     )
                     attachment_denied = attachment_denied or attach_res2.denied
@@ -223,16 +227,17 @@ async def parse_thread_for_admin(
                     attachment_downloaded = attachment_downloaded or attach_res2.downloaded
                     if attach_res2.text and has_115_sha_link(attach_res2.text):
                         attachment_text = (attachment_text + "\n" + attach_res2.text).strip()
-                        attachment_source = "torrent+txt_tail" if attachment_source else "txt_tail"
+                        attachment_source = f"{attachment_kind}+{next_kind}" if attachment_source else next_kind
+                        tip = "115sha 链接（附件，跳过）"
                         outcome = ThreadOutcome(
                             "skipped",
-                            "115sha 链接（附件，跳过）",
+                            tip,
                             outcome.link_kind,
                             outcome.title,
                         )
                     elif attach_res2.text:
                         attachment_text = (attachment_text + "\n" + attach_res2.text).strip()
-                        attachment_source = "torrent+txt_tail" if attachment_source else "txt_tail"
+                        attachment_source = f"{attachment_kind}+{next_kind}" if attachment_source else next_kind
                         html = inject_attachment_text(html, attachment_text)
                         outcome = judge_thread_html(
                             html,
@@ -291,7 +296,9 @@ async def parse_thread_for_admin(
         access_denied = is_thread_access_denied(html)
         reply_required = is_reply_required_post(html)
         meta = parsed.metadata or {}
-        link_count = len(parsed.magnets) + len(parsed.ed2k_links)
+        link_count = len(parsed.assets) if parsed.assets else (
+            len(parsed.magnets) + len(parsed.ed2k_links) + len(parsed.share115_links)
+        )
 
         return {
             "input_url": original_url,
@@ -331,6 +338,7 @@ async def parse_thread_for_admin(
             "body_ed2k_count": len(body_ed2k),
             "final_magnet_count": len(parsed.magnets),
             "final_ed2k_count": len(parsed.ed2k_links),
+            "final_115share_count": len(parsed.share115_links),
             "magnets": [
                 {
                     "infohash": m.infohash,
@@ -343,6 +351,15 @@ async def parse_thread_for_admin(
             "ed2k_links": [
                 {"hash": e.hash, "filename": e.filename, "size": e.size, "link": e.link}
                 for e in parsed.ed2k_links
+            ],
+            "share115_links": [
+                {
+                    "hash": s.hash,
+                    "share_id": s.share_id,
+                    "password": s.password,
+                    "link": s.url,
+                }
+                for s in parsed.share115_links
             ],
             "attachments": [{"name": a.name, "kind": a.kind, "url": a.url} for a in attachments],
             "preview_images": list(parsed.preview_images or [])[:5],

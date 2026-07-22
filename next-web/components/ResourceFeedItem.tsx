@@ -114,11 +114,13 @@ function ResourceSummaryLines({
   resourceSize,
   resourceAmount,
   extractPassword,
+  passwordLabel,
 }: {
   resourceType?: string | null;
   resourceSize?: string | null;
   resourceAmount?: string | null;
   extractPassword?: string | null;
+  passwordLabel?: string;
 }) {
   const t = useTranslations();
 
@@ -139,7 +141,7 @@ function ResourceSummaryLines({
   }
   if (extractPassword) {
     rows.push({
-      label: t("Home.extract_password"),
+      label: passwordLabel || t("Home.extract_password"),
       value: (
         <code
           className="inline-block max-w-full break-all rounded-md bg-default-100 px-1.5 py-0.5 font-mono text-[11px] leading-4 text-primary md:text-xs dark:bg-slate-800"
@@ -308,6 +310,11 @@ export function ResourceFeedItem({
             <div className={cardBodyClass}>
               <ResourceSummaryLines
                 extractPassword={extractPassword}
+                passwordLabel={
+                  item.link_kind === "115share"
+                    ? t("Home.share_code")
+                    : undefined
+                }
                 resourceAmount={resourceAmount}
                 resourceSize={resourceSize}
                 resourceType={resourceType}
@@ -348,6 +355,9 @@ export function ResourceFeedItem({
 
           <ResourceSummaryLines
             extractPassword={extractPassword}
+            passwordLabel={
+              item.link_kind === "115share" ? t("Home.share_code") : undefined
+            }
             resourceAmount={resourceAmount}
             resourceSize={resourceSize}
             resourceType={resourceType}

@@ -472,10 +472,10 @@ function StepDetail({
                     <ArrowDown />
                     <Junction cols={3}>
                       <Branch label="无权限·页内真标题">
-                        <Terminal text="占位入库" sub="页内能读到正常标题才占位" kind="warn" />
+                        <Terminal text="占位入库" sub="用页内标题登记" kind="warn" />
                       </Branch>
                       <Branch label="无权限·提示信息等">
-                        <Terminal text="跳过" sub="伪标题直接 pass，不占位" kind="muted" />
+                        <Terminal text="占位入库" sub="用列表标题列登记" kind="warn" />
                       </Branch>
                       <Branch label="正常正文" main>
                         <Spine>
@@ -699,12 +699,22 @@ function StepDetail({
 
   // account_stub
   return (
-    <ChartShell hint="活动页「账号爬占位」后台跑完优先占位队列；不进待抓列表；与 looping/running 互斥；需论坛配置里的账号 Cookie。">
+    <ChartShell hint="活动页「账号爬占位」先跑未处理失败与无阅读权限跳过，再跑优先占位；不进待抓列表；与 looping/running 互斥；需论坛配置里的账号 Cookie。">
       <Process text="校验账号 Cookie" sub="未配置则拒绝 · 与游客 Cookie 分开" />
       <ArrowDown />
       <Process
-        text="查库优先占位队列"
-        sub="需登录 / 无阅读权限 / 无权限下载附件 · 登录后需回复/需购买跳过删占位 · remaining 每次重算"
+        text="① 未处理：失败（全部）"
+        sub="status=failed · 账号 Cookie 抓帖"
+      />
+      <ArrowDown />
+      <Process
+        text="② 未处理：无阅读权限跳过"
+        sub="outcome 含「无阅读权限」· 账号 Cookie 抓帖"
+      />
+      <ArrowDown />
+      <Process
+        text="③ 查库优先占位队列"
+        sub="需登录 / 无阅读权限 / 无权限下载附件 · remaining 每次重算"
       />
       <ArrowDown />
       <Decision text="还有未尝试的优先占位？" />

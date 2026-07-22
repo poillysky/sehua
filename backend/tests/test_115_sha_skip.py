@@ -110,3 +110,151 @@ def test_no_ed2k_magnet_after_attach_try_skips():
     )
     assert out.verdict == "skipped"
     assert "ed2k" in out.outcome or "磁力" in out.outcome
+
+
+def test_has_115_share_link_and_import():
+    from parsers.thread_gates import has_115_share_link, title_is_115_share_without_ed2k_magnet
+
+    share = "https://115.com/s/swz25fy36lg?password=xfa8#"
+    assert has_115_share_link(share) is True
+    assert has_115_share_link("115.com/s/abc123") is True
+    assert has_115_share_link("https://115cdn.com/s/swf6jpt3ngd?password=1122") is True
+    assert has_115_share_link(SAMPLE_115) is False
+    assert title_is_115_share_without_ed2k_magnet("「115分享链接」异形合集") is True
+    assert title_is_115_share_without_ed2k_magnet("【115网盘分享+百度网盘分享】游戏") is True
+    assert title_is_115_share_without_ed2k_magnet("【115分享码】合集") is True
+    assert title_is_115_share_without_ed2k_magnet("【115分享】【ed2k】合集") is False
+
+    html = f"""
+    <html><head><title>「115分享链接」异形合集 - 论坛</title></head>
+    <body>
+    <span id="thread_subject">「115分享链接」异形合集</span>
+    <div id="postmessage_1">115链接：{share}</div>
+    Powered by Discuz!
+    </body></html>
+    """
+    html = html + ("<!-- pad -->" * 900)
+    out = judge_thread_html(
+        html,
+        board_fid="95:716",
+        list_title="「115分享链接」异形合集",
+        preferred_link="ed2k",
+    )
+    assert out.verdict == "import"
+    assert out.link_kind == "115share"
+    assert out.need_attachments is False
+
+
+def test_115cdn_share_with_access_code_imports():
+    share = "https://115cdn.com/s/swf6jpt3ngd?password=1122#"
+    html = f"""
+    <html><head><title>【整理】【115网盘分享+百度网盘分享】游戏【2G】 - 论坛</title></head>
+    <body>
+    <span id="thread_subject">【整理】【115网盘分享+百度网盘分享】游戏【2G】</span>
+    <div id="postmessage_1">
+      【资源链接】：{share}<br/>
+      115访问码：1122<br/>
+      百度网盘：https://pan.baidu.com/s/1abcDEF?pwd=wwpa
+    </div>
+    Powered by Discuz!
+    </body></html>
+    """
+    html = html + ("<!-- pad -->" * 900)
+    out = judge_thread_html(
+        html,
+        board_fid="95:716",
+        list_title="【整理】【115网盘分享+百度网盘分享】游戏【2G】",
+        preferred_link="ed2k",
+    )
+    assert out.verdict == "import"
+    assert out.link_kind == "115share"
+    assert out.parsed is not None
+    assert out.parsed.extract_password == "1122"
+    assert out.need_attachments is False
+
+
+def test_xunlei_cloud_share_skips():
+    from parsers.thread_gates import has_xunlei_share_link, title_is_xunlei_cloud_without_ed2k_magnet
+
+    share = "https://pan.xunlei.com/s/VOClhLBDZ8kGIAKZSmSQ2Q4WA1#"
+    assert has_xunlei_share_link(share) is True
+    assert has_xunlei_share_link("pan.xunlei.com/s/abc_123") is True
+    assert title_is_xunlei_cloud_without_ed2k_magnet("【自转】【迅雷云盘】合集【149V/115G】") is True
+    assert title_is_xunlei_cloud_without_ed2k_magnet("【迅雷云盘】【ed2k】合集") is False
+
+    html = f"""
+    <html><head><title>【自转】【迅雷云盘】合集【149V/115G】 - 论坛</title></head>
+    <body>
+    <span id="thread_subject">【自转】【迅雷云盘】合集【149V/115G】</span>
+    <div id="postmessage_1">资源：{share}</div>
+    Powered by Discuz!
+    </body></html>
+    """
+    html = html + ("<!-- pad -->" * 900)
+    out = judge_thread_html(
+        html,
+        board_fid="95:716",
+        list_title="【自转】【迅雷云盘】合集【149V/115G】",
+        preferred_link="ed2k",
+    )
+    assert out.verdict == "skipped"
+    assert "迅雷云盘" in out.outcome
+    assert out.need_attachments is False
+
+
+def test_pikpak_share_skips():
+    from parsers.thread_gates import has_pikpak_share_link, title_is_pikpak_without_ed2k_magnet
+
+    share = "https://mypikpak.com/s/VOMN-jTAJm2u6wHtQ_XH9SEko1"
+    assert has_pikpak_share_link(share) is True
+    assert has_pikpak_share_link("mypikpak.com/s/abc_123") is True
+    assert title_is_pikpak_without_ed2k_magnet("【整理】【PIKPAK】合集") is True
+    assert title_is_pikpak_without_ed2k_magnet("【115eD2k/PIKPAK】合集") is False
+
+    html = f"""
+    <html><head><title>【整理】【115eD2k/PIKPAK】合集 - 论坛</title></head>
+    <body>
+    <span id="thread_subject">【整理】【115eD2k/PIKPAK】合集</span>
+    <div id="postmessage_1">先发pikpak的链接。【资源链接】：{share}</div>
+    Powered by Discuz!
+    </body></html>
+    """
+    html = html + ("<!-- pad -->" * 900)
+    out = judge_thread_html(
+        html,
+        board_fid="95:716",
+        list_title="【整理】【115eD2k/PIKPAK】合集",
+        preferred_link="ed2k",
+    )
+    assert out.verdict == "skipped"
+    assert "PikPak" in out.outcome
+    assert out.need_attachments is False
+
+
+def test_baidu_pan_share_skips():
+    from parsers.thread_gates import has_baidu_share_link, title_is_baidu_pan_without_ed2k_magnet
+
+    share = "https://pan.baidu.com/s/1hvdIAh7E16nLaUCgsMONrw?pwd=zqk2"
+    assert has_baidu_share_link(share) is True
+    assert has_baidu_share_link("pan.baidu.com/s/abc_123") is True
+    assert title_is_baidu_pan_without_ed2k_magnet("【自转】【百度网盘】合集") is True
+    assert title_is_baidu_pan_without_ed2k_magnet("【百度网盘】【ed2k】合集") is False
+
+    html = f"""
+    <html><head><title>【自转】【百度网盘】合集 - 论坛</title></head>
+    <body>
+    <span id="thread_subject">【自转】【百度网盘】合集</span>
+    <div id="postmessage_1">资源：{share}</div>
+    Powered by Discuz!
+    </body></html>
+    """
+    html = html + ("<!-- pad -->" * 900)
+    out = judge_thread_html(
+        html,
+        board_fid="95:716",
+        list_title="【自转】【百度网盘】合集",
+        preferred_link="ed2k",
+    )
+    assert out.verdict == "skipped"
+    assert "百度网盘" in out.outcome
+    assert out.need_attachments is False

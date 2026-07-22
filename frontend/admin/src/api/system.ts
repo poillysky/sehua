@@ -22,6 +22,60 @@ export type BackupStatus = {
   busy?: boolean
 }
 
+export type ResourceDbConfig = {
+  message?: string
+  enabled: boolean
+  ready?: boolean
+  using_primary: boolean
+  host: string
+  port: number | null
+  user: string
+  dbname: string
+  has_password: boolean
+  effective?: {
+    host: string
+    port: number
+    user: string
+    dbname: string
+    has_password: boolean
+  }
+  primary?: {
+    host: string
+    port: number
+    user: string
+    dbname: string
+  }
+  migrations_applied?: string[]
+}
+
+export type ResourceDbBody = {
+  enabled: boolean
+  host?: string
+  port?: number | null
+  user?: string
+  password?: string | null
+  dbname?: string
+  keep_password?: boolean
+}
+
+export function fetchResourceDbConfig() {
+  return api<ResourceDbConfig>('/api/system/resource-db')
+}
+
+export function saveResourceDbConfig(body: ResourceDbBody) {
+  return api<ResourceDbConfig>('/api/system/resource-db', {
+    method: 'PUT',
+    body: JSON.stringify(body),
+  })
+}
+
+export function testResourceDbConfig(body: ResourceDbBody) {
+  return api<{ message: string; ok: boolean; using_primary?: boolean }>('/api/system/resource-db/test', {
+    method: 'POST',
+    body: JSON.stringify(body),
+  })
+}
+
 export function fetchBackupStatus() {
   return api<BackupStatus>('/api/system/backup')
 }

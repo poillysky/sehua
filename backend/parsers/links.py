@@ -1,4 +1,4 @@
-"""Dual magnet + ed2k link extraction facade."""
+"""Dual magnet + ed2k (+ 115 分享码) link extraction facade."""
 
 from __future__ import annotations
 
@@ -8,22 +8,29 @@ from typing import Literal
 from parsers.content import (
     ThreadContent,
     build_structured_description,
+    extract_blockcode_text,
+    extract_link_corpus_html,
+    extract_password as extract_post_password,
     parse_thread_content,
 )
 from parsers.ed2k import Ed2kLink, parse_ed2k_text, pick_primary_ed2k
 from parsers.magnet import MagnetLink, parse_magnet_text, pick_primary_magnet
+from parsers.share115 import Share115Link, parse_115_share_text, pick_primary_115_share
 
 LinkKind = Literal["magnet", "ed2k", "both", "none"]
+AssetKind = Literal["magnet", "ed2k", "115share"]
+PrimaryKind = Literal["magnet", "ed2k", "115share", "none"]
 
 
 @dataclass(slots=True)
 class ParsedAsset:
-    link_kind: Literal["magnet", "ed2k"]
+    link_kind: AssetKind
     hash: str
     filename: str
     size: int
     uri: str
     is_primary: bool = False
+    access_code: str = ""
 
 
 @dataclass(slots=True)
@@ -36,8 +43,9 @@ class DualParseResult:
     extract_password: str
     magnets: list[MagnetLink] = field(default_factory=list)
     ed2k_links: list[Ed2kLink] = field(default_factory=list)
+    share115_links: list[Share115Link] = field(default_factory=list)
     assets: list[ParsedAsset] = field(default_factory=list)
-    primary_link_kind: Literal["magnet", "ed2k", "none"] = "none"
+    primary_link_kind: PrimaryKind = "none"
 
     @property
     def search_string(self) -> str:
@@ -65,12 +73,18 @@ def build_assets(
     magnets: list[MagnetLink],
     ed2k_links: list[Ed2kLink],
     preferred: LinkKind = "both",
-) -> tuple[list[ParsedAsset], Literal["magnet", "ed2k", "none"]]:
-    """Merge both link types; choose one primary according to board preference."""
+    share115_links: list[Share115Link] | None = None,
+) -> tuple[list[ParsedAsset], PrimaryKind]:
+    """Merge link types; choose one primary according to board preference.
+
+    115 分享仅在无 magnet/ed2k 时作为主链入库。
+    """
     assets: list[ParsedAsset] = []
+    shares = share115_links or []
 
     primary_magnet = pick_primary_magnet(magnets) if magnets else None
     primary_ed2k = pick_primary_ed2k(ed2k_links) if ed2k_links else None
+    primary_115 = pick_primary_115_share(shares) if shares else None
 
     for link in magnets:
         assets.append(
@@ -94,18 +108,41 @@ def build_assets(
                 is_primary=False,
             )
         )
+    for link in shares:
+        assets.append(
+            ParsedAsset(
+                link_kind="115share",
+                hash=link.hash,
+                filename=link.filename,
+                size=0,
+                uri=link.url,
+                is_primary=False,
+                access_code=link.password or "",
+            )
+        )
 
-    primary_kind: Literal["magnet", "ed2k", "none"] = "none"
+    primary_kind: PrimaryKind = "none"
     if preferred == "magnet":
-        primary_kind = "magnet" if primary_magnet else ("ed2k" if primary_ed2k else "none")
-    elif preferred == "ed2k":
-        primary_kind = "ed2k" if primary_ed2k else ("magnet" if primary_magnet else "none")
-    else:
-        # both / none: prefer magnet when both exist
         if primary_magnet:
             primary_kind = "magnet"
         elif primary_ed2k:
             primary_kind = "ed2k"
+        elif primary_115:
+            primary_kind = "115share"
+    elif preferred == "ed2k":
+        if primary_ed2k:
+            primary_kind = "ed2k"
+        elif primary_magnet:
+            primary_kind = "magnet"
+        elif primary_115:
+            primary_kind = "115share"
+    else:
+        if primary_magnet:
+            primary_kind = "magnet"
+        elif primary_ed2k:
+            primary_kind = "ed2k"
+        elif primary_115:
+            primary_kind = "115share"
 
     if primary_kind == "magnet" and primary_magnet:
         for asset in assets:
@@ -115,6 +152,11 @@ def build_assets(
     elif primary_kind == "ed2k" and primary_ed2k:
         for asset in assets:
             if asset.link_kind == "ed2k" and asset.hash == primary_ed2k.hash:
+                asset.is_primary = True
+                break
+    elif primary_kind == "115share" and primary_115:
+        for asset in assets:
+            if asset.link_kind == "115share" and asset.hash == primary_115.hash:
                 asset.is_primary = True
                 break
 
@@ -131,16 +173,22 @@ def parse_thread_dual(
     board_fid: str | int | None = None,
 ) -> DualParseResult:
     """
-    Full dual parse: HTML → structured content + magnet + ed2k assets.
+    Full dual parse: HTML → structured content + magnet + ed2k (+ 115 分享) assets.
 
     preferred_link: board policy — 'magnet' | 'ed2k' | 'both'
     extra_text: 附件解析出的文本（txt/zip/rar 内链或 torrent→magnet）并入语料
     board_fid: 用于按板块结构卡片筛选描述字段
+
+    元数据只取一楼；链接语料含楼主二楼及后续补链楼。
     """
     content = parse_thread_content(html, tid=tid, base_url=base_url)
+    link_html = extract_link_corpus_html(html)
+    link_block = extract_blockcode_text(link_html) if link_html else ""
     corpus = "\n".join(
         part
         for part in (
+            link_block,
+            link_html,
             content.blockcode_text,
             content.plain_text,
             content.title,
@@ -148,9 +196,24 @@ def parse_thread_dual(
         )
         if part
     )
+
     magnets, ed2k_links = parse_links_from_text(corpus)
-    assets, primary_kind = build_assets(magnets, ed2k_links, preferred=preferred_link)
+    share115_links = parse_115_share_text(corpus, title=content.title)
+    assets, primary_kind = build_assets(
+        magnets,
+        ed2k_links,
+        preferred=preferred_link,
+        share115_links=share115_links,
+    )
     description = _build_description(content, board_fid=board_fid)
+
+    extract_password = content.extract_password
+    if not extract_password and link_html:
+        extract_password = extract_post_password(link_html) or ""
+    if primary_kind == "115share":
+        primary = next((a for a in assets if a.is_primary), None)
+        if primary and primary.access_code:
+            extract_password = primary.access_code
 
     return DualParseResult(
         tid=content.tid or tid,
@@ -158,9 +221,10 @@ def parse_thread_dual(
         description=description,
         metadata=content.metadata,
         preview_images=content.preview_images,
-        extract_password=content.extract_password,
+        extract_password=extract_password,
         magnets=magnets,
         ed2k_links=ed2k_links,
+        share115_links=share115_links,
         assets=assets,
         primary_link_kind=primary_kind,
     )

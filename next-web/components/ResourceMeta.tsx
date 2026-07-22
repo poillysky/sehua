@@ -122,7 +122,9 @@ export function Ed2kCopyButton({
       ? t("Search.ed2k_multi", { count: linkCount })
       : kind === "magnet"
         ? t("Search.magnet")
-        : t("Search.ed2k");
+        : kind === "115share"
+          ? t("Search.share115")
+          : t("Search.ed2k");
 
   return (
     <Button

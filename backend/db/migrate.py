@@ -34,14 +34,25 @@ def migrations_dir() -> Path:
     return candidates[0]
 
 
-def run_migrations(*, only: set[str] | None = None) -> list[str]:
-    """Apply pending *.sql. Returns list of newly applied filenames."""
+def run_migrations(
+    *,
+    only: set[str] | None = None,
+    conn=None,
+    skip_crawl_conflicts: bool = True,
+) -> list[str]:
+    """Apply pending *.sql. Returns list of newly applied filenames.
+
+    conn: 可选；传入时由调用方负责关闭。
+    skip_crawl_conflicts: 主库兼容跳过；独立资源库应 False 并配合 only=资源脚本。
+    """
     init_dir = migrations_dir()
     sql_files = sorted(init_dir.glob("*.sql"))
     if not sql_files:
         raise FileNotFoundError(f"未找到 SQL 脚本: {init_dir}")
 
-    conn = try_postgres()
+    own = conn is None
+    if own:
+        conn = try_postgres()
     conn.autocommit = True
     applied: list[str] = []
 
@@ -60,7 +71,7 @@ def run_migrations(*, only: set[str] | None = None) -> list[str]:
                 name = sql_path.name
                 if only is not None and name not in only:
                     continue
-                if name in SKIP_ON_EXISTING_DB and only is None:
+                if skip_crawl_conflicts and name in SKIP_ON_EXISTING_DB and only is None:
                     # 仍记录为跳过，避免以后误跑
                     cur.execute(
                         "SELECT 1 FROM schema_migrations WHERE filename = %s",
@@ -91,9 +102,33 @@ def run_migrations(*, only: set[str] | None = None) -> list[str]:
                 applied.append(name)
                 logger.info("applied: %s", name)
     finally:
-        conn.close()
+        if own:
+            conn.close()
 
     return applied
+
+
+# 独立资源库需要的脚本（不含爬虫队列 / 鉴权）
+RESOURCE_DB_MIGRATIONS = {
+    "001_init.sql",
+    "006_resource_description.sql",
+    "007_resource_images.sql",
+    "008_resource_ed2k_links.sql",
+    "013_resource_extract_password.sql",
+    "014_ed2k_resources_align.sql",
+    "016_resource_sources_unique_hash.sql",
+    "017_resource_import_outcome.sql",
+    "018_resource_sources_forum_board.sql",
+}
+
+
+def ensure_resource_db_schema(conn) -> list[str]:
+    """在资源库连接上对齐资源表结构。"""
+    return run_migrations(
+        only=RESOURCE_DB_MIGRATIONS,
+        conn=conn,
+        skip_crawl_conflicts=False,
+    )
 
 
 def ensure_ed2k_schema() -> None:

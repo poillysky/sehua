@@ -15,7 +15,18 @@ from db.forum_configs import (
     resolve_enabled_board_fids,
     save_forum_config,
 )
-from db.queue import count_pending
+from db.queue import (
+    DISCARDED_REQUEUE_KINDS,
+    count_discarded,
+    count_discarded_kind,
+    count_pending,
+    count_pending_queue,
+    list_discarded,
+    list_discarded_reasons,
+    list_pending_queue,
+    list_pending_reasons,
+    requeue_discarded_kind,
+)
 from workers.runner import (
     _log_activity,
     crawl_status,
@@ -77,6 +88,9 @@ def get_crawler_status(_user: dict = Depends(require_permission("crawler.view"))
     board_fid = ""
     enabled_fids: list[str] = []
     qstats: dict = {}
+    discarded_stats: dict = {}
+    discarded_access_denied = 0
+    discarded_failed_kind = 0
     active_ready = 0
 
     conn = connect()
@@ -103,6 +117,18 @@ def get_crawler_status(_user: dict = Depends(require_permission("crawler.view"))
             qstats = count_pending(conn, board_fid=queue_keys or None)
         except Exception:
             qstats = {}
+        try:
+            discarded_stats = count_discarded(conn, status="all")
+        except Exception:
+            discarded_stats = {}
+        try:
+            discarded_access_denied = count_discarded_kind(conn, "access_denied_bad_title")
+        except Exception:
+            discarded_access_denied = 0
+        try:
+            discarded_failed_kind = count_discarded_kind(conn, "failed_all")
+        except Exception:
+            discarded_failed_kind = 0
         if board_fid:
             try:
                 active_ready = int(
@@ -112,6 +138,19 @@ def get_crawler_status(_user: dict = Depends(require_permission("crawler.view"))
                 active_ready = 0
     finally:
         conn.close()
+
+    priority_stubs = 0
+    try:
+        from db.repository import count_priority_account_stubs
+        from db.resource_db import connect_resource
+
+        rconn = connect_resource()
+        try:
+            priority_stubs = int(count_priority_account_stubs(rconn) or 0)
+        finally:
+            rconn.close()
+    except Exception:
+        priority_stubs = 0
 
     boards: list[dict] = []
     for efid in enabled_fids:
@@ -185,6 +224,7 @@ def get_crawler_status(_user: dict = Depends(require_permission("crawler.view"))
         "activity": st.get("activity") or [],
         "boards": boards,
         "queue": qstats or st.get("queue") or {},
+        "discarded": discarded_stats or {},
         "throttle": st.get("throttle") or {},
         "metrics": {
             "discovered": last.get("discovered") or 0,
@@ -199,6 +239,9 @@ def get_crawler_status(_user: dict = Depends(require_permission("crawler.view"))
             "queue_soft_ad": (qstats or {}).get("soft_ad") or 0,
             "queue_abnormal": (qstats or {}).get("abnormal") or 0,
             "queue_deferred": (qstats or {}).get("deferred") or 0,
+            "discarded_failed": (discarded_stats or {}).get("failed") or 0,
+            "discarded_skipped": (discarded_stats or {}).get("skipped") or 0,
+            "discarded_total": (discarded_stats or {}).get("total") or 0,
             "random_probed": rnd.get("probed") or 0,
             "random_budget": rnd.get("probe_budget") or 0,
             "random_imported": rnd.get("imported") or 0,
@@ -207,6 +250,12 @@ def get_crawler_status(_user: dict = Depends(require_permission("crawler.view"))
             "stub_budget": stub_prog.get("remaining") or stub_prog.get("budget") or 0,
             "stub_remaining": stub_prog.get("remaining") or stub_prog.get("budget") or 0,
             "stub_upgraded": stub_prog.get("upgraded") or 0,
+            "priority_stubs": priority_stubs,
+            "discarded_access_denied_title": discarded_access_denied,
+            "discarded_failed_kind": discarded_failed_kind,
+            "account_pass_total": (
+                int(priority_stubs) + int(discarded_access_denied) + int(discarded_failed_kind)
+            ),
             "board_updated": last.get("board_updated") or 0,
         },
     }
@@ -440,6 +489,272 @@ async def post_retry_abnormal(_user: dict = Depends(require_permission("crawl.ru
     return await _post_queue_retry("abnormal")
 
 
+@router.get("/queue/browse")
+def get_queue_browse(
+    kind: str = "ready",
+    q: str = "",
+    limit: int = 50,
+    offset: int = 0,
+    status: str = "all",
+    reason: str = "",
+    _user: dict = Depends(require_permission("crawler.view")),
+) -> dict:
+    """队列/占位明细分页：ready | abnormal | discarded | stubs。"""
+    from parsers.boards import enabled_queue_board_keys, queue_board_keys
+
+    key = (kind or "ready").strip().lower()
+    if key not in {"ready", "abnormal", "discarded", "stubs"}:
+        raise HTTPException(status_code=400, detail="kind 仅支持 ready / abnormal / discarded / stubs")
+    lim = max(1, min(200, int(limit or 50)))
+    off = max(0, int(offset or 0))
+    query = (q or "").strip()
+    reason_key = (reason or "").strip()
+
+    if key == "discarded":
+        st = (status or "all").strip().lower()
+        if st not in {"all", "failed", "skipped"}:
+            raise HTTPException(status_code=400, detail="status 仅支持 all / failed / skipped")
+        conn = connect()
+        try:
+            counts = count_discarded(conn, status=st, q=query)
+            total = (
+                count_discarded(conn, status=st, q=query, reason=reason_key)["total"]
+                if reason_key
+                else int(counts.get("total") or 0)
+            )
+            items = list_discarded(
+                conn, status=st, q=query, reason=reason_key or None, limit=lim, offset=off
+            )
+            reasons = list_discarded_reasons(conn, status=st, q=query)
+            kind_counts = {
+                k: count_discarded_kind(conn, k) for k in DISCARDED_REQUEUE_KINDS
+            }
+        finally:
+            conn.close()
+        return {
+            "kind": key,
+            "status": st,
+            "q": query,
+            "reason": reason_key,
+            "limit": lim,
+            "offset": off,
+            "total": int(total),
+            "counts": counts,
+            "kind_counts": kind_counts,
+            "reasons": reasons,
+            "items": items,
+        }
+
+    if key == "stubs":
+        from db.repository import (
+            count_priority_account_stubs_q,
+            list_priority_account_stub_reasons,
+            list_priority_account_stubs,
+        )
+        from db.resource_db import connect_resource
+
+        rconn = connect_resource()
+        try:
+            total = count_priority_account_stubs_q(
+                rconn, q=query, reason=reason_key or None
+            )
+            items = list_priority_account_stubs(
+                rconn, limit=lim, offset=off, q=query, reason=reason_key or None
+            )
+            reasons = list_priority_account_stub_reasons(rconn, q=query)
+        finally:
+            rconn.close()
+        return {
+            "kind": key,
+            "q": query,
+            "reason": reason_key,
+            "limit": lim,
+            "offset": off,
+            "total": int(total),
+            "reasons": reasons,
+            "items": items,
+        }
+
+    # ready / abnormal
+    conn = connect()
+    try:
+        configs = load_forum_configs_map(conn)
+        cfg = dict(configs.get(SITE_CRAWLER_FORUM_ID) or {})
+        enabled_fids = resolve_enabled_board_fids(cfg)
+        queue_keys = enabled_queue_board_keys(enabled_fids)
+        if not queue_keys:
+            board_fid = str(cfg.get("active_board_fid") or "")
+            if board_fid:
+                queue_keys = queue_board_keys(board_fid)
+        total = count_pending_queue(
+            conn,
+            kind=key,
+            board_fid=queue_keys or None,
+            q=query,
+            reason=reason_key or None,
+        )
+        items = list_pending_queue(
+            conn,
+            kind=key,
+            board_fid=queue_keys or None,
+            q=query,
+            reason=reason_key or None,
+            limit=lim,
+            offset=off,
+        )
+        reasons = list_pending_reasons(
+            conn, kind=key, board_fid=queue_keys or None, q=query
+        )
+    finally:
+        conn.close()
+    return {
+        "kind": key,
+        "q": query,
+        "reason": reason_key,
+        "limit": lim,
+        "offset": off,
+        "total": int(total),
+        "reasons": reasons,
+        "items": items,
+    }
+
+
+@router.get("/queue/discarded")
+def get_queue_discarded(
+    status: str = "all",
+    q: str = "",
+    limit: int = 50,
+    offset: int = 0,
+    _user: dict = Depends(require_permission("crawler.view")),
+) -> dict:
+    """入队后未正常入库/占位的明细：失败（含重试耗尽丢弃）与跳过。"""
+    st = (status or "all").strip().lower()
+    if st not in {"all", "failed", "skipped"}:
+        raise HTTPException(status_code=400, detail="status 仅支持 all / failed / skipped")
+    lim = max(1, min(200, int(limit or 50)))
+    off = max(0, int(offset or 0))
+    conn = connect()
+    try:
+        counts = count_discarded(conn, status=st, q=q)
+        items = list_discarded(conn, status=st, q=q, limit=lim, offset=off)
+        kind_counts = {
+            key: count_discarded_kind(conn, key) for key in DISCARDED_REQUEUE_KINDS
+        }
+    finally:
+        conn.close()
+    return {
+        "status": st,
+        "q": (q or "").strip(),
+        "limit": lim,
+        "offset": off,
+        "total": int(counts.get("total") or 0),
+        "counts": {
+            "failed": int(counts.get("failed") or 0),
+            "skipped": int(counts.get("skipped") or 0),
+            "total": int(counts.get("total") or 0),
+        },
+        "kind_counts": kind_counts,
+        "items": items,
+    }
+
+
+class DiscardedRequeueBody(BaseModel):
+    kind: str = Field(default="access_denied_bad_title")
+    start_crawl: bool = True
+
+
+@router.post("/queue/discarded/requeue")
+async def post_discarded_requeue(
+    body: DiscardedRequeueBody,
+    _user: dict = Depends(require_permission("crawl.run")),
+) -> dict:
+    """将某一类未处理（跳过/失败）帖重新入队；可选立刻跑一轮抓取。"""
+    kind = (body.kind or "").strip()
+    if kind not in DISCARDED_REQUEUE_KINDS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"kind 仅支持: {', '.join(sorted(DISCARDED_REQUEUE_KINDS))}",
+        )
+    label = str(DISCARDED_REQUEUE_KINDS[kind].get("label") or kind)
+
+    st = crawl_status()
+    want_crawl = bool(body.start_crawl)
+    crawl_blocked = want_crawl and bool(st.get("looping") or st.get("running"))
+
+    conn = connect()
+    try:
+        matched = count_discarded_kind(conn, kind)
+        if matched <= 0:
+            return {
+                "message": "ok",
+                "kind": kind,
+                "label": label,
+                "matched": 0,
+                "requeued": 0,
+                "crawl": None,
+                "note": f"没有「{label}」可重跑",
+            }
+        requeued = requeue_discarded_kind(conn, kind)
+    finally:
+        conn.close()
+
+    _log_activity(f"未处理重入队 · {label} · {requeued} 条")
+
+    crawl_result = None
+    crawl_note = ""
+    if want_crawl and requeued > 0 and not crawl_blocked:
+        crawl_result = await run_crawl_once(
+            persist=True,
+            scan_list=False,
+            from_loop=False,
+            require_enabled=False,
+        )
+        if crawl_result.get("reason") == "loop_running":
+            crawl_blocked = True
+            crawl_result = None
+    if crawl_blocked:
+        crawl_note = "；爬虫忙，已入队待连续调度/空闲后抓取"
+
+    pending_left = 0
+    conn = connect()
+    try:
+        pending_left = int(count_pending(conn).get("ready") or 0)
+        kind_left = count_discarded_kind(conn, kind)
+    finally:
+        conn.close()
+
+    return {
+        "message": "ok",
+        "kind": kind,
+        "label": label,
+        "matched": matched,
+        "requeued": requeued,
+        "kind_remaining": kind_left,
+        "pending_ready": pending_left,
+        "crawl": {
+            "crawled": (crawl_result or {}).get("crawled") or 0,
+            "imports": (crawl_result or {}).get("imports") or 0,
+            "stubs": (crawl_result or {}).get("stubs") or 0,
+            "skipped": (crawl_result or {}).get("skipped") or 0,
+            "retries": (crawl_result or {}).get("retries") or 0,
+            "failed": (crawl_result or {}).get("failed") or 0,
+        }
+        if crawl_result is not None
+        else None,
+        "note": (
+            f"已重新入队 {requeued} 条「{label}」"
+            + (
+                f"；本轮抓取 {int((crawl_result or {}).get('crawled') or 0)}，"
+                f"占位 {int((crawl_result or {}).get('stubs') or 0)}"
+                if crawl_result is not None
+                else ""
+            )
+            + crawl_note
+            + (f"；待抓队列仍有 {pending_left}" if pending_left else "")
+        ),
+    }
+
+
 @router.post("/queue/retry-soft-ad")
 async def post_retry_soft_ad(_user: dict = Depends(require_permission("crawl.run"))) -> dict:
     """兼容旧接口：与异常重试相同。"""
@@ -469,6 +784,8 @@ async def post_recrawl_stubs(
         "started": bool(result.get("started")),
         "remaining": remaining,
         "budget": remaining,
+        "stub_remaining": int(result.get("stub_remaining") or 0),
+        "discarded_remaining": int(result.get("discarded_remaining") or 0),
         "result": result,
         "processed": 0,
         "upgraded": 0,

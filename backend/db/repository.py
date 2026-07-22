@@ -45,6 +45,8 @@ CASE
   WHEN lower(COALESCE(r.ed2k_link, '')) LIKE 'unavailable://thread/%%' THEN 'stub'
   WHEN lower(COALESCE(r.ed2k_link, '')) LIKE 'magnet:%%' THEN 'magnet'
   WHEN lower(COALESCE(r.ed2k_link, '')) LIKE 'ed2k://%%' THEN 'ed2k'
+  WHEN lower(COALESCE(r.ed2k_link, '')) LIKE '%%115cdn.com/s/%%'
+    OR lower(COALESCE(r.ed2k_link, '')) LIKE '%%115.com/s/%%' THEN '115share'
   ELSE 'failed'
 END
 """
@@ -62,10 +64,13 @@ def infer_resource_link_kind(ed2k_link: str | None) -> str:
         return "magnet"
     if link.startswith("ed2k://"):
         return "ed2k"
+    if "115cdn.com/s/" in link or "115.com/s/" in link:
+        return "115share"
     return "failed"
 
 
 def _ensure_resource_schema(conn: Any) -> None:
+    """补缺列（IF NOT EXISTS）；不改已有列数据。独立库与主库均可。"""
     global _schema_ready
     if _schema_ready:
         return
@@ -270,40 +275,46 @@ def import_thread_stub(
     return 1
 
 
-def get_data_overview(conn: Any) -> dict:
-    """统计可清空的数据量，供数据管理页展示（对齐 ed2k）。"""
+def get_data_overview(conn: Any, resource_conn: Any | None = None) -> dict:
+    """统计可清空的数据量；资源计数可走独立资源库连接。"""
 
-    def _count(sql: str, params: tuple[Any, ...] = ()) -> int:
+    rconn = resource_conn or conn
+
+    def _count(c: Any, sql: str, params: tuple[Any, ...] = ()) -> int:
         try:
-            with conn.cursor() as cur:
+            with c.cursor() as cur:
                 cur.execute(sql, params)
                 row = cur.fetchone()
                 return int(row[0] or 0) if row else 0
         except Exception:
-            conn.rollback()
+            try:
+                c.rollback()
+            except Exception:
+                pass
             return 0
 
     return {
-        "resources": _count("SELECT COUNT(*) FROM ed2k_resources"),
-        "resource_sources": _count("SELECT COUNT(*) FROM resource_sources"),
-        "import_jobs": _count("SELECT COUNT(*) FROM import_jobs"),
-        "crawl_pages": _count("SELECT COUNT(*) FROM crawl_pages"),
+        "resources": _count(rconn, "SELECT COUNT(*) FROM ed2k_resources"),
+        "resource_sources": _count(rconn, "SELECT COUNT(*) FROM resource_sources"),
+        "import_jobs": _count(rconn, "SELECT COUNT(*) FROM import_jobs"),
+        "crawl_pages": _count(conn, "SELECT COUNT(*) FROM crawl_pages"),
         "crawl_pending": _count(
+            conn,
             """
             SELECT COUNT(*) FROM crawl_pages
             WHERE page_type = 'thread' AND status = 'pending'
-            """
+            """,
         ),
-        "crawl_boards": _count("SELECT COUNT(*) FROM crawl_boards"),
-        "activity_logs": _count("SELECT COUNT(*) FROM crawl_activity_log"),
-        # 兼容旧前端字段
-        "sources": _count("SELECT COUNT(*) FROM resource_sources"),
-        "boards": _count("SELECT COUNT(*) FROM crawl_boards"),
+        "crawl_boards": _count(conn, "SELECT COUNT(*) FROM crawl_boards"),
+        "activity_logs": _count(conn, "SELECT COUNT(*) FROM crawl_activity_log"),
+        "sources": _count(rconn, "SELECT COUNT(*) FROM resource_sources"),
+        "boards": _count(conn, "SELECT COUNT(*) FROM crawl_boards"),
+        "resource_db_separate": bool(resource_conn is not None and resource_conn is not conn),
     }
 
 
 def purge_resources(conn: Any, *, reset_crawl: bool = True) -> None:
-    """清空资源与可选爬取数据；保留设置 / 论坛配置 / 账号。"""
+    """清空资源；reset_crawl=True 时一并清空爬取数据。保留设置 / 论坛配置 / 账号。"""
     tables = ["resource_tags", "resource_sources", "import_jobs", "ed2k_resources"]
     if reset_crawl:
         tables.extend(["crawl_pages", "crawl_boards", "crawl_activity_log"])
@@ -314,6 +325,42 @@ def purge_resources(conn: Any, *, reset_crawl: bool = True) -> None:
                 continue
             cur.execute(f"DELETE FROM {name}")
     conn.commit()
+
+
+def purge_crawl_data(conn: Any) -> None:
+    """只清空项目爬取记录（队列/进度/活动日志），不动资源库与账号配置。"""
+    tables = ["crawl_pages", "crawl_boards", "crawl_activity_log"]
+    with conn.cursor() as cur:
+        for name in tables:
+            cur.execute("SELECT to_regclass(%s)", (f"public.{name}",))
+            if cur.fetchone()[0] is None:
+                continue
+            cur.execute(f"DELETE FROM {name}")
+    conn.commit()
+
+
+def clear_forum_crawl_progress(conn: Any) -> int:
+    """清空各论坛配置里的列表游标 / 捕新进度（不清 enabled / Cookie 等）。"""
+    from db.forum_configs import load_forum_configs_map, save_forum_config
+
+    configs = load_forum_configs_map(conn)
+    n = 0
+    for forum_id, raw in configs.items():
+        cfg = dict(raw or {})
+        changed = False
+        for key in (
+            "board_list_cursors",
+            "board_head_catchup_on",
+            "board_head_progress",
+            "board_backfill_progress",
+        ):
+            if cfg.get(key):
+                cfg[key] = {}
+                changed = True
+        if changed:
+            save_forum_config(conn, str(forum_id), cfg)
+            n += 1
+    return n
 
 
 def delete_resource_by_hash(conn: Any, resource_hash: str) -> bool:
@@ -466,16 +513,42 @@ def list_priority_account_stubs(
     conn: Any,
     *,
     limit: int = 1,
+    offset: int = 0,
     exclude_hashes: list[str] | None = None,
+    q: str | None = None,
+    reason: str | None = None,
 ) -> list[dict[str, Any]]:
     """捞出需登录 / 无阅读权限 / 无权限下载附件的占位帖，供账号重爬。"""
     _ensure_resource_schema(conn)
     n = max(1, int(limit or 1))
+    off = max(0, int(offset or 0))
     outcomes = list(ACCOUNT_STUB_OUTCOMES)
     order_case = " ".join(
         f"WHEN rs.import_outcome = %s THEN {i}" for i, _ in enumerate(outcomes)
     )
     where_sql, where_params = _priority_stub_where(exclude_hashes=exclude_hashes)
+    text = (q or "").strip()
+    q_sql = ""
+    q_params: list[Any] = []
+    if text:
+        like = f"%{text}%"
+        q_sql = """
+          AND (
+            r.hash ILIKE %s
+            OR COALESCE(rs.source_url, '') ILIKE %s
+            OR COALESCE(rs.title, r.filename, '') ILIKE %s
+            OR COALESCE(rs.import_outcome, '') ILIKE %s
+            OR COALESCE(rs.board_name, '') ILIKE %s
+            OR COALESCE(rs.board_fid, '') ILIKE %s
+          )
+        """
+        q_params = [like, like, like, like, like, like]
+    reason_text = (reason or "").strip()
+    reason_sql = ""
+    reason_params: list[Any] = []
+    if reason_text:
+        reason_sql = "AND COALESCE(NULLIF(TRIM(rs.import_outcome), ''), '') = %s"
+        reason_params = [reason_text]
     with conn.cursor() as cur:
         cur.execute(
             f"""
@@ -491,22 +564,129 @@ def list_priority_account_stubs(
             FROM ed2k_resources r
             JOIN resource_sources rs ON rs.hash = r.hash
             WHERE {where_sql}
+              {q_sql}
+              {reason_sql}
             ORDER BY
               CASE
                 {order_case}
                 ELSE 99
               END ASC,
               COALESCE(r.updated_at, rs.created_at) ASC NULLS LAST
-            LIMIT %s
+            LIMIT %s OFFSET %s
             """,
             (
                 *where_params,
+                *q_params,
+                *reason_params,
                 *outcomes,
                 n,
+                off,
             ),
         )
         cols = [d[0] for d in cur.description]
-        return [dict(zip(cols, row)) for row in cur.fetchall()]
+        rows: list[dict[str, Any]] = []
+        for row in cur.fetchall():
+            item = dict(zip(cols, row))
+            val = item.get("updated_at")
+            if hasattr(val, "isoformat"):
+                item["updated_at"] = val.isoformat()
+            rows.append(item)
+        return rows
+
+
+def list_priority_account_stub_reasons(
+    conn: Any,
+    *,
+    exclude_hashes: list[str] | None = None,
+    q: str | None = None,
+) -> list[dict[str, Any]]:
+    """优先占位原因分组（供下拉筛选）。"""
+    _ensure_resource_schema(conn)
+    where_sql, params = _priority_stub_where(exclude_hashes=exclude_hashes)
+    text = (q or "").strip()
+    q_sql = ""
+    q_params: list[Any] = []
+    if text:
+        like = f"%{text}%"
+        q_sql = """
+          AND (
+            r.hash ILIKE %s
+            OR COALESCE(rs.source_url, '') ILIKE %s
+            OR COALESCE(rs.title, r.filename, '') ILIKE %s
+            OR COALESCE(rs.import_outcome, '') ILIKE %s
+            OR COALESCE(rs.board_name, '') ILIKE %s
+            OR COALESCE(rs.board_fid, '') ILIKE %s
+          )
+        """
+        q_params = [like, like, like, like, like, like]
+    with conn.cursor() as cur:
+        cur.execute(
+            f"""
+            SELECT COALESCE(NULLIF(TRIM(rs.import_outcome), ''), '') AS reason, COUNT(*) AS cnt
+            FROM ed2k_resources r
+            JOIN resource_sources rs ON rs.hash = r.hash
+            WHERE {where_sql}
+              {q_sql}
+              AND COALESCE(NULLIF(TRIM(rs.import_outcome), ''), '') <> ''
+            GROUP BY 1
+            ORDER BY cnt DESC, reason ASC
+            LIMIT 80
+            """,
+            (*params, *q_params),
+        )
+        return [
+            {"reason": str(r[0]), "count": int(r[1] or 0)}
+            for r in cur.fetchall()
+            if r and r[0]
+        ]
+
+
+def count_priority_account_stubs_q(
+    conn: Any,
+    *,
+    exclude_hashes: list[str] | None = None,
+    q: str | None = None,
+    reason: str | None = None,
+) -> int:
+    """优先占位计数（可带搜索）。"""
+    _ensure_resource_schema(conn)
+    where_sql, params = _priority_stub_where(exclude_hashes=exclude_hashes)
+    text = (q or "").strip()
+    q_sql = ""
+    q_params: list[Any] = []
+    if text:
+        like = f"%{text}%"
+        q_sql = """
+          AND (
+            r.hash ILIKE %s
+            OR COALESCE(rs.source_url, '') ILIKE %s
+            OR COALESCE(rs.title, r.filename, '') ILIKE %s
+            OR COALESCE(rs.import_outcome, '') ILIKE %s
+            OR COALESCE(rs.board_name, '') ILIKE %s
+            OR COALESCE(rs.board_fid, '') ILIKE %s
+          )
+        """
+        q_params = [like, like, like, like, like, like]
+    reason_text = (reason or "").strip()
+    reason_sql = ""
+    reason_params: list[Any] = []
+    if reason_text:
+        reason_sql = "AND COALESCE(NULLIF(TRIM(rs.import_outcome), ''), '') = %s"
+        reason_params = [reason_text]
+    with conn.cursor() as cur:
+        cur.execute(
+            f"""
+            SELECT COUNT(*)
+            FROM ed2k_resources r
+            JOIN resource_sources rs ON rs.hash = r.hash
+            WHERE {where_sql}
+              {q_sql}
+              {reason_sql}
+            """,
+            (*params, *q_params, *reason_params),
+        )
+        row = cur.fetchone()
+        return int(row[0] or 0) if row else 0
 
 
 def list_recent_resources(

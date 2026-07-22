@@ -39,6 +39,7 @@ const DESCRIPTION_LABEL_ALIASES: Record<string, (typeof DISPLAY_DESCRIPTION_LABE
   影片大小: "资源大小",
   文件大小: "资源大小",
   提取密码: "解压密码",
+  资源密码: "解压密码",
   资源解压密码: "解压密码",
 };
 
@@ -156,12 +157,18 @@ export function isPublicDownloadLink(link?: string | null): boolean {
     return false;
   }
 
-  return lower.startsWith("ed2k://") || lower.startsWith("magnet:");
+  if (lower.startsWith("ed2k://") || lower.startsWith("magnet:")) {
+    return true;
+  }
+
+  return (
+    lower.includes("115cdn.com/s/") || lower.includes("115.com/s/")
+  );
 }
 
 export function linkKindOf(
   link?: string | null,
-): "ed2k" | "magnet" | "stub" | "other" {
+): "ed2k" | "magnet" | "stub" | "115share" | "other" {
   const lower = (link || "").trim().toLowerCase();
 
   if (lower.startsWith("magnet:")) {
@@ -174,6 +181,10 @@ export function linkKindOf(
 
   if (lower.startsWith("unavailable://")) {
     return "stub";
+  }
+
+  if (lower.includes("115cdn.com/s/") || lower.includes("115.com/s/")) {
+    return "115share";
   }
 
   return "other";

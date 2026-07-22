@@ -27,6 +27,7 @@ LABEL_KEYS = (
     "第三方水印",
     "解压密码",
     "提取密码",
+    "资源密码",
     "种子期限",
     "下载方式",
     "下载工具",
@@ -67,6 +68,7 @@ DESCRIPTION_LABEL_ALIASES = {
     "有无水印": "有无第三方水印",
     "第三方水印": "有无第三方水印",
     "提取密码": "解压密码",
+    "资源密码": "解压密码",
 }
 
 # profile: labels 顺序；exclusive 组内只保留靠前且有值的一项；aliases 写入展示键
@@ -89,6 +91,7 @@ BOARD_DESCRIPTION_PROFILES: dict[str, dict] = {
             "文件大小": "影片大小",
             "资源大小": "影片大小",
             "提取密码": "解压密码",
+            "资源密码": "解压密码",
         },
         "title_as": "影片名称",
     },
@@ -124,6 +127,7 @@ BOARD_DESCRIPTION_PROFILES: dict[str, dict] = {
             "有无第三方水印": "有无水印",
             "有无码": "是否有码",
             "提取密码": "解压密码",
+            "资源密码": "解压密码",
         },
         "title_as": "资源名称",
     },
@@ -142,6 +146,7 @@ BOARD_DESCRIPTION_PROFILES: dict[str, dict] = {
             "影片容量": "影片大小",
             "有无码": "是否有码",
             "提取密码": "解压密码",
+            "资源密码": "解压密码",
         },
         "title_as": "资源名称",
     },
@@ -203,6 +208,12 @@ _OP_POST_END_RE = re.compile(
     r'<!--\s*end\s*post|</tbody>',
     re.I,
 )
+# 楼主标记：ico_lz.png 或 authi 里的「楼主」（勿用「只看该作者」，每层都有）
+_LZ_MARK_RE = re.compile(
+    r"ico_lz\.png|(?:^|>|&nbsp;)\s*楼主(?:\s|<|\||$)",
+    re.I | re.M,
+)
+
 # 字段值里常见的附件区 / 楼层 / 页脚噪声（非密码字段也裁）
 _FIELD_NOISE_RE = re.compile(
     r"(?:"
@@ -233,10 +244,18 @@ _SHORT_ENUM_LABELS = frozenset(
 )
 _SHORT_ENUM_VALUE_RE = re.compile(r"^([^\s，,。；;|/]+)")
 # 「解压密码是www.98T.la@」——「是/为」是系词不是密码；也兼容冒号/等号
+# 另有【资源密码】写法（】与冒号之间可无空格）
 PASSWORD_RE = re.compile(
-    r"(?:解压|提取)\s*密码\s*(?:[:：=]|是|为)?\s*([^\s【】\n，,。；;]+)",
+    r"(?:解压|提取|资源)\s*密码\s*】?\s*(?:[:：=]|是|为)?\s*([^\s【】\n，,。；;]+)",
     re.I,
 )
+# 帖内常见：单独「密码」后跟 www.98T.la@（无解压/提取前缀，常夹在 font 标签里）
+PASSWORD_BARE_98T_RE = re.compile(
+    r"密码\s*(?:[:：=]|是|为)?\s*((?:www\.)?98[Tt]\.la@?)",
+    re.I,
+)
+_PASSWORD_META_KEYS = ("解压密码", "提取密码", "资源密码")
+_PASSWORD_LABELS = frozenset(_PASSWORD_META_KEYS)
 # 优先 zoomfile / file（Discuz 高清），再 src
 IMG_TAG_RE = re.compile(r"<img\b([^>]*)>", re.I)
 IMG_ATTR_RE = re.compile(
@@ -375,6 +394,48 @@ def extract_first_postmessage_html(html: str) -> str:
     return src
 
 
+def extract_lz_posts_html(html: str, *, limit: int = 5) -> list[str]:
+    """取楼主各层 postmessage（含二楼补链），用于抽 ed2k/磁力/115 分享。
+
+    元数据仍只用一楼；链接语料可并入楼主后续楼。无楼主标记时退化为前 limit 层。
+    """
+    src = html or ""
+    if not src:
+        return []
+
+    starts = [m for m in _OP_POST_START_RE.finditer(src) if m.group(1).isdigit()]
+    posts: list[tuple[str, bool]] = []
+    for i, m in enumerate(starts):
+        start = m.end()
+        end_m = _OP_POST_END_RE.search(src, start)
+        end = end_m.start() if end_m else len(src)
+        body = src[start:end].strip()
+        if not body:
+            continue
+        # 仅看「上一帖结束 → 本帖 postmessage」之间的 authi，避免上一楼楼主标泄漏
+        head_from = starts[i - 1].start() if i > 0 else max(0, m.start() - 2200)
+        head = src[head_from : m.start()]
+        is_lz = bool(_LZ_MARK_RE.search(head))
+        posts.append((body, is_lz))
+
+    if not posts:
+        return []
+
+    lz_bodies = [body for body, is_lz in posts if is_lz]
+    if lz_bodies:
+        return lz_bodies[: max(1, limit)]
+    # 无明确楼主标：仍取前几层（常见一楼封面、二楼补链）
+    return [body for body, _ in posts[: max(1, limit)]]
+
+
+def extract_link_corpus_html(html: str, *, limit: int = 5) -> str:
+    """链接抽取语料：楼主多层正文拼接。"""
+    parts = extract_lz_posts_html(html, limit=limit)
+    if parts:
+        return "\n".join(parts)
+    return extract_first_postmessage_html(html)
+
+
 def _clip_field_value(
     value: str,
     *,
@@ -425,7 +486,7 @@ def extract_metadata(text: str) -> dict[str, str]:
     meta: dict[str, str] = {}
     for m in LABEL_RE.finditer(text or ""):
         key = m.group(1).strip()
-        is_pwd = key in {"解压密码", "提取密码"}
+        is_pwd = key in _PASSWORD_LABELS
         val = _clip_field_value(
             m.group(2),
             password=is_pwd,
@@ -446,6 +507,8 @@ def _is_bogus_password(value: str) -> bool:
     # 剥离标签后残留的 CF 占位
     if re.fullmatch(r"\[?\s*email\s*protected\s*\]?", v, flags=re.I):
         return True
+    if re.match(r"\[?\s*email\b", v, flags=re.I):
+        return True
     # 「密码是 xxx」误把系词当成密码
     if re.fullmatch(r"[是为的了吧啊喔呢]", v):
         return True
@@ -464,18 +527,25 @@ def _is_bogus_password(value: str) -> bool:
 
 def extract_password(text: str, metadata: dict[str, str] | None = None) -> str:
     meta = metadata or {}
-    for key in ("解压密码", "提取密码"):
+    for key in _PASSWORD_META_KEYS:
         val = _clip_field_value(meta.get(key) or "", password=True)
         # 【解压密码】：是www.xxx → 剥掉行首系词
         if val.startswith(("是", "为")) and len(val) > 1:
             val = _clip_field_value(val[1:], password=True)
         if val and not _is_bogus_password(val):
             return val
-    m = PASSWORD_RE.search(text or "")
-    if not m:
-        return ""
-    val = _clip_field_value(m.group(1), password=True)
-    return "" if _is_bogus_password(val) else val
+    blob = text or ""
+    m = PASSWORD_RE.search(blob)
+    if m:
+        val = _clip_field_value(m.group(1), password=True)
+        if val and not _is_bogus_password(val):
+            return val
+    m2 = PASSWORD_BARE_98T_RE.search(blob)
+    if m2:
+        val = _clip_field_value(m2.group(1), password=True)
+        if val and not _is_bogus_password(val):
+            return val
+    return ""
 
 
 def build_structured_description(
@@ -498,7 +568,7 @@ def build_structured_description(
         key = aliases.get(raw_key, raw_key)
         if key not in allowed or key in picked:
             continue
-        is_pwd = key == "解压密码"
+        is_pwd = key == "解压密码" or raw_key in _PASSWORD_LABELS
         clip_label = raw_key if raw_key in _SIZE_FIELD_LABELS | _TITLE_FIELD_LABELS else key
         val = _clip_field_value(
             raw_val,

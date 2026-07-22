@@ -10,6 +10,26 @@ ED2K_RE = re.compile(
     re.IGNORECASE,
 )
 
+# 发帖人/站点常把协议掐掉字母：d2k / e2k / edk → ed2k
+_TRUNCATED_ED2K_SCHEME_RE = re.compile(
+    r"(?<![A-Za-z0-9])(?:d2k|e2k|edk)\s*:\s*/\s*/\s*\|?\s*file\s*\|",
+    re.IGNORECASE,
+)
+
+# e d 2 k : / / | file |
+_SPACED_ED2K_SCHEME_RE = re.compile(
+    r"(?<![A-Za-z0-9])e\s*d\s*2\s*k\s*:\s*/\s*/\s*\|?\s*file\s*\|",
+    re.IGNORECASE,
+)
+
+_FULLWIDTH_TRANS = str.maketrans(
+    {
+        "：": ":",
+        "｜": "|",
+        "／": "/",
+    }
+)
+
 ARCHIVE_EXTENSIONS = (".zip", ".rar", ".7z", ".cbz", ".cbr")
 
 
@@ -19,6 +39,16 @@ class Ed2kLink:
     size: int
     hash: str
     link: str
+
+
+def normalize_ed2k_corpus(text: str) -> str:
+    """还原被掐字母 / 全角 / 空格拆开的 ed2k 协议头。"""
+    if not text:
+        return ""
+    out = text.translate(_FULLWIDTH_TRANS)
+    out = _TRUNCATED_ED2K_SCHEME_RE.sub("ed2k://|file|", out)
+    out = _SPACED_ED2K_SCHEME_RE.sub("ed2k://|file|", out)
+    return out
 
 
 def build_ed2k_link(filename: str, size: int, file_hash: str) -> str:
@@ -42,8 +72,9 @@ def build_search_string(
 def parse_ed2k_text(text: str) -> list[Ed2kLink]:
     results: list[Ed2kLink] = []
     seen: set[str] = set()
+    blob = normalize_ed2k_corpus(text or "")
 
-    for match in ED2K_RE.finditer(text or ""):
+    for match in ED2K_RE.finditer(blob):
         filename = match.group(1).strip()
         size = int(match.group(2))
         file_hash = match.group(3).upper()

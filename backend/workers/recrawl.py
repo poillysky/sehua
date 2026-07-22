@@ -11,6 +11,10 @@ from crawler.session import SessionManager
 from db.connection import connect
 from db.forum_configs import SITE_CRAWLER_FORUM_ID, load_forum_configs_map
 from db.queue import (
+    ACCOUNT_DISCARDED_KINDS,
+    DISCARDED_REQUEUE_KINDS,
+    count_discarded_kind,
+    list_discarded_kind,
     mark_pending_retry,
     mark_thread_done,
     mark_thread_skipped,
@@ -24,6 +28,7 @@ from db.repository import (
     get_resource_by_hash,
     list_priority_account_stubs,
 )
+from db.resource_db import connect_resource
 from parsers.thread_gates import title_recognizable
 from db.settings_store import get_setting
 from parsers.boards import get_board_fid, get_board_policy
@@ -64,12 +69,25 @@ def _empty_account_stub_progress(*, active: bool = False, remaining: int = 0) ->
     }
 
 
+def _count_account_discarded(conn: Any) -> int:
+    total = 0
+    for kind in ACCOUNT_DISCARDED_KINDS:
+        total += int(count_discarded_kind(conn, kind) or 0)
+    return total
+
+
 def _db_priority_remaining(*, exclude_hashes: list[str] | None = None) -> int:
-    conn = connect()
+    conn = connect_resource()
     try:
-        return count_priority_account_stubs(conn, exclude_hashes=exclude_hashes)
+        stubs = count_priority_account_stubs(conn, exclude_hashes=exclude_hashes)
     finally:
         conn.close()
+    qconn = connect()
+    try:
+        discarded = _count_account_discarded(qconn)
+    finally:
+        qconn.close()
+    return int(stubs) + int(discarded)
 
 
 def _publish_account_stub_progress(
@@ -149,12 +167,24 @@ def start_account_stub_recrawl() -> dict[str, Any]:
                 "reason": "no_account_cookie",
                 "error": "未配置账号 Cookie，请到论坛配置 → 进站 →「账号 Cookie」填写登录态",
             }
-        remaining = count_priority_account_stubs(conn)
     finally:
         conn.close()
 
+    rconn = connect_resource()
+    try:
+        stub_remaining = count_priority_account_stubs(rconn)
+    finally:
+        rconn.close()
+
+    qconn = connect()
+    try:
+        discarded_remaining = _count_account_discarded(qconn)
+    finally:
+        qconn.close()
+
+    remaining = int(stub_remaining) + int(discarded_remaining)
     if remaining <= 0:
-        _log_activity("账号爬占位 · 无优先占位可处理")
+        _log_activity("账号爬占位 · 无优先占位 / 未处理失败·无权跳过可处理")
         _publish_account_stub_progress(active=False, remaining=0)
         return {
             "ok": True,
@@ -162,7 +192,9 @@ def start_account_stub_recrawl() -> dict[str, Any]:
             "reason": "empty",
             "remaining": 0,
             "budget": 0,
-            "message": "无「需登录 / 无阅读权限 / 无权限下载附件」占位",
+            "stub_remaining": 0,
+            "discarded_remaining": 0,
+            "message": "无「优先占位」或「未处理失败 / 无阅读权限跳过」可处理",
         }
 
     _publish_account_stub_progress(active=True, remaining=remaining)
@@ -179,13 +211,19 @@ def start_account_stub_recrawl() -> dict[str, Any]:
             _publish_account_stub_progress(active=False, remaining=rem)
 
     _account_stub_task = asyncio.get_running_loop().create_task(_runner())
-    _log_activity(f"账号爬占位已启动 · 队列 {remaining} · 跑完为止")
+    _log_activity(
+        f"账号爬占位已启动 · 占位 {stub_remaining} · 未处理 {discarded_remaining} · 跑完为止"
+    )
     return {
         "ok": True,
         "started": True,
         "remaining": remaining,
         "budget": remaining,
-        "message": f"已开始 · 队列 {remaining} · 直至重爬完",
+        "stub_remaining": int(stub_remaining),
+        "discarded_remaining": int(discarded_remaining),
+        "message": (
+            f"已开始 · 占位 {stub_remaining} · 未处理失败/无权跳过 {discarded_remaining} · 直至重爬完"
+        ),
     }
 
 
@@ -198,8 +236,12 @@ def _load_crawler_cfg(conn: Any) -> dict[str, Any]:
     return cfg
 
 
-def _resolve_item(conn: Any, resource_hash: str, cfg: dict[str, Any]) -> dict[str, Any]:
-    item = get_resource_by_hash(conn, resource_hash)
+def _resolve_item(resource_hash: str, cfg: dict[str, Any]) -> dict[str, Any]:
+    rconn = connect_resource()
+    try:
+        item = get_resource_by_hash(rconn, resource_hash)
+    finally:
+        rconn.close()
     if not item:
         return {"ok": False, "hash": resource_hash, "error": "未找到该资源"}
     source_url = (item.get("source_url") or "").strip()
@@ -228,14 +270,18 @@ def _resolve_item(conn: Any, resource_hash: str, cfg: dict[str, Any]) -> dict[st
     else:
         board_name = pol.name
     title = str(item.get("title") or item.get("filename") or "")
-    queued = requeue_for_recrawl(
-        conn,
-        url=source_url,
-        board_fid=pol.key,
-        board_name=board_name,
-        title=title,
-        forum_id=SITE_CRAWLER_FORUM_ID,
-    )
+    conn = connect()
+    try:
+        queued = requeue_for_recrawl(
+            conn,
+            url=source_url,
+            board_fid=pol.key,
+            board_name=board_name,
+            title=title,
+            forum_id=SITE_CRAWLER_FORUM_ID,
+        )
+    finally:
+        conn.close()
     return {
         "ok": True,
         "hash": resource_hash,
@@ -332,20 +378,24 @@ async def _run_one(
     conn = connect()
     try:
         _apply_queue_outcome(conn, thread_url, outcome)
-        # 跳过/无效帖：清掉原占位行（如「提示信息」），否则重爬后仍挂在列表里
-        if verdict == "skipped":
-            is_stub = (prepared.get("link_kind") or "") == "stub" or str(
-                prepared.get("ed2k_link") or ""
-            ).lower().startswith("unavailable://")
-            junk_title = not title_recognizable(title)
-            if is_stub or junk_title:
-                removed = delete_resource_by_hash(conn, resource_hash) or delete_stub_by_source_url(
-                    conn, thread_url
-                )
-                if removed:
-                    _log_activity(f"已入库重爬 · 删除无效占位 tid={tid}")
     finally:
         conn.close()
+    # 跳过/无效帖：清掉原占位行（如「提示信息」），否则重爬后仍挂在列表里
+    if verdict == "skipped":
+        is_stub = (prepared.get("link_kind") or "") == "stub" or str(
+            prepared.get("ed2k_link") or ""
+        ).lower().startswith("unavailable://")
+        junk_title = not title_recognizable(title)
+        if is_stub or junk_title:
+            rconn = connect_resource()
+            try:
+                removed = delete_resource_by_hash(rconn, resource_hash) or delete_stub_by_source_url(
+                    rconn, thread_url
+                )
+            finally:
+                rconn.close()
+            if removed:
+                _log_activity(f"已入库重爬 · 删除无效占位 tid={tid}")
 
     imported = verdict in _IMPORT_VERDICTS
     persisted = outcome.get("persisted") or {}
@@ -406,23 +456,24 @@ async def recrawl_imported_resources(hashes: list[str]) -> dict[str, Any]:
     conn = connect()
     try:
         cfg = _load_crawler_cfg(conn)
-        prepared_list: list[dict[str, Any]] = []
-        prep_errors: list[dict[str, Any]] = []
-        for h in cleaned:
-            prep = _resolve_item(conn, h, cfg)
-            if prep.get("ok"):
-                prepared_list.append(prep)
-            else:
-                prep_errors.append(
-                    {
-                        "ok": False,
-                        "imported": False,
-                        "hash": h,
-                        "error": prep.get("error") or "准备失败",
-                    }
-                )
     finally:
         conn.close()
+
+    prepared_list: list[dict[str, Any]] = []
+    prep_errors: list[dict[str, Any]] = []
+    for h in cleaned:
+        prep = _resolve_item(h, cfg)
+        if prep.get("ok"):
+            prepared_list.append(prep)
+        else:
+            prep_errors.append(
+                {
+                    "ok": False,
+                    "imported": False,
+                    "hash": h,
+                    "error": prep.get("error") or "准备失败",
+                }
+            )
 
     if not prepared_list and prep_errors:
         return {
@@ -560,12 +611,23 @@ async def recrawl_account_stubs() -> dict[str, Any]:
                 "still_stub": 0,
                 "failed": 0,
             }
-        remaining0 = count_priority_account_stubs(conn)
     finally:
         conn.close()
 
+    rconn = connect_resource()
+    try:
+        stub_remaining0 = count_priority_account_stubs(rconn)
+    finally:
+        rconn.close()
+    qconn = connect()
+    try:
+        discarded_remaining0 = _count_account_discarded(qconn)
+    finally:
+        qconn.close()
+    remaining0 = int(stub_remaining0) + int(discarded_remaining0)
+
     if remaining0 <= 0:
-        _log_activity("账号爬占位 · 无优先占位可处理")
+        _log_activity("账号爬占位 · 无优先占位 / 未处理失败·无权跳过可处理")
         _publish_account_stub_progress(active=False, remaining=0)
         return {
             "ok": True,
@@ -575,7 +637,7 @@ async def recrawl_account_stubs() -> dict[str, Any]:
             "failed": 0,
             "skipped_prep": 0,
             "items": [],
-            "note": "无「需登录 / 无阅读权限 / 无权限下载附件」占位",
+            "note": "无「优先占位」或「未处理失败 / 无阅读权限跳过」可处理",
         }
 
     lock = try_begin_exclusive("account_stubs")
@@ -598,13 +660,15 @@ async def recrawl_account_stubs() -> dict[str, Any]:
     still_stub = 0
     failed = 0
     skipped_prep = 0
+    discarded_done = 0
     attempted: list[str] = []
+    attempted_urls: list[str] = []
 
     def _push_progress(*, current_tid: int | None = None, current_title: str = "", active: bool = True) -> None:
         done = upgraded + still_stub + failed + skipped_prep
         _publish_account_stub_progress(
             active=active,
-            remaining=None,  # 每次重新查库
+            remaining=None,  # 每次重新查库（占位 + 未处理跳过）
             done=done,
             upgraded=upgraded,
             still_stub=still_stub,
@@ -612,11 +676,13 @@ async def recrawl_account_stubs() -> dict[str, Any]:
             skipped_prep=skipped_prep,
             current_tid=current_tid,
             current_title=current_title,
-            exclude_hashes=None,  # 剩余 = 库内仍符合条件的全部优先占位
+            exclude_hashes=None,
         )
 
     try:
-        _log_activity(f"账号爬占位开始 · 队列 {remaining0} · 登录 Cookie · 跑完为止")
+        _log_activity(
+            f"账号爬占位开始 · 占位 {stub_remaining0} · 未处理 {discarded_remaining0} · 登录 Cookie"
+        )
         THROTTLE.clear_stop()
         _push_progress(active=True)
         session = session_from_config(
@@ -627,12 +693,154 @@ async def recrawl_account_stubs() -> dict[str, Any]:
         await session.bootstrap()
         fetcher = fetcher_from_config(session, cfg)
 
+        # ① 先用账号 Cookie 处理未处理：失败全部 → 无阅读权限跳过
+        for disc_kind in ACCOUNT_DISCARDED_KINDS:
+            kind_label = str(
+                (DISCARDED_REQUEUE_KINDS.get(disc_kind) or {}).get("label") or disc_kind
+            )
+            _log_activity(f"账号爬未处理 · 开始类别「{kind_label}」")
+            while True:
+                if THROTTLE.should_stop():
+                    _log_activity("账号爬占位 · 收到停止请求")
+                    break
+
+                qconn = connect()
+                try:
+                    batch = list_discarded_kind(
+                        qconn,
+                        disc_kind,
+                        limit=1,
+                        exclude_urls=attempted_urls,
+                    )
+                finally:
+                    qconn.close()
+                if not batch:
+                    break
+
+                row = batch[0]
+                source_url = str(row.get("url") or "").strip()
+                title = str(row.get("thread_title") or "")
+                if source_url:
+                    attempted_urls.append(source_url)
+
+                tid = tid_from_url(source_url) or int(row.get("tid") or 0) or None
+                if not tid:
+                    skipped_prep += 1
+                    discarded_done += 1
+                    qconn = connect()
+                    try:
+                        mark_thread_skipped(qconn, source_url, f"{kind_label} · 无法解析 tid")
+                    finally:
+                        qconn.close()
+                    _push_progress()
+                    continue
+
+                board_fid_s = str(row.get("board_fid") or "").strip() or str(
+                    cfg.get("active_board_fid") or ""
+                )
+                board_fid = get_board_fid(board_fid_s)
+                if board_fid <= 0:
+                    skipped_prep += 1
+                    discarded_done += 1
+                    qconn = connect()
+                    try:
+                        mark_thread_skipped(qconn, source_url, f"{kind_label} · 缺少板块 fid")
+                    finally:
+                        qconn.close()
+                    _push_progress(current_tid=int(tid), current_title=title)
+                    continue
+
+                pol = get_board_policy(board_fid_s)
+                stored_name = str(row.get("board_name") or "").strip()
+                if stored_name and (" · " in stored_name or "-" in stored_name):
+                    board_name = (
+                        stored_name.replace("-", " · ", 1)
+                        if " · " not in stored_name
+                        else stored_name
+                    )
+                else:
+                    board_name = pol.name
+
+                _push_progress(current_tid=int(tid), current_title=title)
+                rem_now = int((_STATE.get("account_stub_progress") or {}).get("remaining") or 0)
+                _log_activity(
+                    f"账号爬未处理 · {kind_label} · tid={tid} · 剩 {rem_now} · {title[:36]}"
+                )
+
+                try:
+                    outcome = await process_thread(
+                        int(tid),
+                        board_fid=pol.key,
+                        board_name=board_name,
+                        list_title=title,
+                        persist=True,
+                        crawler_config=cfg,
+                        session=session,
+                        fetcher=fetcher,
+                        account_stub_pass=True,
+                    )
+                except Exception as exc:
+                    log.exception("account discarded recrawl tid=%s kind=%s", tid, disc_kind)
+                    failed += 1
+                    discarded_done += 1
+                    qconn = connect()
+                    try:
+                        mark_pending_retry(
+                            qconn, source_url, str(exc)[:200], backoff_seconds=600
+                        )
+                    finally:
+                        qconn.close()
+                    _log_activity(f"账号爬未处理失败 · tid={tid} · {exc}")
+                    _push_progress(current_tid=int(tid), current_title=title)
+                    await asyncio.sleep(0.8)
+                    continue
+
+                verdict = str(outcome.get("verdict") or "failed")
+                label = str(outcome.get("outcome") or outcome.get("verdict_label") or verdict)
+                qconn = connect()
+                try:
+                    _apply_queue_outcome(qconn, source_url, outcome)
+                finally:
+                    qconn.close()
+                discarded_done += 1
+                if verdict == "import":
+                    upgraded += 1
+                    _log_activity(f"账号爬未处理升级 · tid={tid} · {label}")
+                elif verdict == "stub":
+                    still_stub += 1
+                    _log_activity(f"账号爬未处理占位 · tid={tid} · {label}")
+                elif verdict == "skipped":
+                    skipped_prep += 1
+                    _log_activity(f"账号爬未处理跳过 · tid={tid} · {label}")
+                else:
+                    failed += 1
+                    _log_activity(f"账号爬未处理未升级 · tid={tid} · {label}")
+                items.append(
+                    {
+                        "ok": verdict in {"import", "stub", "skipped"},
+                        "source": "discarded",
+                        "kind": disc_kind,
+                        "upgraded": verdict == "import",
+                        "still_stub": verdict == "stub",
+                        "tid": int(tid),
+                        "url": source_url,
+                        "verdict": verdict,
+                        "outcome": label,
+                    }
+                )
+                _push_progress(current_tid=int(tid), current_title=title)
+                await asyncio.sleep(0.35)
+
+            if THROTTLE.should_stop():
+                break
+
+        # ② 再跑资源库优先占位
         while True:
             if THROTTLE.should_stop():
                 _log_activity("账号爬占位 · 收到停止请求")
                 break
 
-            conn = connect()
+            conn = connect_resource()
             try:
                 batch = list_priority_account_stubs(
                     conn,
@@ -732,7 +940,7 @@ async def recrawl_account_stubs() -> dict[str, Any]:
             label = str(outcome.get("outcome") or outcome.get("verdict_label") or verdict)
 
             if verdict == "import":
-                conn = connect()
+                conn = connect_resource()
                 try:
                     removed = delete_stub_by_source_url(conn, source_url)
                 finally:
@@ -757,7 +965,7 @@ async def recrawl_account_stubs() -> dict[str, Any]:
                 )
             elif verdict == "stub" and _is_reply_or_purchase_outcome(label):
                 # 兜底：未走 account_stub_pass 时也不保留需回复/需购买占位
-                conn = connect()
+                conn = connect_resource()
                 try:
                     removed = delete_stub_by_source_url(conn, source_url)
                 finally:
@@ -795,7 +1003,7 @@ async def recrawl_account_stubs() -> dict[str, Any]:
                 )
                 _log_activity(f"账号爬占位仍占位 · tid={tid} · {label}")
             elif verdict == "skipped" and _is_reply_or_purchase_outcome(label):
-                conn = connect()
+                conn = connect_resource()
                 try:
                     removed = delete_stub_by_source_url(conn, source_url)
                 finally:
@@ -851,7 +1059,8 @@ async def recrawl_account_stubs() -> dict[str, Any]:
     rem_left = _db_priority_remaining()
     _log_activity(
         f"账号爬占位结束 · 处理 {processed} · 升级 {upgraded} · 仍占位 {still_stub} · 失败 {failed}"
-        + f" · 库内优先占位剩 {rem_left}"
+        + f" · 未处理已跑 {discarded_done}"
+        + f" · 库内剩余 {rem_left}"
         + (f" · 跳过 {skipped_prep}" if skipped_prep else "")
     )
     return {
@@ -861,7 +1070,8 @@ async def recrawl_account_stubs() -> dict[str, Any]:
         "still_stub": still_stub,
         "failed": failed,
         "skipped_prep": skipped_prep,
+        "discarded_done": discarded_done,
         "remaining": rem_left,
         "items": items,
-        "note": "不限数量直至本轮可尝试队列跑完；升级成功会删除旧占位",
+        "note": "含优先占位 + 未处理失败 + 无阅读权限跳过；升级成功会删除旧占位",
     }

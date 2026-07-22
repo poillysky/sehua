@@ -11,4 +11,5 @@ bcrypt>=4.0.0
 beautifulsoup4>=4.12
 lxml>=5.0
 rarfile>=4.2
+pyzipper>=0.3.6
 python-multipart>=0.0.9

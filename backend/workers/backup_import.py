@@ -9,7 +9,7 @@ import re
 import zipfile
 from typing import Any
 
-from db.connection import connect
+from db.resource_db import connect_resource
 from db.repository import ensure_source, infer_resource_link_kind, upsert_resource
 from parsers.ed2k import Ed2kLink
 from workers import backup as bk
@@ -525,7 +525,7 @@ async def run_backup_import(*, raw: bytes, filename: str = "") -> dict[str, Any]
         if not tables.get("ed2k_resources") and not tables.get("resource_sources"):
             raise ValueError("备份中未找到资源表数据（ed2k_resources / resource_sources）")
 
-        conn = connect()
+        conn = connect_resource()
         try:
             stats = apply_backup_tables(conn, tables)
         finally:

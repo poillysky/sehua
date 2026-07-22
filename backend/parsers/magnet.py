@@ -11,6 +11,34 @@ BTIH_RE = re.compile(r"xt=urn:btih:([^&]+)", re.I)
 DN_RE = re.compile(r"(?:^|&)dn=([^&]+)", re.I)
 XL_RE = re.compile(r"(?:^|&)xl=(\d+)", re.I)
 
+# 中文编辑粘贴常见：全角冒号/问号/与号/等号
+_FULLWIDTH_TRANS = str.maketrans(
+    {
+        "：": ":",
+        "？": "?",
+        "＆": "&",
+        "＝": "=",
+    }
+)
+
+# magnet : ? xt = urn : btih : HASH（半角被空格打断）
+_SPACED_MAGNET_CORE_RE = re.compile(
+    r"magnet\s*:\s*\?\s*xt\s*=\s*urn\s*:\s*btih\s*:\s*"
+    r"([A-Fa-f0-9]{40}|[a-zA-Z2-7]{32})",
+    re.I,
+)
+
+
+def normalize_magnet_corpus(text: str) -> str:
+    """把全角标点 / 被空格拆开的磁力还原成标准 magnet:?xt=urn:btih:...。"""
+    if not text:
+        return ""
+    out = text.translate(_FULLWIDTH_TRANS)
+    return _SPACED_MAGNET_CORE_RE.sub(
+        lambda m: f"magnet:?xt=urn:btih:{m.group(1)}",
+        out,
+    )
+
 
 @dataclass(slots=True)
 class MagnetLink:
@@ -53,8 +81,9 @@ def _parse_magnet_uri(uri: str) -> MagnetLink | None:
 def parse_magnet_text(text: str) -> list[MagnetLink]:
     results: list[MagnetLink] = []
     seen: set[str] = set()
+    blob = normalize_magnet_corpus(text or "")
 
-    for match in MAGNET_URI_RE.finditer(text or ""):
+    for match in MAGNET_URI_RE.finditer(blob):
         parsed = _parse_magnet_uri(match.group(0))
         if not parsed or parsed.infohash in seen:
             continue

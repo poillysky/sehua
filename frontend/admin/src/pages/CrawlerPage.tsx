@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import {
   fetchCrawlerStatus,
+  fetchQueueBrowse,
   recrawlAccountStubs,
   retryAbnormalQueue,
   runCrawlerOnce,
@@ -10,9 +11,77 @@ import {
   startRandomTidLoop,
   stopCrawler,
   type CrawlerStatus,
+  type QueueBrowseItem,
+  type QueueBrowseKind,
 } from '../api/crawler'
 import { confirmDialog } from '../ui/confirm'
 import { toast } from '../ui/toast'
+
+const DISCARDED_PAGE = 30
+
+const STATUS_LABEL: Record<string, string> = {
+  failed: '失败丢弃',
+  skipped: '跳过',
+  pending: '待抓',
+  stub: '占位',
+}
+
+const QUEUE_MODAL_META: Record<
+  QueueBrowseKind,
+  { title: string; sub: string; reasonLabel: string }
+> = {
+  abnormal: {
+    title: '异常帖明细',
+    sub: '失败/重试贴（含软文拦截壳）。可点「异常重试」在本队列重爬',
+    reasonLabel: '错误',
+  },
+  ready: {
+    title: '正常队列明细',
+    sub: '启用子板尚未失败的待抓帖',
+    reasonLabel: '备注',
+  },
+  discarded: {
+    title: '未正常处理明细',
+    sub: '失败丢弃 / 跳过。「失败」与「无阅读权限跳过」请用「账号重爬」处理',
+    reasonLabel: '原因',
+  },
+  stubs: {
+    title: '优先占位明细',
+    sub: '需登录 / 无阅读权限 / 无权限下载附件。点「账号重爬」用账号 Cookie 处理',
+    reasonLabel: '占位原因',
+  },
+}
+
+function formatWhen(iso?: string | null): string {
+  if (!iso) return '—'
+  const d = new Date(iso)
+  if (Number.isNaN(d.getTime())) return iso.slice(0, 19).replace('T', ' ')
+  const p = (n: number) => String(n).padStart(2, '0')
+  return `${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`
+}
+
+function discardedReason(row: QueueBrowseItem): string {
+  return (
+    row.import_outcome ||
+    row.outcome ||
+    row.last_error ||
+    '—'
+  ).trim() || '—'
+}
+
+function rowUrl(row: QueueBrowseItem): string {
+  return (row.url || row.source_url || '').trim()
+}
+
+function rowTitle(row: QueueBrowseItem): string {
+  return (row.thread_title || row.title || '').trim() || '—'
+}
+
+function rowStatus(row: QueueBrowseItem, kind: QueueBrowseKind): string {
+  if (kind === 'stubs') return 'stub'
+  if (kind === 'ready' || kind === 'abnormal') return 'pending'
+  return row.status || '—'
+}
 
 function activityLevelClass(msg: string): string {
   const m = msg || ''
@@ -39,6 +108,7 @@ function activityLevelClass(msg: string): string {
     m.includes('本批入库已达上限') ||
     m.includes('账号爬占位结束') ||
     m.includes('账号爬占位升级') ||
+    m.includes('账号爬未处理') ||
     /重试结束/.test(m) ||
     /完成[：:]/.test(m)
   ) {
@@ -100,12 +170,12 @@ function formatStubHint(p: {
 }): string {
   if (p.active) {
     return (
-      `账号爬占位进行中：已处理 ${p.done} · 库内剩余 ${p.remaining}` +
+      `账号重爬进行中：已处理 ${p.done} · 库内剩余 ${p.remaining}` +
       ` · 升级 ${p.upgraded} · 仍占位 ${p.still} · 失败 ${p.failed}`
     )
   }
   return (
-    `账号爬占位结束：处理 ${p.done} · 升级 ${p.upgraded}` +
+    `账号重爬结束：处理 ${p.done} · 升级 ${p.upgraded}` +
     ` · 仍占位 ${p.still} · 失败 ${p.failed} · 库内剩余 ${p.remaining}`
   )
 }
@@ -118,6 +188,19 @@ export function CrawlerPage() {
   const autoLoopTried = useRef(false)
   const stubWasActive = useRef(false)
 
+  const [discStatus, setDiscStatus] = useState<'all' | 'failed' | 'skipped'>('failed')
+  const [discQInput, setDiscQInput] = useState('')
+  const [discQ, setDiscQ] = useState('')
+  const [discReason, setDiscReason] = useState('')
+  const [discReasons, setDiscReasons] = useState<Array<{ reason: string; count: number }>>([])
+  const [discOffset, setDiscOffset] = useState(0)
+  const [discItems, setDiscItems] = useState<QueueBrowseItem[]>([])
+  const [discTotal, setDiscTotal] = useState(0)
+  const [discCounts, setDiscCounts] = useState({ failed: 0, skipped: 0, total: 0 })
+  const [discKindCounts, setDiscKindCounts] = useState<Record<string, number>>({})
+  const [discLoading, setDiscLoading] = useState(false)
+  const [queueModal, setQueueModal] = useState<QueueBrowseKind | null>(null)
+
   const refresh = useCallback(async () => {
     try {
       const next = await fetchCrawlerStatus()
@@ -129,6 +212,36 @@ export function CrawlerPage() {
     }
   }, [])
 
+  const loadDiscarded = useCallback(async () => {
+    if (!queueModal) return
+    setDiscLoading(true)
+    try {
+      const res = await fetchQueueBrowse({
+        kind: queueModal,
+        status: queueModal === 'discarded' ? discStatus : undefined,
+        q: discQ,
+        reason: discReason || undefined,
+        limit: DISCARDED_PAGE,
+        offset: discOffset,
+      })
+      setDiscItems(res.items || [])
+      setDiscTotal(Number(res.total || 0))
+      setDiscReasons(res.reasons || [])
+      if (res.counts) {
+        setDiscCounts({
+          failed: Number(res.counts.failed || 0),
+          skipped: Number(res.counts.skipped || 0),
+          total: Number(res.counts.total || 0),
+        })
+      }
+      if (res.kind_counts) setDiscKindCounts(res.kind_counts)
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : '读取明细失败')
+    } finally {
+      setDiscLoading(false)
+    }
+  }, [queueModal, discStatus, discQ, discReason, discOffset])
+
   useEffect(() => {
     void refresh()
     const timer = window.setInterval(() => {
@@ -136,6 +249,44 @@ export function CrawlerPage() {
     }, 2000)
     return () => window.clearInterval(timer)
   }, [refresh])
+
+  useEffect(() => {
+    if (!queueModal) return
+    void loadDiscarded()
+  }, [queueModal, loadDiscarded])
+
+  useEffect(() => {
+    if (!queueModal) return
+    const body = document.body
+    body.classList.add('modal-open')
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setQueueModal(null)
+    }
+    window.addEventListener('keydown', onKey)
+    return () => {
+      body.classList.remove('modal-open')
+      window.removeEventListener('keydown', onKey)
+    }
+  }, [queueModal])
+
+  useEffect(() => {
+    if (!queueModal) return
+    const t = window.setTimeout(() => {
+      setDiscOffset(0)
+      setDiscQ(discQInput.trim())
+    }, 320)
+    return () => window.clearTimeout(t)
+  }, [discQInput, queueModal])
+
+  const openQueueModal = (kind: QueueBrowseKind) => {
+    setDiscQInput('')
+    setDiscQ('')
+    setDiscReason('')
+    setDiscReasons([])
+    setDiscOffset(0)
+    if (kind === 'discarded') setDiscStatus('failed')
+    setQueueModal(kind)
+  }
 
   // 与 ed2k 一致：开关开启即连续执行；进入页面时若已开则补启一次调度
   useEffect(() => {
@@ -167,6 +318,27 @@ export function CrawlerPage() {
 
   const abnormal = Number(metrics?.queue_abnormal ?? queue?.abnormal ?? 0)
   const readyQueue = Number(metrics?.queue_ready ?? queue?.ready ?? 0)
+  const discardedFailed = Number(
+    metrics?.discarded_failed ?? status?.discarded?.failed ?? discCounts.failed ?? 0,
+  )
+  const discardedSkipped = Number(
+    metrics?.discarded_skipped ?? status?.discarded?.skipped ?? discCounts.skipped ?? 0,
+  )
+  const discardedTotal = Number(
+    metrics?.discarded_total ?? status?.discarded?.total ?? discardedFailed + discardedSkipped,
+  )
+  const discPageStart = discTotal === 0 ? 0 : discOffset + 1
+  const discPageEnd = Math.min(discOffset + discItems.length, discTotal)
+  const discHasPrev = discOffset > 0
+  const discHasNext = discOffset + DISCARDED_PAGE < discTotal
+  const modalMeta = queueModal ? QUEUE_MODAL_META[queueModal] : null
+  const searchPlaceholder =
+    queueModal === 'stubs'
+      ? 'hash / 标题 / 原因…'
+      : queueModal === 'ready' || queueModal === 'abnormal'
+        ? 'tid / 标题 / 错误…'
+        : 'tid / 标题 / 原因…'
+  const idColLabel = queueModal === 'stubs' ? 'hash' : 'tid'
   const rnd = status?.random_progress
   const randomActive = !!rnd?.active || (looping && loopKind === 'random_tid')
   const randomProbed = Number(rnd?.probed ?? metrics?.random_probed ?? 0)
@@ -219,7 +391,7 @@ export function CrawlerPage() {
     // 页面刷新后：进度已结束但小字仍是旧的「进行中/启动中」
     if (
       stubDone > 0 &&
-      /账号爬占位(中|启动中|进行中|已开始)/.test(runHint)
+      /账号爬占位(中|启动中|进行中|已开始)|账号重爬(中|启动中|进行中|已开始)/.test(runHint)
     ) {
       setRunHint(
         formatStubHint({
@@ -409,6 +581,7 @@ export function CrawlerPage() {
       setRunHint(line)
       toast.success(line)
       await refresh()
+      await loadDiscarded()
     } catch (err) {
       toast.error(err instanceof Error ? err.message : '异常重试失败')
     } finally {
@@ -416,39 +589,64 @@ export function CrawlerPage() {
     }
   }
 
+  const accessDeniedTitleCount = Number(
+    metrics?.discarded_access_denied_title ?? discKindCounts.access_denied_bad_title ?? 0,
+  )
+  const discardedFailedKindCount = Number(
+    metrics?.discarded_failed_kind ?? discKindCounts.failed_all ?? 0,
+  )
+  const priorityStubCount = Number(metrics?.priority_stubs ?? 0)
+  const accountPassTotal = Number(
+    metrics?.account_pass_total ??
+      priorityStubCount + accessDeniedTitleCount + discardedFailedKindCount,
+  )
+
   const onRecrawlStubs = async () => {
     if (enabled || looping || running) {
       toast.info(
-        enabled || looping ? '请先关闭连续调度后再账号爬占位' : '请等待当前任务结束',
+        enabled || looping ? '请先关闭连续调度后再账号重爬' : '请等待当前任务结束',
       )
       return
     }
     const ok = await confirmDialog({
-      title: '账号爬占位',
+      title: '账号重爬',
       message:
-        '用账号 Cookie 重爬全部优先占位（需登录 / 无阅读权限 / 无权限下载附件），不限数量直至跑完。升级成功会删旧占位；若登录后为需回复/需购买则跳过并删占位。需先配置账号 Cookie。确定？',
-      confirmText: '开始爬取',
+        `用账号 Cookie 依次处理：① 未处理「失败」${discardedFailedKindCount} 条；` +
+        `② 未处理「无阅读权限」跳过 ${accessDeniedTitleCount} 条；` +
+        `③ 资源库优先占位 ${priorityStubCount} 条（合计 ${accountPassTotal}）。` +
+        `不限数量直至跑完。升级成功会删旧占位；登录后需回复/需购买则跳过并删占位。需先配置账号 Cookie。确定？`,
+      confirmText: '开始重爬',
     })
     if (!ok) return
     setBusy(true)
     stubWasActive.current = true
-    setRunHint('账号爬占位启动中…')
+    setRunHint('账号重爬启动中…')
     try {
       const res = await recrawlAccountStubs()
       if (res.started) {
-        const line = `账号爬占位进行中：已处理 0 · 库内剩余 ${res.remaining ?? res.budget ?? 0}`
+        const disc = Number(res.discarded_remaining ?? 0)
+        const stubs = Number(res.stub_remaining ?? res.remaining ?? res.budget ?? 0)
+        const total = Number(res.remaining ?? res.budget ?? stubs + disc)
+        const line =
+          `账号重爬进行中：已处理 0 · 库内剩余 ${total}` +
+          (disc > 0 ? `（含未处理失败/无权跳过 ${disc}）` : '')
         setRunHint(line)
-        toast.success(`账号爬占位已开始 · 队列 ${res.remaining ?? res.budget ?? 0}`)
+        toast.success(
+          `账号重爬已开始 · 共 ${total}` +
+            (disc > 0 ? ` · 未处理 ${disc}` : '') +
+            (stubs > 0 && disc > 0 ? ` · 占位 ${stubs}` : ''),
+        )
       } else {
         stubWasActive.current = false
-        const line = res.note || res.message || '无优先占位可处理'
+        const line = res.note || res.message || '无优先占位 / 未处理失败·无权跳过可处理'
         setRunHint(line)
         toast.info(line)
       }
       await refresh()
+      await loadDiscarded()
     } catch (err) {
       stubWasActive.current = false
-      toast.error(err instanceof Error ? err.message : '账号爬占位失败')
+      toast.error(err instanceof Error ? err.message : '账号重爬失败')
     } finally {
       setBusy(false)
     }
@@ -492,7 +690,10 @@ export function CrawlerPage() {
                   className="crawler-refresh"
                   disabled={busy}
                   title="刷新状态与活动日志"
-                  onClick={() => void refresh()}
+                  onClick={() => {
+                    void refresh()
+                    if (queueModal) void loadDiscarded()
+                  }}
                 >
                   刷新
                 </button>
@@ -550,14 +751,19 @@ export function CrawlerPage() {
                     disabled={enabled || looping || running || busy || stopping}
                     title={
                       enabled || looping
-                        ? '连续调度进行中，请先关闭开关后再账号爬占位'
+                        ? '连续调度进行中，请先关闭开关后再账号重爬'
                         : running || stopping
                           ? '本轮仍在执行，请稍候'
-                          : '用账号 Cookie 重爬优先占位（不限数量）：需登录 / 无阅读权限 / 无权限下载附件；登录后需回复/需购买会跳过。请先配置账号 Cookie'
+                          : accountPassTotal > 0
+                            ? `用账号 Cookie：失败 ${discardedFailedKindCount} + 无阅读权限跳过 ${accessDeniedTitleCount} + 优先占位 ${priorityStubCount} = ${accountPassTotal}；请先配置账号 Cookie`
+                            : '用账号 Cookie 重爬未处理失败、无阅读权限跳过与优先占位；登录后需回复/需购买会跳过。请先配置账号 Cookie'
                     }
                     onClick={() => void onRecrawlStubs()}
                   >
-                    账号爬占位
+                    账号重爬
+                    {accountPassTotal > 0 ? (
+                      <span className="crawler-action-badge">{accountPassTotal}</span>
+                    ) : null}
                   </button>
                   <button
                     type="button"
@@ -593,14 +799,35 @@ export function CrawlerPage() {
             <div className="crawler-overview">
               <div className="crawler-overview-row">
                 <div className="crawler-overview-metrics">
-                  <span className="metric-pill" title="失败/重试贴（含软文拦截壳）；点「异常重试」在本队列重爬，成功才出队；到期后连续调度也会吃">
+                  <button
+                    type="button"
+                    className="metric-pill metric-pill-btn"
+                    title="失败/重试贴（含软文拦截壳）。点此查看明细；也可用「异常重试」重爬"
+                    onClick={() => openQueueModal('abnormal')}
+                  >
                     <span className="metric-val stat-warn">{abnormal}</span>
                     <span className="metric-lbl">异常帖</span>
-                  </span>
-                  <span className="metric-pill" title="启用子板全部「尚未失败」的待抓帖合计（实时）。连续调度多子板时不再只显示当前板，避免切板瞬间变成 0 却仍在入库">
+                  </button>
+                  <button
+                    type="button"
+                    className="metric-pill metric-pill-btn"
+                    title="启用子板全部「尚未失败」的待抓帖合计。点此查看明细"
+                    onClick={() => openQueueModal('ready')}
+                  >
                     <span className="metric-val">{readyQueue}</span>
                     <span className="metric-lbl">正常队列</span>
-                  </span>
+                  </button>
+                  <button
+                    type="button"
+                    className="metric-pill metric-pill-btn"
+                    title="入队后最终失败或跳过（非入库/占位）。点此查看明细"
+                    onClick={() => openQueueModal('discarded')}
+                  >
+                    <span className={`metric-val${discardedTotal > 0 ? ' stat-failed' : ''}`}>
+                      {discardedTotal}
+                    </span>
+                    <span className="metric-lbl">未处理</span>
+                  </button>
                   <span
                     className={`metric-pill${randomActive ? ' metric-pill-random' : ''}`}
                     title={
@@ -614,26 +841,25 @@ export function CrawlerPage() {
                     </span>
                     <span className="metric-lbl">随机进度</span>
                   </span>
-                  <span
-                    className={`metric-pill${stubActive ? ' metric-pill-stub' : ''}`}
+                  <button
+                    type="button"
+                    className={`metric-pill metric-pill-btn${stubActive ? ' metric-pill-stub' : ''}`}
                     title={
                       stubActive
-                        ? `账号爬占位进行中：已处理 ${stubDone} · 库内剩余 ${stubRemaining} · 升级 ${stubUpgraded} · 仍占位 ${stubStill} · 失败 ${stubFailed}` +
-                          (stubProg?.current_tid
-                            ? ` · 当前 tid=${stubProg.current_tid}${stubProg.current_title ? ` ${stubProg.current_title}` : ''}`
-                            : '')
-                        : stubDone > 0 || stubRemaining > 0
-                          ? `上次：已处理 ${stubDone} · 库内剩余 ${stubRemaining} · 升级 ${stubUpgraded} · 仍占位 ${stubStill} · 失败 ${stubFailed}`
-                          : '账号爬占位进度（空闲）。点「账号爬占位」后显示已处理与库内剩余'
+                        ? `账号重爬进行中：已处理 ${stubDone} · 库内剩余 ${stubRemaining} · 升级 ${stubUpgraded} · 仍占位 ${stubStill} · 失败 ${stubFailed}`
+                        : `合计 ${accountPassTotal}（失败 ${discardedFailedKindCount} + 无阅读权限跳过 ${accessDeniedTitleCount} + 优先占位 ${priorityStubCount}）。点此查看占位明细`
                     }
+                    onClick={() => openQueueModal('stubs')}
                   >
                     <span className={`metric-val${stubActive ? ' stat-ok' : ''}`}>
-                      {stubActive || stubDone > 0 || stubRemaining > 0
-                        ? `${stubDone}/剩${stubRemaining}`
+                      {stubActive || stubDone > 0 || stubRemaining > 0 || accountPassTotal > 0
+                        ? stubActive || stubDone > 0
+                          ? `${stubDone}/剩${stubRemaining}`
+                          : String(accountPassTotal)
                         : '—'}
                     </span>
-                    <span className="metric-lbl">占位进度</span>
-                  </span>
+                    <span className="metric-lbl">重爬进度</span>
+                  </button>
                   {riskTripped ? (
                     <span className="metric-pill metric-pill-risk">
                       <span className="metric-val stat-failed">熔断</span>
@@ -668,8 +894,219 @@ export function CrawlerPage() {
                 )}
               </div>
             </div>
+
           </div>
       </div>
+
+      {queueModal && modalMeta ? (
+        <div
+          className="modal-backdrop crawler-discarded-backdrop"
+          role="presentation"
+          onClick={() => setQueueModal(null)}
+        >
+          <div
+            className="modal-card crawler-discarded-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="crawler-queue-modal-title"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="modal-head crawler-discarded-modal-head">
+              <div className="crawler-discarded-title">
+                <h3 id="crawler-queue-modal-title">{modalMeta.title}</h3>
+                <span className="crawler-discarded-sub">{modalMeta.sub}</span>
+              </div>
+              <button
+                type="button"
+                className="btn ghost sm icon-only"
+                title="关闭"
+                onClick={() => setQueueModal(null)}
+              >
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden>
+                  <path d="M18 6L6 18M6 6l12 12" />
+                </svg>
+              </button>
+            </div>
+
+            <div className="crawler-discarded-modal-body">
+              <div className="crawler-discarded-tools">
+                {queueModal === 'discarded' ? (
+                  <div className="crawler-discarded-tabs" role="tablist" aria-label="未处理筛选">
+                    {(
+                      [
+                        ['failed', `失败 ${discardedFailed}`],
+                        ['skipped', `跳过 ${discardedSkipped}`],
+                        ['all', `全部 ${discardedTotal}`],
+                      ] as const
+                    ).map(([id, label]) => (
+                      <button
+                        key={id}
+                        type="button"
+                        role="tab"
+                        aria-selected={discStatus === id}
+                        className={`crawler-discarded-tab${discStatus === id ? ' active' : ''}`}
+                        onClick={() => {
+                          setDiscStatus(id)
+                          setDiscReason('')
+                          setDiscOffset(0)
+                        }}
+                      >
+                        {label}
+                      </button>
+                    ))}
+                  </div>
+                ) : null}
+                <input
+                  type="search"
+                  className="crawler-discarded-search"
+                  placeholder={searchPlaceholder}
+                  value={discQInput}
+                  onChange={(e) => setDiscQInput(e.target.value)}
+                  enterKeyHint="search"
+                />
+                <button
+                  type="button"
+                  className="crawler-action crawler-action-muted"
+                  disabled={discLoading}
+                  title="刷新明细"
+                  onClick={() => void loadDiscarded()}
+                >
+                  {discLoading ? '读取中…' : '刷新'}
+                </button>
+              </div>
+
+              <div className={`crawler-discarded-table-wrap${discLoading ? ' is-loading' : ''}`}>
+                <table className="crawler-discarded-table">
+                  <thead>
+                    <tr>
+                      <th>时间</th>
+                      <th>状态</th>
+                      <th>板块</th>
+                      <th>{idColLabel}</th>
+                      <th>标题</th>
+                      {queueModal === 'stubs' ? null : <th>重试</th>}
+                      <th className="crawler-discarded-reason-th">
+                        <select
+                          className="crawler-discarded-reason-filter"
+                          value={discReason}
+                          title={`按${modalMeta.reasonLabel}筛选`}
+                          aria-label={`按${modalMeta.reasonLabel}筛选`}
+                          onChange={(e) => {
+                            setDiscReason(e.target.value)
+                            setDiscOffset(0)
+                          }}
+                        >
+                          <option value="">全部{modalMeta.reasonLabel}</option>
+                          {discReasons.map((item) => (
+                            <option key={item.reason} value={item.reason}>
+                              {item.reason}（{item.count}）
+                            </option>
+                          ))}
+                          {discReason &&
+                          !discReasons.some((item) => item.reason === discReason) ? (
+                            <option value={discReason}>{discReason}</option>
+                          ) : null}
+                        </select>
+                      </th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {discItems.length ? (
+                      discItems.map((row, idx) => {
+                        const url = rowUrl(row)
+                        const st = rowStatus(row, queueModal)
+                        const title = rowTitle(row)
+                        const reason = discardedReason(row)
+                        const idText =
+                          queueModal === 'stubs'
+                            ? (row.hash || '').slice(0, 12) || '—'
+                            : row.tid || '—'
+                        const rowKey = url || row.hash || `${idx}-${idText}`
+                        return (
+                          <tr key={rowKey}>
+                            <td className="mono">
+                              {formatWhen(row.crawled_at || row.updated_at)}
+                            </td>
+                            <td>
+                              <span
+                                className={`crawler-discarded-badge ${
+                                  st === 'failed'
+                                    ? 'is-failed'
+                                    : st === 'pending' || st === 'stub'
+                                      ? 'is-skipped'
+                                      : 'is-skipped'
+                                }`}
+                              >
+                                {STATUS_LABEL[st] || st}
+                              </span>
+                            </td>
+                            <td title={row.board_fid || ''}>
+                              {row.board_name || row.board_fid || '—'}
+                            </td>
+                            <td className="mono">
+                              {url && idText !== '—' ? (
+                                <a href={url} target="_blank" rel="noreferrer" title={url}>
+                                  {idText}
+                                </a>
+                              ) : (
+                                idText
+                              )}
+                            </td>
+                            <td className="crawler-discarded-title-cell" title={title}>
+                              {title}
+                            </td>
+                            {queueModal === 'stubs' ? null : (
+                              <td className="mono">{row.fetch_fail_count ?? 0}</td>
+                            )}
+                            <td className="crawler-discarded-reason" title={reason}>
+                              {reason}
+                            </td>
+                          </tr>
+                        )
+                      })
+                    ) : (
+                      <tr>
+                        <td
+                          colSpan={queueModal === 'stubs' ? 6 : 7}
+                          className="crawler-discarded-empty"
+                        >
+                          {discLoading ? '加载中…' : '暂无记录'}
+                        </td>
+                      </tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+
+              <div className="crawler-discarded-foot">
+                <span className="toolbar-meta">
+                  {discTotal === 0
+                    ? '共 0 条'
+                    : `第 ${discPageStart}–${discPageEnd} 条，共 ${discTotal} 条`}
+                </span>
+                <div className="crawler-discarded-pager">
+                  <button
+                    type="button"
+                    className="crawler-action crawler-action-muted"
+                    disabled={!discHasPrev || discLoading}
+                    onClick={() => setDiscOffset((v) => Math.max(0, v - DISCARDED_PAGE))}
+                  >
+                    上一页
+                  </button>
+                  <button
+                    type="button"
+                    className="crawler-action crawler-action-muted"
+                    disabled={!discHasNext || discLoading}
+                    onClick={() => setDiscOffset((v) => v + DISCARDED_PAGE)}
+                  >
+                    下一页
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      ) : null}
     </section>
   )
 }

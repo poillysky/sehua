@@ -26,12 +26,21 @@ from db.forum_configs import SITE_CRAWLER_FORUM_ID, load_forum_configs_map, save
 from db.migrate import ensure_ed2k_schema
 from db.persist import persist_from_html
 from db.repository import (
+    clear_forum_crawl_progress,
     delete_resource_by_hash,
     get_data_overview,
     list_recent_resources,
     list_resource_boards,
     list_resource_facets,
+    purge_crawl_data,
     purge_resources,
+)
+from db.resource_db import (
+    connect_resource,
+    resource_db_config,
+    save_resource_db_config,
+    test_resource_db_connection,
+    using_separate_resource_db,
 )
 from parsers.links import parse_thread_dual
 
@@ -65,6 +74,22 @@ async def lifespan(_app: FastAPI):
         logger.info("auth ready (%s)", connection_mode())
     except Exception:
         logger.exception("auth bootstrap failed")
+        raise
+
+    try:
+        if using_separate_resource_db():
+            # 独立资源库视为已有库：只连接读写，不自动跑迁移建表
+            from db.resource_db import resource_dsn_kwargs
+
+            dsn = resource_dsn_kwargs()
+            logger.info(
+                "resource DB separate · %s:%s/%s (no auto-migrate)",
+                dsn.get("host"),
+                dsn.get("port"),
+                dsn.get("dbname"),
+            )
+    except Exception:
+        logger.exception("resource DB config check failed — check 数据管理 → 资源数据库")
         raise
 
     from workers.backup import start_backup_scheduler, stop_backup_scheduler
@@ -158,8 +183,10 @@ def data_overview(_user: dict = Depends(require_permission("settings.write"))) -
     from workers.runner import crawl_status
 
     conn = connect()
+    rconn = connect_resource()
     try:
-        overview = get_data_overview(conn)
+        separate = using_separate_resource_db()
+        overview = get_data_overview(conn, rconn if separate else None)
         configs = load_forum_configs_map(conn)
         cfg = dict(configs.get(SITE_CRAWLER_FORUM_ID) or {})
         st = crawl_status()
@@ -168,13 +195,96 @@ def data_overview(_user: dict = Depends(require_permission("settings.write"))) -
             "overview": overview,
             "crawler_running": bool(st.get("running") or st.get("looping")),
             "crawler_enabled": bool(cfg.get("web_crawler_enabled")),
+            "resource_db": resource_db_config(mask_password=True),
         }
     finally:
+        rconn.close()
         conn.close()
+
+
+class ResourceDbBody(BaseModel):
+    enabled: bool = False
+    host: str = ""
+    port: int | None = None
+    user: str = ""
+    password: str | None = None
+    dbname: str = ""
+    keep_password: bool = True
+
+
+@app.get("/api/system/resource-db")
+def get_resource_db(_user: dict = Depends(require_permission("settings.write"))) -> dict:
+    return {"message": "success", **resource_db_config(mask_password=True)}
+
+
+@app.put("/api/system/resource-db")
+def put_resource_db(
+    body: ResourceDbBody,
+    _user: dict = Depends(require_permission("settings.write")),
+) -> dict:
+    cfg = save_resource_db_config(
+        enabled=bool(body.enabled),
+        host=body.host or "",
+        port=body.port,
+        user=body.user or "",
+        password=body.password,
+        dbname=body.dbname or "",
+        keep_password=bool(body.keep_password),
+    )
+    # 独立资源库只保存连接并用于读写；不自动建表/迁移（避免改动已有库）
+    return {"message": "success", **cfg}
+
+
+@app.post("/api/system/resource-db/test")
+def post_resource_db_test(
+    body: ResourceDbBody,
+    _user: dict = Depends(require_permission("settings.write")),
+) -> dict:
+    result = test_resource_db_connection(
+        enabled=bool(body.enabled),
+        host=body.host or "",
+        port=body.port,
+        user=body.user or "",
+        password=body.password,
+        dbname=body.dbname or "",
+        use_saved_password=bool(body.keep_password) and not (body.password or "").strip(),
+    )
+    return {"message": "success", **result}
 
 
 class SystemResetBody(BaseModel):
     confirm: str = ""
+
+
+def _require_crawler_idle_or_409(*, disable_switch: bool = True) -> None:
+    """爬虫运行中则请求停止并 409；可选关闭开关。"""
+    from workers.runner import crawl_status, request_stop, stop_continuous_loop
+
+    st = crawl_status()
+    if st.get("running") or st.get("looping"):
+        stop_continuous_loop()
+        request_stop()
+        if disable_switch:
+            conn = connect()
+            try:
+                configs = load_forum_configs_map(conn)
+                cfg = dict(configs.get(SITE_CRAWLER_FORUM_ID) or {})
+                cfg["web_crawler_enabled"] = False
+                save_forum_config(conn, SITE_CRAWLER_FORUM_ID, cfg)
+            finally:
+                conn.close()
+        raise HTTPException(
+            status_code=409,
+            detail="爬虫正在执行中，已请求停止。请关闭爬虫并等待当前轮次结束后再试",
+        )
+
+
+def _disable_crawler_switch(conn) -> None:
+    configs = load_forum_configs_map(conn)
+    cfg = dict(configs.get(SITE_CRAWLER_FORUM_ID) or {})
+    if cfg.get("web_crawler_enabled"):
+        cfg["web_crawler_enabled"] = False
+        save_forum_config(conn, SITE_CRAWLER_FORUM_ID, cfg)
 
 
 @app.post("/api/system/reset")
@@ -182,44 +292,97 @@ def system_reset(
     body: SystemResetBody,
     _user: dict = Depends(require_permission("settings.write")),
 ) -> dict:
-    from workers.runner import crawl_status, request_stop, stop_continuous_loop
-
+    """清空资源 + 爬取记录（兼容旧接口）。"""
     if body.confirm.strip() != "清空":
         raise HTTPException(status_code=400, detail='请在确认框输入「清空」以继续')
 
-    st = crawl_status()
-    if st.get("running") or st.get("looping"):
-        stop_continuous_loop()
-        request_stop()
-        # 关闭开关，避免清空后立刻被连续调度捡起
-        conn = connect()
-        try:
-            configs = load_forum_configs_map(conn)
-            cfg = dict(configs.get(SITE_CRAWLER_FORUM_ID) or {})
-            cfg["web_crawler_enabled"] = False
-            save_forum_config(conn, SITE_CRAWLER_FORUM_ID, cfg)
-        finally:
-            conn.close()
-        raise HTTPException(
-            status_code=409,
-            detail="爬虫正在执行中，已请求停止。请关闭爬虫并等待当前轮次结束后再试",
-        )
+    _require_crawler_idle_or_409(disable_switch=True)
 
     conn = connect()
+    rconn = connect_resource()
     try:
-        before = get_data_overview(conn)
-        configs = load_forum_configs_map(conn)
-        cfg = dict(configs.get(SITE_CRAWLER_FORUM_ID) or {})
-        if cfg.get("web_crawler_enabled"):
-            cfg["web_crawler_enabled"] = False
-            save_forum_config(conn, SITE_CRAWLER_FORUM_ID, cfg)
-        purge_resources(conn, reset_crawl=True)
+        separate = using_separate_resource_db()
+        before = get_data_overview(conn, rconn if separate else None)
+        _disable_crawler_switch(conn)
+        if separate:
+            purge_resources(rconn, reset_crawl=False)
+            purge_crawl_data(conn)
+        else:
+            purge_resources(conn, reset_crawl=True)
+        clear_forum_crawl_progress(conn)
         return {
             "message": "success",
             "deleted": before,
             "crawler_enabled": False,
         }
     finally:
+        rconn.close()
+        conn.close()
+
+
+@app.post("/api/system/reset-crawl")
+def system_reset_crawl(
+    body: SystemResetBody,
+    _user: dict = Depends(require_permission("settings.write")),
+) -> dict:
+    """只清空爬取记录（队列/进度/活动日志），保留资源库。"""
+    if body.confirm.strip() != "清空爬取":
+        raise HTTPException(status_code=400, detail='请在确认框输入「清空爬取」以继续')
+
+    _require_crawler_idle_or_409(disable_switch=True)
+
+    conn = connect()
+    rconn = connect_resource()
+    try:
+        separate = using_separate_resource_db()
+        before = get_data_overview(conn, rconn if separate else None)
+        _disable_crawler_switch(conn)
+        purge_crawl_data(conn)
+        clear_forum_crawl_progress(conn)
+        return {
+            "message": "success",
+            "scope": "crawl",
+            "deleted": {
+                "crawl_pages": before.get("crawl_pages") or 0,
+                "crawl_pending": before.get("crawl_pending") or 0,
+                "crawl_boards": before.get("crawl_boards") or 0,
+                "activity_logs": before.get("activity_logs") or 0,
+            },
+            "crawler_enabled": False,
+        }
+    finally:
+        rconn.close()
+        conn.close()
+
+
+@app.post("/api/system/reset-resources")
+def system_reset_resources(
+    body: SystemResetBody,
+    _user: dict = Depends(require_permission("settings.write")),
+) -> dict:
+    """只清空资源库，保留爬取队列与进度。"""
+    if body.confirm.strip() != "清空资源":
+        raise HTTPException(status_code=400, detail='请在确认框输入「清空资源」以继续')
+
+    _require_crawler_idle_or_409(disable_switch=False)
+
+    conn = connect()
+    rconn = connect_resource()
+    try:
+        separate = using_separate_resource_db()
+        before = get_data_overview(conn, rconn if separate else None)
+        purge_resources(rconn, reset_crawl=False)
+        return {
+            "message": "success",
+            "scope": "resources",
+            "deleted": {
+                "resources": before.get("resources") or 0,
+                "resource_sources": before.get("resource_sources") or 0,
+                "import_jobs": before.get("import_jobs") or 0,
+            },
+        }
+    finally:
+        rconn.close()
         conn.close()
 
 
@@ -245,7 +408,7 @@ def resources_recent(
     link_kind = result_raw if result_raw and result_raw != "all" else None
     query = q.strip() or None
 
-    conn = connect()
+    conn = connect_resource()
     try:
         items, total = list_recent_resources(
             conn,
@@ -298,7 +461,7 @@ def resources_delete(
     h = (body.hash or "").strip()
     if not h:
         raise HTTPException(status_code=400, detail="缺少 hash")
-    conn = connect()
+    conn = connect_resource()
     try:
         ok = delete_resource_by_hash(conn, h)
     finally:
@@ -327,7 +490,7 @@ def resources_delete_batch(
 
     deleted = 0
     missing = 0
-    conn = connect()
+    conn = connect_resource()
     try:
         for h in hashes:
             if delete_resource_by_hash(conn, h):
@@ -429,7 +592,7 @@ def parse_thread(body: ParseHtmlRequest) -> dict:
         url = (body.source_url or "").strip()
         if not url:
             raise HTTPException(status_code=400, detail="persist=true 时需要 source_url")
-        conn = connect()
+        conn = connect_resource()
         try:
             payload["persist"] = persist_from_html(
                 conn,

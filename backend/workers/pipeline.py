@@ -10,7 +10,7 @@ from crawler.list_urls import list_url_for_board, site_root
 from crawler.session import BASE_URL, SessionManager
 from parsers.boards import get_board_policy
 from parsers.links import DualParseResult, parse_thread_dual
-from parsers.thread_gates import has_115_sha_link
+from parsers.thread_gates import has_115_sha_link, looks_like_attachment_zone
 from workers.session_factory import fetcher_from_config, session_from_config
 from workers.thread_outcome import ThreadOutcome, judge_thread_html
 
@@ -196,6 +196,51 @@ async def process_thread(
                     had_attachments=attach_res.downloaded or bool(attachment_text),
                     preferred_link=link_pref,
                 )
+                # 电驴板：txt/zip 无果再试种子；双链：种子无果再试 txt/zip
+                if (
+                    outcome.verdict not in {"import", "skipped"}
+                    and looks_like_attachment_zone(html)
+                    and (
+                        (link_pref == "ed2k" and attachment_kind == "txt_tail")
+                        or (link_pref == "both" and attachment_kind == "torrent")
+                    )
+                ):
+                    next_kind = "torrent" if attachment_kind == "txt_tail" else "txt_tail"
+                    log.info("tid=%s fallback attachments kind=%s", tid, next_kind)
+                    attach_res2 = await fetch_attachments_for_outcome(
+                        session,
+                        html=html,
+                        thread_url=thread_url,
+                        attachment_kind=next_kind,
+                        timeout=max(15.0, attach_timeout),
+                    )
+                    if attach_res2.text and has_115_sha_link(attach_res2.text):
+                        attachment_text = (attachment_text + "\n" + attach_res2.text).strip()
+                        outcome = ThreadOutcome(
+                            "skipped",
+                            "115sha 链接（附件，跳过）",
+                            outcome.link_kind,
+                            outcome.title or list_title,
+                        )
+                    elif attach_res2.text:
+                        attachment_text = (attachment_text + "\n" + attach_res2.text).strip()
+                        html = inject_attachment_text(html, attachment_text)
+                        outcome = judge_thread_html(
+                            html,
+                            board_fid=board_fid,
+                            list_title=list_title,
+                            base_url=thread_url,
+                            soft_browser_retried=soft_browser_retried,
+                            attachments_already_tried=True,
+                            attachment_denied=attach_res.denied or attach_res2.denied,
+                            attachment_failed=(
+                                (attach_res.failed and not attach_res.downloaded)
+                                or (attach_res2.failed and not attach_res2.downloaded)
+                            ),
+                            had_attachments=True,
+                            preferred_link=link_pref,
+                        )
+                    attachment_kind = f"{attachment_kind}+{next_kind}"
                 # 附件语料可能已含链但 judge 走了非 import：再双解析一次补全
                 # skipped（含 115sha）不再抬升为 import
                 if outcome.verdict not in {"import", "skipped"} and attachment_text:
@@ -286,7 +331,7 @@ async def process_thread(
         }
 
         if persist and outcome.verdict in {"import", "stub"}:
-            from db.connection import connect
+            from db.resource_db import connect_resource
             from db.persist import persist_dual_parse
 
             # For stub-only outcomes without assets, force stub path
@@ -297,7 +342,7 @@ async def process_thread(
                 parsed.ed2k_links = []
                 parsed.primary_link_kind = "none"
 
-            conn = connect()
+            conn = connect_resource()
             try:
                 result["persisted"] = persist_dual_parse(
                     conn,
@@ -327,10 +372,10 @@ def persist_parsed(
     source_url: str,
 ) -> dict:
     """Write DualParseResult into ed2k_resources + resource_sources."""
-    from db.connection import connect
+    from db.resource_db import connect_resource
     from db.persist import persist_dual_parse
 
-    conn = connect()
+    conn = connect_resource()
     try:
         return persist_dual_parse(
             conn,

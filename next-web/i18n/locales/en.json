@@ -30,7 +30,8 @@
     "resource_type": "Type",
     "resource_size": "Size",
     "resource_amount": "Amount",
-    "extract_password": "Password"
+    "extract_password": "Password",
+    "share_code": "Share code"
   },
   "Browse": {
     "entry": "Surprise me",
@@ -95,6 +96,7 @@
     "ed2k": "Download",
     "ed2k_multi": "Download ({count})",
     "magnet": "Magnet",
+    "share115": "115 share",
     "stub": "Stub (no link)",
     "stub_hint": "No downloadable link yet; kept as a catalog placeholder",
     "file_size": "File size: ",

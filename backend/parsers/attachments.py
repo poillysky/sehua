@@ -179,6 +179,16 @@ def filter_torrent_attachments(
     return filtered[-limit:]
 
 
+def pick_ed2k_attachment_kind(base_url: str, html: str) -> str:
+    """电驴板附件策略：有 txt/zip/rar 优先；仅有种子则转磁力（板策略本就接受磁力）。"""
+    atts = extract_download_attachments(base_url, html)
+    if filter_tail_attachments(atts):
+        return "txt_tail"
+    if filter_torrent_attachments(atts):
+        return "torrent"
+    return "txt_tail"
+
+
 def merge_thread_content(post_text: str, attachment_text: str) -> str:
     parts = [part.strip() for part in (post_text, attachment_text) if part and part.strip()]
     return "\n\n".join(parts)

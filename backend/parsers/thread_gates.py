@@ -32,6 +32,20 @@ ACCESS_DENIED_MARKERS = (
     "您无权访问该帖",
     "没有权限查看此帖",
 )
+# 版主/管理员屏蔽（Discuz locked 框：「该帖被管理员或版主屏蔽」）
+MODERATOR_BLOCKED_MARKERS = (
+    "该帖被管理员或版主屏蔽",
+    "被管理员或版主屏蔽",
+    "主题被屏蔽",
+    "本主题已被屏蔽",
+)
+# 作者被禁/删：正文自动屏蔽（Discuz locked：「作者被禁止或删除 内容自动屏蔽」）
+AUTHOR_BANNED_MARKERS = (
+    "作者被禁止或删除 内容自动屏蔽",
+    "作者被禁止或删除",
+    "内容自动屏蔽",
+)
+
 REPLY_MARKERS = (
     "游客，如果您要查看本帖隐藏内容请回复",
     "如果您要查看本帖隐藏内容请回复",
@@ -63,18 +77,42 @@ PURCHASE_MARKERS = (
     "您还没有购买此主题",
 )
 CLOUD_SHARE_RE = re.compile(
-    r"https?://(?:"
+    r"(?:https?://)?(?:"
     r"pan\.xunlei\.com|"
     r"pan\.baidu\.com|"
     r"(?:www\.)?aliyundrive\.com|"
+    r"(?:www\.)?alipan\.com|"
     r"pan\.quark\.cn|"
-    r"cloud\.189\.cn"
+    r"cloud\.189\.cn|"
+    r"(?:www\.)?115\.com/s/|"
+    r"(?:www\.)?115cdn\.com/s/|"
+    r"(?:www\.)?mypikpak\.com/s/"
     r")",
     re.I,
 )
 # 115 直链分享：115://文件名|字节数|hash|hash
 RE_115_SHA = re.compile(
     r"115://[^\s<>\"'|]+\|\d+\|[A-Fa-f0-9]{32,64}\|[A-Fa-f0-9]{32,64}",
+    re.I,
+)
+# 115 网盘分享页：115.com/s/... 或 115cdn.com/s/...（含访问码参数亦可）
+RE_115_SHARE = re.compile(
+    r"(?:https?://)?(?:www\.)?(?:115\.com|115cdn\.com)/s/[A-Za-z0-9]+",
+    re.I,
+)
+# 迅雷云盘分享：pan.xunlei.com/s/...
+RE_XUNLEI_SHARE = re.compile(
+    r"(?:https?://)?(?:pan\.)?xunlei\.com/s/[A-Za-z0-9_-]+",
+    re.I,
+)
+# PikPak 分享：mypikpak.com/s/...
+RE_PIKPAK_SHARE = re.compile(
+    r"(?:https?://)?(?:www\.)?mypikpak\.com/s/[A-Za-z0-9_-]+",
+    re.I,
+)
+# 百度网盘分享：pan.baidu.com/s/... 或 yun.baidu.com/s/...
+RE_BAIDU_SHARE = re.compile(
+    r"(?:https?://)?(?:pan|yun)\.baidu\.com/s/[A-Za-z0-9_-]+",
     re.I,
 )
 SOFT_AD_TITLE_HINTS = ("名人名言", "请稍候", "Just a moment")
@@ -138,13 +176,26 @@ def is_mobile_thread_shell(html: str) -> bool:
     return False
 
 def has_target_link(text: str, link_kind: str) -> bool:
-    """板块目标链：ed2k 板同时接受电驴与磁力（常见混发）；magnet 板仍只要磁力。"""
-    blob = text or ""
+    """板块目标链：ed2k 板同时接受电驴与磁力（常见混发）；magnet 板仍只要磁力。
+
+    ed2k 板另认 115 网盘分享页（分享码资源可入库）。
+    """
+    from parsers.ed2k import normalize_ed2k_corpus
+    from parsers.magnet import normalize_magnet_corpus
+
+    raw = text or ""
+    blob = normalize_ed2k_corpus(normalize_magnet_corpus(raw))
     if link_kind == "ed2k":
-        return bool(ED2K_RE.search(blob) or MAGNET_RE.search(blob))
+        return bool(
+            ED2K_RE.search(blob)
+            or MAGNET_RE.search(blob)
+            or RE_115_SHARE.search(blob)
+        )
     if link_kind == "magnet":
         return bool(MAGNET_RE.search(blob))
-    return bool(ED2K_RE.search(blob) or MAGNET_RE.search(blob))
+    return bool(
+        ED2K_RE.search(blob) or MAGNET_RE.search(blob) or RE_115_SHARE.search(blob)
+    )
 
 
 def has_115_sha_link(text: str) -> bool:
@@ -158,6 +209,79 @@ def has_115_sha_link(text: str) -> bool:
         return True
     compact = re.sub(r"\s+", "", text)
     return compact != text and bool(RE_115_SHA.search(compact))
+
+
+def has_115_share_link(text: str) -> bool:
+    """识别 115 网盘分享页链接：115.com/s/xxxx（含提取码参数亦可）。"""
+    return bool(RE_115_SHARE.search(text or ""))
+
+
+def has_xunlei_share_link(text: str) -> bool:
+    """识别迅雷云盘分享：pan.xunlei.com/s/..."""
+    return bool(RE_XUNLEI_SHARE.search(text or ""))
+
+
+def has_pikpak_share_link(text: str) -> bool:
+    """识别 PikPak 分享：mypikpak.com/s/..."""
+    return bool(RE_PIKPAK_SHARE.search(text or ""))
+
+
+def has_baidu_share_link(text: str) -> bool:
+    """识别百度网盘分享：pan.baidu.com/s/..."""
+    return bool(RE_BAIDU_SHARE.search(text or ""))
+
+
+def title_is_xunlei_cloud_without_ed2k_magnet(title: str) -> bool:
+    """标题标明迅雷云盘，且未写 ed2k / magnet / 磁力 / 电驴 → 直接跳过。"""
+    t = (title or "").strip()
+    if not t:
+        return False
+    if "迅雷云盘" not in t and "迅雷网盘" not in t and not re.search(r"迅雷\s*云盘", t):
+        return False
+    lower = t.lower()
+    if any(x in lower for x in ("ed2k", "magnet", "磁力", "电驴", "种子", "torrent")):
+        return False
+    return True
+
+
+def title_is_pikpak_without_ed2k_magnet(title: str) -> bool:
+    """标题标明 PikPak，且未写 ed2k / magnet / 磁力 / 电驴 → 直接跳过。"""
+    t = (title or "").strip()
+    if not t:
+        return False
+    lower = t.lower()
+    if "pikpak" not in lower and "pik pak" not in lower:
+        return False
+    if any(x in lower for x in ("ed2k", "magnet", "磁力", "电驴", "种子", "torrent")):
+        return False
+    return True
+
+
+def title_is_baidu_pan_without_ed2k_magnet(title: str) -> bool:
+    """标题标明百度网盘，且未写 ed2k / magnet / 磁力 / 电驴 → 直接跳过。"""
+    t = (title or "").strip()
+    if not t:
+        return False
+    if "百度网盘" not in t and "百度云" not in t and not re.search(r"百度\s*网盘", t):
+        return False
+    lower = t.lower()
+    if any(x in lower for x in ("ed2k", "magnet", "磁力", "电驴", "种子", "torrent")):
+        return False
+    return True
+
+
+def title_is_115_share_without_ed2k_magnet(title: str) -> bool:
+    """标题标明 115 分享/分享码/网盘分享，且未写 ed2k / magnet / 磁力 / 电驴 → 直接跳过。"""
+    t = (title or "").strip()
+    if not t:
+        return False
+    # 115分享 / 115分享码 / 115网盘分享 / 115 分享链接
+    if not re.search(r"115\s*(?:网盘)?\s*分享(?:码|链接)?", t):
+        return False
+    lower = t.lower()
+    if any(x in lower for x in ("ed2k", "magnet", "磁力", "电驴", "种子", "torrent")):
+        return False
+    return True
 
 
 def title_is_115sha_without_ed2k_magnet(title: str) -> bool:
@@ -247,6 +371,33 @@ def is_thread_access_denied(html: str) -> bool:
     return "postmessage_" not in html
 
 
+def is_thread_moderator_blocked(html: str) -> bool:
+    """管理员/版主屏蔽：正文 locked，永久不可抓。"""
+    if not html:
+        return False
+    if any(m in html for m in MODERATOR_BLOCKED_MARKERS):
+        return True
+    body = re.sub(r"<[^>]+>", "\n", html)
+    return any(m in body for m in MODERATOR_BLOCKED_MARKERS)
+
+
+def is_thread_author_banned(html: str) -> bool:
+    """作者被禁止或删除，内容自动屏蔽。"""
+    if not html:
+        return False
+    # 优先认 locked 框，避免误伤正文里偶然出现的「屏蔽」字样
+    if re.search(
+        r'class=["\']locked["\'][^>]*>[^<]*(?:作者被禁止|内容自动屏蔽)',
+        html,
+        re.I,
+    ):
+        return True
+    if any(m in html for m in AUTHOR_BANNED_MARKERS[:2]):
+        return True
+    body = re.sub(r"<[^>]+>", "\n", html)
+    return any(m in body for m in AUTHOR_BANNED_MARKERS[:2])
+
+
 def is_reply_required_post(html: str) -> bool:
     """需回复才看隐藏内容（调用方：满龄/非龄期板 → 占位；龄期未满 → 先跳过）。
 
@@ -286,13 +437,16 @@ def is_purchase_required_post(html: str) -> bool:
 
 
 def is_non_target_cloud_share(*, link_kind: str, text: str) -> bool:
-    """ED2K 板：只有网盘分享、无电驴/磁力。"""
+    """ED2K 板：只有网盘分享、无电驴/磁力/115分享。"""
     if link_kind != "ed2k":
         return False
-    blob = text or ""
-    if ED2K_RE.search(blob) or MAGNET_RE.search(blob):
+    from parsers.ed2k import normalize_ed2k_corpus
+    from parsers.magnet import normalize_magnet_corpus
+
+    blob = normalize_ed2k_corpus(normalize_magnet_corpus(text or ""))
+    if ED2K_RE.search(blob) or MAGNET_RE.search(blob) or RE_115_SHARE.search(blob):
         return False
-    return bool(CLOUD_SHARE_RE.search(blob))
+    return bool(CLOUD_SHARE_RE.search(text or ""))
 
 
 def title_implies_resource(title: str, link_kind: str) -> bool:
@@ -453,16 +607,9 @@ def thread_typeid_mismatch(html: str, board_fid: str, required_typeid: str | Non
 
 
 def looks_like_attachment_zone(html: str) -> bool:
+    """是否有可解析的资源附件（txt/zip/rar/torrent）。预览图不算。"""
     if not html:
         return False
-    markers = (
-        "attach_",
-        "aid=",
-        ".torrent",
-        ".txt",
-        ".zip",
-        ".rar",
-        "附件",
-        "download.php",
-    )
-    return any(m in html for m in markers)
+    from parsers.attachments import extract_download_attachments
+
+    return bool(extract_download_attachments("", html))

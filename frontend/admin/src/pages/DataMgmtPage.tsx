@@ -2,10 +2,14 @@ import { useCallback, useEffect, useState, type FormEvent } from 'react'
 import { api } from '../api/client'
 import {
   fetchBackupStatus,
+  fetchResourceDbConfig,
   importBackupFile,
   runBackupNow,
   saveBackupConfig,
+  saveResourceDbConfig,
+  testResourceDbConfig,
   type BackupStatus,
+  type ResourceDbConfig,
 } from '../api/system'
 import { confirmDialog } from '../ui/confirm'
 import { toast } from '../ui/toast'
@@ -18,6 +22,7 @@ type Overview = {
   crawl_pending: number
   crawl_boards: number
   activity_logs: number
+  resource_db_separate?: boolean
 }
 
 type DataOverviewResponse = {
@@ -25,6 +30,7 @@ type DataOverviewResponse = {
   overview: Overview
   crawler_running: boolean
   crawler_enabled: boolean
+  resource_db?: ResourceDbConfig
 }
 
 type ResetResult = {
@@ -56,8 +62,15 @@ function fetchDataOverview() {
   return api<DataOverviewResponse>('/api/system/data-overview')
 }
 
-function resetAllData(confirmText: string) {
-  return api<ResetResult>('/api/system/reset', {
+function resetCrawlData(confirmText: string) {
+  return api<ResetResult>('/api/system/reset-crawl', {
+    method: 'POST',
+    body: JSON.stringify({ confirm: confirmText }),
+  })
+}
+
+function resetResourceData(confirmText: string) {
+  return api<ResetResult>('/api/system/reset-resources', {
     method: 'POST',
     body: JSON.stringify({ confirm: confirmText }),
   })
@@ -75,12 +88,14 @@ function formatBytes(n: number | undefined) {
 }
 
 export function DataMgmtPage() {
-  const [confirmText, setConfirmText] = useState('')
+  const [confirmCrawl, setConfirmCrawl] = useState('')
+  const [confirmResources, setConfirmResources] = useState('')
   const [overview, setOverview] = useState<Overview | null>(null)
   const [crawlerRunning, setCrawlerRunning] = useState(false)
   const [crawlerEnabled, setCrawlerEnabled] = useState(false)
   const [loading, setLoading] = useState(true)
-  const [resetting, setResetting] = useState(false)
+  const [resettingCrawl, setResettingCrawl] = useState(false)
+  const [resettingResources, setResettingResources] = useState(false)
 
   const [backup, setBackup] = useState<BackupStatus | null>(null)
   const [backupEnabled, setBackupEnabled] = useState(false)
@@ -92,6 +107,27 @@ export function DataMgmtPage() {
   const [backupImporting, setBackupImporting] = useState(false)
   const [importFile, setImportFile] = useState<File | null>(null)
 
+  const [rdb, setRdb] = useState<ResourceDbConfig | null>(null)
+  const [rdbEnabled, setRdbEnabled] = useState(false)
+  const [rdbHost, setRdbHost] = useState('')
+  const [rdbPort, setRdbPort] = useState(5432)
+  const [rdbUser, setRdbUser] = useState('')
+  const [rdbPassword, setRdbPassword] = useState('')
+  const [rdbDbname, setRdbDbname] = useState('')
+  const [rdbLoading, setRdbLoading] = useState(true)
+  const [rdbSaving, setRdbSaving] = useState(false)
+  const [rdbTesting, setRdbTesting] = useState(false)
+
+  const applyResourceDb = useCallback((data: ResourceDbConfig) => {
+    setRdb(data)
+    setRdbEnabled(Boolean(data.enabled))
+    setRdbHost(data.host || '')
+    setRdbPort(Number(data.port ?? data.primary?.port ?? 5432))
+    setRdbUser(data.user || '')
+    setRdbDbname(data.dbname || '')
+    setRdbPassword('')
+  }, [])
+
   const load = useCallback(async () => {
     setLoading(true)
     try {
@@ -99,13 +135,27 @@ export function DataMgmtPage() {
       setOverview(data.overview || emptyOverview())
       setCrawlerRunning(Boolean(data.crawler_running))
       setCrawlerEnabled(Boolean(data.crawler_enabled))
+      if (data.resource_db) applyResourceDb(data.resource_db)
     } catch (err) {
       toast.error(err instanceof Error ? err.message : '加载失败')
       setOverview(null)
     } finally {
       setLoading(false)
     }
-  }, [])
+  }, [applyResourceDb])
+
+  const loadResourceDb = useCallback(async () => {
+    setRdbLoading(true)
+    try {
+      const data = await fetchResourceDbConfig()
+      applyResourceDb(data)
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : '读取资源库配置失败')
+      setRdb(null)
+    } finally {
+      setRdbLoading(false)
+    }
+  }, [applyResourceDb])
 
   const loadBackup = useCallback(async () => {
     setBackupLoading(true)
@@ -126,39 +176,119 @@ export function DataMgmtPage() {
   useEffect(() => {
     void load()
     void loadBackup()
-  }, [load, loadBackup])
+    void loadResourceDb()
+  }, [load, loadBackup, loadResourceDb])
 
-  async function onReset(e: FormEvent) {
+  function resourceDbBody() {
+    const password = rdbPassword.trim()
+    return {
+      enabled: rdbEnabled,
+      host: rdbHost.trim(),
+      port: Number(rdbPort) || 5432,
+      user: rdbUser.trim(),
+      dbname: rdbDbname.trim(),
+      password: password || null,
+      keep_password: !password,
+    }
+  }
+
+  async function onSaveResourceDb(e: FormEvent) {
     e.preventDefault()
-    const text = confirmText.trim()
-    if (text !== '清空') {
-      toast.warn('请在确认框输入「清空」')
+    if (rdbEnabled && (!rdbHost.trim() || !rdbDbname.trim())) {
+      toast.warn('启用独立资源库时请填写主机与数据库名')
+      return
+    }
+    setRdbSaving(true)
+    try {
+      const data = await saveResourceDbConfig(resourceDbBody())
+      applyResourceDb(data)
+      await load()
+      toast.success(
+        data.using_primary
+          ? '已保存 · 资源仍写入主库（与项目源数据同库）'
+          : `已保存 · 资源写入 ${data.effective?.host}:${data.effective?.port}/${data.effective?.dbname}`,
+      )
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : '保存失败')
+    } finally {
+      setRdbSaving(false)
+    }
+  }
+
+  async function onTestResourceDb() {
+    setRdbTesting(true)
+    try {
+      const res = await testResourceDbConfig(resourceDbBody())
+      if (res.ok) toast.success(res.message || '连通成功')
+      else toast.error(res.message || '连通失败')
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : '测试失败')
+    } finally {
+      setRdbTesting(false)
+    }
+  }
+
+  async function onResetCrawl(e: FormEvent) {
+    e.preventDefault()
+    const text = confirmCrawl.trim()
+    if (text !== '清空爬取') {
+      toast.warn('请在确认框输入「清空爬取」')
       return
     }
     const ok = await confirmDialog({
-      title: '清空数据',
-      message: '确定清空所有爬取数据与资源？此操作不可恢复。',
-      confirmText: '清空',
+      title: '清空爬取记录',
+      message:
+        '将删除爬虫队列、已处理/失败/跳过记录、活动日志与列表游标进度；资源库不动。此操作不可恢复。',
+      confirmText: '清空爬取',
       danger: true,
     })
     if (!ok) return
 
-    setResetting(true)
+    setResettingCrawl(true)
     try {
-      const data = await resetAllData(text)
-      setConfirmText('')
-      setOverview(emptyOverview())
+      const data = await resetCrawlData(text)
+      setConfirmCrawl('')
       setCrawlerRunning(false)
       setCrawlerEnabled(false)
       await load()
       toast.success(
-        `已删除资源 ${data.deleted?.resources ?? 0} 条、爬取记录 ${data.deleted?.crawl_pages ?? 0} 条`,
+        `已清空爬取记录 ${data.deleted?.crawl_pages ?? 0} 条` +
+          `（待抓 ${data.deleted?.crawl_pending ?? 0}）`,
       )
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : '清空失败')
+      toast.error(err instanceof Error ? err.message : '清空爬取失败')
       await load().catch(() => {})
     } finally {
-      setResetting(false)
+      setResettingCrawl(false)
+    }
+  }
+
+  async function onResetResources(e: FormEvent) {
+    e.preventDefault()
+    const text = confirmResources.trim()
+    if (text !== '清空资源') {
+      toast.warn('请在确认框输入「清空资源」')
+      return
+    }
+    const ok = await confirmDialog({
+      title: '清空资源库',
+      message: '将删除全部资源、关联与导入任务；爬取队列与进度保留。此操作不可恢复。',
+      confirmText: '清空资源',
+      danger: true,
+    })
+    if (!ok) return
+
+    setResettingResources(true)
+    try {
+      const data = await resetResourceData(text)
+      setConfirmResources('')
+      await load()
+      toast.success(`已清空资源 ${data.deleted?.resources ?? 0} 条`)
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : '清空资源失败')
+      await load().catch(() => {})
+    } finally {
+      setResettingResources(false)
     }
   }
 
@@ -244,15 +374,19 @@ export function DataMgmtPage() {
   let crawlerHint = ''
   let crawlerHintTone: 'warn' | 'info' = 'info'
   if (crawlerRunning) {
-    crawlerHint = '爬虫正在执行中，请先关闭爬虫并等待当前轮次结束后再清空数据。'
+    crawlerHint = '爬虫正在执行中，请先关闭爬虫并等待当前轮次结束后再清空爬取记录。'
     crawlerHintTone = 'warn'
   } else if (crawlerEnabled) {
-    crawlerHint = '爬虫开关当前为开启状态，清空时会自动关闭爬虫。'
+    crawlerHint = '爬虫开关当前为开启状态，清空爬取记录时会自动关闭爬虫。'
     crawlerHintTone = 'info'
   }
 
   const file = backup?.file
   const busy = backupRunning || backupImporting || Boolean(backup?.busy)
+  const rdbBusy = rdbSaving || rdbTesting
+  const primaryHint = rdb?.primary
+    ? `${rdb.primary.host}:${rdb.primary.port}/${rdb.primary.dbname}`
+    : '主库（POSTGRES_*）'
 
   return (
     <section className="page page-data active">
@@ -262,10 +396,126 @@ export function DataMgmtPage() {
             <div className="data-mgmt-intro-text">
               <h2>数据管理</h2>
               <p>
-                管理资源库备份、备份导入与数据重置。备份只保留一份完整资源快照；导入按 hash 去重合并；清空不会删除系统设置、论坛配置与账号。
+                可单独指定资源库连接；爬虫队列、论坛配置与账号仍在主库。备份/导入/清空资源均针对当前资源库；搜索端
+                next-web 若拆库需自行指向同一资源库。
               </p>
             </div>
           </header>
+
+          <div className="card data-mgmt-card">
+            <div className="data-mgmt-card-head">
+              <div>
+                <h3>资源数据库</h3>
+                <p className="hint">
+                  关闭时资源写入主库（与项目源数据同库）。开启后仅资源读写走下方库；保存时不会建表/迁移，读写时仅可安全补缺列（不改已有数据）。密码留空则沿用已保存密码或主库密码。
+                </p>
+              </div>
+            </div>
+            <div className="data-mgmt-card-body">
+              <form className="data-rdb-form" onSubmit={(e) => void onSaveResourceDb(e)}>
+                <label className="data-backup-switch">
+                  <input
+                    type="checkbox"
+                    checked={rdbEnabled}
+                    disabled={rdbLoading || rdbBusy || busy}
+                    onChange={(e) => {
+                      const on = e.target.checked
+                      setRdbEnabled(on)
+                      if (!on) return
+                      const p = rdb?.primary
+                      setRdbHost((h) => h.trim() || String(p?.host || ''))
+                      setRdbPort((port) => {
+                        const n = Number(port)
+                        if (n > 0) return n
+                        return Number(p?.port ?? 5432) || 5432
+                      })
+                      setRdbUser((u) => u.trim() || String(p?.user || ''))
+                      setRdbDbname((d) => d.trim() || String(p?.dbname || ''))
+                    }}
+                  />
+                  <span>使用独立资源库</span>
+                </label>
+                <div className={`settings-form-fields${rdbEnabled ? '' : ' is-disabled'}`}>
+                  <label>
+                    主机
+                    <input
+                      type="text"
+                      value={rdbHost}
+                      placeholder={rdb?.primary?.host || '127.0.0.1'}
+                      disabled={!rdbEnabled || rdbLoading || rdbBusy || busy}
+                      onChange={(e) => setRdbHost(e.target.value)}
+                      autoComplete="off"
+                    />
+                  </label>
+                  <label>
+                    端口
+                    <input
+                      type="number"
+                      min={1}
+                      max={65535}
+                      value={rdbPort}
+                      disabled={!rdbEnabled || rdbLoading || rdbBusy || busy}
+                      onChange={(e) => setRdbPort(Math.max(1, Math.min(65535, Number(e.target.value) || 5432)))}
+                    />
+                  </label>
+                  <label>
+                    用户
+                    <input
+                      type="text"
+                      value={rdbUser}
+                      placeholder={rdb?.primary?.user || 'postgres'}
+                      disabled={!rdbEnabled || rdbLoading || rdbBusy || busy}
+                      onChange={(e) => setRdbUser(e.target.value)}
+                      autoComplete="off"
+                    />
+                  </label>
+                  <label>
+                    数据库名
+                    <input
+                      type="text"
+                      value={rdbDbname}
+                      placeholder={rdb?.primary?.dbname || 'ed2k'}
+                      disabled={!rdbEnabled || rdbLoading || rdbBusy || busy}
+                      onChange={(e) => setRdbDbname(e.target.value)}
+                      autoComplete="off"
+                    />
+                  </label>
+                  <label className="settings-field-full">
+                    密码{rdb?.has_password ? '（已保存，留空不改）' : ''}
+                    <input
+                      type="password"
+                      value={rdbPassword}
+                      placeholder={rdb?.has_password ? '••••••••' : '留空则用主库密码'}
+                      disabled={!rdbEnabled || rdbLoading || rdbBusy || busy}
+                      onChange={(e) => setRdbPassword(e.target.value)}
+                      autoComplete="new-password"
+                    />
+                  </label>
+                </div>
+                <p className="hint">
+                  当前生效：
+                  {rdbLoading
+                    ? '…'
+                    : rdb?.using_primary
+                      ? `主库 ${primaryHint}`
+                      : `${rdb?.effective?.host}:${rdb?.effective?.port}/${rdb?.effective?.dbname}`}
+                </p>
+                <div className="data-backup-actions">
+                  <button
+                    type="button"
+                    className="btn ghost sm"
+                    disabled={rdbLoading || rdbBusy || busy}
+                    onClick={() => void onTestResourceDb()}
+                  >
+                    {rdbTesting ? '测试中…' : '测试连接'}
+                  </button>
+                  <button type="submit" className="btn secondary sm" disabled={rdbLoading || rdbBusy || busy}>
+                    {rdbSaving ? '保存中…' : '保存配置'}
+                  </button>
+                </div>
+              </form>
+            </div>
+          </div>
 
           <div className="card data-mgmt-card">
             <div className="data-mgmt-card-head">
@@ -279,8 +529,9 @@ export function DataMgmtPage() {
                 onClick={() => {
                   void load()
                   void loadBackup()
+                  void loadResourceDb()
                 }}
-                disabled={loading || resetting || busy}
+                disabled={loading || resettingCrawl || resettingResources || busy || rdbBusy}
               >
                 {loading ? '刷新中…' : '刷新'}
               </button>
@@ -425,37 +676,91 @@ export function DataMgmtPage() {
             </div>
           </div>
 
-          <div className="card data-mgmt-card data-mgmt-card--danger">
-            <div className="data-mgmt-card-head">
-              <div>
-                <h3>重置所有数据</h3>
-                <p className="hint">此操作不可恢复。执行前请先关闭爬虫；若爬虫正在运行，系统将拒绝清空。</p>
+          <div className="data-reset-grid">
+            <div className="card data-mgmt-card data-mgmt-card--danger">
+              <div className="data-mgmt-card-head">
+                <div>
+                  <h3>清空爬取记录</h3>
+                  <p className="hint">只清本项目爬虫数据，资源库保留。执行前请先关闭爬虫。</p>
+                </div>
+              </div>
+              <div className="data-mgmt-card-body">
+                <ul className="data-mgmt-scope">
+                  <li>爬虫队列（待抓 / 异常 / 失败 / 跳过）</li>
+                  <li>板块扫描游标与捕新进度</li>
+                  <li>爬虫活动日志</li>
+                </ul>
+                <p className="hint">不会删除资源库、论坛配置、Cookie 与账号。</p>
+                <form className="data-reset-form" onSubmit={(e) => void onResetCrawl(e)}>
+                  <label className="data-reset-field">
+                    <span className="lbl">输入「清空爬取」以确认</span>
+                    <input
+                      type="text"
+                      value={confirmCrawl}
+                      onChange={(e) => setConfirmCrawl(e.target.value)}
+                      placeholder="清空爬取"
+                      autoComplete="off"
+                      disabled={resettingCrawl || resettingResources}
+                    />
+                  </label>
+                  <div className="data-reset-actions">
+                    <button
+                      type="submit"
+                      className="btn danger"
+                      disabled={
+                        resettingCrawl ||
+                        resettingResources ||
+                        confirmCrawl.trim() !== '清空爬取'
+                      }
+                    >
+                      {resettingCrawl ? '清空中…' : '清空爬取记录'}
+                    </button>
+                  </div>
+                </form>
               </div>
             </div>
-            <div className="data-mgmt-card-body">
-              <ul className="data-mgmt-scope">
-                <li>所有 ED2K / magnet 资源与标签</li>
-                <li>爬虫队列、已处理帖子记录、板块扫描进度</li>
-                <li>爬虫活动日志</li>
-              </ul>
-              <form className="data-reset-form" onSubmit={(e) => void onReset(e)}>
-                <label className="data-reset-field">
-                  <span className="lbl">输入「清空」以确认</span>
-                  <input
-                    type="text"
-                    value={confirmText}
-                    onChange={(e) => setConfirmText(e.target.value)}
-                    placeholder="清空"
-                    autoComplete="off"
-                    disabled={resetting}
-                  />
-                </label>
-                <div className="data-reset-actions">
-                  <button type="submit" className="btn danger" disabled={resetting || confirmText.trim() !== '清空'}>
-                    {resetting ? '清空中…' : '清空所有数据'}
-                  </button>
+
+            <div className="card data-mgmt-card data-mgmt-card--danger">
+              <div className="data-mgmt-card-head">
+                <div>
+                  <h3>清空资源库</h3>
+                  <p className="hint">只清已入库资源，爬取队列与进度保留。</p>
                 </div>
-              </form>
+              </div>
+              <div className="data-mgmt-card-body">
+                <ul className="data-mgmt-scope">
+                  <li>全部 ED2K / magnet / 占位资源</li>
+                  <li>资源关联与标签</li>
+                  <li>导入任务记录</li>
+                </ul>
+                <p className="hint">不会删除爬虫队列、扫描进度与活动日志。</p>
+                <form className="data-reset-form" onSubmit={(e) => void onResetResources(e)}>
+                  <label className="data-reset-field">
+                    <span className="lbl">输入「清空资源」以确认</span>
+                    <input
+                      type="text"
+                      value={confirmResources}
+                      onChange={(e) => setConfirmResources(e.target.value)}
+                      placeholder="清空资源"
+                      autoComplete="off"
+                      disabled={resettingCrawl || resettingResources}
+                    />
+                  </label>
+                  <div className="data-reset-actions">
+                    <button
+                      type="submit"
+                      className="btn danger"
+                      disabled={
+                        resettingCrawl ||
+                        resettingResources ||
+                        confirmResources.trim() !== '清空资源'
+                      }
+                    >
+                      {resettingResources ? '清空中…' : '清空资源库'}
+                    </button>
+                  </div>
+                </form>
+              </div>
             </div>
           </div>
         </div>

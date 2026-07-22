@@ -28,7 +28,8 @@
     "resource_type": "資源類型",
     "resource_size": "資源大小",
     "resource_amount": "資源數量",
-    "extract_password": "解壓密碼"
+    "extract_password": "解壓密碼",
+    "share_code": "分享碼"
   },
   "Browse": {
     "entry": "隨便看看",
@@ -93,6 +94,7 @@
     "ed2k": "下載連結",
     "ed2k_multi": "下載連結 ({count})",
     "magnet": "磁力",
+    "share115": "115分享",
     "stub": "占位（無下載鏈）",
     "stub_hint": "該帖暫無可用下載連結，僅作收錄占位",
     "file_size": "文件大小: ",

@@ -49,3 +49,7 @@ ed2k/
 ed2k/data/
 ed2k/**/.venv/
 ed2k/**/node_modules/
+
+# local archive tools (do not ship binaries)
+backend/.tools/
+
