@@ -1290,21 +1290,7 @@ def list_resource_facets(
     boards: list[dict[str, Any]] = []
     with conn.cursor() as cur:
         if unfiltered:
-            # 无筛选：估算总数 + 轻量分组，避免每次扫 20 万行
-            cur.execute(
-                """
-                SELECT COALESCE(c.reltuples, 0)::bigint
-                FROM pg_class c
-                JOIN pg_namespace n ON n.oid = c.relnamespace
-                WHERE c.relname = 'ed2k_resources'
-                  AND n.nspname = current_schema()
-                LIMIT 1
-                """
-            )
-            est = int((cur.fetchone() or [0])[0] or 0)
-            sources["all"] = est
-            results["all"] = est
-
+            # 无筛选：来源/板块用精确 COUNT；结果类型仍用近量样本估算比例（避免全表扫）
             cur.execute(
                 """
                 SELECT COALESCE(NULLIF(s.source_type, ''), 'web') AS st, COUNT(*)
@@ -1315,8 +1301,7 @@ def list_resource_facets(
             )
             for st, n in cur.fetchall():
                 sources[str(st or "web")] = int(n)
-            if sources["all"] <= 0:
-                sources["all"] = sum(sources[k] for k in ("web", "upload", "telegram"))
+            sources["all"] = sum(sources[k] for k in ("web", "upload", "telegram"))
 
             cur.execute(
                 """
@@ -1333,6 +1318,9 @@ def list_resource_facets(
             )
             for name, n in cur.fetchall():
                 boards.append({"name": str(name), "count": int(n)})
+
+            est = sources["all"]
+            results["all"] = est
 
             cur.execute(
                 f"""
