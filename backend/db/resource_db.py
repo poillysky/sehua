@@ -143,6 +143,7 @@ def resource_dsn_kwargs() -> dict[str, Any]:
         "user": user,
         "password": password,
         "dbname": dbname,
+        "connect_timeout": int(primary.get("connect_timeout") or 5),
     }
     with _CACHE_LOCK:
         _CACHED_KWARGS = dict(kwargs)
@@ -157,10 +158,29 @@ def using_separate_resource_db() -> bool:
 
 
 def connect_resource():
-    """资源表读写连接。"""
+    """资源表读写连接。
+
+    独立库连不上时回落主库（避免迁库后错误 host 把整站状态接口拖死）。
+    """
     import psycopg2
 
-    return psycopg2.connect(**resource_dsn_kwargs())
+    kwargs = dict(resource_dsn_kwargs())
+    kwargs.setdefault("connect_timeout", 5)
+    try:
+        return psycopg2.connect(**kwargs)
+    except Exception as exc:
+        if not using_separate_resource_db():
+            raise
+        primary = dict(primary_dsn_kwargs())
+        primary.setdefault("connect_timeout", 5)
+        log.warning(
+            "独立资源库不可用 %s:%s/%s（%s），本次回落主库；请在数据管理关闭独立资源库",
+            kwargs.get("host"),
+            kwargs.get("port"),
+            kwargs.get("dbname"),
+            exc,
+        )
+        return psycopg2.connect(**primary)
 
 
 def open_resource_connection() -> tuple[Any | None, str | None]:
