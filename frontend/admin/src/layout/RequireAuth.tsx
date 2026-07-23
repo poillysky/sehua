@@ -8,10 +8,12 @@ export function RequireAuth() {
   const [ready, setReady] = useState(false)
   const [ok, setOk] = useState(false)
   const [user, setUser] = useState<AuthUser | null>(null)
+  const [hint, setHint] = useState('检查登录状态…')
 
   useEffect(() => {
     let cancelled = false
     setReady(false)
+    setHint('检查登录状态…')
     fetchAuthStatus()
       .then((status) => {
         if (cancelled) return
@@ -19,10 +21,11 @@ export function RequireAuth() {
         setOk(allowed)
         setUser(status.user)
       })
-      .catch(() => {
+      .catch((err) => {
         if (!cancelled) {
           setOk(false)
           setUser(null)
+          setHint(err instanceof Error ? err.message : '检查登录失败')
         }
       })
       .finally(() => {
@@ -36,7 +39,7 @@ export function RequireAuth() {
   if (!ready) {
     return (
       <div className="login-page">
-        <p className="hint">检查登录状态…</p>
+        <p className="hint">{hint}</p>
       </div>
     )
   }

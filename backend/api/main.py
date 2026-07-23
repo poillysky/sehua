@@ -99,14 +99,25 @@ async def lifespan(_app: FastAPI):
     start_backup_scheduler()
     logger.info("resource backup scheduler started")
     try:
-        from workers.runner import _log_activity
+        from workers.runner import _log_activity, bind_main_loop, emergency_stop_sync
+        from workers.emergency_stop_server import start_emergency_stop_server
 
+        bind_main_loop()
+        port = start_emergency_stop_server(emergency_stop_sync, port=18080)
+        if port:
+            logger.info("emergency stop ready on http://127.0.0.1:%s/stop", port)
         _log_activity("后端就绪 · 活动日志已落库，操作后可在此查看")
     except Exception:
-        logger.debug("startup activity log skipped", exc_info=True)
+        logger.debug("startup activity / emergency stop skipped", exc_info=True)
     try:
         yield
     finally:
+        try:
+            from workers.emergency_stop_server import stop_emergency_stop_server
+
+            stop_emergency_stop_server()
+        except Exception:
+            pass
         await stop_backup_scheduler()
 
 

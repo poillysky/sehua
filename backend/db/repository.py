@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
+import time
 from typing import Any
 
 from parsers.ed2k import Ed2kLink, build_search_string
+from parsers.safe_text import strip_nul, strip_nul_list
 
 logger = logging.getLogger(__name__)
 
@@ -50,6 +53,41 @@ CASE
   ELSE 'failed'
 END
 """
+
+# 处理记录按帖聚合：有 source_url 则同帖多子资源合成一行；无 URL 仍按 hash 一行
+RESOURCE_GROUP_KEY_SQL = """
+CASE
+  WHEN NULLIF(BTRIM(COALESCE(rs.source_url, '')), '') IS NOT NULL
+    THEN 'url:' || BTRIM(rs.source_url)
+  ELSE 'hash:' || upper(r.hash)
+END
+"""
+
+
+def _dedupe_preserve(items: list[Any]) -> list[Any]:
+    seen: set[Any] = set()
+    out: list[Any] = []
+    for x in items:
+        if x in seen or x is None:
+            continue
+        seen.add(x)
+        out.append(x)
+    return out
+
+
+def _merge_preview_lists(lists: list[list[str] | None], *, cap: int = 25) -> list[str]:
+    out: list[str] = []
+    seen: set[str] = set()
+    for imgs in lists:
+        for u in imgs or []:
+            s = (u or "").strip()
+            if not s or s in seen:
+                continue
+            seen.add(s)
+            out.append(s)
+            if len(out) >= cap:
+                return out
+    return out
 
 
 def thread_stub_hash(source_url: str) -> str:
@@ -99,6 +137,7 @@ def _ensure_resource_schema(conn: Any) -> None:
         cur.execute(
             "ALTER TABLE resource_sources ADD COLUMN IF NOT EXISTS description TEXT"
         )
+        # 索引勿在热路径创建 INDEX（易与写入死锁）；updated_at 索引由迁移/运维创建
     conn.commit()
     _schema_ready = True
 
@@ -147,6 +186,23 @@ def upsert_resource(
     commit: bool = True,
 ) -> bool:
     _ensure_resource_schema(conn)
+    title = strip_nul(title) or None
+    description = strip_nul(description) or None
+    extract_password = strip_nul(extract_password) or None
+    board_name = strip_nul(board_name) or None
+    import_outcome = strip_nul(import_outcome) or None
+    source_url = strip_nul(source_url) or None
+    forum_id = strip_nul(forum_id) or None
+    board_fid = strip_nul(board_fid) or None
+    preview_images = strip_nul_list(preview_images) or None
+    ed2k_links = strip_nul_list(ed2k_links) or None
+    # link fields may carry binary-scanned noise
+    link = Ed2kLink(
+        filename=strip_nul(link.filename) or link.hash,
+        size=int(link.size or 0),
+        hash=strip_nul(link.hash) or link.hash,
+        link=strip_nul(link.link) or link.link,
+    )
     search_string = build_search_string(
         link.filename,
         title or "",
@@ -689,17 +745,13 @@ def count_priority_account_stubs_q(
         return int(row[0] or 0) if row else 0
 
 
-def list_recent_resources(
-    conn: Any,
+def _resource_list_where(
     *,
-    limit: int = 30,
-    offset: int = 0,
     source_type: str | None = None,
     board_name: str | None = None,
     link_kind: str | None = None,
     q: str | None = None,
-) -> tuple[list[dict], int]:
-    """Paginated resource list. Returns (items, total)."""
+) -> tuple[str, list[Any]]:
     where: list[str] = []
     params: list[Any] = []
 
@@ -716,82 +768,325 @@ def list_recent_resources(
         where.append(f"({LINK_KIND_SQL}) = %s")
         params.append(link_kind)
     if q:
+        # 走 filename / search_string 的 pg_trgm GIN（勿用 rs.title ILIKE，会逼全表扫）
         where.append(
             "("
-            "COALESCE(rs.title, '') ILIKE %s OR "
-            "COALESCE(r.filename, '') ILIKE %s"
+            "r.filename ILIKE %s OR "
+            "COALESCE(r.search_string, '') ILIKE %s"
             ")"
         )
         like = f"%{q}%"
         params.extend([like, like])
 
     where_sql = (" WHERE " + " AND ".join(where)) if where else ""
+    return where_sql, params
 
-    with conn.cursor() as cur:
-        cur.execute(
-            f"""
-            SELECT COUNT(*)
-            FROM ed2k_resources r
-            JOIN resource_sources rs ON rs.hash = r.hash
-            JOIN sources s ON s.id = rs.source_id
-            {where_sql}
-            """,
-            params,
+
+def _assemble_thread_resource_row(
+    *,
+    group_id: int,
+    updated_at: Any,
+    source_key: str | None,
+    source_type: str | None,
+    import_outcome: str | None,
+    assets_raw: list[Any],
+) -> dict:
+    """同一帖（或无 URL 的单 hash）聚合成处理记录一行。"""
+    assets: list[dict] = []
+    for raw in assets_raw or []:
+        if isinstance(raw, dict):
+            item = raw
+        else:
+            continue
+        link = (item.get("ed2k_link") or "").strip()
+        assets.append(
+            {
+                "hash": item.get("hash"),
+                "filename": item.get("filename"),
+                "size": int(item.get("size") or 0),
+                "ed2k_link": link,
+                "preview_images": list(item.get("preview_images") or []),
+                "link_kind": infer_resource_link_kind(link),
+            }
         )
-        total = int(cur.fetchone()[0])
+    if not assets:
+        return {
+            "id": int(group_id),
+            "hash": "",
+            "hashes": [],
+            "filename": "",
+            "size": 0,
+            "ed2k_link": "",
+            "updated_at": updated_at.isoformat() if updated_at else None,
+            "title": None,
+            "description": None,
+            "source_url": None,
+            "board_fid": None,
+            "board_name": None,
+            "ed2k_links": [],
+            "extract_password": None,
+            "source_key": source_key,
+            "source_type": source_type,
+            "preview_images": [],
+            "import_outcome": import_outcome,
+            "forum_id": None,
+            "forum_name": "",
+            "link_kind": "failed",
+            "asset_count": 0,
+            "assets": [],
+        }
 
-        cur.execute(
-            f"""
+    primary = assets[0]
+    # 元数据取最新一条（json_agg 已按 updated_at DESC）
+    meta_src = assets_raw[0] if assets_raw and isinstance(assets_raw[0], dict) else {}
+    description = meta_src.get("description")
+    forum_id = meta_src.get("forum_id")
+    hashes = _dedupe_preserve([a["hash"] for a in assets if a.get("hash")])
+    links = _dedupe_preserve(
+        [a["ed2k_link"] for a in assets if a.get("ed2k_link")]
+        + list(meta_src.get("ed2k_links") or [])
+    )
+    previews = _merge_preview_lists([a.get("preview_images") for a in assets])
+    return {
+        "id": int(group_id),
+        "hash": primary.get("hash") or "",
+        "hashes": hashes,
+        "filename": primary.get("filename") or "",
+        "size": int(primary.get("size") or 0),
+        "ed2k_link": primary.get("ed2k_link") or "",
+        "updated_at": updated_at.isoformat() if updated_at else None,
+        "title": meta_src.get("title"),
+        "description": description,
+        "source_url": meta_src.get("source_url"),
+        "board_fid": meta_src.get("board_fid"),
+        "board_name": meta_src.get("board_name"),
+        "ed2k_links": links,
+        "extract_password": meta_src.get("extract_password"),
+        "source_key": source_key,
+        "source_type": source_type,
+        "preview_images": previews,
+        "import_outcome": import_outcome,
+        "forum_id": forum_id,
+        "forum_name": resolve_forum_display_name(forum_id, description=description),
+        "link_kind": primary.get("link_kind") or infer_resource_link_kind(primary.get("ed2k_link")),
+        "asset_count": len(assets),
+        "assets": assets,
+    }
+
+
+def _thread_group_key(source_url: str | None, resource_hash: str) -> str:
+    url = (source_url or "").strip()
+    if url:
+        return f"url:{url}"
+    return f"hash:{(resource_hash or '').strip().upper()}"
+
+
+def _flat_resource_select_sql(where_sql: str) -> str:
+    # 不 JOIN crawl_pages：大表关联会把「最近 N 条」拖到数十秒
+    return f"""
             SELECT
               rs.id, r.hash, r.filename, r.size, r.ed2k_link, r.updated_at,
               rs.title, rs.description, rs.source_url, rs.board_fid, rs.board_name,
               rs.ed2k_links, rs.extract_password, s.key, s.source_type,
               rs.preview_images,
-              COALESCE(NULLIF(rs.import_outcome, ''), NULLIF(cp.outcome, '')) AS import_outcome,
+              rs.import_outcome,
               rs.forum_id
             FROM ed2k_resources r
             JOIN resource_sources rs ON rs.hash = r.hash
             JOIN sources s ON s.id = rs.source_id
-            LEFT JOIN crawl_pages cp
-              ON cp.page_type = 'thread'
-             AND cp.url = rs.source_url
             {where_sql}
             ORDER BY r.updated_at DESC NULLS LAST, r.created_at DESC, rs.id DESC
-            LIMIT %s OFFSET %s
-            """,
-            [*params, limit, offset],
+            """
+
+
+def _asset_dict_from_flat_row(row: Any) -> dict:
+    return {
+        "hash": row[1],
+        "filename": row[2],
+        "size": row[3],
+        "ed2k_link": row[4],
+        "preview_images": list(row[15] or []),
+        "title": row[6],
+        "description": row[7],
+        "source_url": row[8],
+        "board_fid": row[9],
+        "board_name": row[10],
+        "ed2k_links": list(row[11] or []),
+        "extract_password": row[12],
+        "forum_id": row[17],
+    }
+
+
+def _group_flat_rows_in_order(rows: list[Any]) -> tuple[list[str], dict[str, list[Any]]]:
+    order: list[str] = []
+    groups: dict[str, list[Any]] = {}
+    for row in rows:
+        key = _thread_group_key(row[8], str(row[1] or ""))
+        if key not in groups:
+            groups[key] = []
+            order.append(key)
+        groups[key].append(row)
+    return order, groups
+
+
+def _fast_flat_total(
+    cur: Any,
+    where_sql: str,
+    params: list[Any],
+    *,
+    q: str | None = None,
+    capped: bool = False,
+) -> int:
+    """总数：无筛选用估算；搜索/板块等筛选用上限 COUNT，避免大表精确计数拖慢。"""
+    if not where_sql.strip():
+        cur.execute(
+            """
+            SELECT COALESCE(c.reltuples, 0)::bigint
+            FROM pg_class c
+            JOIN pg_namespace n ON n.oid = c.relnamespace
+            WHERE c.relname = 'ed2k_resources'
+              AND n.nspname = current_schema()
+            LIMIT 1
+            """
         )
-        rows = cur.fetchall()
+        row = cur.fetchone()
+        if row and int(row[0] or 0) > 0:
+            return int(row[0])
+    # 有筛选：最多数到 cap+1，够分页即可
+    if capped or (q or "").strip():
+        cap = 5000
+        cur.execute(
+            f"""
+            SELECT COUNT(*) FROM (
+              SELECT 1
+              FROM ed2k_resources r
+              JOIN resource_sources rs ON rs.hash = r.hash
+              JOIN sources s ON s.id = rs.source_id
+              {where_sql}
+              LIMIT %s
+            ) t
+            """,
+            [*params, cap + 1],
+        )
+        return int(cur.fetchone()[0])
+    cur.execute(
+        f"""
+        SELECT COUNT(*)
+        FROM ed2k_resources r
+        JOIN resource_sources rs ON rs.hash = r.hash
+        JOIN sources s ON s.id = rs.source_id
+        {where_sql}
+        """,
+        params,
+    )
+    return int(cur.fetchone()[0])
+
+
+def list_recent_resources(
+    conn: Any,
+    *,
+    limit: int = 30,
+    offset: int = 0,
+    source_type: str | None = None,
+    board_name: str | None = None,
+    link_kind: str | None = None,
+    q: str | None = None,
+) -> tuple[list[dict], int]:
+    """分页处理记录：有来源帖 URL 时按帖聚合（一帖一行），否则按 hash。
+
+    用「最近行 oversample + 内存分组」避免全表 GROUP BY 拖死接口。
+    """
+    where_sql, params = _resource_list_where(
+        source_type=source_type,
+        board_name=board_name,
+        link_kind=link_kind,
+        q=q,
+    )
+    limit = max(1, int(limit or 30))
+    offset = max(0, int(offset or 0))
+    need = offset + limit
+    # 合集帖多 hash 会压缩「帖数」；有筛选时也要够 oversample
+    has_filter = bool(
+        (q or "").strip()
+        or source_type not in (None, "", "all")
+        or board_name not in (None, "", "all")
+        or link_kind not in (None, "", "all")
+    )
+    if has_filter:
+        fetch_n = min(max(need * 20 + 80, 500), 4000)
+    else:
+        fetch_n = min(max(need * 12 + 40, limit + 40), 8000)
+    _ensure_resource_schema(conn)
+
+    with conn.cursor() as cur:
+        flat_total = _fast_flat_total(
+            cur, where_sql, params, q=q, capped=has_filter
+        )
+
+        cur.execute(
+            _flat_resource_select_sql(where_sql) + " LIMIT %s",
+            [*params, fetch_n],
+        )
+        rows = list(cur.fetchall())
+
+    order, groups = _group_flat_rows_in_order(rows)
+    page_keys = order[offset : offset + limit]
+
+    # 补全本页帖的全部子资源（oversample 窗口外的旧 hash）
+    urls = [k[4:] for k in page_keys if k.startswith("url:")]
+    by_url: dict[str, list[Any]] = {}
+    if urls:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT
+                  rs.id, r.hash, r.filename, r.size, r.ed2k_link, r.updated_at,
+                  rs.title, rs.description, rs.source_url, rs.board_fid, rs.board_name,
+                  rs.ed2k_links, rs.extract_password, s.key, s.source_type,
+                  rs.preview_images,
+                  rs.import_outcome,
+                  rs.forum_id
+                FROM ed2k_resources r
+                JOIN resource_sources rs ON rs.hash = r.hash
+                JOIN sources s ON s.id = rs.source_id
+                WHERE NULLIF(BTRIM(COALESCE(rs.source_url, '')), '') = ANY(%s)
+                ORDER BY r.created_at ASC NULLS LAST, rs.id ASC
+                """,
+                (urls,),
+            )
+            for row in cur.fetchall():
+                url = (row[8] or "").strip()
+                if not url:
+                    continue
+                by_url.setdefault(url, []).append(row)
 
     out: list[dict] = []
-    for row in rows:
-        link = row[4] or ""
-        description = row[7]
-        forum_id = row[17]
+    for key in page_keys:
+        if key.startswith("url:"):
+            asset_rows = by_url.get(key[4:]) or groups.get(key) or []
+        else:
+            asset_rows = groups.get(key) or []
+        if not asset_rows:
+            continue
+        first = asset_rows[0]
         out.append(
-            {
-                "id": int(row[0]),
-                "hash": row[1],
-                "filename": row[2],
-                "size": row[3],
-                "ed2k_link": link,
-                "updated_at": row[5].isoformat() if row[5] else None,
-                "title": row[6],
-                "description": description,
-                "source_url": row[8],
-                "board_fid": row[9],
-                "board_name": row[10],
-                "ed2k_links": list(row[11] or []),
-                "extract_password": row[12],
-                "source_key": row[13],
-                "source_type": row[14],
-                "preview_images": list(row[15] or []),
-                "import_outcome": row[16],
-                "forum_id": forum_id,
-                "forum_name": resolve_forum_display_name(forum_id, description=description),
-                "link_kind": infer_resource_link_kind(link),
-            }
+            _assemble_thread_resource_row(
+                group_id=int(first[0]),
+                updated_at=first[5],
+                source_key=first[13],
+                source_type=first[14],
+                import_outcome=first[16],
+                assets_raw=[_asset_dict_from_flat_row(r) for r in asset_rows],
+            )
         )
+
+    # 能扫完筛选结果时给精确帖数；否则用行数作上限（略偏大，保证分页可用）
+    if flat_total <= fetch_n:
+        total = len(order) if len(rows) < fetch_n else flat_total
+    else:
+        total = flat_total
+    if has_filter and flat_total > 5000 and len(out) >= limit:
+        total = max(total, offset + limit + 1)
     return out, total
 
 
@@ -804,74 +1099,69 @@ def list_resource_ids_for_selection(
     q: str | None = None,
     limit: int = 2000,
 ) -> tuple[list[dict], int]:
-    """当前筛选下的资源 id/hash 列表（跨页全选用）。返回 (items, total)。"""
-    where: list[str] = []
-    params: list[Any] = []
-
-    if source_type in ("web", "upload", "telegram"):
-        where.append("s.source_type = %s")
-        params.append(source_type)
-    if board_name:
-        if board_name in ("未分类", "__empty__"):
-            where.append("(rs.board_name IS NULL OR rs.board_name = '')")
-        else:
-            where.append("COALESCE(rs.board_name, '') = %s")
-            params.append(board_name)
-    if link_kind in ("magnet", "ed2k", "stub", "failed", "115share"):
-        where.append(f"({LINK_KIND_SQL}) = %s")
-        params.append(link_kind)
-    if q:
-        where.append(
-            "("
-            "COALESCE(rs.title, '') ILIKE %s OR "
-            "COALESCE(r.filename, '') ILIKE %s"
-            ")"
-        )
-        like = f"%{q}%"
-        params.extend([like, like])
-
-    where_sql = (" WHERE " + " AND ".join(where)) if where else ""
+    """当前筛选下的处理记录 id/hash（按帖聚合；跨页全选）。返回 (items, total)。"""
+    where_sql, params = _resource_list_where(
+        source_type=source_type,
+        board_name=board_name,
+        link_kind=link_kind,
+        q=q,
+    )
     lim = max(1, min(int(limit or 2000), 5000))
+    fetch_n = min(max(lim * 8, lim), 12000)
 
     with conn.cursor() as cur:
-        cur.execute(
-            f"""
-            SELECT COUNT(*)
-            FROM ed2k_resources r
-            JOIN resource_sources rs ON rs.hash = r.hash
-            JOIN sources s ON s.id = rs.source_id
-            {where_sql}
-            """,
-            params,
-        )
-        total = int(cur.fetchone()[0])
+        flat_total = _fast_flat_total(cur, where_sql, params, q=q)
 
         cur.execute(
-            f"""
-            SELECT rs.id, r.hash, rs.source_url, rs.title, r.filename, r.ed2k_link
-            FROM ed2k_resources r
-            JOIN resource_sources rs ON rs.hash = r.hash
-            JOIN sources s ON s.id = rs.source_id
-            {where_sql}
-            ORDER BY r.updated_at DESC NULLS LAST, r.created_at DESC, rs.id DESC
-            LIMIT %s
-            """,
-            [*params, lim],
+            _flat_resource_select_sql(where_sql) + " LIMIT %s",
+            [*params, fetch_n],
         )
-        rows = cur.fetchall()
+        rows = list(cur.fetchall())
+
+    order, groups = _group_flat_rows_in_order(rows)
+    page_keys = order[:lim]
+
+    urls = [k[4:] for k in page_keys if k.startswith("url:")]
+    hashes_by_url: dict[str, list[str]] = {}
+    if urls:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT BTRIM(rs.source_url), r.hash
+                FROM ed2k_resources r
+                JOIN resource_sources rs ON rs.hash = r.hash
+                WHERE NULLIF(BTRIM(COALESCE(rs.source_url, '')), '') = ANY(%s)
+                ORDER BY r.created_at ASC NULLS LAST, rs.id ASC
+                """,
+                (urls,),
+            )
+            for url, h in cur.fetchall():
+                hashes_by_url.setdefault(str(url or "").strip(), []).append(str(h))
 
     items: list[dict] = []
-    for row in rows:
-        link = row[5] or ""
+    for key in page_keys:
+        asset_rows = groups.get(key) or []
+        if not asset_rows:
+            continue
+        first = asset_rows[0]
+        link = first[4] or ""
+        if key.startswith("url:"):
+            hashes = _dedupe_preserve(hashes_by_url.get(key[4:]) or [r[1] for r in asset_rows])
+        else:
+            hashes = _dedupe_preserve([r[1] for r in asset_rows])
         items.append(
             {
-                "id": int(row[0]),
-                "hash": row[1],
-                "source_url": row[2],
-                "title": row[3] or row[4] or row[1],
+                "id": int(first[0]),
+                "hash": hashes[0] if hashes else first[1],
+                "hashes": hashes,
+                "source_url": first[8],
+                "title": first[6] or first[2] or first[1],
                 "link_kind": infer_resource_link_kind(link),
+                "asset_count": len(hashes),
             }
         )
+
+    total = len(order) if flat_total <= fetch_n else flat_total
     return items, total
 
 
@@ -944,31 +1234,16 @@ def _facet_where(
     board_name: str | None = None,
     link_kind: str | None = None,
 ) -> tuple[str, list[Any]]:
-    where: list[str] = []
-    params: list[Any] = []
-    if source_type in ("web", "upload", "telegram"):
-        where.append("s.source_type = %s")
-        params.append(source_type)
-    if board_name:
-        if board_name in ("未分类", "__empty__"):
-            where.append("(rs.board_name IS NULL OR rs.board_name = '')")
-        else:
-            where.append("COALESCE(rs.board_name, '') = %s")
-            params.append(board_name)
-    if link_kind in ("magnet", "ed2k", "stub", "failed", "115share"):
-        where.append(f"({LINK_KIND_SQL}) = %s")
-        params.append(link_kind)
-    if q:
-        where.append(
-            "("
-            "COALESCE(rs.title, '') ILIKE %s OR "
-            "COALESCE(r.filename, '') ILIKE %s"
-            ")"
-        )
-        like = f"%{q}%"
-        params.extend([like, like])
-    where_sql = (" WHERE " + " AND ".join(where)) if where else ""
-    return where_sql, params
+    return _resource_list_where(
+        q=q,
+        source_type=source_type,
+        board_name=board_name,
+        link_kind=link_kind,
+    )
+
+
+_FACET_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
+_FACET_CACHE_TTL_SEC = 45.0
 
 
 def list_resource_facets(
@@ -979,70 +1254,180 @@ def list_resource_facets(
     board_name: str | None = None,
     link_kind: str | None = None,
 ) -> dict[str, Any]:
-    """筛选维度计数：来源/板块/结果各自排除本维，交叉受其它维与搜索影响。"""
+    """筛选维度计数。结果缓存数十秒，避免处理记录页每次全表统计卡住。"""
+    cache_key = "|".join(
+        [
+            (q or "").strip().lower(),
+            (source_type or "").strip(),
+            (board_name or "").strip(),
+            (link_kind or "").strip(),
+        ]
+    )
+    now = time.time()
+    cached = _FACET_CACHE.get(cache_key)
+    if cached and now - cached[0] < _FACET_CACHE_TTL_SEC:
+        return cached[1]
+
     base_join = """
         FROM ed2k_resources r
         JOIN resource_sources rs ON rs.hash = r.hash
         JOIN sources s ON s.id = rs.source_id
     """
-    # 来源：受搜索 + 板块 + 结果
     src_where, src_params = _facet_where(q=q, board_name=board_name, link_kind=link_kind)
-    # 板块：受搜索 + 来源 + 结果
     board_where, board_params = _facet_where(q=q, source_type=source_type, link_kind=link_kind)
-    # 结果：受搜索 + 来源 + 板块
     result_where, result_params = _facet_where(q=q, source_type=source_type, board_name=board_name)
+    unfiltered = not any(
+        [
+            (q or "").strip(),
+            source_type not in (None, "", "all"),
+            board_name not in (None, "", "all"),
+            link_kind not in (None, "", "all"),
+        ]
+    )
 
     sources = {"all": 0, "web": 0, "upload": 0, "telegram": 0}
     results = {"all": 0, "magnet": 0, "ed2k": 0, "115share": 0, "stub": 0, "failed": 0}
     boards: list[dict[str, Any]] = []
     with conn.cursor() as cur:
-        cur.execute(f"SELECT COUNT(*) {base_join} {src_where}", src_params)
-        sources["all"] = int(cur.fetchone()[0])
+        if unfiltered:
+            # 无筛选：估算总数 + 轻量分组，避免每次扫 20 万行
+            cur.execute(
+                """
+                SELECT COALESCE(c.reltuples, 0)::bigint
+                FROM pg_class c
+                JOIN pg_namespace n ON n.oid = c.relnamespace
+                WHERE c.relname = 'ed2k_resources'
+                  AND n.nspname = current_schema()
+                LIMIT 1
+                """
+            )
+            est = int((cur.fetchone() or [0])[0] or 0)
+            sources["all"] = est
+            results["all"] = est
 
-        cur.execute(
-            f"""
-            SELECT COALESCE(NULLIF(s.source_type, ''), 'web') AS st, COUNT(*)
-            {base_join} {src_where}
-            GROUP BY 1
-            """,
-            src_params,
-        )
-        for st, n in cur.fetchall():
-            sources[str(st or "web")] = int(n)
+            cur.execute(
+                """
+                SELECT COALESCE(NULLIF(s.source_type, ''), 'web') AS st, COUNT(*)
+                FROM resource_sources rs
+                JOIN sources s ON s.id = rs.source_id
+                GROUP BY 1
+                """
+            )
+            for st, n in cur.fetchall():
+                sources[str(st or "web")] = int(n)
+            if sources["all"] <= 0:
+                sources["all"] = sum(sources[k] for k in ("web", "upload", "telegram"))
 
-        cur.execute(
-            f"""
-            SELECT
-              CASE
-                WHEN rs.board_name IS NULL OR rs.board_name = '' THEN '未分类'
-                ELSE rs.board_name
-              END AS board,
-              COUNT(*) AS cnt
-            {base_join} {board_where}
-            GROUP BY 1
-            ORDER BY cnt DESC, board ASC
-            """,
-            board_params,
-        )
-        for name, n in cur.fetchall():
-            boards.append({"name": str(name), "count": int(n)})
+            cur.execute(
+                """
+                SELECT
+                  CASE
+                    WHEN rs.board_name IS NULL OR rs.board_name = '' THEN '未分类'
+                    ELSE rs.board_name
+                  END AS board,
+                  COUNT(*) AS cnt
+                FROM resource_sources rs
+                GROUP BY 1
+                ORDER BY cnt DESC, board ASC
+                """
+            )
+            for name, n in cur.fetchall():
+                boards.append({"name": str(name), "count": int(n)})
 
-        cur.execute(f"SELECT COUNT(*) {base_join} {result_where}", result_params)
-        results["all"] = int(cur.fetchone()[0])
+            cur.execute(
+                f"""
+                SELECT kind, COUNT(*) AS cnt
+                FROM (
+                  SELECT ({LINK_KIND_SQL}) AS kind
+                  FROM ed2k_resources r
+                  ORDER BY r.updated_at DESC NULLS LAST
+                  LIMIT 20000
+                ) t
+                GROUP BY kind
+                """
+            )
+            kind_rows = list(cur.fetchall())
+            sample_sum = sum(int(n) for _, n in kind_rows) or 1
+            scale = (est / sample_sum) if est > sample_sum else 1.0
+            for kind, n in kind_rows:
+                results[str(kind or "failed")] = int(int(n) * scale)
+            if results["all"] <= 0:
+                results["all"] = sum(
+                    results.get(k, 0) for k in ("magnet", "ed2k", "115share", "stub", "failed")
+                )
+        else:
+            # 有筛选：按当前条件取样（点板块时必须带 board，否则热门版统计会变成 0）
+            sample_limit = 3000 if (q or "").strip() else 5000
+            sample_where, sample_params = _resource_list_where(
+                q=q,
+                source_type=source_type if source_type not in (None, "", "all") else None,
+                board_name=board_name if board_name not in (None, "", "all") else None,
+                link_kind=link_kind if link_kind not in (None, "", "all") else None,
+            )
+            cur.execute(
+                f"""
+                SELECT
+                  r.ed2k_link,
+                  rs.board_name,
+                  s.source_type
+                FROM ed2k_resources r
+                JOIN resource_sources rs ON rs.hash = r.hash
+                JOIN sources s ON s.id = rs.source_id
+                {sample_where}
+                ORDER BY r.updated_at DESC NULLS LAST, r.created_at DESC, rs.id DESC
+                LIMIT %s
+                """,
+                [*sample_params, sample_limit],
+            )
+            sample = list(cur.fetchall())
 
-        cur.execute(
-            f"""
-            SELECT ({LINK_KIND_SQL}) AS kind, COUNT(*) AS cnt
-            {base_join} {result_where}
-            GROUP BY 1
-            """,
-            result_params,
-        )
-        for kind, n in cur.fetchall():
-            key = str(kind or "failed")
-            if key in results:
-                results[key] = int(n)
+            def _kind(link: str | None) -> str:
+                return infer_resource_link_kind(link)
+
+            def _board(name: str | None) -> str:
+                n = (name or "").strip()
+                return n if n else "未分类"
+
+            def _src(st: str | None) -> str:
+                return (st or "").strip() or "web"
+
+            # 来源 / 结果：样本已带当前筛选
+            sources["all"] = len(sample)
+            for row in sample:
+                st = _src(row[2])
+                sources[st] = int(sources.get(st, 0)) + 1
+
+            results["all"] = len(sample)
+            for row in sample:
+                k = _kind(row[0])
+                results[k] = int(results.get(k, 0)) + 1
+
+            # 板块列表：点某个板块时仍展示全站板块树（用无筛选缓存 / 轻量 GROUP BY）
+            global_key = "|||"
+            global_hit = _FACET_CACHE.get(global_key)
+            if global_hit and now - global_hit[0] < _FACET_CACHE_TTL_SEC:
+                boards = list(global_hit[1].get("boards") or [])
             else:
-                results[key] = int(n)
+                cur.execute(
+                    """
+                    SELECT
+                      CASE
+                        WHEN rs.board_name IS NULL OR rs.board_name = '' THEN '未分类'
+                        ELSE rs.board_name
+                      END AS board,
+                      COUNT(*) AS cnt
+                    FROM resource_sources rs
+                    GROUP BY 1
+                    ORDER BY cnt DESC, board ASC
+                    """
+                )
+                boards = [{"name": str(name), "count": int(n)} for name, n in cur.fetchall()]
 
-    return {"sources": sources, "boards": boards, "results": results}
+    out = {"sources": sources, "boards": boards, "results": results}
+    _FACET_CACHE[cache_key] = (now, out)
+    # 防止缓存无限胀
+    if len(_FACET_CACHE) > 64:
+        oldest = sorted(_FACET_CACHE.items(), key=lambda kv: kv[1][0])[:16]
+        for k, _ in oldest:
+            _FACET_CACHE.pop(k, None)
+    return out

@@ -32,8 +32,19 @@ export type AuthStatus = {
   user: AuthUser | null
 }
 
-export function fetchAuthStatus() {
-  return api<AuthStatus>('/api/auth/status')
+export async function fetchAuthStatus() {
+  const ctrl = new AbortController()
+  const timer = window.setTimeout(() => ctrl.abort(), 8000)
+  try {
+    return await api<AuthStatus>('/api/auth/status', { signal: ctrl.signal })
+  } catch (err) {
+    if (err instanceof DOMException && err.name === 'AbortError') {
+      throw new Error('后端无响应（可能正在爬帖占满），请稍后刷新或先停止爬虫')
+    }
+    throw err
+  } finally {
+    window.clearTimeout(timer)
+  }
 }
 
 export async function login(username: string, password: string) {

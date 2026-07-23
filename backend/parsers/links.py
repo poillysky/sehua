@@ -11,6 +11,7 @@ from parsers.content import (
     extract_blockcode_text,
     extract_link_corpus_html,
     extract_password as extract_post_password,
+    extract_preview_images_by_infohash,
     parse_thread_content,
 )
 from parsers.ed2k import Ed2kLink, parse_ed2k_text, pick_primary_ed2k
@@ -31,6 +32,7 @@ class ParsedAsset:
     uri: str
     is_primary: bool = False
     access_code: str = ""
+    preview_images: list[str] = field(default_factory=list)
 
 
 @dataclass(slots=True)
@@ -205,6 +207,16 @@ def parse_thread_dual(
         preferred=preferred_link,
         share115_links=share115_links,
     )
+    # 多磁力合集：每条子资源挂邻近封面/截图；单资源仍用整帖预览
+    hashes = [a.hash for a in assets if a.link_kind in {"magnet", "ed2k"} and a.hash]
+    if len(hashes) > 1:
+        by_hash = extract_preview_images_by_infohash(
+            html, hashes, base_url=base_url, limit_per=5
+        )
+        for asset in assets:
+            imgs = by_hash.get((asset.hash or "").upper()) or []
+            if imgs:
+                asset.preview_images = imgs
     description = _build_description(content, board_fid=board_fid)
 
     extract_password = content.extract_password

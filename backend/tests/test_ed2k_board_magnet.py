@@ -19,6 +19,13 @@ def test_has_target_link_ed2k_accepts_magnet():
     assert has_target_link("ed2k://|file|a.mkv|1|ABCDEFABCDEFABCDEFABCDEFABCDEFAB|/", "ed2k")
 
 
+def test_has_target_link_magnet_accepts_ed2k():
+    """磁力板也认正文 ed2k（转帖区【115ed2k】常见）。"""
+    ed2k = "ed2k://|file|a.mkv|1|ABCDEFABCDEFABCDEFABCDEFABCDEFAB|/"
+    assert has_target_link(ed2k, "magnet")
+    assert has_target_link(MAGNET, "magnet")
+
+
 def test_incomplete_ed2k_not_target_link():
     """缺 hash 的半截 ed2k / d2k 不应算有目标链（常见发帖截断）。"""
     broken = "ed2k://|file|www.98T.la@demo.zip|509285037|"

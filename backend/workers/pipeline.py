@@ -86,6 +86,17 @@ async def process_thread(
     html: 若已取到帖页 HTML 则复用，避免重复请求。
     account_stub_pass: 账号爬占位时，需回复/需购买改为跳过且不写占位。
     """
+    from crawler.throttle import THROTTLE
+
+    if THROTTLE.should_stop():
+        return {
+            "tid": tid,
+            "verdict": "stopped",
+            "outcome": "已请求停止",
+            "skipped": True,
+            "link_kind": "none",
+        }
+
     policy = get_board_policy(board_fid)
     persist_board_name = (board_name or policy.name or "").strip()
     link_pref = (preferred_link or policy.primary_link or "magnet").strip().lower()

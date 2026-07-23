@@ -18,13 +18,14 @@ def test_expand_legacy_fid_to_subunits():
     assert "95:662" not in keys
 
 
-def test_resolve_enabled_respects_board_order():
+def test_resolve_enabled_preserves_selection_order():
     cfg = {
         "board_order": ["95:716", "95:709", "2:684", "37"],
         "enabled_board_fids": ["2:684", "95:716", "999"],
         "active_board_fid": "95:716",
     }
-    assert resolve_enabled_board_fids(cfg) == ["95:716", "2:684"]
+    # 勾选顺序优先于 board_order
+    assert resolve_enabled_board_fids(cfg) == ["2:684", "95:716"]
 
 
 def test_resolve_enabled_expands_legacy_fid():

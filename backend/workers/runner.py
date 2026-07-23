@@ -64,6 +64,16 @@ _STATE: dict[str, Any] = {
 
 _loop_task: asyncio.Task | None = None
 _round_task: asyncio.Task | None = None
+_MAIN_LOOP: asyncio.AbstractEventLoop | None = None
+
+
+def bind_main_loop(loop: asyncio.AbstractEventLoop | None = None) -> None:
+    """记录 uvicorn 主循环，供旁路紧急停止 threadsafe cancel。"""
+    global _MAIN_LOOP
+    try:
+        _MAIN_LOOP = loop or asyncio.get_running_loop()
+    except RuntimeError:
+        _MAIN_LOOP = loop
 
 
 def crawl_status() -> dict[str, Any]:
@@ -101,6 +111,68 @@ def request_stop() -> None:
     THROTTLE.request_stop()
     _STATE["looping"] = False
     _STATE["phase"] = "stopping" if _STATE.get("running") else _STATE.get("phase") or "idle"
+
+
+def emergency_stop_sync() -> dict[str, Any]:
+    """旁路线程可调：打停止标 + 尽量取消任务 + 强制 idle。"""
+    global _loop_task, _round_task
+    request_stop()
+    try:
+        conn = connect()
+        try:
+            configs = load_forum_configs_map(conn)
+            cfg = dict(configs.get(SITE_CRAWLER_FORUM_ID) or {})
+            if cfg.get("web_crawler_enabled"):
+                cfg["web_crawler_enabled"] = False
+                save_forum_config(conn, SITE_CRAWLER_FORUM_ID, cfg)
+        finally:
+            conn.close()
+    except Exception as exc:
+        log.warning("emergency stop disable: %s", exc)
+
+    def _cancel_on_loop() -> None:
+        tasks: list[asyncio.Task] = []
+        if _loop_task is not None and not _loop_task.done():
+            tasks.append(_loop_task)
+        if _round_task is not None and not _round_task.done() and _round_task not in tasks:
+            tasks.append(_round_task)
+        try:
+            from workers.random_tid import cancel_random_loop_task, clear_random_session_state
+
+            for t in cancel_random_loop_task():
+                if t not in tasks:
+                    tasks.append(t)
+            clear_random_session_state()
+        except Exception:
+            pass
+        for t in tasks:
+            t.cancel()
+        _force_idle_state()
+
+    main_loop = _MAIN_LOOP
+    if main_loop is not None and main_loop.is_running():
+        try:
+            main_loop.call_soon_threadsafe(_cancel_on_loop)
+        except Exception:
+            _force_idle_state()
+    else:
+        _force_idle_state()
+
+    # 立刻复位 UI 状态；协程在下一处 should_stop / CancelledError 退出
+    _force_idle_state()
+
+    try:
+        _log_activity("紧急停止 · 旁路端口已请求强制退出（队列保留）")
+    except Exception:
+        pass
+    return {
+        "ok": True,
+        "forced": True,
+        "queue_preserved": True,
+        "running": bool(_STATE.get("running")),
+        "looping": bool(_STATE.get("looping")),
+        "stop_flag": THROTTLE.should_stop(),
+    }
 
 
 def _log_activity(msg: str) -> None:
@@ -152,6 +224,8 @@ async def run_crawl_once(
     require_enabled: bool = True,
     queue_kind: str | None = None,
     hold_lock: bool = False,
+    force_list_scan: bool = False,
+    clear_stop_flag: bool | None = None,
 ) -> dict[str, Any]:
     """执行拓扑一轮：选板→进站→扫列表入队→取待抓→抓帖入库。
 
@@ -160,6 +234,8 @@ async def run_crawl_once(
     - 连续循环：scan_head=False, deep_scan=True, from_loop=True；当前板 list_exhausted 后切下一启用板。
     - queue_kind=abnormal|soft_ad：只在该队列内重爬，成功才出队，不扫列表。
     - hold_lock=True：调用方已占用 running，本函数不抢锁/不释放。
+    - force_list_scan=True：忽略队列背压，仍读本板列表（扫新帖防漏板）。
+    - clear_stop_flag：是否清除手动停止标。None 时：非 from_loop 默认清除；扫新帖多板应传 False。
     """
     kind = (queue_kind or "").strip().lower() or None
     if kind not in {None, "abnormal", "soft_ad"}:
@@ -167,6 +243,14 @@ async def run_crawl_once(
     if kind:
         scan_list = False
 
+    # 已请求停止则拒绝新开一轮（防止扫新帖换板把停止标清掉后继续跑）
+    if THROTTLE.should_stop() and not from_loop and clear_stop_flag is not True:
+        return {
+            "ok": False,
+            "skipped": True,
+            "reason": "stopped",
+            "error": "已请求停止",
+        }
     if hold_lock:
         if not _STATE.get("running"):
             return {
@@ -198,8 +282,9 @@ async def run_crawl_once(
         _STATE["last_started_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
         global _round_task
         _round_task = asyncio.current_task()
-        # 手动开跑清停止标志；连续循环内保留（由 loop/start 清理）
-        if not from_loop:
+        # 仅显式允许时清停止标；扫新帖逐板调用必须 clear_stop_flag=False
+        do_clear = (not from_loop) if clear_stop_flag is None else bool(clear_stop_flag)
+        if do_clear:
             THROTTLE.clear_stop()
 
     result: dict[str, Any] = {
@@ -333,7 +418,7 @@ async def run_crawl_once(
             # 只计正常可抓队列，异常/软文不计入背压
             pending_ready = int(pre_q.get("ready") or 0)
             result["queue_before_list"] = pending_ready
-            if pending_ready >= QUEUE_LIST_BACKPRESSURE:
+            if pending_ready >= QUEUE_LIST_BACKPRESSURE and not force_list_scan:
                 _log_activity(
                     f"启用子板正常待抓合计 {pending_ready}（≥{QUEUE_LIST_BACKPRESSURE}）· "
                     f"本轮跳过列表入队，先消化队列（异常/软文不计）"
@@ -341,6 +426,10 @@ async def run_crawl_once(
                 result["list_skipped"] = True
                 result["reason"] = "queue_backpressure"
             else:
+                if force_list_scan and pending_ready >= QUEUE_LIST_BACKPRESSURE:
+                    _log_activity(
+                        f"强制捕新 · 待抓仍有 {pending_ready}（≥{QUEUE_LIST_BACKPRESSURE}，越过背压以免漏板）"
+                    )
                 _STATE["phase"] = "list_scan"
                 pages_per = int(cfg.get("web_crawler_list_pages_per_board") or 15)
                 max_pages = int(cfg.get("web_crawler_max_list_pages") or 0)
@@ -867,7 +956,15 @@ async def run_scan_head_once(
     max_pages: int | None = None,
     persist: bool = True,
 ) -> dict[str, Any]:
-    """手动扫新帖：按启用队列顺序逐板首页捕新；每板达上限或扫完后换下一板。"""
+    """手动扫新帖：启用板按序捕新入队，最后消化队列至空（或手动停止）。
+
+    保证：
+    1. 每个启用子板都会读列表（无视背压，force_list_scan）。
+    2. 入队帖在收尾阶段尽量全部抓完入库（停止则保留剩余队列）。
+    3. 停止标只在开头清一次；换板/消化轮绝不 clear_stop。
+    """
+    global _round_task
+
     conn = connect()
     try:
         configs = load_forum_configs_map(conn)
@@ -878,8 +975,27 @@ async def run_scan_head_once(
     if not enabled:
         return {"ok": False, "skipped": True, "reason": "no_enabled_boards", "error": "未选择工作板块"}
 
+    if _STATE.get("looping"):
+        return {
+            "ok": False,
+            "skipped": True,
+            "reason": "loop_running",
+            "error": "连续调度进行中，请先关闭后再扫新帖",
+        }
+    if _STATE.get("running"):
+        return {"ok": False, "skipped": True, "reason": "already_running", **crawl_status()}
+
+    _ensure_queue_schema()
+    THROTTLE.clear_stop()
+    _STATE["running"] = True
+    _STATE["loop_inner"] = True
+    _STATE["phase"] = "scan_head"
+    _STATE["last_started_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
+    _round_task = asyncio.current_task()
+
     _log_activity(
-        f"手动扫新帖 · 启用 {len(enabled)} 板 · 顺序 {' → '.join(enabled)}"
+        f"手动扫新帖 · 启用 {len(enabled)} 板 · 顺序 {' → '.join(enabled)} · "
+        f"每板强制读列表 · 收尾消化至空"
     )
     agg: dict[str, Any] = {
         "ok": True,
@@ -896,91 +1012,179 @@ async def run_scan_head_once(
         "failed": 0,
         "pages_head": [],
         "pages_scanned": [],
+        "drain_rounds": 0,
     }
     last: dict[str, Any] = {}
-    for fid in enabled:
-        if THROTTLE.should_stop():
-            agg["reason"] = "stopped"
-            break
-        if max_pages is not None:
-            pages = max(1, int(max_pages))
-        else:
-            pages = resolve_manual_head_pages(cfg, fid)
-        _log_activity(f"扫新帖 · 板块 {fid} · 上限 {pages} 页")
-        last = await run_crawl_once(
-            forum_id=forum_id,
-            persist=persist,
-            scan_list=True,
-            scan_head=True,
-            deep_scan=False,
-            head_pages_override=pages,
-            board_fid_override=fid,
-            from_loop=False,
-            require_enabled=False,
-        )
-        if last.get("skipped"):
-            agg["ok"] = False
-            agg["skipped"] = True
-            agg["reason"] = last.get("reason")
-            agg["error"] = last.get("error")
-            break
-        board_summary = {
-            "board_fid": last.get("board_fid"),
-            "board_name": last.get("board_name"),
-            "pages_head": last.get("pages_head") or [],
-            "enqueued": last.get("enqueued") or 0,
-            "discovered": last.get("discovered") or 0,
-            "crawled": last.get("crawled") or 0,
-            "imports": last.get("imports") or 0,
-            "head_completed": last.get("head_completed"),
-            "head_incomplete": bool(last.get("head_incomplete")),
-            "reason": last.get("reason"),
-        }
-        agg["boards"].append(board_summary)
-        for key in ("discovered", "enqueued", "crawled", "imports", "stubs", "retries", "failed"):
-            agg[key] = int(agg.get(key) or 0) + int(last.get(key) or 0)
-        agg["pages_head"] = list(agg.get("pages_head") or []) + list(last.get("pages_head") or [])
-        if last.get("ok") is False:
-            agg["ok"] = False
-            agg["error"] = last.get("error") or last.get("reason")
-            if last.get("reason") in {"list_login_required", "cooldown_tripped", "stopped"}:
-                agg["reason"] = last.get("reason")
-                break
-        # 达上限或扫完均已于本板 run 内结束，继续下一启用板
-        # 刷新 cfg 以便后续板读到最新进度
-        conn = connect()
-        try:
-            configs = load_forum_configs_map(conn)
-            cfg = dict(configs.get(forum_id) or {})
-        finally:
-            conn.close()
 
-    if last:
-        agg["board_fid"] = last.get("board_fid")
-        agg["board_name"] = last.get("board_name")
-        if last.get("reason") and not agg.get("reason"):
-            agg["reason"] = last.get("reason")
-    _STATE["last_result"] = {
-        k: agg.get(k)
-        for k in (
-            "ok",
-            "enabled_board_fids",
-            "boards",
-            "discovered",
-            "enqueued",
-            "crawled",
-            "imports",
-            "stubs",
-            "retries",
-            "reason",
-            "error",
+    def _accumulate(round_res: dict[str, Any]) -> None:
+        for key in ("discovered", "enqueued", "crawled", "imports", "stubs", "retries", "failed"):
+            agg[key] = int(agg.get(key) or 0) + int(round_res.get(key) or 0)
+        agg["pages_head"] = list(agg.get("pages_head") or []) + list(
+            round_res.get("pages_head") or []
         )
-    }
-    _log_activity(
-        f"扫新帖汇总 · {len(agg.get('boards') or [])}/{len(enabled)} 板 · "
-        f"入队 {agg['enqueued']} · 抓 {agg['crawled']} · 入库 {agg['imports']}"
-    )
-    return agg
+
+    def _queue_ready() -> int:
+        try:
+            qconn = connect()
+            try:
+                keys = enabled_queue_board_keys(enabled) or enabled
+                return int(count_pending(qconn, board_fid=keys).get("ready") or 0)
+            finally:
+                qconn.close()
+        except Exception:
+            return 0
+
+    try:
+        for fid in enabled:
+            if THROTTLE.should_stop():
+                agg["reason"] = "stopped"
+                break
+            if max_pages is not None:
+                pages = max(1, int(max_pages))
+            else:
+                pages = resolve_manual_head_pages(cfg, fid)
+            _log_activity(f"扫新帖 · 板块 {fid} · 上限 {pages} 页 · 强制捕新")
+            last = await run_crawl_once(
+                forum_id=forum_id,
+                persist=persist,
+                scan_list=True,
+                scan_head=True,
+                deep_scan=False,
+                head_pages_override=pages,
+                board_fid_override=fid,
+                from_loop=False,
+                require_enabled=False,
+                hold_lock=True,
+                force_list_scan=True,
+                clear_stop_flag=False,
+            )
+            _accumulate(last)
+            board_summary = {
+                "board_fid": last.get("board_fid") or fid,
+                "board_name": last.get("board_name"),
+                "pages_head": last.get("pages_head") or [],
+                "enqueued": last.get("enqueued") or 0,
+                "discovered": last.get("discovered") or 0,
+                "crawled": last.get("crawled") or 0,
+                "imports": last.get("imports") or 0,
+                "head_completed": last.get("head_completed"),
+                "head_incomplete": bool(last.get("head_incomplete")),
+                "reason": last.get("reason"),
+                "forced_list": True,
+                "list_skipped": bool(last.get("list_skipped")),
+            }
+            if not last.get("skipped") or last.get("reason") == "stopped":
+                agg["boards"].append(board_summary)
+
+            if last.get("reason") == "stopped" or THROTTLE.should_stop():
+                agg["reason"] = "stopped"
+                break
+            if last.get("skipped"):
+                agg["ok"] = False
+                agg["skipped"] = True
+                agg["reason"] = last.get("reason")
+                agg["error"] = last.get("error")
+                break
+            if last.get("ok") is False:
+                agg["ok"] = False
+                agg["error"] = last.get("error") or last.get("reason")
+                if last.get("reason") in {"list_login_required", "cooldown_tripped"}:
+                    agg["reason"] = last.get("reason")
+                    break
+
+            conn = connect()
+            try:
+                configs = load_forum_configs_map(conn)
+                cfg = dict(configs.get(forum_id) or {})
+            finally:
+                conn.close()
+
+        # 收尾：把启用板正常待抓消化完，保证入队帖尽量入库
+        if agg.get("reason") not in {
+            "stopped",
+            "list_login_required",
+            "cooldown_tripped",
+            "already_running",
+            "loop_running",
+        }:
+            idle = 0
+            while not THROTTLE.should_stop():
+                ready = _queue_ready()
+                if ready <= 0:
+                    break
+                agg["drain_rounds"] = int(agg.get("drain_rounds") or 0) + 1
+                _log_activity(
+                    f"扫新帖收尾消化 · 待抓 {ready} · 第 {agg['drain_rounds']} 轮"
+                )
+                last = await run_crawl_once(
+                    forum_id=forum_id,
+                    persist=persist,
+                    scan_list=False,
+                    scan_head=False,
+                    deep_scan=False,
+                    from_loop=False,
+                    require_enabled=False,
+                    hold_lock=True,
+                    clear_stop_flag=False,
+                    board_fid_override=enabled[0] if enabled else None,
+                )
+                _accumulate(last)
+                if last.get("reason") == "stopped" or THROTTLE.should_stop():
+                    agg["reason"] = "stopped"
+                    break
+                crawled = int(last.get("crawled") or 0)
+                if crawled <= 0:
+                    idle += 1
+                    if idle >= 2:
+                        _log_activity("扫新帖收尾 · 无可抓帖（可能均在退避），结束")
+                        break
+                else:
+                    idle = 0
+
+        if last:
+            agg["board_fid"] = last.get("board_fid")
+            agg["board_name"] = last.get("board_name")
+            if last.get("reason") and not agg.get("reason"):
+                agg["reason"] = last.get("reason")
+
+        covered = len(agg.get("boards") or [])
+        _STATE["last_result"] = {
+            k: agg.get(k)
+            for k in (
+                "ok",
+                "enabled_board_fids",
+                "boards",
+                "discovered",
+                "enqueued",
+                "crawled",
+                "imports",
+                "stubs",
+                "retries",
+                "drain_rounds",
+                "reason",
+                "error",
+            )
+        }
+        _log_activity(
+            f"扫新帖汇总 · {covered}/{len(enabled)} 板 · "
+            f"入队 {agg['enqueued']} · 抓 {agg['crawled']} · 入库 {agg['imports']}"
+            + (f" · 收尾 {agg.get('drain_rounds') or 0} 轮" if agg.get("drain_rounds") else "")
+            + (f" · {agg.get('reason')}" if agg.get("reason") else "")
+        )
+        return agg
+    except asyncio.CancelledError:
+        agg["ok"] = False
+        agg["reason"] = "stopped"
+        _log_activity("扫新帖已取消 · 未完成队列已保留")
+        raise
+    finally:
+        if _round_task is asyncio.current_task():
+            _round_task = None
+        _STATE["loop_inner"] = False
+        _STATE["running"] = False
+        _STATE["phase"] = "idle"
+        _STATE["last_finished_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
+        _STATE["throttle"] = THROTTLE.status()
 
 
 async def _continuous_loop() -> None:
@@ -1059,11 +1263,12 @@ def _force_idle_state() -> None:
 async def stop_crawler(
     *,
     disable: bool = True,
-    wait_seconds: float = 12.0,
-    force_after: float = 8.0,
+    wait_seconds: float = 2.0,
+    force_after: float = 0.0,
 ) -> dict[str, Any]:
-    """手动停止：协作退出 → 超时取消任务 → 会话在 finally 清理；队列行不删不改。"""
+    """手动停止：立刻打停止标并取消任务；短等后强制 idle。队列行不删不改。"""
     global _loop_task, _round_task
+    del force_after  # 兼容旧调用；现已立即 cancel，不再干等
 
     was_running = bool(_STATE.get("running") or _STATE.get("looping"))
     request_stop()
@@ -1083,38 +1288,37 @@ async def stop_crawler(
         except Exception as exc:
             log.warning("stop disable flag: %s", exc)
 
-    deadline = time.monotonic() + max(0.5, float(wait_seconds))
-    force_at = time.monotonic() + max(0.5, float(force_after))
     forced = False
+    tasks: list[asyncio.Task] = []
+    if _loop_task is not None and not _loop_task.done():
+        tasks.append(_loop_task)
+    if _round_task is not None and not _round_task.done() and _round_task not in tasks:
+        if _loop_task is None or _round_task is not _loop_task:
+            tasks.append(_round_task)
+    try:
+        from workers.random_tid import cancel_random_loop_task, clear_random_session_state
 
+        for t in cancel_random_loop_task():
+            if t not in tasks:
+                tasks.append(t)
+        clear_random_session_state()
+    except Exception:
+        pass
+    if tasks:
+        forced = True
+        for t in tasks:
+            t.cancel()
+        _log_activity("手动停止 · 已发出任务取消")
+
+    deadline = time.monotonic() + max(0.2, float(wait_seconds))
     while time.monotonic() < deadline:
-        if not _STATE.get("running") and not _STATE.get("looping"):
+        if not _STATE.get("running") and not _STATE.get("looping") and not _STATE.get("loop_inner"):
             break
-        if not forced and time.monotonic() >= force_at:
-            forced = True
-            tasks: list[asyncio.Task] = []
-            if _loop_task is not None and not _loop_task.done():
-                tasks.append(_loop_task)
-            if _round_task is not None and not _round_task.done() and _round_task not in tasks:
-                # 同一 task（循环内）只 cancel 一次
-                if _loop_task is None or _round_task is not _loop_task:
-                    tasks.append(_round_task)
-            try:
-                from workers.random_tid import cancel_random_loop_task, clear_random_session_state
-
-                for t in cancel_random_loop_task():
-                    if t not in tasks:
-                        tasks.append(t)
-                clear_random_session_state()
-            except Exception:
-                pass
-            for t in tasks:
-                t.cancel()
-            _log_activity("手动停止 · 超时强制取消任务")
-        await asyncio.sleep(0.2)
+        await asyncio.sleep(0.1)
 
     still = bool(_STATE.get("running") or _STATE.get("looping") or _STATE.get("loop_inner"))
     if still:
+        forced = True
         _force_idle_state()
         _log_activity("手动停止 · 已强制复位状态（队列未改动）")
     else:
@@ -1128,5 +1332,5 @@ async def stop_crawler(
         "running": bool(_STATE.get("running")),
         "looping": bool(_STATE.get("looping")),
         "queue_preserved": True,
-        "message": "已停止 · 未完成队列已保留",
+        "message": "已强制停止 · 未完成队列已保留" if forced else "已停止 · 未完成队列已保留",
     }

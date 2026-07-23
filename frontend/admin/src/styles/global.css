@@ -1901,6 +1901,9 @@ a {
 
 .crawler-action-danger {
   color: #fca5a5;
+  pointer-events: auto !important;
+  opacity: 1 !important;
+  cursor: pointer !important;
 }
 
 .crawler-action-danger:hover:not(:disabled) {

@@ -533,12 +533,17 @@ async def recrawl_imported_resources(hashes: list[str]) -> dict[str, Any]:
     imported_n = 0
     removed_n = 0
     try:
+        # 上次「停止」会留下 stop 文件；不清理则 process_thread 条条直接 stopped
+        THROTTLE.clear_stop()
         _log_activity(f"已入库批量重爬 · 开始 {len(prepared_list)} 条")
         session = session_from_config(cfg)
         await session.bootstrap()
         fetcher = fetcher_from_config(session, cfg)
 
         for i, prepared in enumerate(prepared_list):
+            if THROTTLE.should_stop():
+                _log_activity("已入库批量重爬 · 收到停止请求，中止后续")
+                break
             one = await _run_one(prepared, cfg=cfg, session=session, fetcher=fetcher)
             results.append(one)
             if one.get("imported"):

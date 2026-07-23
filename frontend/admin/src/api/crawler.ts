@@ -171,19 +171,62 @@ export function stopCrawlerLoop() {
   })
 }
 
-export function stopCrawler() {
-  return api<{
-    message: string
-    ok?: boolean
-    was_running?: boolean
-    forced?: boolean
-    queue_preserved?: boolean
-    running?: boolean
-    looping?: boolean
-  }>('/api/crawler/stop', {
-    method: 'POST',
-    body: '{}',
-  })
+export async function stopCrawler() {
+  const ctrl = new AbortController()
+  const timer = window.setTimeout(() => ctrl.abort(), 4000)
+  try {
+    return await api<{
+      message: string
+      ok?: boolean
+      was_running?: boolean
+      forced?: boolean
+      queue_preserved?: boolean
+      running?: boolean
+      looping?: boolean
+    }>('/api/crawler/stop', {
+      method: 'POST',
+      body: '{}',
+      signal: ctrl.signal,
+    })
+  } catch (err) {
+    // 主 API 被爬虫堵住时走旁路端口（独立线程，不经过 uvicorn 事件循环）
+    try {
+      const res = await fetch('http://127.0.0.1:18080/stop', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: '{}',
+      })
+      const data = (await res.json().catch(() => ({}))) as {
+        message?: string
+        ok?: boolean
+        forced?: boolean
+        queue_preserved?: boolean
+        running?: boolean
+        looping?: boolean
+      }
+      if (!res.ok) {
+        throw new Error(data.message || `紧急停止失败（${res.status}）`)
+      }
+      return {
+        message: data.message || '已紧急停止 · 队列已保留',
+        ok: true,
+        forced: true,
+        queue_preserved: true,
+        ...data,
+      }
+    } catch (emergencyErr) {
+      if (err instanceof DOMException && err.name === 'AbortError') {
+        throw new Error(
+          emergencyErr instanceof Error
+            ? `主接口超时，紧急停止也失败：${emergencyErr.message}`
+            : '停止超时：请重启后端',
+        )
+      }
+      throw err instanceof Error ? err : new Error('停止失败')
+    }
+  } finally {
+    window.clearTimeout(timer)
+  }
 }
 
 export type QueueRetryResult = {

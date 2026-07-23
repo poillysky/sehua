@@ -510,6 +510,8 @@ def mark_pending_soft_ad(conn: Any, url: str, *, backoff_seconds: int = 3600) ->
     mark_pending_retry(conn, url, SOFT_AD_ERROR, backoff_seconds=backoff_seconds)
 
 def mark_pending_retry(conn: Any, url: str, error: str, *, backoff_seconds: int = 900) -> None:
+    from parsers.safe_text import strip_nul
+
     url = canonical_thread_url(url)
     cur = conn.cursor()
     cur.execute(
@@ -522,7 +524,7 @@ def mark_pending_retry(conn: Any, url: str, error: str, *, backoff_seconds: int 
             updated_at = now()
         WHERE page_type = 'thread' AND url = %s
         """,
-        ((error or "retry")[:500], max(30, int(backoff_seconds)), url),
+        (strip_nul(error or "retry")[:500], max(30, int(backoff_seconds)), url),
     )
     conn.commit()
 
@@ -534,6 +536,8 @@ def mark_thread_done(
     outcome: str,
     status: str = "done",
 ) -> None:
+    from parsers.safe_text import strip_nul
+
     url = canonical_thread_url(url)
     cur = conn.cursor()
     cur.execute(
@@ -547,7 +551,7 @@ def mark_thread_done(
             updated_at = now()
         WHERE page_type = 'thread' AND url = %s
         """,
-        (status, (outcome or "")[:200], url),
+        (status, strip_nul(outcome or "")[:200], url),
     )
     conn.commit()
 

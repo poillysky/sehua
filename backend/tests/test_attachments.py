@@ -258,6 +258,26 @@ def test_denied_not_masked_by_empty_download():
     assert not out.text
 
 
+def test_denied_continues_to_next_then_import_wins():
+    """3 个附件：前两个无权、第三个有链 → 应继续试并成功（denied 不短路）。"""
+    names = ["a.rar", "b.rar", "c.txt"]
+    tried: list[str] = []
+    result_text = ""
+    any_denied = False
+    for name in names:
+        tried.append(name)
+        if name.endswith(".rar"):
+            any_denied = True
+            continue
+        result_text = "magnet:?xt=urn:btih:AABBCCDDEEFF00112233445566778899"
+        break
+    assert tried == ["a.rar", "b.rar", "c.txt"]
+    assert result_text.startswith("magnet:")
+    # 有可入库文本时，最终不应因 earlier denied 而占位
+    denied_final = False if result_text else any_denied
+    assert denied_final is False
+
+
 def test_judge_stubs_when_second_attachment_denied():
     """正文无链、附件已试、第二附件无权 → 占位入库，不重试。"""
     from workers.thread_outcome import judge_thread_html

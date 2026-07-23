@@ -1,4 +1,7 @@
-"""请求节奏：基准延迟 + AutoThrottle（按近窗失败率抬升延迟）。"""
+"""请求节奏：基准延迟 + AutoThrottle（按近窗失败率抬升延迟）。
+
+停止标双写：内存 + data/crawler.stop，避免多进程/热重载后停错实例。
+"""
 
 from __future__ import annotations
 
@@ -6,7 +9,33 @@ import asyncio
 import time
 from collections import deque
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
+
+_STOP_FILE = Path(__file__).resolve().parent.parent / "data" / "crawler.stop"
+
+
+def _write_stop_file() -> None:
+    try:
+        _STOP_FILE.parent.mkdir(parents=True, exist_ok=True)
+        _STOP_FILE.write_text(str(time.time()), encoding="utf-8")
+    except OSError:
+        pass
+
+
+def _clear_stop_file() -> None:
+    try:
+        if _STOP_FILE.exists():
+            _STOP_FILE.unlink()
+    except OSError:
+        pass
+
+
+def _stop_file_present() -> bool:
+    try:
+        return _STOP_FILE.is_file()
+    except OSError:
+        return False
 
 
 @dataclass
@@ -39,12 +68,19 @@ class AutoThrottle:
 
     def request_stop(self) -> None:
         self._stop = True
+        _write_stop_file()
 
     def clear_stop(self) -> None:
         self._stop = False
+        _clear_stop_file()
 
     def should_stop(self) -> bool:
-        return self._stop
+        if self._stop:
+            return True
+        if _stop_file_present():
+            self._stop = True
+            return True
+        return False
 
     def record_success(self) -> None:
         self.consecutive_failures = 0
@@ -75,7 +111,7 @@ class AutoThrottle:
         """可中断睡眠：stop 后最多约 0.5s 内醒来，避免冷却卡住退出。"""
         end = time.monotonic() + max(0.0, float(seconds or 0))
         while True:
-            if self._stop:
+            if self.should_stop():
                 return
             remaining = end - time.monotonic()
             if remaining <= 0:
@@ -97,6 +133,8 @@ class AutoThrottle:
             "fetch_sample_size": total,
             "fetch_failure_threshold": self.failure_threshold,
             "consecutive_failures": self.consecutive_failures,
+            "stop_flag": self.should_stop(),
+            "stop_file": _stop_file_present(),
         }
 
 

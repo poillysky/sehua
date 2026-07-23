@@ -20,6 +20,7 @@ from parsers.list_dates import extract_thread_posted_at, is_thread_old_enough
 from parsers.thread_gates import (
     has_115_sha_link,
     has_baidu_share_link,
+    has_115_share_link,
     has_pikpak_share_link,
     has_target_link,
     has_xunlei_share_link,
@@ -110,13 +111,15 @@ def judge_thread_html(
     title = page_tit
     if not title_recognizable(title) and title_recognizable(list_title):
         title = list_title
-    text = post_text(html)
-    # 与 parse_thread_dual 对齐：目标链/网盘判定以楼主语料为准，避免回帖磁力干扰
+    # 与 parse_thread_dual 对齐：目标链/网盘/跳过一律只认楼主语料，忽略回帖
     try:
         from parsers.content import extract_link_corpus_html
 
-        link_corpus = extract_link_corpus_html(html) or text
+        link_corpus = extract_link_corpus_html(html) or ""
     except Exception:
+        link_corpus = ""
+    text = post_text(html) or link_corpus
+    if not link_corpus:
         link_corpus = text
     has_lz_target = has_target_link(link_corpus, link_kind)
 
@@ -180,10 +183,9 @@ def judge_thread_html(
                 title,
             )
 
-    # 115sha 直链：已有 magnet/ed2k 不跳；有附件区则先下附件（rar/zip 里常有磁力）
-    _sha_blob = f"{text or ''}\n{html or ''}"
-    if has_115_sha_link(text) or has_115_sha_link(html):
-        if should_skip_as_115sha_only(_sha_blob):
+    # 115sha 直链：只认楼主语料；已有 magnet/ed2k 不跳；有附件区则先下附件
+    if has_115_sha_link(link_corpus):
+        if should_skip_as_115sha_only(link_corpus):
             has_attach_corpus = "postmessage_attach" in (html or "")
             if not attachments_already_tried and looks_like_attachment_zone(html):
                 pass  # 先下附件
@@ -202,40 +204,65 @@ def judge_thread_html(
     # 115 网盘分享页：有分享链则走正文解析入库（见 parse_thread_dual），不再跳过。
     # 仍跳过：仅标题写 115 分享、正文无实际链接（见下方 title 分支已移除分享标题硬跳）。
 
-    # 迅雷云盘（pan.xunlei.com/s/...）：无 ed2k/磁力/115分享时直接跳过
-    if (has_xunlei_share_link(text) or has_xunlei_share_link(html)) and not has_lz_target:
-        return ThreadOutcome("skipped", "迅雷云盘（跳过）", link_kind, title)
+    # 迅雷 / PikPak / 百度：只看楼主语料（勿扫回帖广告链）；无目标链且无附件可试时才跳过
+    if has_xunlei_share_link(link_corpus) and not has_lz_target:
+        if not attachments_already_tried and looks_like_attachment_zone(html):
+            pass
+        else:
+            return ThreadOutcome("skipped", "迅雷云盘（跳过）", link_kind, title)
 
-    # PikPak（mypikpak.com/s/...）：无目标链时直接跳过
-    if (has_pikpak_share_link(text) or has_pikpak_share_link(html)) and not has_lz_target:
-        return ThreadOutcome("skipped", "PikPak网盘（跳过）", link_kind, title)
+    if has_pikpak_share_link(link_corpus) and not has_lz_target:
+        if not attachments_already_tried and looks_like_attachment_zone(html):
+            pass
+        else:
+            return ThreadOutcome("skipped", "PikPak网盘（跳过）", link_kind, title)
 
-    # 百度网盘（pan.baidu.com/s/...）：无目标链时直接跳过
-    if (has_baidu_share_link(text) or has_baidu_share_link(html)) and not has_lz_target:
-        return ThreadOutcome("skipped", "百度网盘（跳过）", link_kind, title)
+    if has_baidu_share_link(link_corpus) and not has_lz_target:
+        if not attachments_already_tried and looks_like_attachment_zone(html):
+            pass
+        else:
+            return ThreadOutcome("skipped", "百度网盘（跳过）", link_kind, title)
 
-    # 标题仅 115sha / 迅雷 / PikPak / 百度、且正文无目标链：不下附件、不重试
+    # 标题仅 115sha / 迅雷 / PikPak / 百度、且正文无目标链：
+    # 115sha 标题若带附件区，先下附件（常见：标题写 115sha1，rar 内实为 ed2k）
     # （正文已有 115cdn 分享 / ed2k / 磁力时不因标题里的「百度」等字样硬跳）
     if title_is_115sha_without_ed2k_magnet(title) or title_is_115sha_without_ed2k_magnet(
         list_title
     ):
-        return ThreadOutcome("skipped", "115sha 标题（无 ed2k/磁力，跳过）", link_kind, title)
+        if has_lz_target:
+            pass
+        elif has_115_share_link(link_corpus):
+            # 标题写 115sha1，正文实为 115.com/s/ 分享码 → 入库
+            pass
+        elif not attachments_already_tried and looks_like_attachment_zone(html):
+            pass
+        else:
+            return ThreadOutcome("skipped", "115sha 标题（无 ed2k/磁力，跳过）", link_kind, title)
     _has_body_target = has_lz_target
     if not _has_body_target and (
         title_is_xunlei_cloud_without_ed2k_magnet(title)
         or title_is_xunlei_cloud_without_ed2k_magnet(list_title)
     ):
-        return ThreadOutcome("skipped", "迅雷云盘标题（无 ed2k/磁力，跳过）", link_kind, title)
+        if not attachments_already_tried and looks_like_attachment_zone(html):
+            pass
+        else:
+            return ThreadOutcome("skipped", "迅雷云盘标题（无 ed2k/磁力，跳过）", link_kind, title)
     if not _has_body_target and (
         title_is_pikpak_without_ed2k_magnet(title)
         or title_is_pikpak_without_ed2k_magnet(list_title)
     ):
-        return ThreadOutcome("skipped", "PikPak标题（无 ed2k/磁力，跳过）", link_kind, title)
+        if not attachments_already_tried and looks_like_attachment_zone(html):
+            pass
+        else:
+            return ThreadOutcome("skipped", "PikPak标题（无 ed2k/磁力，跳过）", link_kind, title)
     if not _has_body_target and (
         title_is_baidu_pan_without_ed2k_magnet(title)
         or title_is_baidu_pan_without_ed2k_magnet(list_title)
     ):
-        return ThreadOutcome("skipped", "百度网盘标题（无 ed2k/磁力，跳过）", link_kind, title)
+        if not attachments_already_tried and looks_like_attachment_zone(html):
+            pass
+        else:
+            return ThreadOutcome("skipped", "百度网盘标题（无 ed2k/磁力，跳过）", link_kind, title)
 
     # 需回复：满龄（或非龄期板）→ 占位显示；未满龄已在上一步跳过
     if is_reply_required_post(html):
@@ -254,12 +281,8 @@ def judge_thread_html(
             board_fid=board_fid,
         )  # type: ignore[arg-type]
         if parsed.primary_link_kind != "none" and parsed.assets:
-            # ed2k 板若只有磁力，primary 为 magnet；报表用实际主链类型
-            outcome_kind = (
-                parsed.primary_link_kind
-                if link_kind in {"both", "ed2k"}
-                else link_kind
-            )
+            # 报表用实际主链类型（含：磁力板仅有 115 分享码 → 115share）
+            outcome_kind = parsed.primary_link_kind
             return ThreadOutcome(
                 "import",
                 (
@@ -347,7 +370,7 @@ def judge_thread_html(
             title,
         )
 
-    if is_non_target_cloud_share(link_kind=link_kind, text=text) and not title_implies_resource(
+    if is_non_target_cloud_share(link_kind=link_kind, text=link_corpus) and not title_implies_resource(
         title, link_kind
     ):
         return ThreadOutcome("skipped", "非ED2K资源（网盘分享）", link_kind, title)
@@ -357,7 +380,7 @@ def judge_thread_html(
         and fid == DISCUZ_BOARD_FID
         and thread_typeid_mismatch(html, str(fid), required_typeid)
     )
-    if is_genuine_non_resource(html=html, title=title, link_kind=link_kind, text=text):
+    if is_genuine_non_resource(html=html, title=title, link_kind=link_kind, text=link_corpus):
         outcome = (
             "非情色分享分类"
             if wrong_typeid

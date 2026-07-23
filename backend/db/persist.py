@@ -6,7 +6,8 @@ from typing import Any
 
 from db.repository import ensure_source, import_thread_stub, upsert_resource
 from parsers.ed2k import Ed2kLink
-from parsers.links import DualParseResult
+from parsers.links import DualParseResult, ParsedAsset
+from parsers.resource_names import resolve_sub_filename
 
 
 def persist_dual_parse(
@@ -21,7 +22,12 @@ def persist_dual_parse(
     source_name: str = "网站爬虫",
     import_outcome: str | None = None,
 ) -> dict[str, Any]:
-    """Persist one thread parse. Returns {count, stub, hash, link_kind}."""
+    """Persist one thread parse. Returns {count, stub, hash, link_kind}.
+
+    - 主资源名 title = 帖子标题
+    - 子资源名 filename = 有真实文件名用自己的，没有则用标题
+    - 多磁力/多 ed2k：按 hash 各写一条
+    """
     source_id = ensure_source(conn, source_key, source_name, "web")
     fid = str(board_fid) if board_fid not in ("", None) else None
 
@@ -29,12 +35,14 @@ def persist_dual_parse(
     if primary is None and parsed.assets:
         primary = parsed.assets[0]
 
+    post_title = (parsed.title or "").strip()
+
     if primary is None:
         count = import_thread_stub(
             conn,
             source_id=source_id,
             source_url=source_url,
-            title=parsed.title or None,
+            title=post_title or None,
             description=parsed.description or None,
             preview_images=parsed.preview_images or None,
             board_fid=fid,
@@ -50,35 +58,65 @@ def persist_dual_parse(
             "import_outcome": import_outcome or "无下载链 · 占位入库",
         }
 
-    same_kind = [a for a in parsed.assets if a.link_kind == primary.link_kind]
-    all_uris = [a.uri for a in same_kind] or [primary.uri]
-    link = Ed2kLink(
-        filename=primary.filename or parsed.title or primary.hash,
-        size=int(primary.size or 0),
-        hash=primary.hash,
-        link=primary.uri,
+    same_kind = [a for a in parsed.assets if a.link_kind == primary.link_kind] or [
+        primary
+    ]
+    seen: set[str] = set()
+    uniq: list[ParsedAsset] = []
+    for asset in same_kind:
+        h = (asset.hash or "").strip().upper()
+        if not h or h in seen:
+            continue
+        seen.add(h)
+        uniq.append(asset)
+    if not uniq:
+        uniq = [primary]
+
+    outcome_msg = import_outcome or (
+        f"成功：已提取 {len(uniq)} 条资源" if len(uniq) > 1 else "成功：已提取主链"
     )
-    upsert_resource(
-        conn,
-        link,
-        source_id,
-        source_url=source_url,
-        title=parsed.title or None,
-        description=parsed.description or None,
-        preview_images=parsed.preview_images or None,
-        ed2k_links=all_uris,
-        extract_password=parsed.extract_password or None,
-        board_fid=fid,
-        board_name=board_name or None,
-        forum_id=forum_id,
-        import_outcome=import_outcome or "成功：已提取主链",
-    )
+    last_hash = primary.hash
+    for asset in uniq:
+        main_name = post_title or (asset.filename or "").strip() or asset.hash
+        sub_name = resolve_sub_filename(
+            inner_name=asset.filename,
+            title=main_name,
+            hash_value=asset.hash,
+            link_uri=asset.uri,
+        )
+        link = Ed2kLink(
+            filename=sub_name,
+            size=int(asset.size or 0),
+            hash=asset.hash,
+            link=asset.uri,
+        )
+        upsert_resource(
+            conn,
+            link,
+            source_id,
+            source_url=source_url,
+            title=main_name,
+            description=parsed.description or None,
+            preview_images=(
+                (asset.preview_images or parsed.preview_images or None)[:5]
+                if (asset.preview_images or parsed.preview_images)
+                else None
+            ),
+            ed2k_links=[asset.uri],
+            extract_password=parsed.extract_password or None,
+            board_fid=fid,
+            board_name=board_name or None,
+            forum_id=forum_id,
+            import_outcome=outcome_msg,
+        )
+        last_hash = asset.hash
+
     return {
-        "count": 1,
+        "count": len(uniq),
         "stub": False,
-        "hash": primary.hash,
+        "hash": last_hash,
         "link_kind": primary.link_kind,
-        "import_outcome": import_outcome or "成功：已提取主链",
+        "import_outcome": outcome_msg,
     }
 
 

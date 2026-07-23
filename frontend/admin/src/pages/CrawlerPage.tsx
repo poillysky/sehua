@@ -554,17 +554,7 @@ export function CrawlerPage() {
   }
 
   const onStop = async () => {
-    if (!running && !looping && !enabled) {
-      toast.info('当前没有在跑的爬虫')
-      return
-    }
-    const ok = await confirmDialog({
-      title: '手动停止',
-      message: '立即停止爬虫并清理线程。未处理完的队列任务会保留在数据库中，不会丢失。',
-      confirmText: '停止',
-    })
-    if (!ok) return
-    setBusy(true)
+    // 不弹确认、不因状态禁用：状态轮询失败时也要能停
     setRunHint('正在停止…')
     try {
       const res = await stopCrawler()
@@ -577,8 +567,6 @@ export function CrawlerPage() {
       await refresh()
     } catch (err) {
       toast.error(err instanceof Error ? err.message : '停止失败')
-    } finally {
-      setBusy(false)
     }
   }
 
@@ -845,7 +833,7 @@ export function CrawlerPage() {
                         ? '连续调度进行中，请先关闭开关后再扫新帖'
                         : running || stopping
                           ? '本轮仍在执行，请稍候'
-                          : '从第 1 页捕新入队（启用多板按序轮换；连续 2 页全已知或达上限后换下一板）'
+                          : '启用子板按序捕新（强制读列表）→ 收尾消化待抓至空；连续全旧帖早停；可手动停止'
                     }
                     onClick={() => void onScanHead()}
                   >
@@ -907,8 +895,8 @@ export function CrawlerPage() {
                   <button
                     type="button"
                     className="crawler-action crawler-action-danger"
-                    disabled={busy || stopping || (!running && !looping && !enabled)}
-                    title="停止爬虫并清理线程；未完成队列保留不丢"
+                    disabled={false}
+                    title="立即停止（始终可点；主接口不通时自动走紧急旁路）"
                     onClick={() => void onStop()}
                   >
                     {stopping ? '停止中…' : '手动停止'}

@@ -144,6 +144,60 @@ def test_title_115sha_only_skips_without_trying_attachments():
     assert out.need_attachments is False
 
 
+def test_title_115sha_with_ed2k_rar_tries_attachments():
+    """标题写 115sha1，但附件是 ed2k.rar → 应先下附件，勿直接跳过。"""
+    html = """
+    <html><head><title>【自购】【115sha1】示例合集【2V】 - 论坛</title></head>
+    <body>
+    <div id="postmessage_1">链接见附件</div>
+    <div class="tattl"><ignore_js_op>
+      <a href="forum.php?mod=attachment&aid=1">ed2k.rar</a>
+    </ignore_js_op></div>
+    Powered by Discuz!
+    </body></html>
+    """
+    html = html + ("x" * 15000)
+    out = judge_thread_html(
+        html,
+        board_fid="141:690",
+        list_title="【自购】【115sha1】示例合集【2V】",
+        preferred_link="ed2k",
+    )
+    assert out.verdict == "need_attachments"
+    assert out.need_attachments is True
+
+
+def test_title_115sha_after_attach_ed2k_imports():
+    """115sha 标题帖：附件注入 ed2k 后应入库，不再按标题跳过。"""
+    html = """
+    <html><head><title>【115sha1】示例合集 - 论坛</title></head>
+    <body>
+    <div id="postmessage_1">见附件</div>
+    <div class="tattl"><ignore_js_op>
+      <a href="forum.php?mod=attachment&aid=1">ed2k.rar</a>
+    </ignore_js_op></div>
+    Powered by Discuz!
+    </body></html>
+    """
+    html = html + ("x" * 15000)
+    ed2k = (
+        "ed2k://|file|ppv-orimrs526.mp4|717742734|"
+        "D8474F7BE71FDFB00A5F9B9F7AA7CD16|/"
+    )
+    merged = inject_attachment_text(html, ed2k)
+    out = judge_thread_html(
+        merged,
+        board_fid="141:690",
+        list_title="【115sha1】示例合集",
+        preferred_link="ed2k",
+        attachments_already_tried=True,
+        had_attachments=True,
+    )
+    assert out.verdict == "import"
+    assert out.parsed is not None
+    assert out.parsed.ed2k_links
+
+
 def test_no_ed2k_magnet_after_attach_try_skips():
     html = """
     <html><head><title>资源合集 98T - 论坛</title></head>
@@ -296,7 +350,12 @@ def test_baidu_pan_share_skips():
     <html><head><title>【自转】【百度网盘】合集 - 论坛</title></head>
     <body>
     <span id="thread_subject">【自转】【百度网盘】合集</span>
-    <div id="postmessage_1">资源：{share}</div>
+    <div id="postlist">
+      <div id="post_1">
+        <div class="authi"><em>1#</em><img src="ico_lz.png" alt="楼主"/></div>
+        <div id="postmessage_1">资源：{share}</div>
+      </div>
+    </div>
     Powered by Discuz!
     </body></html>
     """
@@ -310,6 +369,42 @@ def test_baidu_pan_share_skips():
     assert out.verdict == "skipped"
     assert "百度网盘" in out.outcome
     assert out.need_attachments is False
+
+
+def test_reply_baidu_does_not_skip_lz_ed2k_attachment():
+    """回帖贴百度封面链，楼主有 ed2k.zip 附件 → 应先下附件，勿百度跳过。"""
+    html = """
+    <html><head><title>【自整理合集】【ed2k】示例合集 - 论坛</title></head>
+    <body>
+    <span id="thread_subject">【自整理合集】【ed2k】示例合集</span>
+    <div id="postlist">
+      <div id="post_1">
+        <div class="authi"><em>1#</em><img src="ico_lz.png" alt="楼主"/></div>
+        <div id="postmessage_1">链接见附件 ed2k.zip</div>
+        <div class="tattl"><ignore_js_op>
+          <a href="forum.php?mod=attachment&aid=1">demo_ed2k.zip</a>
+        </ignore_js_op></div>
+      </div>
+      <div id="post_2">
+        <div class="authi"><em>2#</em></div>
+        <div id="postmessage_2">
+          封面：https://pan.baidu.com/s/1wTbr2pUU-P1cRWmHNLxf5Q?pwd=qnkb
+        </div>
+      </div>
+    </div>
+    Powered by Discuz!
+    </body></html>
+    """
+    html = html + ("<!-- pad -->" * 900)
+    out = judge_thread_html(
+        html,
+        board_fid="141:691",
+        list_title="【自整理合集】【ed2k】示例合集",
+        preferred_link="ed2k",
+    )
+    assert out.verdict == "need_attachments"
+    assert out.need_attachments is True
+    assert "百度" not in out.outcome
 
 
 def test_baidu_op_not_failed_by_reply_magnet():
@@ -418,3 +513,115 @@ def test_discussion_op_skips_despite_reply_ed2k():
     assert out.verdict == "skipped"
     assert "非资源" in out.outcome or "未发现" in out.outcome or "无目标" in out.outcome
     assert out.outcome != "解析入库失败（有链但无主资源）"
+
+
+def test_reply_115sha_ignored_when_lz_has_ed2k():
+    """回帖贴 115sha，楼主正文有 ed2k → 应入库，勿 115sha 跳过。"""
+    ed2k = (
+        "ed2k://|file|demo.mkv|123456|"
+        "0123456789ABCDEF0123456789ABCDEF|/"
+    )
+    html = f"""
+    <html><head><title>【ed2k】示例资源 - 论坛</title></head>
+    <body>
+    <span id="thread_subject">【ed2k】示例资源</span>
+    <div id="postlist">
+      <div id="post_1">
+        <div class="authi"><em>1#</em><img src="ico_lz.png" alt="楼主"/></div>
+        <div id="postmessage_1">资源：{ed2k}</div>
+      </div>
+      <div id="post_2">
+        <div class="authi"><em>2#</em></div>
+        <div id="postmessage_2">{SAMPLE_115}</div>
+      </div>
+    </div>
+    Powered by Discuz!
+    </body></html>
+    """
+    html = html + ("<!-- pad -->" * 900)
+    out = judge_thread_html(
+        html,
+        board_fid="95:716",
+        list_title="【ed2k】示例资源",
+        preferred_link="ed2k",
+    )
+    assert out.verdict == "import"
+    assert "115sha" not in out.outcome
+
+
+def test_reply_please_reply_marker_ignored():
+    """回帖复读「请回复」，楼主已公开资源 → 勿判需回复贴。"""
+    from parsers.thread_gates import is_reply_required_post, post_text
+
+    ed2k = (
+        "ed2k://|file|demo.mkv|123456|"
+        "0123456789ABCDEF0123456789ABCDEF|/"
+    )
+    html = f"""
+    <html><head><title>【ed2k】示例 - 论坛</title></head>
+    <body>
+    <span id="thread_subject">【ed2k】示例</span>
+    <div id="postlist">
+      <div id="post_1">
+        <div class="authi"><em>1#</em><img src="ico_lz.png" alt="楼主"/></div>
+        <div id="postmessage_1">资源：{ed2k}</div>
+      </div>
+      <div id="post_2">
+        <div class="authi"><em>2#</em></div>
+        <div id="postmessage_2">
+          引用：游客，如果您要查看本帖隐藏内容请回复
+        </div>
+      </div>
+    </div>
+    Powered by Discuz!
+    </body></html>
+    """
+    html = html + ("<!-- pad -->" * 900)
+    assert is_reply_required_post(html) is False
+    assert "请回复" not in post_text(html)
+    assert "demo.mkv" in post_text(html)
+    out = judge_thread_html(
+        html,
+        board_fid="95:716",
+        list_title="【ed2k】示例",
+        preferred_link="ed2k",
+    )
+    assert out.verdict == "import"
+
+
+def test_reply_magnet_blockcode_not_imported():
+    """回帖 blockcode 磁力，楼主无链 → 勿从回帖入库。"""
+    from parsers.links import parse_thread_dual
+
+    magnet = "magnet:?xt=urn:btih:ABCDEF0123456789ABCDEF0123456789ABCDEF01"
+    html = f"""
+    <html><head><title>讨论帖 - 论坛</title></head>
+    <body>
+    <span id="thread_subject">随便聊聊</span>
+    <div id="postlist">
+      <div id="post_1">
+        <div class="authi"><em>1#</em><img src="ico_lz.png" alt="楼主"/></div>
+        <div id="postmessage_1">求资源，有没有人发一下</div>
+      </div>
+      <div id="post_2">
+        <div class="authi"><em>2#</em></div>
+        <div id="postmessage_2">
+          <div class="blockcode"><ol><li>{magnet}</li></ol></div>
+        </div>
+      </div>
+    </div>
+    Powered by Discuz!
+    </body></html>
+    """
+    parsed = parse_thread_dual(html, preferred_link="magnet")
+    assert parsed.primary_link_kind == "none"
+    assert not parsed.magnets
+    html = html + ("<!-- pad -->" * 900)
+    out = judge_thread_html(
+        html,
+        board_fid="36",
+        list_title="随便聊聊",
+        preferred_link="magnet",
+    )
+    assert out.verdict == "skipped"
+    assert out.verdict != "import"

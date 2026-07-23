@@ -31,12 +31,18 @@ log = logging.getLogger(__name__)
 
 
 def _decode_bytes(data: bytes) -> str:
+    from parsers.safe_text import strip_nul
+
+    text = ""
     for encoding in ("utf-8-sig", "utf-8", "gbk", "gb18030", "utf-16"):
         try:
-            return data.decode(encoding)
+            text = data.decode(encoding)
+            break
         except UnicodeDecodeError:
             continue
-    return data.decode("latin-1", errors="ignore")
+    else:
+        text = data.decode("latin-1", errors="ignore")
+    return strip_nul(text)
 
 
 def _rar_tool_candidates() -> list[str]:
@@ -587,6 +593,8 @@ def _links_from_blob_text(blob: str) -> list[str]:
 
 def _extract_links_from_binary_blob(data: bytes) -> str:
     """旧版 .xls / .doc 等二进制里直接扫 magnet/ed2k（ASCII + UTF-16LE）。"""
+    from parsers.safe_text import strip_nul
+
     if not data:
         return ""
     out: list[str] = []
@@ -597,22 +605,50 @@ def _extract_links_from_binary_blob(data: bytes) -> str:
         data.decode("utf-16-be", errors="ignore"),
     ):
         for s in _links_from_blob_text(blob):
-            if s not in seen:
-                seen.add(s)
-                out.append(s)
+            cleaned = strip_nul(s)
+            if cleaned and cleaned not in seen:
+                seen.add(cleaned)
+                out.append(cleaned)
     return "\n".join(out)
 
 
 def _xml_plain_text(xml: str) -> str:
     """去掉 XML/Word 标签，保留段落换行与实体解码。"""
+    from parsers.safe_text import strip_nul
+
     plain = re.sub(r"</w:p>", "\n", xml or "", flags=re.I)
     plain = re.sub(r"<[^>]+>", "", plain)
     plain = re.sub(r"&amp;", "&", plain)
     plain = re.sub(r"&lt;", "<", plain)
     plain = re.sub(r"&gt;", ">", plain)
-    plain = re.sub(r"&#(\d+);", lambda m: chr(int(m.group(1))), plain)
-    plain = re.sub(r"&#x([0-9a-fA-F]+);", lambda m: chr(int(m.group(1), 16)), plain)
-    return plain
+
+    def _entity_chr(m: re.Match[str]) -> str:
+        try:
+            code = int(m.group(1))
+        except ValueError:
+            return ""
+        if code == 0:
+            return ""
+        try:
+            return chr(code)
+        except ValueError:
+            return ""
+
+    def _entity_hex(m: re.Match[str]) -> str:
+        try:
+            code = int(m.group(1), 16)
+        except ValueError:
+            return ""
+        if code == 0:
+            return ""
+        try:
+            return chr(code)
+        except ValueError:
+            return ""
+
+    plain = re.sub(r"&#(\d+);", _entity_chr, plain)
+    plain = re.sub(r"&#x([0-9a-fA-F]+);", _entity_hex, plain)
+    return strip_nul(plain)
 
 
 def _extract_text_from_docx(data: bytes) -> str:
@@ -796,9 +832,12 @@ class AttachmentDownloader:
             if await locator.count() == 0:
                 return None, False
 
-            wait_ms = max(8000, min(int(timeout * 1000), 60000))
+            # 无权弹窗很常见：下载事件常永不触发。先短等下载，再弹窗确认，
+            # 避免每个附件空等满 timeout（可达 45–60s）才判无权。
+            dl_ms = max(4000, min(int(timeout * 1000), 10000))
+            popup_ms = max(5000, min(int(timeout * 1000), 12000))
             try:
-                async with page.expect_download(timeout=wait_ms) as download_info:
+                async with page.expect_download(timeout=dl_ms) as download_info:
                     await locator.click(timeout=5000)
                 download = await download_info.value
                 temp_path = Path(tempfile.gettempdir()) / f"sht-attach-{int(time.time() * 1000)}{suffix}"
@@ -811,10 +850,10 @@ class AttachmentDownloader:
                 pass
 
             try:
-                async with page.expect_popup(timeout=min(wait_ms, 20000)) as popup_info:
+                async with page.expect_popup(timeout=popup_ms) as popup_info:
                     await locator.click(timeout=5000)
                 popup = await popup_info.value
-                await popup.wait_for_load_state("domcontentloaded", timeout=min(wait_ms, 20000))
+                await popup.wait_for_load_state("domcontentloaded", timeout=popup_ms)
                 html = await popup.content()
                 if is_attachment_denied(html):
                     log.info("Attachment popup denied: %s", attachment.name)
@@ -914,6 +953,12 @@ class AttachmentDownloader:
                 )
                 if denied:
                     any_denied = True
+                    # 无权限不代表整帖都不能下：继续试下一个（等待已缩短）
+                    log.info(
+                        "Attachment %s denied — try next",
+                        attachment.name,
+                    )
+                    continue
                 if downloaded:
                     any_downloaded = True
                 if not text.strip():
@@ -943,8 +988,9 @@ class AttachmentDownloader:
 
         result_text = _pick_best_archive_texts(chunks)
         if result_text:
+            # 已抽到可入库链接：即使部分附件无权也算成功
             return AttachmentFetchResult(
-                text=result_text, downloaded=True, denied=any_denied
+                text=result_text, downloaded=True, denied=False
             )
         if any_denied:
             return AttachmentFetchResult(downloaded=any_downloaded, denied=True)

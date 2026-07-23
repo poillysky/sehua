@@ -32,6 +32,7 @@ const EMPTY_FACETS: ResourceFacets = {
 
 type CheckedMeta = {
   hash: string
+  hashes?: string[]
   sourceUrl?: string
   title: string
   result: ResourceRow['result']
@@ -126,6 +127,7 @@ export function ResourcesPage() {
               if (!prev[r.id] || !r.hash) continue
               const meta: CheckedMeta = {
                 hash: r.hash,
+                hashes: r.hashes,
                 sourceUrl: r.sourceUrl,
                 title: r.title,
                 result: r.result,
@@ -133,6 +135,7 @@ export function ResourcesPage() {
               const old = prev[r.id]
               if (
                 old.hash !== meta.hash ||
+                (old.hashes || []).join(',') !== (meta.hashes || []).join(',') ||
                 old.sourceUrl !== meta.sourceUrl ||
                 old.title !== meta.title ||
                 old.result !== meta.result
@@ -237,6 +240,7 @@ export function ResourcesPage() {
         result: meta.result,
         time: '—',
         hash: meta.hash,
+        hashes: meta.hashes,
         sourceUrl: meta.sourceUrl,
       }
     })
@@ -254,10 +258,16 @@ export function ResourcesPage() {
     if (!r.hash) return null
     return {
       hash: r.hash,
+      hashes: r.hashes,
       sourceUrl: r.sourceUrl,
       title: r.title,
       result: r.result,
     }
+  }
+
+  function hashesOfRow(r: { hash?: string; hashes?: string[] }): string[] {
+    if (r.hashes?.length) return r.hashes.filter(Boolean)
+    return r.hash ? [r.hash] : []
   }
 
   function toggleChecked(id: string, next?: boolean) {
@@ -339,6 +349,7 @@ export function ResourcesPage() {
           : 'failed') as ResourceRow['result']
         nextMeta[id] = {
           hash,
+          hashes: it.hashes?.length ? it.hashes : [hash],
           sourceUrl: it.source_url || undefined,
           title: (it.title || hash).trim() || hash,
           result: kind,
@@ -464,8 +475,14 @@ export function ResourcesPage() {
     if (!ok) return
     setRecrawlBusy(true)
     try {
-      const hashes = targets.map((r) => r.hash!).filter(Boolean)
-      const { result } = await recrawlResourcesBatch(hashes)
+      const recrawlHashes = [
+        ...new Map(
+          targets
+            .filter((r) => r.hash)
+            .map((r) => [r.sourceUrl || r.hash!, r.hash!] as const),
+        ).values(),
+      ]
+      const { result } = await recrawlResourcesBatch(recrawlHashes)
       const imported = Number(result.imported || 0)
       const removed = Number(result.removed || 0)
       const queued = Number(result.queued || 0)
@@ -483,7 +500,7 @@ export function ResourcesPage() {
       } else if (imported > 0 || removed > 0) {
         toast.warn(`重爬结束 · 入库 ${imported} · 删占位 ${removed} · 失败 ${failed}`)
       } else {
-        toast.error(result.error || `重爬未入库 · 失败 ${failed || hashes.length}`)
+        toast.error(result.error || `重爬未入库 · 失败 ${failed || recrawlHashes.length}`)
       }
       setCheckedIds([])
       setCheckedMeta({})
@@ -514,19 +531,22 @@ export function ResourcesPage() {
       .map((r) => r.title)
       .join('\n')
     const more = targets.length > 5 ? `\n…另有 ${targets.length - 5} 条` : ''
+    const childCount = targets.reduce((n, r) => n + Math.max(1, hashesOfRow(r).length), 0)
     const ok = await confirmDialog({
-      title: targets.length > 1 ? '批量删除资源' : '删除资源',
+      title: targets.length > 1 ? '批量删除处理记录' : '删除处理记录',
       message:
-        `确定删除 ${targets.length} 条资源？此操作不可恢复。` +
+        `确定删除 ${targets.length} 条处理记录` +
+        (childCount > targets.length ? `（含 ${childCount} 个子资源）` : '') +
+        `？此操作不可恢复。` +
         (skipped > 0 ? `\n（跳过无 hash ${skipped} 条）` : '') +
         `\n${preview}${more}`,
-      confirmText: targets.length > 1 ? `删除 ${targets.length} 条` : '删除该资源',
+      confirmText: targets.length > 1 ? `删除 ${targets.length} 条` : '删除该记录',
       danger: true,
     })
     if (!ok) return
     setDeleteBusy(true)
     try {
-      const hashes = targets.map((r) => r.hash!).filter(Boolean)
+      const hashes = [...new Set(targets.flatMap((r) => hashesOfRow(r)))]
       const result = await deleteResourcesBatch(hashes)
       const deleted = Number(result.deleted || 0)
       const missing = Number(result.missing || 0)
@@ -967,7 +987,10 @@ export function ResourcesPage() {
                           {r.outcome}
                         </td>
                         <td className="col-result">
-                          <span className={`tag tag-${r.result}`}>{RESULT_LABEL[r.result]}</span>
+                          <span className={`tag tag-${r.result}`}>
+                            {RESULT_LABEL[r.result]}
+                            {r.assetCount && r.assetCount > 1 ? ` ×${r.assetCount}` : ''}
+                          </span>
                         </td>
                         <td className="col-time">{r.time}</td>
                       </tr>
@@ -1483,7 +1506,9 @@ function DetailTabs({
             </div>
             {row.hash ? (
               <div className="detail-field full">
-                <span className="lbl">Hash</span>
+                <span className="lbl">
+                  Hash{row.assetCount && row.assetCount > 1 ? `（主 · 共 ${row.assetCount} 个子资源）` : ''}
+                </span>
                 <span className="val mono">{row.hash}</span>
               </div>
             ) : null}
@@ -1505,7 +1530,7 @@ function DetailTabs({
                   disabled={Boolean(recrawlBusy || deleteBusy)}
                   onClick={() => onDelete?.()}
                 >
-                  {deleteBusy ? '删除中…' : '删除该资源'}
+                  {deleteBusy ? '删除中…' : '删除该记录'}
                 </button>
               ) : null}
             </div>
@@ -1544,7 +1569,7 @@ function DetailTabs({
             </div>
             {row.sourceUrl ? (
               <div className="detail-field full">
-                <span className="hint">点「已入库重爬」会重新抓取该帖并按 hash 覆盖更新，不会新增同标题重复行。</span>
+                <span className="hint">点「已入库重爬」会重新抓取该帖；同帖多子资源仍按 hash 覆盖更新，列表按帖只显示一行。</span>
               </div>
             ) : (
               <div className="detail-field full">
@@ -1577,8 +1602,19 @@ function DetailTabs({
               </div>
             ) : null}
             <div className="detail-field full">
-              <span className="lbl">链接</span>
-              {row.links?.length ? (
+              <span className="lbl">
+                链接{row.assetCount && row.assetCount > 1 ? `（${row.assetCount} 个子资源）` : ''}
+              </span>
+              {row.assets && row.assets.length > 1 ? (
+                <ul className="link-list">
+                  {row.assets.map((a) => (
+                    <li key={a.hash || a.link}>
+                      <div className="val">{a.filename || a.hash || '—'}</div>
+                      <div className="mono">{a.link || '—'}</div>
+                    </li>
+                  ))}
+                </ul>
+              ) : row.links?.length ? (
                 <ul className="link-list">
                   {row.links.map((l) => (
                     <li key={l} className="mono">

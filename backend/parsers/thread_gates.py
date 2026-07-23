@@ -158,7 +158,28 @@ def normalize_title_core(title: str) -> str:
     return t
 
 
-def post_text(html: str) -> str:
+def post_text(html: str, *, all_floors: bool = False) -> str:
+    """帖内正文纯文本。默认只取楼主（+附件注入块），忽略回帖。
+
+    all_floors=True 时拼接全部 postmessage_*（含回帖；仅诊断/兼容用）。
+    """
+    if not all_floors:
+        try:
+            from parsers.content import extract_link_corpus_html
+
+            corpus = extract_link_corpus_html(html or "")
+            if corpus:
+                text = corpus
+                try:
+                    from parsers.content import restore_cloudflare_emails
+
+                    text = restore_cloudflare_emails(text)
+                except Exception:
+                    pass
+                text = re.sub(r"<[^>]+>", "\n", text)
+                return re.sub(r"\s+", " ", text).strip()
+        except Exception:
+            pass
     chunks = POSTMESSAGE_RE.findall(html or "")
     if not chunks:
         return ""
@@ -171,6 +192,19 @@ def post_text(html: str) -> str:
         pass
     text = re.sub(r"<[^>]+>", "\n", text)
     return re.sub(r"\s+", " ", text).strip()
+
+
+def _lz_gate_blob(html: str) -> str:
+    """需回复/购买等门控语料：楼主帖块（含 locked），无则退回整页。"""
+    try:
+        from parsers.content import extract_lz_scope_html
+
+        scope = extract_lz_scope_html(html or "")
+        if scope:
+            return scope
+    except Exception:
+        pass
+    return html or ""
 
 
 def has_thread_post_body(html: str) -> bool:
@@ -194,23 +228,21 @@ def is_mobile_thread_shell(html: str) -> bool:
     return False
 
 def has_target_link(text: str, link_kind: str) -> bool:
-    """板块目标链：ed2k 板同时接受电驴与磁力（常见混发）；magnet 板仍只要磁力。
+    """板块目标链：磁力板 / 电驴板均同时认 magnet 与 ed2k（转帖区常混发）。
 
-    ed2k 板另认 115 网盘分享页（分享码资源可入库）。
+    各板均认 115 网盘分享页（分享码资源可入库）。
     """
     from parsers.ed2k import normalize_ed2k_corpus
     from parsers.magnet import normalize_magnet_corpus
 
     raw = text or ""
     blob = normalize_ed2k_corpus(normalize_magnet_corpus(raw))
-    if link_kind == "ed2k":
+    if link_kind in {"ed2k", "magnet", "both"}:
         return bool(
             ED2K_RE.search(blob)
             or MAGNET_RE.search(blob)
             or RE_115_SHARE.search(blob)
         )
-    if link_kind == "magnet":
-        return bool(MAGNET_RE.search(blob))
     return bool(
         ED2K_RE.search(blob) or MAGNET_RE.search(blob) or RE_115_SHARE.search(blob)
     )
@@ -230,7 +262,7 @@ def has_115_sha_link(text: str) -> bool:
 
 
 def should_skip_as_115sha_only(text: str) -> bool:
-    """附件语料含 115sha，且没有可入库的 magnet/ed2k 时才整帖跳过。
+    """附件语料含 115sha，且没有可入库的 magnet/ed2k/115分享 时才整帖跳过。
 
     同一压缩包内常同时有 Excel 磁力与 sha1.txt；有磁力则不应因 115sha 丢弃。
     """
@@ -238,6 +270,8 @@ def should_skip_as_115sha_only(text: str) -> bool:
         return False
     low = (text or "").lower()
     if "magnet:" in low or "ed2k://" in low:
+        return False
+    if has_115_share_link(text):
         return False
     return True
 
@@ -424,12 +458,13 @@ def is_missing_thread(html: str, title: str = "") -> bool:
 
 
 def is_thread_moderator_blocked(html: str) -> bool:
-    """管理员/版主屏蔽：正文 locked，永久不可抓。"""
+    """管理员/版主屏蔽：正文 locked，永久不可抓。只认楼主帖块。"""
     if not html:
         return False
-    if any(m in html for m in MODERATOR_BLOCKED_MARKERS):
+    blob = _lz_gate_blob(html)
+    if any(m in blob for m in MODERATOR_BLOCKED_MARKERS):
         return True
-    body = re.sub(r"<[^>]+>", "\n", html)
+    body = re.sub(r"<[^>]+>", "\n", blob)
     return any(m in body for m in MODERATOR_BLOCKED_MARKERS)
 
 
@@ -437,18 +472,20 @@ def is_thread_author_banned(html: str) -> bool:
     """作者被禁止或删除，内容自动屏蔽。
 
     必须明确出现「作者被禁止」；若一楼已有有效正文/链接，视为正常帖（避免误跳过）。
+    只认楼主帖块，忽略回帖引用。
     """
     if not html:
         return False
-    plain = re.sub(r"<[^>]+>", "\n", html)
+    blob = _lz_gate_blob(html)
+    plain = re.sub(r"<[^>]+>", "\n", blob)
     locked_hit = bool(
         re.search(
             r'class=["\']locked["\'][^>]*>[^<]*作者被禁止',
-            html,
+            blob,
             re.I,
         )
     )
-    text_hit = any(m in html or m in plain for m in AUTHOR_BANNED_MARKERS)
+    text_hit = any(m in blob or m in plain for m in AUTHOR_BANNED_MARKERS)
     if not (locked_hit or text_hit):
         return False
 
@@ -471,15 +508,17 @@ def is_reply_required_post(html: str) -> bool:
 
     线上文案示例：``poilly，如果您要查看本帖隐藏内容请<a>回复</a>``
     （登录用户名 / 游客前缀均可；「请」与「回复」常被链接拆开。）
+    只认楼主帖块，忽略回帖里的引用/复读。
     """
     if not html:
         return False
-    if any(m in html for m in REPLY_MARKERS):
+    blob = _lz_gate_blob(html)
+    if any(m in blob for m in REPLY_MARKERS):
         return True
-    if _REPLY_GATE_RE.search(html):
+    if _REPLY_GATE_RE.search(blob):
         return True
     # 去标签后：请<a>回复</a> → 「请 回复」，再压掉空白便于匹配
-    plain = re.sub(r"<[^>]+>", " ", html)
+    plain = re.sub(r"<[^>]+>", " ", blob)
     plain = re.sub(r"\s+", " ", plain)
     plain_compact = plain.replace(" ", "")
     if any(m in plain for m in REPLY_MARKERS) or any(m in plain_compact for m in REPLY_MARKERS):
@@ -490,7 +529,7 @@ def is_reply_required_post(html: str) -> bool:
         and ("请回复" in plain_compact or "请回复" in plain)
     ):
         return True
-    if "showhide" in html.lower() and (
+    if "showhide" in blob.lower() and (
         "请回复" in plain_compact or "回复后才能" in plain_compact
     ):
         return True
@@ -500,7 +539,8 @@ def is_reply_required_post(html: str) -> bool:
 def is_purchase_required_post(html: str) -> bool:
     if not html or is_reply_required_post(html):
         return False
-    blob = f"{html}\n{post_text(html)}"
+    blob = _lz_gate_blob(html)
+    blob = f"{blob}\n{post_text(html)}"
     return any(m in blob for m in PURCHASE_MARKERS)
 
 
@@ -536,7 +576,21 @@ def title_implies_resource(title: str, link_kind: str) -> bool:
             )
         )
     if link_kind == "magnet":
-        return any(x in t for x in ("magnet", "磁力", "磁链", "种子", "torrent", "bt"))
+        return any(
+            x in t
+            for x in (
+                "magnet",
+                "磁力",
+                "磁链",
+                "种子",
+                "torrent",
+                "bt",
+                "ed2k",
+                "115",
+                "98t",
+                "电驴",
+            )
+        )
     if link_kind == "both":
         return any(
             x in t

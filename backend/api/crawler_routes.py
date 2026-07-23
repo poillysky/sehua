@@ -450,8 +450,8 @@ async def post_loop_stop(_user: dict = Depends(require_permission("crawl.run")))
 
 @router.post("/stop")
 async def post_crawler_stop(_user: dict = Depends(require_permission("crawl.run"))) -> dict:
-    """手动停止：协作退出 + 超时取消任务；关闭开关；队列任务不删除。"""
-    result = await stop_crawler(disable=True, wait_seconds=12.0, force_after=8.0)
+    """手动停止：立刻取消任务并关开关；队列任务不删除。"""
+    result = await stop_crawler(disable=True, wait_seconds=2.0)
     return {
         "message": result.get("message") or "stopped",
         **result,

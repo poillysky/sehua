@@ -279,7 +279,9 @@ def merge_thread_content(post_text: str, attachment_text: str) -> str:
 
 def inject_attachment_text(html: str, attachment_text: str) -> str:
     """把附件解析文本挂到 HTML，便于 judge / parse_thread_dual 复用正文逻辑。"""
-    text = (attachment_text or "").strip()
+    from parsers.safe_text import strip_nul
+
+    text = strip_nul(attachment_text or "").strip()
     if not text:
         return html or ""
     cleaned = text.replace("<", " ").replace(">", " ")

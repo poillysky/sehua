@@ -59,6 +59,34 @@ def test_judge_imports_115_share_as_primary():
     assert out.parsed.assets[0].uri.startswith("https://115cdn.com/s/")
 
 
+def test_title_115sha_with_body_share_imports_on_magnet_board():
+    """标题写 115sha1，正文是 115.com/s/ 分享码：磁力板也应入库，勿按标题跳过。"""
+    html = """
+    <html><head><title>【HEVC】【115sha1】示例合集 - 论坛</title></head>
+    <body>
+    <span id="thread_subject">【HEVC】【115sha1】示例合集</span>
+    <div id="postmessage_1">
+      115网盘：<br/>
+      <a href="https://115.com/s/sw6r00p3n6m">https://115.com/s/sw6r00p3n6m</a><br/>
+      访问码：k1d6<br/>
+    </div>
+    Powered by Discuz!
+    </body></html>
+    """
+    html = html + ("<!-- pad -->" * 900)
+    out = judge_thread_html(
+        html,
+        board_fid=36,
+        list_title="【HEVC】【115sha1】示例合集",
+        preferred_link="magnet",
+    )
+    assert out.verdict == "import"
+    assert out.link_kind == "115share"
+    assert out.parsed is not None
+    assert out.parsed.primary_link_kind == "115share"
+    assert "password=k1d6" in out.parsed.assets[0].uri
+
+
 def test_ed2k_still_preferred_over_115_share():
     html = """
     <html><head><title>【115eD2k】合集 - 论坛</title></head>

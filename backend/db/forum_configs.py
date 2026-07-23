@@ -74,7 +74,7 @@ FORUM_CRAWLER_DEFAULTS: dict[str, Any] = {
     "web_crawler_random_tid_probe": 200,
     "web_crawler_random_tid_import_target": 0,
     "board_order": default_board_order(),
-    # 勾选参与爬取的子版（按 board_order 排序依次爬）；默认全开非版务
+    # 勾选参与爬取的子版（按勾选先后顺序爬）；默认全开非版务
     "enabled_board_fids": default_board_order(),
     # 深扫当前工作子版（启用队列中的游标）
     "active_board_fid": default_board_order()[0],
@@ -208,7 +208,7 @@ def _normalize_forum_config(raw: dict | None) -> dict[str, Any]:
             order.append(key)
     base["board_order"] = order
 
-    # 启用队列：按 board_order 排序；旧配置无 enabled 时用 active 迁移并展开
+    # 启用队列：保留 enabled_board_fids 勾选顺序（先勾先爬）；不再按 board_order 重排
     if "enabled_board_fids" not in (raw or {}):
         legacy_active = str(base.get("active_board_fid") or "").strip()
         expanded = expand_legacy_board_keys([legacy_active] if legacy_active else [])
@@ -219,7 +219,12 @@ def _normalize_forum_config(raw: dict | None) -> dict[str, Any]:
         raw_enabled = expand_legacy_board_keys(
             [str(x) for x in (base.get("enabled_board_fids") or [])]
         )
-        enabled = [k for k in order if k in set(raw_enabled)]
+        seen: set[str] = set()
+        enabled = []
+        for k in raw_enabled:
+            if k in allowed and k not in seen:
+                enabled.append(k)
+                seen.add(k)
         if not enabled:
             legacy_active = str(base.get("active_board_fid") or "").strip()
             expanded = expand_legacy_board_keys([legacy_active] if legacy_active else [])
@@ -288,7 +293,7 @@ def _normalize_forum_config(raw: dict | None) -> dict[str, Any]:
 
 
 def resolve_enabled_board_fids(cfg: dict[str, Any] | None) -> list[str]:
-    """启用爬取队列：按 board_order 排序后的 enabled_board_fids（单位 key）。"""
+    """启用爬取队列：按 enabled_board_fids 勾选顺序（先勾先爬）。"""
     allowed = set(BOARD_POLICIES.keys())
     order = expand_legacy_board_keys(
         [str(x) for x in ((cfg or {}).get("board_order") or [])]
@@ -299,7 +304,12 @@ def resolve_enabled_board_fids(cfg: dict[str, Any] | None) -> list[str]:
     raw = expand_legacy_board_keys(
         [str(x) for x in ((cfg or {}).get("enabled_board_fids") or [])]
     )
-    enabled = [k for k in order if k in set(raw)]
+    seen: set[str] = set()
+    enabled: list[str] = []
+    for k in raw:
+        if k in allowed and k not in seen:
+            enabled.append(k)
+            seen.add(k)
     if enabled:
         return enabled
     active = str((cfg or {}).get("active_board_fid") or "").strip()
@@ -496,8 +506,7 @@ def set_active_board_fid(conn: Any, forum_id: str, board_fid: str) -> dict:
     enabled = list(resolve_enabled_board_fids(current))
     if fid not in enabled:
         enabled.append(fid)
-        order = [str(x) for x in (current.get("board_order") or [])]
-        enabled = [k for k in order if k in set(enabled)] or enabled
+        # 保持勾选顺序，仅追加；勿按 board_order 重排
     current["enabled_board_fids"] = enabled
     current["active_board_fid"] = fid
     current["web_crawler_max_boards_per_run"] = max(1, len(enabled))
@@ -512,8 +521,13 @@ def set_enabled_board_fids(conn: Any, forum_id: str, board_fids: list[str]) -> d
         [str(x) for x in (current.get("board_order") or default_board_order())]
     )
     order = [k for k in order if k in allowed] or default_board_order()
-    wanted = set(expand_legacy_board_keys([str(x) for x in (board_fids or [])]))
-    enabled = [k for k in order if k in wanted and k in allowed]
+    # 保留传入顺序（勾选先后），勿按 board_order 重排
+    seen: set[str] = set()
+    enabled: list[str] = []
+    for k in expand_legacy_board_keys([str(x) for x in (board_fids or [])]):
+        if k in allowed and k not in seen:
+            enabled.append(k)
+            seen.add(k)
     if not enabled:
         raise ValueError("请至少启用一个子版")
     current["board_order"] = order
@@ -574,6 +588,7 @@ SITE_CRAWLER_FORUM_ID = "sehuatang"
 SITE_CRAWLER_MODULE = "crawler.sehuatang"
 
 # 正文【标签】展示名（供管理端；入库别名见 parsers.content.LABEL_KEYS）
+# 前两项 = 真正资源名 / 子标题（与 parsers.resource_names.SUBRESOURCE_TITLE_LABELS 一致）
 STRUCTURE_LABELS = (
     "影片名称",
     "资源名称",

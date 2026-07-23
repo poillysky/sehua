@@ -1,19 +1,29 @@
 import { Ed2kResourceProps } from "@/types";
 
-export function getDisplayTitle(item: Pick<Ed2kResourceProps, "title" | "name">) {
+export function getDisplayTitle(
+  item: Pick<Ed2kResourceProps, "title" | "name" | "description">,
+) {
+  // 主标题：资源名称 / 影片名称 → 帖子标题 → 文件名
+  const fromDesc =
+    getDescriptionField(item.description, "资源名称") ||
+    getDescriptionField(item.description, "影片名称");
   const title = item.title?.trim();
-
-  return title || item.name;
+  const name = item.name?.trim();
+  return fromDesc || title || name || "";
 }
 
-export function getDisplayFilename(item: Pick<Ed2kResourceProps, "title" | "name">) {
-  const title = item.title?.trim();
+export function getDisplayFilename(
+  item: Pick<Ed2kResourceProps, "title" | "name" | "description">,
+) {
+  // 与主标题不同时，返回文件名作次要信息
+  const display = getDisplayTitle(item);
+  const name = item.name?.trim();
 
-  if (!title || title === item.name) {
+  if (!name || !display || name === display) {
     return null;
   }
 
-  return item.name;
+  return name;
 }
 
 export type DescriptionLine = {
@@ -41,6 +51,8 @@ const DESCRIPTION_LABEL_ALIASES: Record<string, (typeof DISPLAY_DESCRIPTION_LABE
   提取密码: "解压密码",
   资源密码: "解压密码",
   资源解压密码: "解压密码",
+  影片名稱: "影片名称",
+  資源名稱: "资源名称",
 };
 
 export function formatDescriptionLines(description?: string | null): DescriptionLine[] {

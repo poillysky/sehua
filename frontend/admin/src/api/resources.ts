@@ -1,8 +1,18 @@
 import { api } from './client'
 
+export type ApiResourceAsset = {
+  hash: string
+  filename?: string | null
+  size?: number
+  ed2k_link?: string | null
+  preview_images?: string[]
+  link_kind?: string
+}
+
 export type ApiResource = {
   id?: number
   hash: string
+  hashes?: string[]
   filename: string
   size: number
   ed2k_link: string
@@ -21,6 +31,17 @@ export type ApiResource = {
   preview_images?: string[]
   import_outcome?: string | null
   link_kind: 'magnet' | 'ed2k' | '115share' | 'stub' | 'failed' | string
+  asset_count?: number
+  assets?: ApiResourceAsset[]
+}
+
+export type ResourceAsset = {
+  hash: string
+  filename?: string
+  size?: number
+  link?: string
+  previewImages?: string[]
+  result?: ResourceRow['result']
 }
 
 export type ResourceRow = {
@@ -40,6 +61,10 @@ export type ResourceRow = {
   links?: string[]
   filename?: string
   hash?: string
+  /** 同帖全部子资源 hash；删除时应全部提交 */
+  hashes?: string[]
+  assetCount?: number
+  assets?: ResourceAsset[]
   previewImages?: string[]
 }
 
@@ -171,6 +196,25 @@ export function mapApiResource(item: ApiResource): ResourceRow {
     ? item.link_kind
     : 'failed') as ResourceRow['result']
   const links = item.ed2k_links?.length ? item.ed2k_links : item.ed2k_link ? [item.ed2k_link] : []
+  const hashes =
+    item.hashes?.length
+      ? item.hashes
+      : item.hash
+        ? [item.hash]
+        : []
+  const assets: ResourceAsset[] = (item.assets || []).map((a) => {
+    const ak = (['magnet', 'ed2k', '115share', 'stub', 'failed'].includes(String(a.link_kind))
+      ? a.link_kind
+      : kind) as ResourceRow['result']
+    return {
+      hash: a.hash,
+      filename: a.filename || undefined,
+      size: a.size,
+      link: a.ed2k_link || undefined,
+      previewImages: a.preview_images?.length ? a.preview_images : undefined,
+      result: ak,
+    }
+  })
   return {
     id: item.id != null ? String(item.id) : item.hash,
     title: item.title || item.filename || item.hash,
@@ -188,6 +232,9 @@ export function mapApiResource(item: ApiResource): ResourceRow {
     links,
     filename: item.filename,
     hash: item.hash,
+    hashes,
+    assetCount: item.asset_count ?? hashes.length,
+    assets: assets.length ? assets : undefined,
     previewImages: item.preview_images?.length ? item.preview_images : undefined,
   }
 }
@@ -218,9 +265,11 @@ export function fetchRecentResources(params: {
 export type ResourceSelectionItem = {
   id: number
   hash: string
+  hashes?: string[]
   source_url?: string | null
   title?: string | null
   link_kind?: string
+  asset_count?: number
 }
 
 export type ResourceIdsResult = {

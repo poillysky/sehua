@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useMemo, useState, type FormEvent, type ReactNode } from 'react'
+import { Fragment, useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 import { fetchCrawlerStatus } from '../api/crawler'
 import {
@@ -440,7 +440,9 @@ function BoardsTab({
               · 点击主板块展开子版
             </p>
             <div className="forum-boards-active-card">
-              <span className="forum-boards-active-lbl">启用队列 · {enabledFids.length} 子版</span>
+              <span className="forum-boards-active-lbl">
+                启用队列 · {enabledFids.length} 子版（按勾选先后；Alt+点击已选项可移到队尾）
+              </span>
               {enabledFids.length ? (
                 <div className="forum-boards-active-val">
                   <strong className="forum-boards-queue-path" title={enabledFids.join(' → ')}>
@@ -517,16 +519,26 @@ function BoardsTab({
                         <tr
                           className={`forum-board-row forum-board-parent-row${allOn || someOn ? ' is-active-board' : ''}${parentHasActive ? ' is-current-parent' : ''}${soleCurrent ? ' is-current-board' : ''}`}
                           data-board-fid={parent.fid}
-                          onClick={() => {
-                            if (sole) onToggle(soleKey, !soleSelected)
-                            else toggleExpand(parent.fid)
+                          onClick={(e) => {
+                            if (sole) {
+                              if (e.altKey && soleSelected) onToggle(soleKey, true)
+                              else onToggle(soleKey, !soleSelected)
+                            } else toggleExpand(parent.fid)
                           }}
                           style={{ cursor: 'pointer' }}
                         >
                           <td className="board-select-cell">
                             <label
                               className="board-select-check"
-                              title={sole ? '启用本板块' : allOn ? '取消全部子版' : '启用全部子版'}
+                              title={
+                                sole
+                                  ? soleSelected
+                                    ? '点击取消；Alt+点击移到队尾'
+                                    : '启用本板块'
+                                  : allOn
+                                    ? '点击取消全部子版；Alt+点击整组移到队尾'
+                                    : '启用全部子版'
+                              }
                               onClick={(e) => e.stopPropagation()}
                             >
                               <input
@@ -535,12 +547,20 @@ function BoardsTab({
                                 ref={(el) => {
                                   if (el && !sole) el.indeterminate = someOn
                                 }}
+                                onClick={(e) => {
+                                  e.stopPropagation()
+                                  if (e.altKey) {
+                                    e.preventDefault()
+                                    if (sole) onToggle(soleKey, true)
+                                    else toggleParentAll(parent, true)
+                                  }
+                                }}
                                 onChange={(e) => {
                                   e.stopPropagation()
+                                  if ((e.nativeEvent as MouseEvent).altKey) return
                                   if (sole) onToggle(soleKey, e.target.checked)
                                   else toggleParentAll(parent, e.target.checked)
                                 }}
-                                onClick={(e) => e.stopPropagation()}
                               />
                               <span className="board-select-box" aria-hidden />
                             </label>
@@ -625,23 +645,37 @@ function BoardsTab({
                                   key={unitKey}
                                   className={`forum-board-row forum-board-child-row${selected ? ' is-active-board' : ''}${isCurrent ? ' is-current-board' : ''}`}
                                   data-board-fid={unitKey}
-                                  onClick={() => onToggle(unitKey, !selected)}
+                                  onClick={(e) => {
+                                    if (e.altKey && selected) onToggle(unitKey, true)
+                                    else onToggle(unitKey, !selected)
+                                  }}
                                   style={{ cursor: 'pointer' }}
                                 >
                                   <td className="board-select-cell">
                                     <label
                                       className="board-select-check"
-                                      title="勾选加入爬取队列"
+                                      title={
+                                        selected
+                                          ? '点击移出队列；Alt+点击移到队尾'
+                                          : '勾选加入爬取队列'
+                                      }
                                       onClick={(e) => e.stopPropagation()}
                                     >
                                       <input
                                         type="checkbox"
                                         checked={selected}
+                                        onClick={(e) => {
+                                          e.stopPropagation()
+                                          if (e.altKey) {
+                                            e.preventDefault()
+                                            onToggle(unitKey, true)
+                                          }
+                                        }}
                                         onChange={(e) => {
                                           e.stopPropagation()
+                                          if ((e.nativeEvent as MouseEvent).altKey) return
                                           onToggle(unitKey, e.target.checked)
                                         }}
-                                        onClick={(e) => e.stopPropagation()}
                                       />
                                       <span className="board-select-box" aria-hidden />
                                     </label>
@@ -955,15 +989,22 @@ export function ForumConfigModal({
 }: Props) {
   const [draft, setDraft] = useState<ForumCrawlerConfig>(() => ({ ...forum.crawler_config }))
   const [saving, setSaving] = useState(false)
+  /** 勾选顺序保存序号：丢弃过期回包，避免连点时旧请求把队列打回默认序 */
+  const boardSaveSeq = useRef(0)
   /** 弹窗打开期间从爬虫状态轮询，避免板块列表游标停在打开瞬间 */
   const [liveCursors, setLiveCursors] = useState<Record<string, number>>(
     () => ({ ...(forum.crawler_config.board_list_cursors || {}) }),
   )
 
   useEffect(() => {
+    // 仅切换论坛时重置草稿；配置热更新勿整表覆盖，否则勾选顺序保存竞态会被旧结果打回
     setDraft({ ...forum.crawler_config })
     setLiveCursors({ ...(forum.crawler_config.board_list_cursors || {}) })
-  }, [forum])
+  }, [forum.id])
+
+  useEffect(() => {
+    setLiveCursors({ ...(forum.crawler_config.board_list_cursors || {}) })
+  }, [forum.crawler_config.board_list_cursors])
 
   /** 锁住下层滚动/触摸，避免 iOS 穿透到底栏与设置页 */
   useEffect(() => {
@@ -1046,28 +1087,37 @@ export function ForumConfigModal({
         : activeBoardFid
           ? [activeBoardFid]
           : []
-    const order = draft.board_order || forum.crawler_config.board_order || boards.map((b) => boardUnitKey(b))
-    const wanted = new Set(raw.map(String))
-    return order.map(String).filter((fid) => wanted.has(fid))
+    // 保留勾选先后顺序，勿按 board_order 重排
+    const allowed = new Set(boards.map((b) => boardUnitKey(b)))
+    const seen = new Set<string>()
+    const out: string[] = []
+    for (const fid of raw.map(String)) {
+      if (allowed.has(fid) && !seen.has(fid)) {
+        out.push(fid)
+        seen.add(fid)
+      }
+    }
+    return out
   }, [
     draft.enabled_board_fids,
-    draft.board_order,
     forum.crawler_config.enabled_board_fids,
-    forum.crawler_config.board_order,
     activeBoardFid,
     boards,
   ])
 
   const handleToggleBoard = (fid: string, enabled: boolean) => {
-    const wanted = new Set(enabledBoardFids)
-    if (enabled) wanted.add(fid)
-    else wanted.delete(fid)
-    if (!wanted.size) {
+    // 启用：从原位置摘掉再追加到队尾（已勾选再点也会按点击顺序重排）
+    // 取消：仅移除
+    let nextEnabled: string[]
+    if (enabled) {
+      nextEnabled = [...enabledBoardFids.filter((id) => id !== fid), fid]
+    } else {
+      nextEnabled = enabledBoardFids.filter((id) => id !== fid)
+    }
+    if (!nextEnabled.length) {
       toast.info('至少保留一个启用板块')
       return
     }
-    const order = draft.board_order || forum.crawler_config.board_order || boards.map((b) => boardUnitKey(b))
-    const nextEnabled = order.map(String).filter((id) => wanted.has(id))
     const nextActive = nextEnabled.includes(activeBoardFid) ? activeBoardFid : nextEnabled[0]
     const next = {
       ...draft,
@@ -1075,26 +1125,42 @@ export function ForumConfigModal({
       active_board_fid: nextActive,
       web_crawler_max_boards_per_run: Math.max(1, nextEnabled.length),
     }
+    const seq = ++boardSaveSeq.current
     setDraft(next)
     onActiveBoardChange(next)
     void saveForumConfig(forum.id, next).then(
-      (res) => onActiveBoardChange({ ...next, ...res.config }),
-      (err) => toast.error(err instanceof Error ? err.message : '更新启用板块失败'),
+      (res) => {
+        if (seq !== boardSaveSeq.current) return
+        const merged = {
+          ...res.config,
+          enabled_board_fids: nextEnabled,
+          active_board_fid: nextActive,
+        }
+        setDraft((prev) => ({ ...prev, ...merged }))
+        onActiveBoardChange(merged)
+      },
+      (err) => {
+        if (seq !== boardSaveSeq.current) return
+        toast.error(err instanceof Error ? err.message : '更新启用板块失败')
+      },
     )
   }
 
   const handleToggleMany = (fids: string[], enabled: boolean) => {
-    const wanted = new Set(enabledBoardFids)
-    for (const fid of fids) {
-      if (enabled) wanted.add(fid)
-      else wanted.delete(fid)
+    const block = fids.map(String)
+    let nextEnabled: string[]
+    if (enabled) {
+      // 主板块整组：摘掉后按子版顺序追加到队尾（再点可重排）
+      const drop = new Set(block)
+      nextEnabled = [...enabledBoardFids.filter((id) => !drop.has(id)), ...block]
+    } else {
+      const drop = new Set(block)
+      nextEnabled = enabledBoardFids.filter((id) => !drop.has(id))
     }
-    if (!wanted.size) {
+    if (!nextEnabled.length) {
       toast.info('至少保留一个启用板块')
       return
     }
-    const order = draft.board_order || forum.crawler_config.board_order || boards.map((b) => boardUnitKey(b))
-    const nextEnabled = order.map(String).filter((id) => wanted.has(id))
     const nextActive = nextEnabled.includes(activeBoardFid) ? activeBoardFid : nextEnabled[0]
     const next = {
       ...draft,
@@ -1102,11 +1168,24 @@ export function ForumConfigModal({
       active_board_fid: nextActive,
       web_crawler_max_boards_per_run: Math.max(1, nextEnabled.length),
     }
+    const seq = ++boardSaveSeq.current
     setDraft(next)
     onActiveBoardChange(next)
     void saveForumConfig(forum.id, next).then(
-      (res) => onActiveBoardChange({ ...next, ...res.config }),
-      (err) => toast.error(err instanceof Error ? err.message : '更新启用板块失败'),
+      (res) => {
+        if (seq !== boardSaveSeq.current) return
+        const merged = {
+          ...res.config,
+          enabled_board_fids: nextEnabled,
+          active_board_fid: nextActive,
+        }
+        setDraft((prev) => ({ ...prev, ...merged }))
+        onActiveBoardChange(merged)
+      },
+      (err) => {
+        if (seq !== boardSaveSeq.current) return
+        toast.error(err instanceof Error ? err.message : '更新启用板块失败')
+      },
     )
   }
 
