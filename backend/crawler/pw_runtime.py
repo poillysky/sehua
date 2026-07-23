@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import sys
 import threading
 from collections.abc import Coroutine
@@ -14,6 +15,13 @@ from typing import Any, TypeVar
 
 log = logging.getLogger(__name__)
 T = TypeVar("T")
+
+
+def _default_pw_timeout() -> float:
+    try:
+        return max(15.0, float(os.getenv("PW_OP_TIMEOUT", "120") or "120"))
+    except (TypeError, ValueError):
+        return 120.0
 
 
 class _PlaywrightRuntime:
@@ -64,14 +72,29 @@ def get_pw_runtime() -> _PlaywrightRuntime:
         return _runtime
 
 
-async def run_on_pw_loop(coro: Coroutine[Any, Any, T]) -> T:
-    """在 Playwright 专用 Proactor 循环上执行协程。"""
+async def run_on_pw_loop(
+    coro: Coroutine[Any, Any, T],
+    *,
+    timeout: float | None = None,
+) -> T:
+    """在 Playwright 专用 Proactor 循环上执行协程。
+
+    必须带超时：浏览器/下载一旦挂死，主循环会一直等 wrap_future，管理端整站假死。
+    """
     runtime = get_pw_runtime()
     try:
         running = asyncio.get_running_loop()
     except RuntimeError:
         running = None
+    limit = _default_pw_timeout() if timeout is None else float(timeout)
+    if limit <= 0:
+        limit = _default_pw_timeout()
     if running is runtime.loop:
-        return await coro
+        return await asyncio.wait_for(coro, timeout=limit)
     fut = asyncio.run_coroutine_threadsafe(coro, runtime.loop)
-    return await asyncio.wrap_future(fut)
+    try:
+        return await asyncio.wait_for(asyncio.wrap_future(fut), timeout=limit)
+    except asyncio.TimeoutError:
+        fut.cancel()
+        log.warning("Playwright 操作超时（%.0fs），已取消", limit)
+        raise TimeoutError(f"浏览器操作超时（{limit:.0f}s）") from None

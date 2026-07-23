@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 from typing import Any, Optional
 
 from crawler.fetcher import Fetcher
@@ -1257,16 +1258,54 @@ async def recrawl_discarded_tids(tids: list[int]) -> dict[str, Any]:
                 if THROTTLE.should_stop():
                     _log_activity("未处理批量重爬 · 收到停止请求")
                     break
-                outcome = await process_thread(
-                    tid,
-                    board_fid=board_key,
-                    board_name=board_name,
-                    list_title=title,
-                    persist=True,
-                    crawler_config=cfg,
-                    session=session,
-                    fetcher=fetcher,
+                # 单帖上限，避免附件/浏览器挂死拖死整次「未处理重爬」与管理端
+                try:
+                    per_tid = float(
+                        (cfg or {}).get("web_crawler_thread_timeout")
+                        or os.getenv("WEB_CRAWLER_THREAD_TIMEOUT", "180")
+                        or "180"
+                    )
+                except (TypeError, ValueError):
+                    per_tid = 180.0
+                per_tid = max(60.0, per_tid)
+                outcome = await asyncio.wait_for(
+                    process_thread(
+                        tid,
+                        board_fid=board_key,
+                        board_name=board_name,
+                        list_title=title,
+                        persist=True,
+                        crawler_config=cfg,
+                        session=session,
+                        fetcher=fetcher,
+                    ),
+                    timeout=per_tid,
                 )
+            except asyncio.TimeoutError:
+                log.warning("discarded recrawl timeout tid=%s", tid)
+                conn = connect()
+                try:
+                    mark_pending_retry(
+                        conn,
+                        thread_url,
+                        f"单帖处理超时（>{int(per_tid)}s）",
+                        backoff_seconds=600,
+                    )
+                finally:
+                    conn.close()
+                failed_n += 1
+                crawled_n += 1
+                items.append(
+                    {
+                        "ok": False,
+                        "tid": tid,
+                        "url": thread_url,
+                        "title": title,
+                        "error": f"单帖处理超时（>{int(per_tid)}s）",
+                    }
+                )
+                _log_activity(f"未处理重爬超时 · tid={tid} · >{int(per_tid)}s")
+                continue
             except Exception as exc:
                 log.exception("discarded recrawl failed tid=%s", tid)
                 conn = connect()

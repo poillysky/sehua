@@ -737,98 +737,110 @@ async def run_crawl_once(
                     result["soft_browser_retried"] += 1
 
                 log_label = str(outcome.get("verdict_label") or verdict)
-                conn = connect()
-                try:
-                    if verdict == "import":
-                        result["imports"] += 1
-                        consecutive_fail = 0
-                        THROTTLE.record_success()
-                        mark_thread_done(conn, thread_url, outcome=str(outcome.get("outcome") or "import"))
-                    elif verdict == "stub":
-                        result["stubs"] += 1
-                        consecutive_fail = 0
-                        THROTTLE.record_success()
-                        mark_thread_done(conn, thread_url, outcome=str(outcome.get("outcome") or "stub"))
-                    elif verdict == "skipped":
-                        result["skipped"] += 1
-                        consecutive_fail = 0
-                        THROTTLE.record_success()
-                        mark_thread_skipped(conn, thread_url, str(outcome.get("outcome") or "skipped"))
-                        # 无权伪标题等：清掉历史上错误占位，避免重爬后仍留在资源列表
-                        try:
-                            from db.repository import delete_stub_by_source_url
-                            from db.resource_db import connect_resource
 
-                            rconn = connect_resource()
+                def _update_queue_after_thread() -> str:
+                    label = log_label
+                    conn = connect()
+                    try:
+                        if verdict == "import":
+                            result["imports"] += 1
+                            THROTTLE.record_success()
+                            mark_thread_done(
+                                conn, thread_url, outcome=str(outcome.get("outcome") or "import")
+                            )
+                        elif verdict == "stub":
+                            result["stubs"] += 1
+                            THROTTLE.record_success()
+                            mark_thread_done(
+                                conn, thread_url, outcome=str(outcome.get("outcome") or "stub")
+                            )
+                        elif verdict == "skipped":
+                            result["skipped"] += 1
+                            THROTTLE.record_success()
+                            mark_thread_skipped(
+                                conn, thread_url, str(outcome.get("outcome") or "skipped")
+                            )
                             try:
-                                if delete_stub_by_source_url(rconn, thread_url):
-                                    log_label = f"{log_label} · 已删占位"
-                            finally:
-                                rconn.close()
-                        except Exception:
-                            pass
-                    elif verdict == "retry" or "软文" in str(outcome.get("outcome") or ""):
-                        result["retries"] += 1
-                        consecutive_fail += 1
-                        THROTTLE.record_failure()
-                        prev_fails = int(row.get("fetch_fail_count") or 0)
-                        err_msg = str(outcome.get("outcome") or "retry")
-                        # 软文壳与其它失败统一进异常重试池，计数与耗尽规则一致
-                        if prev_fails + 1 >= MAX_THREAD_RETRIES:
-                            mark_thread_done(
-                                conn,
-                                thread_url,
-                                outcome=f"重试{MAX_THREAD_RETRIES}次仍失败：{err_msg[:120]}",
-                                status="failed",
-                            )
-                            result["failed"] += 1
-                            log_label = f"重试耗尽出队 · {err_msg}"
-                        else:
-                            backoff = (
-                                3600
-                                if (
-                                    outcome.get("soft_browser_retried")
-                                    or "软文" in err_msg
-                                    or "安全壳" in err_msg
+                                from db.repository import delete_stub_by_source_url
+                                from db.resource_db import connect_resource
+
+                                rconn = connect_resource()
+                                try:
+                                    if delete_stub_by_source_url(rconn, thread_url):
+                                        label = f"{label} · 已删占位"
+                                finally:
+                                    rconn.close()
+                            except Exception:
+                                pass
+                        elif verdict == "retry" or "软文" in str(outcome.get("outcome") or ""):
+                            result["retries"] += 1
+                            THROTTLE.record_failure()
+                            prev_fails = int(row.get("fetch_fail_count") or 0)
+                            err_msg = str(outcome.get("outcome") or "retry")
+                            if prev_fails + 1 >= MAX_THREAD_RETRIES:
+                                mark_thread_done(
+                                    conn,
+                                    thread_url,
+                                    outcome=f"重试{MAX_THREAD_RETRIES}次仍失败：{err_msg[:120]}",
+                                    status="failed",
                                 )
-                                else 900
-                            )
-                            mark_pending_retry(
-                                conn,
-                                thread_url,
-                                err_msg,
-                                backoff_seconds=backoff,
-                            )
-                    elif verdict == "need_attachments":
-                        result["retries"] += 1
-                        consecutive_fail += 1
-                        THROTTLE.record_failure()
-                        prev_fails = int(row.get("fetch_fail_count") or 0)
-                        if prev_fails + 1 >= MAX_THREAD_RETRIES:
+                                result["failed"] += 1
+                                label = f"重试耗尽出队 · {err_msg}"
+                            else:
+                                backoff = (
+                                    3600
+                                    if (
+                                        outcome.get("soft_browser_retried")
+                                        or "软文" in err_msg
+                                        or "安全壳" in err_msg
+                                    )
+                                    else 900
+                                )
+                                mark_pending_retry(
+                                    conn,
+                                    thread_url,
+                                    err_msg,
+                                    backoff_seconds=backoff,
+                                )
+                        elif verdict == "need_attachments":
+                            result["retries"] += 1
+                            THROTTLE.record_failure()
+                            prev_fails = int(row.get("fetch_fail_count") or 0)
+                            if prev_fails + 1 >= MAX_THREAD_RETRIES:
+                                mark_thread_done(
+                                    conn,
+                                    thread_url,
+                                    outcome="重试耗尽：需下附件仍失败",
+                                    status="failed",
+                                )
+                                result["failed"] += 1
+                                label = "重试耗尽出队 · 需下附件仍失败"
+                            else:
+                                mark_pending_retry(
+                                    conn, thread_url, "need_attachments", backoff_seconds=600
+                                )
+                        else:
+                            result["failed"] += 1
+                            THROTTLE.record_failure()
                             mark_thread_done(
                                 conn,
                                 thread_url,
-                                outcome="重试耗尽：需下附件仍失败",
+                                outcome=str(outcome.get("outcome") or "failed"),
                                 status="failed",
                             )
-                            result["failed"] += 1
-                            log_label = "重试耗尽出队 · 需下附件仍失败"
-                        else:
-                            mark_pending_retry(
-                                conn, thread_url, "need_attachments", backoff_seconds=600
-                            )
-                    else:
-                        result["failed"] += 1
-                        consecutive_fail += 1
-                        THROTTLE.record_failure()
-                        mark_thread_done(
-                            conn,
-                            thread_url,
-                            outcome=str(outcome.get("outcome") or "failed"),
-                            status="failed",
-                        )
-                finally:
-                    conn.close()
+                    finally:
+                        conn.close()
+                    return label
+
+                log_label = await asyncio.to_thread(_update_queue_after_thread)
+                if verdict in {"import", "stub", "skipped"}:
+                    consecutive_fail = 0
+                elif verdict in {"retry", "need_attachments"} or "软文" in str(
+                    outcome.get("outcome") or ""
+                ):
+                    consecutive_fail += 1
+                else:
+                    consecutive_fail += 1
 
                 _log_activity(
                     f"抓帖 tid={tid} · {log_label}"
@@ -840,11 +852,16 @@ async def run_crawl_once(
                 result["fetch_failures"] += 1
                 THROTTLE.record_failure()
                 try:
-                    conn = connect()
-                    try:
-                        mark_pending_retry(conn, thread_url, str(exc)[:200], backoff_seconds=600)
-                    finally:
-                        conn.close()
+                    def _mark_retry() -> None:
+                        conn = connect()
+                        try:
+                            mark_pending_retry(
+                                conn, thread_url, str(exc)[:200], backoff_seconds=600
+                            )
+                        finally:
+                            conn.close()
+
+                    await asyncio.to_thread(_mark_retry)
                 except Exception:
                     pass
                 _log_activity(f"抓帖 tid={tid} 失败 · {exc}")

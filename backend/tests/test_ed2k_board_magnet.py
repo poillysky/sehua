@@ -105,6 +105,26 @@ def test_bare_hex_without_cue_not_magnet():
     assert not has_target_link(raw, "magnet")
 
 
+def test_title_bt_magnet_label_does_not_redos():
+    """标题仅有【BT/磁力】时不得扫整页卡死（回归：裸线索 ReDoS）。"""
+    import time
+
+    h = "ca0d5b474a8b3fef00ebb8abec6e67b713f59765"
+    # 大量残缺标签，旧正则会回溯爆炸
+    bomb = "<" * 8000
+    raw = f"【BT/磁力】私密电报群泄密测试{bomb}无哈希"
+    t0 = time.perf_counter()
+    assert parse_magnet_text(raw) == []
+    assert time.perf_counter() - t0 < 1.0
+    # 仍能识别真正的【哈希校验】
+    raw2 = f"【BT/磁力】标题{bomb[:200]}【哈希校验】：{h}"
+    t0 = time.perf_counter()
+    links = parse_magnet_text(raw2)
+    assert time.perf_counter() - t0 < 1.0
+    assert len(links) == 1
+    assert links[0].infohash == h.upper()
+
+
 def test_parse_bare_infohash_hash_check_label():
     """【哈希校验】后的裸 infohash（tid 3628517 类）。"""
     h = "ca0d5b474a8b3fef00ebb8abec6e67b713f59765"

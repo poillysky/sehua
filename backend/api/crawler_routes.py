@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
@@ -877,48 +879,42 @@ async def post_discarded_requeue_tids(
             + (f"；待抓队列仍有 {pending_left}" if pending_left else ""),
         }
 
-    result = await recrawl_discarded_tids(tids)
+    # 后台执行：避免浏览器/附件挂死时 HTTP 一直不返回，管理端整页假死
+    async def _bg_discarded_recrawl() -> None:
+        try:
+            await recrawl_discarded_tids(tids)
+        except Exception as exc:
+            import logging
+
+            logging.getLogger(__name__).exception("background discarded recrawl")
+            _log_activity(f"未处理批量重爬异常结束 · {exc}")
+
+    asyncio.create_task(_bg_discarded_recrawl())
     pending_left = 0
     conn = connect()
     try:
         pending_left = int(count_pending(conn).get("ready") or 0)
     finally:
         conn.close()
-
-    crawled = int(result.get("crawled") or 0)
-    imports_n = int(result.get("imports") or 0)
-    stubs_n = int(result.get("stubs") or 0)
-    skipped_n = int(result.get("skipped") or 0)
-    failed_n = int(result.get("failed") or 0)
-    requeued = int(result.get("requeued") or 0)
-    note = str(result.get("note") or "")
-    if pending_left and result.get("mode") == "queued":
-        note = note + f"；待抓队列仍有 {pending_left}"
-
     return {
-        "message": "ok",
-        "mode": result.get("mode") or "immediate",
-        "selected": int(result.get("selected") or len(tids)),
-        "matched": int(result.get("matched") or 0),
-        "requeued": requeued,
-        "crawled": crawled,
-        "imports": imports_n,
-        "stubs": stubs_n,
-        "skipped": skipped_n,
-        "failed": failed_n,
+        "message": "started",
+        "mode": "background",
+        "selected": len(tids),
+        "matched": 0,
+        "requeued": 0,
+        "crawled": 0,
+        "imports": 0,
+        "stubs": 0,
+        "skipped": 0,
+        "failed": 0,
         "pending_ready": pending_left,
-        "items": result.get("items") or [],
-        "crawl": {
-            "crawled": crawled,
-            "imports": imports_n,
-            "stubs": stubs_n,
-            "skipped": skipped_n,
-            "retries": 0,
-            "failed": failed_n,
-        }
-        if crawled or result.get("mode") == "immediate"
-        else None,
-        "note": note,
+        "items": [],
+        "crawl": None,
+        "note": (
+            f"已在后台重爬选中的 {len(tids)} 条，进度见活动日志；"
+            "单帖超时会跳过，避免整站卡死"
+            + (f"；待抓队列仍有 {pending_left}" if pending_left else "")
+        ),
     }
 
 

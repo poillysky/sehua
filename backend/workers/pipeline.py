@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Any, Optional
 
@@ -360,19 +361,23 @@ async def process_thread(
                 parsed.ed2k_links = []
                 parsed.primary_link_kind = "none"
 
-            conn = connect_resource()
-            try:
-                result["persisted"] = persist_dual_parse(
-                    conn,
-                    parsed,
-                    source_url=thread_url,
-                    board_fid=board_fid,
-                    board_name=persist_board_name,
-                    forum_id="sehuatang",
-                    import_outcome=str(outcome.outcome or outcome.label or ""),
-                )
-            finally:
-                conn.close()
+            def _persist_sync() -> dict[str, Any]:
+                conn = connect_resource()
+                try:
+                    return persist_dual_parse(
+                        conn,
+                        parsed,
+                        source_url=thread_url,
+                        board_fid=board_fid,
+                        board_name=persist_board_name,
+                        forum_id="sehuatang",
+                        import_outcome=str(outcome.outcome or outcome.label or ""),
+                    )
+                finally:
+                    conn.close()
+
+            # 同步写库放到线程，避免堵住 FastAPI 事件循环导致管理端假死
+            result["persisted"] = await asyncio.to_thread(_persist_sync)
         elif persist and outcome.verdict == "failed":
             result["persisted"] = {"count": 0, "stub": False, "link_kind": "failed"}
 

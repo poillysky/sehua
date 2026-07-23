@@ -263,7 +263,7 @@ export function CrawlerPage() {
     void refresh()
     const timer = window.setInterval(() => {
       void refresh()
-    }, 2000)
+    }, 5000)
     return () => window.clearInterval(timer)
   }, [refresh])
 
