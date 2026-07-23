@@ -69,6 +69,60 @@ def test_parse_colonless_magnet_anti_filter():
     assert has_target_link(raw, "magnet")
 
 
+def test_parse_bare_infohash_after_copy_code():
+    """Discuz「复制代码下载：」后的裸 infohash（tid 3533954 类）。"""
+    h = "f7809dc8bf32d7be01b6d89b5fb31e3af1a37c5a"
+    raw = f"复制代码下载：{h}"
+    fixed = normalize_magnet_corpus(raw)
+    assert f"magnet:?xt=urn:btih:{h}" in fixed
+    links = parse_magnet_text(raw)
+    assert len(links) == 1
+    assert links[0].infohash == h.upper()
+    assert links[0].link.lower().startswith("magnet:?xt=urn:btih:")
+    assert has_target_link(raw, "magnet")
+    assert has_target_link(raw, "ed2k")
+
+
+def test_parse_bare_infohash_in_blockcode_html():
+    """blockcode 标题「复制代码」与 hash 分行时也能识别。"""
+    h = "F7809DC8BF32D7BE01B6D89B5FB31E3AF1A37C5A"
+    html = f"""
+    <div class="blockcode">
+      <em>复制代码</em>
+      <ol><li>{h}</li></ol>
+    </div>
+    """
+    links = parse_magnet_text(html)
+    assert len(links) == 1
+    assert links[0].infohash == h
+    assert has_target_link(html, "magnet")
+
+
+def test_bare_hex_without_cue_not_magnet():
+    """无提示语的裸 40 位 hex 不误判（避免正文噪音）。"""
+    raw = "校验 f7809dc8bf32d7be01b6d89b5fb31e3af1a37c5a 结束"
+    assert parse_magnet_text(raw) == []
+    assert not has_target_link(raw, "magnet")
+
+
+def test_parse_bare_infohash_hash_check_label():
+    """【哈希校验】后的裸 infohash（tid 3628517 类）。"""
+    h = "ca0d5b474a8b3fef00ebb8abec6e67b713f59765"
+    raw = f"""
+    【影片名称】：测试片子
+    【影片大小】：508MB
+    【哈希校验】：{h}
+    【是否有码】：无码
+    """
+    links = parse_magnet_text(raw)
+    assert len(links) == 1
+    assert links[0].infohash == h.upper()
+    assert links[0].link.lower() == f"magnet:?xt=urn:btih:{h}"
+    assert "测试片子" in links[0].filename
+    assert "是否有码" not in links[0].link
+    assert has_target_link(raw, "magnet")
+
+
 def test_parse_truncated_ed2k_scheme():
     """发帖掐掉 e：d2k://|file|… 应还原为 ed2k。"""
     from parsers.ed2k import normalize_ed2k_corpus, parse_ed2k_text

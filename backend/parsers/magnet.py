@@ -9,8 +9,15 @@ from urllib.parse import unquote
 
 from parsers.resource_names import SUBRESOURCE_TITLE_MATCH_FORMS
 
-MAGNET_URI_RE = re.compile(r"magnet:\?[^\s<>\"'\]]+", re.I)
-BTIH_RE = re.compile(r"xt=urn:btih:([^&]+)", re.I)
+MAGNET_URI_RE = re.compile(
+    r"magnet:\?xt=urn:btih:(?:[A-Fa-f0-9]{40}|[a-zA-Z2-7]{32})(?:&[^\s<>\"'\]【】]+)?",
+    re.I,
+)
+BTIH_RE = re.compile(
+    r"xt=urn:btih:([A-Fa-f0-9]{40}|[a-zA-Z2-7]{32})",
+    re.I,
+)
+
 DN_RE = re.compile(r"(?:^|&)dn=([^&]+)", re.I)
 XL_RE = re.compile(r"(?:^|&)xl=(\d+)", re.I)
 
@@ -56,9 +63,58 @@ _COLONLESS_MAGNET_RE = re.compile(
     re.I,
 )
 
+# Discuz「复制代码」旁裸 infohash（例：复制代码下载：f7809dc8…）
+# 转帖常见【哈希校验】：40位 hex（tid 3628517）
+# 亦兼容「磁力链接」等提示后的 40 位 hex / 32 位 base32；间隔可含 HTML 标签
+_BARE_INFOHASH_CUED_RE = re.compile(
+    r"(?:"
+    r"复制代码(?:下载)?"
+    r"|哈希校验"
+    r"|哈希值"
+    r"|磁力(?:链接|连接|鍊接)?"
+    r"|BT\s*(?:哈希|hash|种子)?"
+    r"|info\s*hash"
+    r"|种子(?:哈希|hash)"
+    r")"
+    r"(?:[^A-Fa-f0-9a-zA-Z2-7]+|<[^>]+>)*?"
+    r"([A-Fa-f0-9]{40}|[a-zA-Z2-7]{32})"
+    r"(?![A-Fa-f0-9])",
+    re.I | re.S,
+)
+
+
+def _already_magnet_btih(text: str, hash_value: str) -> bool:
+    return bool(
+        re.search(
+            rf"(?:magnet:\?|btih:)[^\n]{{0,40}}{re.escape(hash_value)}",
+            text,
+            re.I,
+        )
+    )
+
+
+def _expand_bare_infohashes(text: str) -> str:
+    """把带提示语的裸 infohash 原地换成 magnet:?xt=urn:btih:…，便于后续统一解析。"""
+    if not text:
+        return ""
+
+    def repl(m: re.Match[str]) -> str:
+        h = m.group(1)
+        before = text[max(0, m.start(1) - 32) : m.start(1)].lower()
+        if "btih:" in before or "magnet:?" in before:
+            return m.group(0)
+        if _already_magnet_btih(text, h):
+            return m.group(0)
+        head = m.group(0)[: m.start(1) - m.start()]
+        tail = m.group(0)[m.end(1) - m.start() :]
+        # 与后文【标签】隔开，避免 magnet URI 吞进中文
+        return f"{head}magnet:?xt=urn:btih:{h} {tail}"
+
+    return _BARE_INFOHASH_CUED_RE.sub(repl, text)
+
 
 def normalize_magnet_corpus(text: str) -> str:
-    """把全角标点 / 被空格拆开 / 去冒号防和谐的磁力还原成标准形式。"""
+    """把全角标点 / 被空格拆开 / 去冒号防和谐 / 裸 infohash 还原成标准形式。"""
     if not text:
         return ""
     out = text.translate(_FULLWIDTH_TRANS)
@@ -70,6 +126,7 @@ def normalize_magnet_corpus(text: str) -> str:
         lambda m: f"magnet:?xt=urn:btih:{m.group(1)}",
         out,
     )
+    out = _expand_bare_infohashes(out)
     return out
 
 
