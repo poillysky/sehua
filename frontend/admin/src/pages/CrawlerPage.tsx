@@ -589,6 +589,9 @@ export function CrawlerPage() {
     setRunHint('异常队列重爬中…')
     try {
       const res = await retryAbnormalQueue()
+      if (res.message && res.message !== 'ok') {
+        throw new Error(res.message === 'failed' ? '异常重试未执行（可能仍被停止标拦截）' : String(res.message))
+      }
       const line = `异常重试：处理 ${res.crawled ?? 0} · 入库 ${res.imports ?? 0} · 仍重试 ${res.retries ?? 0}`
       setRunHint(line)
       toast.success(line)

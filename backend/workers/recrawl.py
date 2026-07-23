@@ -42,6 +42,7 @@ from workers.runner import (
     _log_activity,
     crawl_status,
     end_exclusive,
+    recover_stuck_after_stop,
     try_begin_exclusive,
 )
 from workers.session_factory import fetcher_from_config, session_from_config
@@ -146,6 +147,7 @@ def start_account_stub_recrawl() -> dict[str, Any]:
     global _account_stub_task, _account_stub_future
     from workers.crawl_executor import spawn_crawl
 
+    recover_stuck_after_stop(activity="账号重爬")
     st = crawl_status()
     if st.get("looping") or st.get("running"):
         return {

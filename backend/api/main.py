@@ -634,7 +634,7 @@ async def resources_recrawl_batch(
     """
     from workers.crawl_executor import await_crawl, spawn_crawl
     from workers.recrawl import recrawl_imported_resources
-    from workers.runner import _log_activity, crawl_status
+    from workers.runner import _log_activity, crawl_status, recover_stuck_after_stop
 
     hashes = list(body.hashes or [])
     if len(hashes) > 2000:
@@ -664,6 +664,8 @@ async def resources_recrawl_batch(
             )
         return {"message": "ok", "result": result}
 
+    recover_stuck_after_stop(activity="已入库批量重爬")
+    st = crawl_status()
     if st.get("running"):
         raise HTTPException(status_code=409, detail="爬虫正在执行，请稍后再重爬")
 

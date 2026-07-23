@@ -86,10 +86,28 @@ def crawl_status() -> dict[str, Any]:
     return out
 
 
+def recover_stuck_after_stop(*, activity: str | None = None) -> bool:
+    """手动入口共用：紧急/手动停止后 running 与 stop 标可能同时残留。
+
+    非连续调度且仍标 running + 停止意图时，复位为空闲并清 stop。返回是否做了复位。
+    """
+    if _STATE.get("looping"):
+        return False
+    stopping_intent = THROTTLE.should_stop() or str(_STATE.get("phase") or "") == "stopping"
+    if not (_STATE.get("running") and stopping_intent):
+        return False
+    _force_idle_state()
+    THROTTLE.clear_stop()
+    if activity:
+        _log_activity(f"{activity}前复位卡住的运行状态")
+    return True
+
+
 def try_begin_exclusive(phase: str = "recrawl") -> dict[str, Any]:
     """占用 running，供已入库重爬等手工任务。连续调度或正在抓取时拒绝。"""
     if _STATE.get("looping"):
         return {"ok": False, "reason": "loop_running", "error": "连续调度进行中，请先关闭后再立即重爬"}
+    recover_stuck_after_stop()
     if _STATE.get("running"):
         return {"ok": False, "reason": "busy", "error": "爬虫正在执行，请稍后再重爬"}
     _STATE["running"] = True
@@ -250,14 +268,10 @@ async def run_crawl_once(
     if kind:
         scan_list = False
 
-    # 已请求停止则拒绝新开一轮（防止扫新帖换板把停止标清掉后继续跑）
-    if THROTTLE.should_stop() and not from_loop and clear_stop_flag is not True:
-        return {
-            "ok": False,
-            "skipped": True,
-            "reason": "stopped",
-            "error": "已请求停止",
-        }
+    # clear_stop_flag：是否清除手动停止标。None 时：非 from_loop 默认清除；扫新帖多板应传 False。
+    # 必须先清标再开跑：否则「手动停止」残留 stop 会让异常重试/立即爬取直接 skipped，表现为点了没反应。
+    do_clear_stop = (not from_loop) if clear_stop_flag is None else bool(clear_stop_flag)
+
     if hold_lock:
         if not _STATE.get("running"):
             return {
@@ -277,10 +291,22 @@ async def run_crawl_once(
                 "reason": "loop_running",
                 "error": "连续调度进行中，请先关闭后再操作",
             }
+        if not from_loop:
+            recover_stuck_after_stop()
         if _STATE.get("running") and not _STATE.get("looping"):
             return {"ok": False, "skipped": True, "reason": "already_running", **crawl_status()}
         if _STATE.get("running") and _STATE.get("loop_inner"):
             return {"ok": False, "skipped": True, "reason": "already_running"}
+
+        if do_clear_stop:
+            THROTTLE.clear_stop()
+        elif THROTTLE.should_stop() and not from_loop:
+            return {
+                "ok": False,
+                "skipped": True,
+                "reason": "stopped",
+                "error": "已请求停止",
+            }
 
         _ensure_queue_schema()
         _STATE["running"] = True
@@ -289,10 +315,6 @@ async def run_crawl_once(
         _STATE["last_started_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
         global _round_task
         _round_task = asyncio.current_task()
-        # 仅显式允许时清停止标；扫新帖逐板调用必须 clear_stop_flag=False
-        do_clear = (not from_loop) if clear_stop_flag is None else bool(clear_stop_flag)
-        if do_clear:
-            THROTTLE.clear_stop()
 
     result: dict[str, Any] = {
         "ok": True,
@@ -1006,6 +1028,7 @@ async def run_scan_head_once(
             "reason": "loop_running",
             "error": "连续调度进行中，请先关闭后再扫新帖",
         }
+    recover_stuck_after_stop()
     if _STATE.get("running"):
         return {"ok": False, "skipped": True, "reason": "already_running", **crawl_status()}
 

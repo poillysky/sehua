@@ -35,6 +35,7 @@ from workers.runner import (
     _log_activity,
     crawl_status,
     recent_activity,
+    recover_stuck_after_stop,
     run_crawl_once,
     run_scan_head_once,
     start_continuous_loop,
@@ -307,6 +308,17 @@ async def put_crawler_enabled(
         conn.close()
 
 
+def _require_manual_idle(*, action: str) -> None:
+    """手动操作前：连续调度拒绝；停止后卡住的 running+stop 则复位。"""
+    st = crawl_status()
+    if st.get("looping"):
+        raise HTTPException(status_code=409, detail=f"连续调度进行中，请先关闭后再{action}")
+    recover_stuck_after_stop(activity=action)
+    st = crawl_status()
+    if st.get("running"):
+        raise HTTPException(status_code=409, detail="上一轮仍在执行，请稍候")
+
+
 @router.post("/run")
 async def post_crawler_run(
     body: RunBody | None = None,
@@ -317,11 +329,7 @@ async def post_crawler_run(
     fid = (body.forum_id or SITE_CRAWLER_FORUM_ID).strip()
     if fid != SITE_CRAWLER_FORUM_ID:
         raise HTTPException(status_code=400, detail="该论坛尚未接入爬虫")
-    st = crawl_status()
-    if st.get("looping"):
-        raise HTTPException(status_code=409, detail="连续调度进行中，请先关闭后再立即爬取")
-    if st.get("running"):
-        raise HTTPException(status_code=409, detail="上一轮仍在执行，请稍候")
+    _require_manual_idle(action="立即爬取")
     result = await await_crawl(
         run_crawl_once(
             forum_id=fid,
@@ -350,11 +358,7 @@ async def post_crawler_scan_head(
     fid = (body.forum_id or SITE_CRAWLER_FORUM_ID).strip()
     if fid != SITE_CRAWLER_FORUM_ID:
         raise HTTPException(status_code=400, detail="该论坛尚未接入爬虫")
-    st = crawl_status()
-    if st.get("looping"):
-        raise HTTPException(status_code=409, detail="连续调度进行中，请先关闭后再扫新帖")
-    if st.get("running"):
-        raise HTTPException(status_code=409, detail="上一轮仍在执行，请稍候")
+    _require_manual_idle(action="扫新帖")
     result = await await_crawl(
         run_scan_head_once(
             forum_id=fid,
@@ -380,11 +384,7 @@ async def post_crawler_random_tid(
     fid = (body.forum_id or SITE_CRAWLER_FORUM_ID).strip()
     if fid != SITE_CRAWLER_FORUM_ID:
         raise HTTPException(status_code=400, detail="该论坛尚未接入爬虫")
-    st = crawl_status()
-    if st.get("looping"):
-        raise HTTPException(status_code=409, detail="连续调度进行中，请先关闭后再随机抓帖")
-    if st.get("running"):
-        raise HTTPException(status_code=409, detail="上一轮仍在执行，请稍候")
+    _require_manual_idle(action="随机抓帖")
     result = await await_crawl(
         run_random_tid_batch(
             forum_id=fid,
@@ -472,11 +472,7 @@ async def post_crawler_stop(_user: dict = Depends(require_permission("crawl.run"
 
 
 async def _post_queue_retry(kind: str) -> dict:
-    st = crawl_status()
-    if st.get("looping"):
-        raise HTTPException(status_code=409, detail="连续调度进行中，请先关闭后再重试队列")
-    if st.get("running"):
-        raise HTTPException(status_code=409, detail="爬虫正在执行，请稍候")
+    _require_manual_idle(action="异常重试")
     result = await await_crawl(
         run_crawl_once(
             persist=True,
@@ -489,8 +485,15 @@ async def _post_queue_retry(kind: str) -> dict:
     )
     if result.get("reason") == "loop_running":
         raise HTTPException(status_code=409, detail=str(result.get("error") or "连续调度进行中"))
+    if result.get("skipped") or result.get("ok") is False:
+        detail = str(
+            result.get("error")
+            or result.get("reason")
+            or "异常重试未执行"
+        )
+        raise HTTPException(status_code=409, detail=detail)
     return {
-        "message": "ok" if result.get("ok") and not result.get("skipped") else "failed",
+        "message": "ok",
         "kind": kind,
         "crawled": result.get("crawled") or 0,
         "imports": result.get("imports") or 0,
@@ -736,6 +739,7 @@ async def _maybe_crawl_after_requeue(
     """重入队后可选跑一轮；返回 (crawl_result, crawl_note)。"""
     if not want_crawl or requeued <= 0:
         return None, ""
+    recover_stuck_after_stop(activity="入队后抓取")
     st = crawl_status()
     if st.get("looping") or st.get("running"):
         return None, "；爬虫忙，已入队待连续调度/空闲后抓取"
@@ -947,11 +951,7 @@ async def post_recrawl_stubs(
     """用账号 Cookie 重爬全部优先占位；后台执行，进度见 status.account_stub_progress。"""
     from workers.recrawl import start_account_stub_recrawl
 
-    st = crawl_status()
-    if st.get("looping"):
-        raise HTTPException(status_code=409, detail="连续调度进行中，请先关闭后再账号爬占位")
-    if st.get("running"):
-        raise HTTPException(status_code=409, detail="上一轮仍在执行，请稍候")
+    _require_manual_idle(action="账号重爬")
     result = start_account_stub_recrawl()
     if not result.get("ok") and result.get("reason") in ("busy", "loop_running"):
         raise HTTPException(status_code=409, detail=str(result.get("error") or "爬虫正在执行"))

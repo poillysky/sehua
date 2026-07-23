@@ -26,6 +26,7 @@ from workers.runner import (
     _STATE,
     _log_activity,
     end_exclusive,
+    recover_stuck_after_stop,
     try_begin_exclusive,
 )
 from workers.session_factory import fetcher_from_config, session_from_config
@@ -485,6 +486,7 @@ def start_random_tid_loop(
             "reason": "loop_running",
             "error": "已有连续调度在运行，请先停止",
         }
+    recover_stuck_after_stop()
     if _STATE.get("running"):
         return {"ok": False, "reason": "busy", "error": "爬虫正在执行，请稍候"}
 
