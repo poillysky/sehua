@@ -143,6 +143,80 @@ def test_parse_bare_infohash_hash_check_label():
     assert has_target_link(raw, "magnet")
 
 
+def test_parse_bare_infohash_feature_code_label():
+    """【特征编码】后的裸 infohash（tid 2856358 类）。"""
+    h = "40426ff87ad87231c4f12fcca32f512e80bc1f11"
+    raw = f"""
+    【影片名称】：测试片子
+    【影片大小】：70.9 M
+    【特征编码】：{h}
+    【是否有码】：无码
+    """
+    links = parse_magnet_text(raw)
+    assert len(links) == 1
+    assert links[0].infohash == h.upper()
+    assert links[0].link.lower() == f"magnet:?xt=urn:btih:{h}"
+    assert "测试片子" in links[0].filename
+    assert has_target_link(raw, "magnet")
+
+    # 繁体 / 短标签 / 简繁混写（tid 3094851：特征編碼）
+    for lab in ("特徵編碼", "特征码", "特徵碼", "特征編碼", "特徵编码"):
+        got = parse_magnet_text(f"【{lab}】：{h}")
+        assert len(got) == 1 and got[0].infohash == h.upper(), lab
+
+
+def test_parse_magnet_btih_wrapped_in_escaped_span():
+    """blockcode 把 hash 包进 &lt;span&gt;（tid 3094851 磁力+特征编码同帖）。"""
+    h = "bd0be9bbbf9775c1aaeacbf1c3f957371f51542a"
+    raw = (
+        "【磁力链接】: "
+        f"magnet:?xt=urn:btih:&lt;span style=&quot;background-color: rgb(255, 255, 255);&quot;&gt;{h}&lt;/span&gt;"
+    )
+    fixed = normalize_magnet_corpus(raw)
+    assert f"magnet:?xt=urn:btih:{h}" in fixed.lower()
+    assert "&lt;span" not in fixed.lower()
+    links = parse_magnet_text(raw)
+    assert len(links) == 1
+    assert links[0].infohash == h.upper()
+    assert has_target_link(raw, "magnet")
+
+
+def test_parse_feature_code_and_magnet_same_hash_dedupe():
+    """特征编码裸 hash 与磁力 URI 同值时只保留一条。"""
+    h = "bd0be9bbbf9775c1aaeacbf1c3f957371f51542a"
+    raw = f"""
+    【影片名称】：同帖双写
+    【特征編碼】：{h}
+    【磁力链接】: magnet:?xt=urn:btih:{h}
+    """
+    links = parse_magnet_text(raw)
+    assert len(links) == 1
+    assert links[0].infohash == h.upper()
+    assert "同帖双写" in links[0].filename
+
+
+def test_parse_seed_feature_code_and_dated_magnet():
+    """【种子特码】+ magnet:?xt=urn:btih:YYYYMM/HASH（tid 3286293）。"""
+    h = "0d76c369f18439e7a8458f1ca904d514e321dc58"
+    raw = f"""
+    【影片名称】：合集其一
+    【种子特码】：{h}
+    【磁力链接】: magnet:?xt=urn:btih:202601/{h}&dn=demo
+    """
+    fixed = normalize_magnet_corpus(raw)
+    assert f"magnet:?xt=urn:btih:{h}" in fixed.lower()
+    assert "202601/" not in fixed.split("btih:")[-1][:20]
+    links = parse_magnet_text(raw)
+    assert len(links) == 1
+    assert links[0].infohash == h.upper()
+    assert "合集其一" in links[0].filename
+    assert has_target_link(raw, "magnet")
+
+    for lab in ("種子特碼", "种子特碼", "種子特码"):
+        got = parse_magnet_text(f"【{lab}】：{h}")
+        assert len(got) == 1 and got[0].infohash == h.upper(), lab
+
+
 def test_parse_truncated_ed2k_scheme():
     """发帖掐掉 e：d2k://|file|… 应还原为 ed2k。"""
     from parsers.ed2k import normalize_ed2k_corpus, parse_ed2k_text

@@ -780,7 +780,11 @@ def _magnet_positions_in_scope(scope: str, wanted: set[str] | None = None) -> li
     """文档序磁力位置；(hash, start, end)。同 hash 留首次。"""
     mag_pos: list[tuple[str, int, int]] = []
     seen_h: set[str] = set()
-    for m in re.finditer(r"magnet:\?xt=urn:btih:([A-Fa-f0-9]{40})", scope, re.I):
+    for m in re.finditer(
+        r"magnet:\?xt=urn:btih:([A-Fa-f0-9]{40}|[A-Fa-f0-9]{32}|[a-zA-Z2-7]{32})",
+        scope,
+        re.I,
+    ):
         h = m.group(1).upper()
         if h in seen_h:
             continue

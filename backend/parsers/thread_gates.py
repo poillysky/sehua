@@ -10,7 +10,7 @@ ED2K_RE = re.compile(
     re.I,
 )
 MAGNET_RE = re.compile(
-    r"magnet:\?xt=urn:btih:(?:[A-Fa-f0-9]{40}|[a-zA-Z2-7]{32})",
+    r"magnet:\?xt=urn:btih:(?:[A-Fa-f0-9]{40}|[A-Fa-f0-9]{32}|[a-zA-Z2-7]{32})",
     re.I,
 )
 TITLE_RE = re.compile(r"<title[^>]*>(.*?)</title>", re.I | re.S)

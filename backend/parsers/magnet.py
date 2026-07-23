@@ -8,12 +8,15 @@ from urllib.parse import unquote
 
 from parsers.resource_names import context_subresource_title
 
+# BT infohash：40 位 hex（SHA1）/ 32 位 hex（转帖常见短链，如 tid 2758065）/ 32 位 base32
+_INFOHASH = r"(?:[A-Fa-f0-9]{40}|[A-Fa-f0-9]{32}|[a-zA-Z2-7]{32})"
+
 MAGNET_URI_RE = re.compile(
-    r"magnet:\?xt=urn:btih:(?:[A-Fa-f0-9]{40}|[a-zA-Z2-7]{32})(?:&[^\s<>\"'\]【】]+)?",
+    rf"magnet:\?xt=urn:btih:{_INFOHASH}(?:&[^\s<>\"'\]【】]+)?",
     re.I,
 )
 BTIH_RE = re.compile(
-    r"xt=urn:btih:([A-Fa-f0-9]{40}|[a-zA-Z2-7]{32})",
+    rf"xt=urn:btih:({_INFOHASH})",
     re.I,
 )
 
@@ -38,20 +41,21 @@ _FULLWIDTH_TRANS = str.maketrans(
 
 # magnet : ? xt = urn : btih : HASH（半角被空格打断）
 _SPACED_MAGNET_CORE_RE = re.compile(
-    r"magnet\s*:\s*\?\s*xt\s*=\s*urn\s*:\s*btih\s*:\s*"
-    r"([A-Fa-f0-9]{40}|[a-zA-Z2-7]{32})",
+    rf"magnet\s*:\s*\?\s*xt\s*=\s*urn\s*:\s*btih\s*:\s*"
+    rf"({_INFOHASH})",
     re.I,
 )
 
 # 发帖/附件防和谐：去掉冒号 → magnetxt=urnbtih:HASH 或 magnet?xt=urnbtih:HASH
 _COLONLESS_MAGNET_RE = re.compile(
-    r"magnet\s*\??\s*xt\s*=\s*urn\s*btih\s*:\s*"
-    r"([A-Fa-f0-9]{40}|[a-zA-Z2-7]{32})",
+    rf"magnet\s*\??\s*xt\s*=\s*urn\s*btih\s*:\s*"
+    rf"({_INFOHASH})",
     re.I,
 )
 
 # Discuz「复制代码」旁裸 infohash（例：复制代码下载：f7809dc8…）
 # 转帖常见【哈希校验】：40位 hex（tid 3628517）
+# 【特征编码/特徵編碼/特征編碼…】简繁混写（tid 2856358 / 3094851）
 #
 # 禁止用裸「磁力」「BT」作线索：标题【BT/磁力】在大 HTML 上会触发灾难性回溯卡死进程。
 # 间隔必须有上限，禁止 (?:…)*? 扫整页。
@@ -64,10 +68,28 @@ _BARE_INFOHASH_CUED_RE = re.compile(
     r"|BT\s*(?:哈希|hash)"
     r"|info\s*hash"
     r"|种子(?:哈希|hash)"
+    r"|特[征徵][编編]?[码碼]"
+    # 转帖「种子特码/種子特碼」（tid 3286293）
+    r"|[种種]子特[码碼]"
     r")"
     r"(?:[\s:：\|\[\]【】=\-_]|<[^>\n]{0,120}>){0,60}"
-    r"([A-Fa-f0-9]{40}|[a-zA-Z2-7]{32})"
+    rf"({_INFOHASH})"
     r"(?![A-Fa-f0-9])",
+    re.I,
+)
+
+# blockcode 里把 hash 包进转义/真实标签：magnet:?xt=urn:btih:&lt;span…&gt;HASH&lt;/span&gt;
+_MAGNET_BTIH_TAG_JUNK_RE = re.compile(
+    rf"(magnet:\?xt=urn:btih:)"
+    rf"(?:(?:<[^>\n]{{0,200}}>)|(?:&lt;(?:(?!&gt;).){{0,200}}&gt;)|\s)*"
+    rf"({_INFOHASH})"
+    rf"(?:(?:</[^>\n]{{0,80}}>)|(?:&lt;/(?:(?!&gt;).){{0,80}}&gt;)|\s)*",
+    re.I,
+)
+
+# 磁力 URI 在 btih 与 hash 间插入日期目录：magnet:?xt=urn:btih:202601/HASH（tid 3286293）
+_MAGNET_BTIH_DATE_PREFIX_RE = re.compile(
+    rf"(magnet:\?xt=urn:btih:)(?:[0-9]{{4,8}}/)+({_INFOHASH})",
     re.I,
 )
 
@@ -103,10 +125,18 @@ def _expand_bare_infohashes(text: str) -> str:
 
 
 def normalize_magnet_corpus(text: str) -> str:
-    """把全角标点 / 被空格拆开 / 去冒号防和谐 / 裸 infohash 还原成标准形式。"""
+    """把全角标点 / 被空格拆开 / 去冒号防和谐 / 标签打断 / 裸 infohash 还原成标准形式。"""
     if not text:
         return ""
     out = text.translate(_FULLWIDTH_TRANS)
+    out = _MAGNET_BTIH_TAG_JUNK_RE.sub(
+        lambda m: f"{m.group(1)}{m.group(2)}",
+        out,
+    )
+    out = _MAGNET_BTIH_DATE_PREFIX_RE.sub(
+        lambda m: f"{m.group(1)}{m.group(2)}",
+        out,
+    )
     out = _SPACED_MAGNET_CORE_RE.sub(
         lambda m: f"magnet:?xt=urn:btih:{m.group(1)}",
         out,
