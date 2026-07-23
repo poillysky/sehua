@@ -89,6 +89,7 @@ def test_persist_multi_and_single_naming(monkeypatch):
 
     calls: list[dict] = []
     monkeypatch.setattr(persist_mod, "ensure_source", lambda *a, **k: 1)
+    monkeypatch.setattr(persist_mod, "delete_stub_by_source_url", lambda *a, **k: False)
 
     def fake_upsert(conn, link, source_id, **kwargs):
         calls.append(

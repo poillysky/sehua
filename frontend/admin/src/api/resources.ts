@@ -369,7 +369,8 @@ export function recrawlResourcesBatch(hashes: string[]) {
     message: string
     result: {
       ok: boolean
-      mode?: 'immediate' | 'queued' | 'failed'
+      mode?: 'immediate' | 'queued' | 'background' | 'failed'
+      started?: number
       imported?: number
       removed?: number
       queued?: number

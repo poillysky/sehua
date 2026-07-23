@@ -12,6 +12,7 @@ import {
   hasArchiveEd2k,
   isArchiveDownloadLink,
   linkKindOf,
+  linksForResourceHash,
   normalizeEd2kLinks,
 } from "@/utils/resource";
 import { Toast } from "@/utils";
@@ -25,6 +26,7 @@ export function P115SaveButton({
 }: {
   item?: Pick<
     Ed2kResourceProps,
+    | "hash"
     | "ed2k_link"
     | "ed2k_links"
     | "extract_password"
@@ -45,7 +47,9 @@ export function P115SaveButton({
     ed2k_link: ed2kLink || "",
     ed2k_links: ed2kLinks,
   };
-  const urls = normalizeEd2kLinks(source.ed2k_links, source.ed2k_link);
+  const urls = item?.hash
+    ? linksForResourceHash(item.hash, source.ed2k_links, source.ed2k_link)
+    : normalizeEd2kLinks(source.ed2k_links, source.ed2k_link);
   const password = item ? getExtractPassword(item) : null;
   const titleHint = item ? getDisplayTitle(item) : "";
   const shareUrls = urls.filter((u) => linkKindOf(u) === "115share");

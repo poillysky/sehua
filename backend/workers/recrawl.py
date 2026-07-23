@@ -138,11 +138,14 @@ def account_stub_progress() -> dict[str, Any]:
 
 
 _account_stub_task: Optional[asyncio.Task[Any]] = None
+_account_stub_future: Any = None
 
 
 def start_account_stub_recrawl() -> dict[str, Any]:
     """校验后后台跑账号爬占位（不限数量，直到队列清空或本轮均已尝试）。"""
-    global _account_stub_task
+    global _account_stub_task, _account_stub_future
+    from workers.crawl_executor import spawn_crawl
+
     st = crawl_status()
     if st.get("looping") or st.get("running"):
         return {
@@ -151,7 +154,10 @@ def start_account_stub_recrawl() -> dict[str, Any]:
             "reason": "busy" if st.get("running") else "loop_running",
             "error": "爬虫正在执行，请先停止后再账号爬占位",
         }
-    if _account_stub_task is not None and not _account_stub_task.done():
+    if (
+        (_account_stub_future is not None and not _account_stub_future.done())
+        or (_account_stub_task is not None and not _account_stub_task.done())
+    ):
         return {
             "ok": False,
             "started": False,
@@ -203,6 +209,8 @@ def start_account_stub_recrawl() -> dict[str, Any]:
     _publish_account_stub_progress(active=True, remaining=remaining)
 
     async def _runner() -> None:
+        global _account_stub_task
+        _account_stub_task = asyncio.current_task()
         try:
             await recrawl_account_stubs()
         except Exception:
@@ -212,8 +220,11 @@ def start_account_stub_recrawl() -> dict[str, Any]:
             except Exception:
                 rem = 0
             _publish_account_stub_progress(active=False, remaining=rem)
+        finally:
+            if _account_stub_task is asyncio.current_task():
+                _account_stub_task = None
 
-    _account_stub_task = asyncio.get_running_loop().create_task(_runner())
+    _account_stub_future = spawn_crawl(_runner(), name="account-stubs")
     _log_activity(
         f"账号爬占位已启动 · 占位 {stub_remaining} · 未处理 {discarded_remaining} · 跑完为止"
     )

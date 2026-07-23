@@ -11,7 +11,7 @@ from parsers.content import (
     extract_blockcode_text,
     extract_link_corpus_html,
     extract_password as extract_post_password,
-    extract_preview_images_by_infohash,
+    extract_subresource_blocks,
     parse_thread_content,
 )
 from parsers.ed2k import Ed2kLink, parse_ed2k_text, pick_primary_ed2k
@@ -33,6 +33,8 @@ class ParsedAsset:
     is_primary: bool = False
     access_code: str = ""
     preview_images: list[str] = field(default_factory=list)
+    # 合集子资源块描述（名称/大小/格式/说明）；空则入库用帖级 description
+    description: str = ""
 
 
 @dataclass(slots=True)
@@ -182,7 +184,7 @@ def parse_thread_dual(
     extra_text: 附件解析出的文本（txt/zip/rar 内链或 torrent→magnet）并入语料
     board_fid: 用于按板块结构卡片筛选描述字段
 
-    元数据只取一楼；链接语料含楼主二楼及后续补链楼。
+    元数据与链接/子资源均只取主贴一楼；回帖（含楼主二楼）不参与识别。
     """
     content = parse_thread_content(html, tid=tid, base_url=base_url)
     link_html = extract_link_corpus_html(html)
@@ -208,16 +210,37 @@ def parse_thread_dual(
         preferred=preferred_link,
         share115_links=share115_links,
     )
-    # 多磁力合集：每条子资源挂邻近封面/截图；单资源仍用整帖预览
+    # 子资源：按子标题切段（无子标题则整帖用帖标题）；一段只留一个主链
     hashes = [a.hash for a in assets if a.link_kind in {"magnet", "ed2k"} and a.hash]
-    if len(hashes) > 1:
-        by_hash = extract_preview_images_by_infohash(
-            html, hashes, base_url=base_url, limit_per=5
+    if hashes:
+        blocks = extract_subresource_blocks(
+            html,
+            hashes,
+            base_url=base_url,
+            limit_per=5,
+            fallback_title=content.title or "",
         )
-        for asset in assets:
-            imgs = by_hash.get((asset.hash or "").upper()) or []
-            if imgs:
-                asset.preview_images = imgs
+        if blocks:
+            by_hash = {(a.hash or "").strip().upper(): a for a in assets}
+            ordered: list[ParsedAsset] = []
+            for b in blocks:
+                asset = by_hash.get(b.infohash)
+                if not asset:
+                    continue
+                if b.title:
+                    asset.filename = b.title[:255]
+                if b.size and b.size > 0:
+                    asset.size = int(b.size)
+                if b.preview_images:
+                    asset.preview_images = list(b.preview_images)
+                if b.description:
+                    asset.description = b.description
+                asset.is_primary = False
+                ordered.append(asset)
+            if ordered:
+                ordered[0].is_primary = True
+                assets = ordered
+                primary_kind = ordered[0].link_kind  # type: ignore[assignment]
     description = _build_description(content, board_fid=board_fid)
 
     extract_password = content.extract_password

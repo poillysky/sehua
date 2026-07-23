@@ -94,7 +94,7 @@ export function Ed2kCopyButton({
   size = "sm",
   compact = false,
 }: {
-  item?: Pick<Ed2kResourceProps, "ed2k_link" | "ed2k_links">;
+  item?: Pick<Ed2kResourceProps, "hash" | "ed2k_link" | "ed2k_links">;
   ed2kLink?: string;
   ed2kLinks?: string[];
   size?: "sm" | "md";
@@ -105,13 +105,9 @@ export function Ed2kCopyButton({
     ed2k_link: ed2kLink || "",
     ed2k_links: ed2kLinks,
   };
-  const copyText = getEd2kCopyText(source);
-  const linkCount = getEd2kLinkCount(source);
-  const kind = linkKindOf(
-    Array.isArray(source.ed2k_links) && source.ed2k_links[0]
-      ? source.ed2k_links[0]
-      : source.ed2k_link,
-  );
+  const copyText = getEd2kCopyText(source as Pick<Ed2kResourceProps, "hash" | "ed2k_link" | "ed2k_links">);
+  const linkCount = getEd2kLinkCount(source as Pick<Ed2kResourceProps, "hash" | "ed2k_link" | "ed2k_links">);
+  const kind = linkKindOf(source.ed2k_link || source.ed2k_links?.[0]);
 
   if (!copyText) {
     return null;

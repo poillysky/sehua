@@ -21,7 +21,8 @@ DN_RE = re.compile(r"(?:^|&)dn=([^&]+)", re.I)
 XL_RE = re.compile(r"(?:^|&)xl=(\d+)", re.I)
 
 _FILM_SIZE_RE = re.compile(
-    r"【\s*影片大小\s*】\s*[:：]?\s*([0-9.]+)\s*(T|TB|G|GB|M|MB|K|KB)?",
+    r"【\s*(?:影片大小|影片容量|资源大小|資源大小|文件大小|檔案大小|档案大小)\s*】"
+    r"\s*[:：]?\s*([0-9.]+)\s*(T|TB|G|GB|M|MB|K|KB)?",
     re.I,
 )
 
@@ -149,15 +150,27 @@ def _size_from_label(raw_num: str, unit: str | None) -> int:
 
 
 def _context_name_and_size(blob: str, start: int, end: int) -> tuple[str, int]:
-    """子资源名只认【影片名称】/【资源名称】；链旁尺寸另取。"""
+    """子资源名只认【影片名称】/【资源名称】；尺寸与片名同侧就近取。"""
     name = context_subresource_title(
         blob, start, end, allow_torrent_fallback=True
     )
+    before = re.sub(r"<[^>]+>", " ", blob[max(0, start - 800) : start])
     after = re.sub(r"<[^>]+>", " ", blob[end : end + 480])
     size = 0
-    sm = _FILM_SIZE_RE.search(after)
-    if sm:
-        size = _size_from_label(sm.group(1), sm.group(2))
+    # 与命名一致：先后文再前文，避免吃到上一条的【影片大小】
+    for window in (after, before):
+        sm = _FILM_SIZE_RE.search(window)
+        if sm:
+            size = _size_from_label(sm.group(1), sm.group(2))
+            break
+    if not size and name:
+        emb = re.search(
+            r"\[\s*(?:MP4|MKV|AVI|WMV|MOV|FLV|TS|ISO)?\s*/\s*([0-9.]+)\s*([KMGT])B?\s*\]",
+            name,
+            re.I,
+        )
+        if emb:
+            size = _size_from_label(emb.group(1), emb.group(2))
     return name, size
 
 

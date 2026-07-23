@@ -11,7 +11,7 @@ import {
   filterPreviewImages,
   isPublicDownloadLink,
   linkKindOf,
-  normalizeEd2kLinks,
+  linksForResourceHash,
   parseEd2kLink,
   RESOURCE_HASH_REGEX,
 } from "@/utils/resource";
@@ -72,7 +72,8 @@ LEFT JOIN LATERAL (
   FROM resource_sources
   WHERE hash = r.hash
   ORDER BY
-    coalesce(array_length(ed2k_links, 1), 0) DESC,
+    -- 优先单链行（多链多为合集旧残留），再看预览/描述完整度
+    CASE WHEN coalesce(array_length(ed2k_links, 1), 0) <= 1 THEN 0 ELSE 1 END,
     coalesce(array_length(preview_images, 1), 0) DESC,
     length(coalesce(description, '')) DESC,
     length(coalesce(title, '')) DESC,
@@ -88,7 +89,7 @@ LEFT JOIN LATERAL (
   FROM resource_sources
   WHERE hash = r.hash
   ORDER BY
-    coalesce(array_length(ed2k_links, 1), 0) DESC,
+    CASE WHEN coalesce(array_length(ed2k_links, 1), 0) <= 1 THEN 0 ELSE 1 END,
     created_at DESC
   LIMIT 1
 ) rs ON true
@@ -176,12 +177,16 @@ export function formatResource(row: Ed2kRow) {
   const previewImages = filterPreviewImages(
     Array.isArray(row.preview_images) ? row.preview_images : [],
   );
-  const ed2kLinks = normalizeEd2kLinks(row.ed2k_links, row.ed2k_link);
   const rawLink = (row.ed2k_link || "").trim();
   const isStub = rawLink.toLowerCase().startsWith("unavailable://");
+  // 子资源以本 hash 的 r.ed2k_link 为准，过滤合集残留在 rs.ed2k_links 里的其它磁链
+  const ed2kLinks = linksForResourceHash(row.hash, row.ed2k_links, rawLink);
   const primary =
+    (isPublicDownloadLink(rawLink) &&
+    ed2kLinks.some((l) => l === rawLink)
+      ? rawLink
+      : "") ||
     ed2kLinks[0] ||
-    (isPublicDownloadLink(rawLink) ? rawLink : "") ||
     (isStub ? rawLink : "");
   const parsedFiles = ed2kLinks.map((link, index) => {
     const parsed = parseEd2kLink(link);

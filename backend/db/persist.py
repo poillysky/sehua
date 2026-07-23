@@ -4,7 +4,12 @@ from __future__ import annotations
 
 from typing import Any
 
-from db.repository import ensure_source, import_thread_stub, upsert_resource
+from db.repository import (
+    delete_stub_by_source_url,
+    ensure_source,
+    import_thread_stub,
+    upsert_resource,
+)
 from parsers.ed2k import Ed2kLink
 from parsers.links import DualParseResult, ParsedAsset
 from parsers.resource_names import resolve_sub_filename
@@ -83,7 +88,7 @@ def persist_dual_parse(
             title=main_name,
             hash_value=asset.hash,
             link_uri=asset.uri,
-            description=parsed.description or "",
+            description=asset.description or parsed.description or "",
         )
         link = Ed2kLink(
             filename=sub_name,
@@ -97,7 +102,7 @@ def persist_dual_parse(
             source_id,
             source_url=source_url,
             title=main_name,
-            description=parsed.description or None,
+            description=asset.description or parsed.description or None,
             preview_images=(
                 (asset.preview_images or parsed.preview_images or None)[:5]
                 if (asset.preview_images or parsed.preview_images)
@@ -111,6 +116,9 @@ def persist_dual_parse(
             import_outcome=outcome_msg,
         )
         last_hash = asset.hash
+
+    # 真链入库后清掉同帖占位，避免「ed2k + stub」被当成 ×2 合集
+    delete_stub_by_source_url(conn, source_url)
 
     return {
         "count": len(uniq),

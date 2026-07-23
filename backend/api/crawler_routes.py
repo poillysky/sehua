@@ -41,6 +41,7 @@ from workers.runner import (
     stop_continuous_loop,
     stop_crawler,
 )
+from workers.crawl_executor import await_crawl, spawn_crawl
 from workers.random_tid import run_random_tid_batch, start_random_tid_loop
 
 router = APIRouter(prefix="/api/crawler", tags=["crawler"])
@@ -321,15 +322,18 @@ async def post_crawler_run(
         raise HTTPException(status_code=409, detail="连续调度进行中，请先关闭后再立即爬取")
     if st.get("running"):
         raise HTTPException(status_code=409, detail="上一轮仍在执行，请稍候")
-    result = await run_crawl_once(
-        forum_id=fid,
-        persist=body.persist,
-        max_threads=body.max_threads,
-        scan_list=body.scan_list,
-        scan_head=False,
-        deep_scan=True,
-        from_loop=False,
-        require_enabled=False,
+    result = await await_crawl(
+        run_crawl_once(
+            forum_id=fid,
+            persist=body.persist,
+            max_threads=body.max_threads,
+            scan_list=body.scan_list,
+            scan_head=False,
+            deep_scan=True,
+            from_loop=False,
+            require_enabled=False,
+        ),
+        name="crawler-run",
     )
     if result.get("reason") == "loop_running":
         raise HTTPException(status_code=409, detail=str(result.get("error") or "连续调度进行中"))
@@ -351,10 +355,13 @@ async def post_crawler_scan_head(
         raise HTTPException(status_code=409, detail="连续调度进行中，请先关闭后再扫新帖")
     if st.get("running"):
         raise HTTPException(status_code=409, detail="上一轮仍在执行，请稍候")
-    result = await run_scan_head_once(
-        forum_id=fid,
-        max_pages=body.max_pages,
-        persist=body.persist,
+    result = await await_crawl(
+        run_scan_head_once(
+            forum_id=fid,
+            max_pages=body.max_pages,
+            persist=body.persist,
+        ),
+        name="crawler-scan-head",
     )
     if result.get("reason") == "loop_running":
         raise HTTPException(status_code=409, detail=str(result.get("error") or "连续调度进行中"))
@@ -378,13 +385,16 @@ async def post_crawler_random_tid(
         raise HTTPException(status_code=409, detail="连续调度进行中，请先关闭后再随机抓帖")
     if st.get("running"):
         raise HTTPException(status_code=409, detail="上一轮仍在执行，请稍候")
-    result = await run_random_tid_batch(
-        forum_id=fid,
-        probe=body.count,
-        import_target=body.import_target,
-        tid_min=body.tid_min,
-        tid_max=body.tid_max,
-        persist=body.persist,
+    result = await await_crawl(
+        run_random_tid_batch(
+            forum_id=fid,
+            probe=body.count,
+            import_target=body.import_target,
+            tid_min=body.tid_min,
+            tid_max=body.tid_max,
+            persist=body.persist,
+        ),
+        name="crawler-random-tid",
     )
     if result.get("reason") == "loop_running":
         raise HTTPException(status_code=409, detail=str(result.get("error") or "连续调度进行中"))
@@ -467,12 +477,15 @@ async def _post_queue_retry(kind: str) -> dict:
         raise HTTPException(status_code=409, detail="连续调度进行中，请先关闭后再重试队列")
     if st.get("running"):
         raise HTTPException(status_code=409, detail="爬虫正在执行，请稍候")
-    result = await run_crawl_once(
-        persist=True,
-        scan_list=False,
-        from_loop=False,
-        require_enabled=False,
-        queue_kind=kind,
+    result = await await_crawl(
+        run_crawl_once(
+            persist=True,
+            scan_list=False,
+            from_loop=False,
+            require_enabled=False,
+            queue_kind=kind,
+        ),
+        name=f"crawler-queue-{kind}",
     )
     if result.get("reason") == "loop_running":
         raise HTTPException(status_code=409, detail=str(result.get("error") or "连续调度进行中"))
@@ -726,11 +739,14 @@ async def _maybe_crawl_after_requeue(
     st = crawl_status()
     if st.get("looping") or st.get("running"):
         return None, "；爬虫忙，已入队待连续调度/空闲后抓取"
-    crawl_result = await run_crawl_once(
-        persist=True,
-        scan_list=False,
-        from_loop=False,
-        require_enabled=False,
+    crawl_result = await await_crawl(
+        run_crawl_once(
+            persist=True,
+            scan_list=False,
+            from_loop=False,
+            require_enabled=False,
+        ),
+        name="crawler-after-requeue",
     )
     if crawl_result.get("reason") == "loop_running":
         return None, "；爬虫忙，已入队待连续调度/空闲后抓取"
@@ -879,8 +895,8 @@ async def post_discarded_requeue_tids(
             + (f"；待抓队列仍有 {pending_left}" if pending_left else ""),
         }
 
-    # 后台执行：避免浏览器/附件挂死时 HTTP 一直不返回，管理端整页假死
-    async def _bg_discarded_recrawl() -> None:
+    # 爬虫线程执行：避免浏览器/附件挂死时堵死 uvicorn 主循环
+    async def _discarded_job() -> None:
         try:
             await recrawl_discarded_tids(tids)
         except Exception as exc:
@@ -889,7 +905,7 @@ async def post_discarded_requeue_tids(
             logging.getLogger(__name__).exception("background discarded recrawl")
             _log_activity(f"未处理批量重爬异常结束 · {exc}")
 
-    asyncio.create_task(_bg_discarded_recrawl())
+    spawn_crawl(_discarded_job(), name="discarded-recrawl")
     pending_left = 0
     conn = connect()
     try:

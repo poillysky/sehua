@@ -322,16 +322,74 @@ export function normalizeEd2kLinks(
   return Array.from(new Set(raw.filter((link) => isPublicDownloadLink(link))));
 }
 
+/** 链接是否属于该资源 hash（磁力 infohash / ed2k MD4）。解析不出 hash 的链（如 115）视为可保留。 */
+export function linkMatchesResourceHash(
+  link: string | null | undefined,
+  hash: string | null | undefined,
+): boolean {
+  const h = (hash || "").trim().toUpperCase();
+  if (!h) return true;
+  const raw = (link || "").trim();
+  if (!raw) return false;
+
+  const ed2k = parseEd2kLink(raw);
+  if (ed2k?.hash) {
+    return ed2k.hash.toUpperCase() === h;
+  }
+  const magnet = parseMagnetLink(raw);
+  if (magnet?.hash) {
+    return magnet.hash.toUpperCase() === h;
+  }
+  return true;
+}
+
+/**
+ * 一 hash 一条资源：只保留属于本 hash 的链接。
+ * 合集帖旧数据可能把整帖多链写进 rs.ed2k_links，会盖住正确的 r.ed2k_link。
+ */
+export function linksForResourceHash(
+  hash: string | null | undefined,
+  ed2kLinks?: string[] | null,
+  fallbackLink?: string | null,
+): string[] {
+  const h = (hash || "").trim().toUpperCase();
+  const primary = (fallbackLink || "").trim();
+  const fromMeta = normalizeEd2kLinks(ed2kLinks, null).filter((link) =>
+    linkMatchesResourceHash(link, h),
+  );
+
+  const out: string[] = [];
+  const push = (link: string) => {
+    if (!link || out.includes(link)) return;
+    if (!isPublicDownloadLink(link) && !link.toLowerCase().startsWith("unavailable://")) {
+      return;
+    }
+    if (h && isPublicDownloadLink(link) && !linkMatchesResourceHash(link, h)) {
+      return;
+    }
+    out.push(link);
+  };
+
+  // 以资源表主链为准
+  if (primary) push(primary);
+  for (const link of fromMeta) push(link);
+
+  if (!out.length && primary) {
+    return [primary];
+  }
+  return out;
+}
+
 export function getEd2kCopyText(
-  item: Pick<Ed2kResourceProps, "ed2k_link" | "ed2k_links">,
+  item: Pick<Ed2kResourceProps, "hash" | "ed2k_link" | "ed2k_links">,
 ): string {
-  return normalizeEd2kLinks(item.ed2k_links, item.ed2k_link).join("\n");
+  return linksForResourceHash(item.hash, item.ed2k_links, item.ed2k_link).join("\n");
 }
 
 export function getEd2kLinkCount(
-  item: Pick<Ed2kResourceProps, "ed2k_link" | "ed2k_links">,
+  item: Pick<Ed2kResourceProps, "hash" | "ed2k_link" | "ed2k_links">,
 ): number {
-  return normalizeEd2kLinks(item.ed2k_links, item.ed2k_link).length;
+  return linksForResourceHash(item.hash, item.ed2k_links, item.ed2k_link).length;
 }
 
 export type Ed2kResourceItem = {
@@ -346,7 +404,7 @@ export type Ed2kResourceItem = {
 export function getEd2kResourceList(
   item: Pick<Ed2kResourceProps, "name" | "hash" | "size" | "ed2k_link" | "ed2k_links">,
 ): Ed2kResourceItem[] {
-  const links = normalizeEd2kLinks(item.ed2k_links, item.ed2k_link);
+  const links = linksForResourceHash(item.hash, item.ed2k_links, item.ed2k_link);
 
   return links.map((link, index) => {
     const parsed = parseEd2kLink(link);
@@ -409,13 +467,13 @@ export function isArchiveDownloadLink(link?: string | null): boolean {
 }
 
 export function hasArchiveEd2k(
-  item: Pick<Ed2kResourceProps, "name" | "ed2k_link" | "ed2k_links">,
+  item: Pick<Ed2kResourceProps, "name" | "hash" | "ed2k_link" | "ed2k_links">,
 ): boolean {
   if (isArchiveFilename(item.name)) {
     return true;
   }
 
-  return normalizeEd2kLinks(item.ed2k_links, item.ed2k_link).some((link) =>
+  return linksForResourceHash(item.hash, item.ed2k_links, item.ed2k_link).some((link) =>
     isArchiveDownloadLink(link),
   );
 }

@@ -63,6 +63,20 @@ CASE
 END
 """
 
+# 同帖 ≥2 条「真」子资源（合集）；占位 stub 不计入
+MULTI_ASSET_URL_SQL = """
+NULLIF(BTRIM(COALESCE(rs.source_url, '')), '') IN (
+  SELECT BTRIM(rs2.source_url)
+  FROM resource_sources rs2
+  JOIN ed2k_resources r2 ON r2.hash = rs2.hash
+  WHERE NULLIF(BTRIM(COALESCE(rs2.source_url, '')), '') IS NOT NULL
+  GROUP BY BTRIM(rs2.source_url)
+  HAVING COUNT(*) FILTER (
+    WHERE lower(COALESCE(r2.ed2k_link, '')) NOT LIKE 'unavailable://thread/%%'
+  ) > 1
+)
+"""
+
 
 def _dedupe_preserve(items: list[Any]) -> list[Any]:
     seen: set[Any] = set()
@@ -305,6 +319,9 @@ def import_thread_stub(
     source_url = (source_url or "").strip()
     if not source_url:
         return 0
+    # 同帖已有真链时不再叠占位，避免列表出现「真链 + stub」假 ×2
+    if _url_has_real_resource(conn, source_url):
+        return 0
 
     stub_hash = thread_stub_hash(source_url)
     filename = (title or f"thread-{stub_hash[:8]}")[:255]
@@ -329,6 +346,25 @@ def import_thread_stub(
         import_outcome=import_outcome or "无下载链 · 占位入库",
     )
     return 1
+
+
+def _url_has_real_resource(conn: Any, source_url: str) -> bool:
+    url = (source_url or "").strip()
+    if not url:
+        return False
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT 1
+            FROM ed2k_resources r
+            JOIN resource_sources rs ON rs.hash = r.hash
+            WHERE NULLIF(BTRIM(COALESCE(rs.source_url, '')), '') = %s
+              AND lower(COALESCE(r.ed2k_link, '')) NOT LIKE %s
+            LIMIT 1
+            """,
+            (url, f"{STUB_LINK_PREFIX.lower()}%"),
+        )
+        return cur.fetchone() is not None
 
 
 def get_data_overview(conn: Any, resource_conn: Any | None = None) -> dict:
@@ -767,6 +803,9 @@ def _resource_list_where(
     if link_kind in ("magnet", "ed2k", "stub", "failed", "115share"):
         where.append(f"({LINK_KIND_SQL}) = %s")
         params.append(link_kind)
+    elif link_kind == "multi":
+        # 同帖多子资源合并条目（合集）
+        where.append(MULTI_ASSET_URL_SQL)
     if q:
         # 走 filename / search_string 的 pg_trgm GIN（勿用 rs.title ILIKE，会逼全表扫）
         where.append(
@@ -937,7 +976,7 @@ def _fast_flat_total(
     q: str | None = None,
     capped: bool = False,
 ) -> int:
-    """总数：无筛选用估算；搜索/板块等筛选用上限 COUNT，避免大表精确计数拖慢。"""
+    """子资源行数：无筛选用估算；有筛选用上限 COUNT。"""
     if not where_sql.strip():
         cur.execute(
             """
@@ -952,7 +991,6 @@ def _fast_flat_total(
         row = cur.fetchone()
         if row and int(row[0] or 0) > 0:
             return int(row[0])
-    # 有筛选：最多数到 cap+1，够分页即可
     if capped or (q or "").strip():
         cap = 5000
         cur.execute(
@@ -982,6 +1020,51 @@ def _fast_flat_total(
     return int(cur.fetchone()[0])
 
 
+def _fast_thread_total(
+    cur: Any,
+    where_sql: str,
+    params: list[Any],
+    *,
+    q: str | None = None,
+    capped: bool = False,
+) -> int:
+    """处理记录条数（按帖聚合）：与列表「一帖一行」口径一致。"""
+    # 有筛选时用上限 COUNT，避免全表 GROUP BY 拖死登录/列表
+    if capped or (q or "").strip() or where_sql.strip():
+        cap = 5000
+        cur.execute(
+            f"""
+            SELECT COUNT(*) FROM (
+              SELECT {RESOURCE_GROUP_KEY_SQL} AS gk
+              FROM ed2k_resources r
+              JOIN resource_sources rs ON rs.hash = r.hash
+              JOIN sources s ON s.id = rs.source_id
+              {where_sql}
+              GROUP BY 1
+              LIMIT %s
+            ) t
+            """,
+            [*params, cap + 1],
+        )
+        return int((cur.fetchone() or [0])[0] or 0)
+    cur.execute(
+        """
+        SELECT
+          (
+            SELECT COUNT(DISTINCT BTRIM(source_url))
+            FROM resource_sources
+            WHERE NULLIF(BTRIM(COALESCE(source_url, '')), '') IS NOT NULL
+          )
+          + (
+            SELECT COUNT(*)
+            FROM resource_sources
+            WHERE NULLIF(BTRIM(COALESCE(source_url, '')), '') IS NULL
+          )
+        """
+    )
+    return int((cur.fetchone() or [0])[0] or 0)
+
+
 def list_recent_resources(
     conn: Any,
     *,
@@ -996,6 +1079,16 @@ def list_recent_resources(
 
     用「最近行 oversample + 内存分组」避免全表 GROUP BY 拖死接口。
     """
+    if (link_kind or "").strip() == "multi":
+        return _list_multi_asset_resources(
+            conn,
+            limit=limit,
+            offset=offset,
+            source_type=source_type,
+            board_name=board_name,
+            q=q,
+        )
+
     where_sql, params = _resource_list_where(
         source_type=source_type,
         board_name=board_name,
@@ -1005,31 +1098,49 @@ def list_recent_resources(
     limit = max(1, int(limit or 30))
     offset = max(0, int(offset or 0))
     need = offset + limit
-    # 合集帖多 hash 会压缩「帖数」；有筛选时也要够 oversample
+    # 合集帖多 hash 会压缩「帖数」；有筛选时加大 oversample，尽量凑满本页帖数
     has_filter = bool(
         (q or "").strip()
         or source_type not in (None, "", "all")
         or board_name not in (None, "", "all")
         or link_kind not in (None, "", "all")
     )
-    if has_filter:
-        fetch_n = min(max(need * 20 + 80, 500), 4000)
-    else:
-        fetch_n = min(max(need * 12 + 40, limit + 40), 8000)
     _ensure_resource_schema(conn)
 
     with conn.cursor() as cur:
+        # 总数必须跨页稳定：始终按帖聚合计数，勿用本页 oversample 的 len(order)
+        thread_total = _fast_thread_total(
+            cur, where_sql, params, q=q, capped=has_filter
+        )
         flat_total = _fast_flat_total(
             cur, where_sql, params, q=q, capped=has_filter
         )
 
-        cur.execute(
-            _flat_resource_select_sql(where_sql) + " LIMIT %s",
-            [*params, fetch_n],
-        )
-        rows = list(cur.fetchall())
+        if has_filter:
+            # 匹配行未触顶时一次拉全，避免第 1/2 页窗口不同导致漏帖或顺序跳变
+            if flat_total <= 5000:
+                fetch_n = min(12000, max(int(flat_total) + 100, need * 50 + 200, 1500))
+            else:
+                fetch_n = min(12000, max(need * 50 + 200, 3000))
+        else:
+            # 近期大合集单帖可有几十 hash；*12 会只凑出十来帖，首页像「只有 12 条」
+            fetch_n = min(max(need * 80 + 200, limit + 200), 12000)
 
-    order, groups = _group_flat_rows_in_order(rows)
+        rows: list[Any] = []
+        order: list[str] = []
+        groups: dict[str, list[Any]] = {}
+        while True:
+            cur.execute(
+                _flat_resource_select_sql(where_sql) + " LIMIT %s",
+                [*params, fetch_n],
+            )
+            rows = list(cur.fetchall())
+            order, groups = _group_flat_rows_in_order(rows)
+            # 帖数仍不足且还有更大窗口可拉时扩窗再取
+            if len(order) >= need or len(rows) < fetch_n or fetch_n >= 12000:
+                break
+            fetch_n = min(fetch_n * 2, 12000)
+
     page_keys = order[offset : offset + limit]
 
     # 补全本页帖的全部子资源（oversample 窗口外的旧 hash）
@@ -1080,12 +1191,9 @@ def list_recent_resources(
             )
         )
 
-    # 能扫完筛选结果时给精确帖数；否则用行数作上限（略偏大，保证分页可用）
-    if flat_total <= fetch_n:
-        total = len(order) if len(rows) < fetch_n else flat_total
-    else:
-        total = flat_total
-    if has_filter and flat_total > 5000 and len(out) >= limit:
+    total = int(thread_total or 0)
+    # 跨页禁止改用 len(order)：oversample 窗口随页变化会让总数 180↔177 跳动
+    if has_filter and total >= 5000 and len(out) >= limit:
         total = max(total, offset + limit + 1)
     return out, total
 
@@ -1110,7 +1218,7 @@ def list_resource_ids_for_selection(
     fetch_n = min(max(lim * 8, lim), 12000)
 
     with conn.cursor() as cur:
-        flat_total = _fast_flat_total(cur, where_sql, params, q=q)
+        thread_total = _fast_thread_total(cur, where_sql, params, q=q, capped=True)
 
         cur.execute(
             _flat_resource_select_sql(where_sql) + " LIMIT %s",
@@ -1161,7 +1269,8 @@ def list_resource_ids_for_selection(
             }
         )
 
-    total = len(order) if flat_total <= fetch_n else flat_total
+    # 与列表接口一致：按帖聚合总数，勿随本窗口 len(order) 跳动
+    total = int(thread_total or 0)
     return items, total
 
 
@@ -1242,6 +1351,160 @@ def _facet_where(
     )
 
 
+def _count_multi_asset_threads(
+    cur: Any,
+    where_sql: str,
+    params: list[Any],
+    *,
+    capped: bool = True,
+) -> int:
+    """同帖 ≥2 条真子资源（×N）帖数；stub 不计入。"""
+    real_having = (
+        "COUNT(*) FILTER ("
+        "WHERE lower(COALESCE(r.ed2k_link, '')) NOT LIKE 'unavailable://thread/%%'"
+        ") > 1"
+    )
+    if not where_sql.strip():
+        cur.execute(
+            f"""
+            SELECT COUNT(*) FROM (
+              SELECT BTRIM(rs.source_url)
+              FROM resource_sources rs
+              JOIN ed2k_resources r ON r.hash = rs.hash
+              WHERE NULLIF(BTRIM(COALESCE(rs.source_url, '')), '') IS NOT NULL
+              GROUP BY 1
+              HAVING {real_having}
+            ) t
+            """
+        )
+        return int((cur.fetchone() or [0])[0] or 0)
+    merged = where_sql.rstrip() + (
+        " AND NULLIF(BTRIM(COALESCE(rs.source_url, '')), '') IS NOT NULL"
+    )
+    lim_sql = " LIMIT %s" if capped else ""
+    sql_params: list[Any] = list(params)
+    if capped:
+        sql_params.append(5001)
+    cur.execute(
+        f"""
+        SELECT COUNT(*) FROM (
+          SELECT BTRIM(rs.source_url)
+          FROM ed2k_resources r
+          JOIN resource_sources rs ON rs.hash = r.hash
+          JOIN sources s ON s.id = rs.source_id
+          {merged}
+          GROUP BY 1
+          HAVING {real_having}
+          {lim_sql}
+        ) t
+        """,
+        sql_params,
+    )
+    return int((cur.fetchone() or [0])[0] or 0)
+
+
+def _list_multi_asset_resources(
+    conn: Any,
+    *,
+    limit: int = 30,
+    offset: int = 0,
+    source_type: str | None = None,
+    board_name: str | None = None,
+    q: str | None = None,
+) -> tuple[list[dict], int]:
+    """只列出会显示 ×N 的合集帖。"""
+    base_where, params = _resource_list_where(
+        source_type=source_type,
+        board_name=board_name,
+        link_kind=None,
+        q=q,
+    )
+    limit = max(1, int(limit or 30))
+    offset = max(0, int(offset or 0))
+    _ensure_resource_schema(conn)
+
+    if base_where.strip():
+        url_filter = base_where.rstrip() + (
+            " AND NULLIF(BTRIM(COALESCE(rs.source_url, '')), '') IS NOT NULL"
+        )
+    else:
+        url_filter = (
+            " WHERE NULLIF(BTRIM(COALESCE(rs.source_url, '')), '') IS NOT NULL"
+        )
+
+    with conn.cursor() as cur:
+        total = _count_multi_asset_threads(cur, base_where, params, capped=False)
+        cur.execute(
+            f"""
+            SELECT BTRIM(rs.source_url) AS url
+            FROM ed2k_resources r
+            JOIN resource_sources rs ON rs.hash = r.hash
+            JOIN sources s ON s.id = rs.source_id
+            {url_filter}
+            GROUP BY 1
+            HAVING COUNT(*) FILTER (
+              WHERE lower(COALESCE(r.ed2k_link, '')) NOT LIKE 'unavailable://thread/%%'
+            ) > 1
+            ORDER BY MAX(r.updated_at) DESC NULLS LAST
+            LIMIT %s OFFSET %s
+            """,
+            [*params, limit, offset],
+        )
+        urls = [str(r[0]).strip() for r in cur.fetchall() if r and r[0]]
+
+    if not urls:
+        return [], int(total)
+
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT
+              rs.id, r.hash, r.filename, r.size, r.ed2k_link, r.updated_at,
+              rs.title, rs.description, rs.source_url, rs.board_fid, rs.board_name,
+              rs.ed2k_links, rs.extract_password, s.key, s.source_type,
+              rs.preview_images,
+              rs.import_outcome,
+              rs.forum_id
+            FROM ed2k_resources r
+            JOIN resource_sources rs ON rs.hash = r.hash
+            JOIN sources s ON s.id = rs.source_id
+            WHERE NULLIF(BTRIM(COALESCE(rs.source_url, '')), '') = ANY(%s)
+            ORDER BY r.created_at ASC NULLS LAST, rs.id ASC
+            """,
+            (urls,),
+        )
+        rows = list(cur.fetchall())
+
+    by_url: dict[str, list[Any]] = {}
+    for row in rows:
+        url = (row[8] or "").strip()
+        if url:
+            by_url.setdefault(url, []).append(row)
+
+    out: list[dict] = []
+    for url in urls:
+        asset_rows = [
+            r
+            for r in (by_url.get(url) or [])
+            if not str(r[4] or "").lower().startswith("unavailable://thread/")
+        ]
+        if len(asset_rows) < 2:
+            continue
+        first = asset_rows[0]
+        newest_at = max((r[5] for r in asset_rows if r[5] is not None), default=first[5])
+        out.append(
+            _assemble_thread_resource_row(
+                group_id=int(first[0]),
+                updated_at=newest_at,
+                source_key=first[13],
+                source_type=first[14],
+                import_outcome=first[16],
+                assets_raw=[_asset_dict_from_flat_row(r) for r in asset_rows],
+            )
+        )
+    return out, int(total)
+
+
 _FACET_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
 _FACET_CACHE_TTL_SEC = 45.0
 
@@ -1286,7 +1549,15 @@ def list_resource_facets(
     )
 
     sources = {"all": 0, "web": 0, "upload": 0, "telegram": 0}
-    results = {"all": 0, "magnet": 0, "ed2k": 0, "115share": 0, "stub": 0, "failed": 0}
+    results = {
+        "all": 0,
+        "magnet": 0,
+        "ed2k": 0,
+        "115share": 0,
+        "stub": 0,
+        "failed": 0,
+        "multi": 0,
+    }
     boards: list[dict[str, Any]] = []
     with conn.cursor() as cur:
         if unfiltered:
@@ -1344,7 +1615,7 @@ def list_resource_facets(
                     results.get(k, 0) for k in ("magnet", "ed2k", "115share", "stub", "failed")
                 )
         else:
-            # 有筛选：按当前条件取样（点板块时必须带 board，否则热门版统计会变成 0）
+            # 有筛选：按当前条件取样
             sample_limit = 3000 if (q or "").strip() else 5000
             sample_where, sample_params = _resource_list_where(
                 q=q,
@@ -1372,14 +1643,9 @@ def list_resource_facets(
             def _kind(link: str | None) -> str:
                 return infer_resource_link_kind(link)
 
-            def _board(name: str | None) -> str:
-                n = (name or "").strip()
-                return n if n else "未分类"
-
             def _src(st: str | None) -> str:
                 return (st or "").strip() or "web"
 
-            # 来源 / 结果：样本已带当前筛选
             sources["all"] = len(sample)
             for row in sample:
                 st = _src(row[2])
@@ -1390,7 +1656,6 @@ def list_resource_facets(
                 k = _kind(row[0])
                 results[k] = int(results.get(k, 0)) + 1
 
-            # 板块列表：点某个板块时仍展示全站板块树（用无筛选缓存 / 轻量 GROUP BY）
             global_key = "|||"
             global_hit = _FACET_CACHE.get(global_key)
             if global_hit and now - global_hit[0] < _FACET_CACHE_TTL_SEC:
@@ -1410,6 +1675,11 @@ def list_resource_facets(
                     """
                 )
                 boards = [{"name": str(name), "count": int(n)} for name, n in cur.fetchall()]
+
+        # 仅额外统计 ×N 合集（轻量）；与磁力等可重叠
+        results["multi"] = _count_multi_asset_threads(
+            cur, result_where, result_params, capped=not unfiltered
+        )
 
     out = {"sources": sources, "boards": boards, "results": results}
     _FACET_CACHE[cache_key] = (now, out)

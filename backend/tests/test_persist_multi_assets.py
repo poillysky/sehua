@@ -24,6 +24,7 @@ def _parsed(*assets: ParsedAsset, title: str = "合集帖") -> DualParseResult:
 def test_multi_magnet_upserts_each_as_single_resource(monkeypatch):
     calls: list[dict] = []
     monkeypatch.setattr(persist_mod, "ensure_source", lambda *a, **k: 1)
+    monkeypatch.setattr(persist_mod, "delete_stub_by_source_url", lambda *a, **k: False)
 
     def fake_upsert(conn, link, source_id, **kwargs):
         calls.append(
@@ -81,6 +82,7 @@ def test_multi_magnet_upserts_each_as_single_resource(monkeypatch):
 def test_single_keeps_real_filename(monkeypatch):
     calls: list[dict] = []
     monkeypatch.setattr(persist_mod, "ensure_source", lambda *a, **k: 1)
+    monkeypatch.setattr(persist_mod, "delete_stub_by_source_url", lambda *a, **k: False)
 
     def fake_upsert(conn, link, source_id, **kwargs):
         calls.append({"filename": link.filename, "title": kwargs.get("title")})
@@ -91,7 +93,7 @@ def test_single_keeps_real_filename(monkeypatch):
     asset = ParsedAsset(
         link_kind="magnet",
         hash="D" * 40,
-        filename="alone.mp4",
+        filename="专属片名.mp4",
         size=1,
         uri="magnet:?xt=urn:btih:" + "D" * 40 + "&dn=alone.mp4",
         is_primary=True,
@@ -102,4 +104,4 @@ def test_single_keeps_real_filename(monkeypatch):
         source_url="https://example.com/thread-2-1-1.html",
     )
     assert calls[0]["title"] == "【单资源】示例帖"
-    assert calls[0]["filename"] == "alone.mp4"
+    assert calls[0]["filename"] == "专属片名.mp4"

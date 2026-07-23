@@ -419,6 +419,7 @@ async def run_random_tid_batch(
 
 
 _random_loop_task: asyncio.Task | None = None
+_random_loop_future: Any = None
 
 
 async def _random_tid_loop(
@@ -469,10 +470,15 @@ def start_random_tid_loop(
     tid_max: int | None = None,
 ) -> dict[str, Any]:
     """启动随机抓帖连续循环（与深扫连续调度互斥）。"""
-    global _random_loop_task
+    global _random_loop_task, _random_loop_future
+    from workers.crawl_executor import spawn_crawl
+
     if _STATE.get("looping"):
         kind = _STATE.get("loop_kind") or "deep"
-        if kind == "random_tid" and _random_loop_task and not _random_loop_task.done():
+        if kind == "random_tid" and (
+            (_random_loop_future is not None and not _random_loop_future.done())
+            or (_random_loop_task is not None and not _random_loop_task.done())
+        ):
             return {"ok": True, "already": True, "message": "随机抓帖连续调度已在运行"}
         return {
             "ok": False,
@@ -490,9 +496,19 @@ def start_random_tid_loop(
     _STATE["loop_kind"] = "random_tid"
     _STATE["phase"] = "random_tid"
     _STATE["last_started_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
-    _random_loop_task = asyncio.get_running_loop().create_task(
-        _random_tid_loop(forum_id=forum_id, probe=n, tid_min=tid_min, tid_max=tid_max)
-    )
+
+    async def _boot() -> None:
+        global _random_loop_task
+        _random_loop_task = asyncio.current_task()
+        try:
+            await _random_tid_loop(
+                forum_id=forum_id, probe=n, tid_min=tid_min, tid_max=tid_max
+            )
+        finally:
+            if _random_loop_task is asyncio.current_task():
+                _random_loop_task = None
+
+    _random_loop_future = spawn_crawl(_boot(), name="random-tid-loop")
     return {"ok": True, "message": f"随机抓帖连续调度已启动 · 每轮 {n} · 不进队列", "probe": n}
 
 

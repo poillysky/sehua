@@ -6,7 +6,7 @@ import { useTranslations } from "next-intl";
 import { CopyIcon } from "@/components/icons";
 import { Ed2kResourceProps } from "@/types";
 import { setClipboard, Toast } from "@/utils";
-import { normalizeEd2kLinks } from "@/utils/resource";
+import { normalizeEd2kLinks, linksForResourceHash } from "@/utils/resource";
 
 export function Ed2kResourceDetailList({
   item,
@@ -14,7 +14,7 @@ export function Ed2kResourceDetailList({
   item: Ed2kResourceProps;
 }) {
   const t = useTranslations();
-  const links = normalizeEd2kLinks(item.ed2k_links, item.ed2k_link);
+  const links = linksForResourceHash(item.hash, item.ed2k_links, item.ed2k_link);
 
   if (!links.length) {
     if (item.link_kind === "stub") {

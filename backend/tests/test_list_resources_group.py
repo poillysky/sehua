@@ -2,7 +2,13 @@
 
 from __future__ import annotations
 
-from db.repository import _assemble_thread_resource_row, _dedupe_preserve, _merge_preview_lists
+from db.repository import (
+    MULTI_ASSET_URL_SQL,
+    _assemble_thread_resource_row,
+    _dedupe_preserve,
+    _merge_preview_lists,
+    _resource_list_where,
+)
 
 
 def test_dedupe_preserve_order():
@@ -15,6 +21,15 @@ def test_merge_preview_lists_cap():
         cap=3,
     )
     assert got == ["u1", "u2", "u3"]
+
+
+def test_resource_list_where_multi_filter():
+    where_sql, params = _resource_list_where(link_kind="multi")
+    assert MULTI_ASSET_URL_SQL in where_sql
+    assert params == []
+    where_sql2, params2 = _resource_list_where(link_kind="magnet")
+    assert "magnet" in params2
+    assert MULTI_ASSET_URL_SQL not in where_sql2
 
 
 def test_assemble_thread_merges_assets():

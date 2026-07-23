@@ -111,7 +111,7 @@ def judge_thread_html(
     title = page_tit
     if not title_recognizable(title) and title_recognizable(list_title):
         title = list_title
-    # 与 parse_thread_dual 对齐：目标链/网盘/跳过一律只认楼主语料，忽略回帖
+    # 与 parse_thread_dual 对齐：目标链/网盘/跳过一律只认主贴语料，忽略回帖
     try:
         from parsers.content import extract_link_corpus_html
 

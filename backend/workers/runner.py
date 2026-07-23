@@ -64,6 +64,7 @@ _STATE: dict[str, Any] = {
 
 _loop_task: asyncio.Task | None = None
 _round_task: asyncio.Task | None = None
+_loop_future: Any = None  # concurrent.futures.Future | None
 _MAIN_LOOP: asyncio.AbstractEventLoop | None = None
 
 
@@ -115,8 +116,14 @@ def request_stop() -> None:
 
 def emergency_stop_sync() -> dict[str, Any]:
     """旁路线程可调：打停止标 + 尽量取消任务 + 强制 idle。"""
-    global _loop_task, _round_task
+    global _loop_task, _round_task, _loop_future
     request_stop()
+    try:
+        from workers.crawl_executor import cancel_all_crawls
+
+        cancel_all_crawls()
+    except Exception as exc:
+        log.warning("emergency stop cancel crawls: %s", exc)
     try:
         conn = connect()
         try:
@@ -1247,8 +1254,13 @@ async def _continuous_loop() -> None:
 
 
 def start_continuous_loop() -> dict[str, Any]:
-    global _loop_task
-    if _STATE.get("looping") and _loop_task and not _loop_task.done():
+    global _loop_task, _loop_future
+    from workers.crawl_executor import spawn_crawl
+
+    if _STATE.get("looping") and (
+        (_loop_future is not None and not _loop_future.done())
+        or (_loop_task is not None and not _loop_task.done())
+    ):
         return {"ok": True, "already": True, "message": "连续调度已在运行"}
     if _STATE.get("looping") and _STATE.get("loop_kind") == "random_tid":
         return {"ok": False, "already": False, "message": "随机抓帖连续中，请先停止"}
@@ -1257,7 +1269,17 @@ def start_continuous_loop() -> dict[str, Any]:
     _STATE["running"] = True
     _STATE["loop_kind"] = "deep"
     _STATE["phase"] = "scheduler"
-    _loop_task = asyncio.get_running_loop().create_task(_continuous_loop())
+
+    async def _boot() -> None:
+        global _loop_task
+        _loop_task = asyncio.current_task()
+        try:
+            await _continuous_loop()
+        finally:
+            if _loop_task is asyncio.current_task():
+                _loop_task = None
+
+    _loop_future = spawn_crawl(_boot(), name="continuous-loop")
     return {"ok": True, "message": "连续调度已启动"}
 
 
@@ -1290,6 +1312,13 @@ async def stop_crawler(
     was_running = bool(_STATE.get("running") or _STATE.get("looping"))
     request_stop()
     _log_activity("手动停止 · 请求线程退出 · 未完成队列将保留")
+
+    try:
+        from workers.crawl_executor import cancel_all_crawls
+
+        cancel_all_crawls()
+    except Exception as exc:
+        log.warning("stop cancel crawls: %s", exc)
 
     if disable:
         try:

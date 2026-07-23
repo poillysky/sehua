@@ -27,8 +27,10 @@ const RESULT_LABEL: Record<ResourceRow['result'], string> = {
 const EMPTY_FACETS: ResourceFacets = {
   sources: { all: 0, web: 0, upload: 0, telegram: 0 },
   boards: [],
-  results: { all: 0, magnet: 0, ed2k: 0, '115share': 0, stub: 0, failed: 0 },
+  results: { all: 0, magnet: 0, ed2k: 0, '115share': 0, stub: 0, failed: 0, multi: 0 },
 }
+
+type ResultFilter = 'all' | 'magnet' | 'ed2k' | '115share' | 'stub' | 'failed' | 'multi'
 
 type CheckedMeta = {
   hash: string
@@ -45,6 +47,8 @@ export function ResourcesPage() {
   const [total, setTotal] = useState(0)
   const [pages, setPages] = useState(1)
   const [page, setPage] = useState(1)
+  /** items 实际对应的页码；避免翻页后 page 已变、列表仍是旧页时出现「151–180」假区间 */
+  const [loadedPage, setLoadedPage] = useState(1)
   const [loading, setLoading] = useState(true)
   const [refreshing, setRefreshing] = useState(false)
   const [qInput, setQInput] = useState('')
@@ -60,7 +64,7 @@ export function ResourcesPage() {
   const [expandedBoardParents, setExpandedBoardParents] = useState<Set<string>>(() => new Set())
   const [source, setSource] = useState<'all' | 'web' | 'upload'>('all')
   const [board, setBoard] = useState('all')
-  const [result, setResult] = useState<'all' | 'magnet' | 'ed2k' | '115share' | 'stub' | 'failed'>('all')
+  const [result, setResult] = useState<ResultFilter>('all')
   const [importOpen, setImportOpen] = useState(false)
   const [recrawlBusy, setRecrawlBusy] = useState(false)
   const [deleteBusy, setDeleteBusy] = useState(false)
@@ -69,6 +73,8 @@ export function ResourcesPage() {
   const hasLoaded = useRef(false)
   const tableScrollRef = useRef<HTMLDivElement>(null)
   const lastScrollTop = useRef(0)
+  /** 同一筛选条件下锁定总数，避免翻页/并发写入导致 180→177 跳动 */
+  const pinnedTotalRef = useRef<{ key: string; total: number } | null>(null)
 
   const load = useCallback(
     async (opts?: { silent?: boolean; pageOverride?: number }) => {
@@ -91,8 +97,17 @@ export function ResourcesPage() {
         if (seq !== reqSeq.current) return
 
         const rows = data.items.map(mapApiResource)
-        const totalCount = Number(data.total ?? data.count ?? rows.length) || 0
-        const pageCount = Number(data.pages) || Math.max(1, Math.ceil(totalCount / PAGE_SIZE) || 1)
+        const filterKey = `${source}|${board}|${result}|${q}`
+        let totalCount = Number(data.total ?? data.count ?? rows.length) || 0
+        const pinned = pinnedTotalRef.current
+        if (!silent && pageNo === 1) {
+          pinnedTotalRef.current = { key: filterKey, total: totalCount }
+        } else if (pinned && pinned.key === filterKey && pinned.total > 0) {
+          totalCount = pinned.total
+        } else {
+          pinnedTotalRef.current = { key: filterKey, total: totalCount }
+        }
+        const pageCount = Math.max(1, Math.ceil(totalCount / PAGE_SIZE) || 1)
         const nextFacets: ResourceFacets = data.facets
           ? {
               sources: { ...EMPTY_FACETS.sources, ...(data.facets.sources || {}) },
@@ -111,6 +126,7 @@ export function ResourcesPage() {
             : data.boards || []
         startTransition(() => {
           setItems(rows)
+          setLoadedPage(pageNo)
           setTotal(totalCount)
           setPages(pageCount)
           setFacets(nextFacets)
@@ -167,10 +183,11 @@ export function ResourcesPage() {
     void load()
   }, [load])
 
-  // 筛选条件变化：清空跨页勾选
+  // 筛选条件变化：清空跨页勾选与锁定的总数
   useEffect(() => {
     setCheckedIds([])
     setCheckedMeta({})
+    pinnedTotalRef.current = null
   }, [source, board, result, q])
 
   // 搜索防抖，避免输入卡顿
@@ -251,7 +268,9 @@ export function ResourcesPage() {
   const somePageChecked = items.some((r) => checkedIds.includes(r.id))
   const allFilteredSelected =
     total > 0 && checkedIds.length > 0 && checkedIds.length >= total
-  const rowOffset = (page - 1) * PAGE_SIZE
+  const rowOffset = (loadedPage - 1) * PAGE_SIZE
+  const rangeEnd =
+    items.length === 0 ? rowOffset : Math.min(rowOffset + items.length, total > 0 ? total : rowOffset + items.length)
   const busy = loading || refreshing || recrawlBusy || deleteBusy || selectAllBusy
 
   function metaFromRow(r: ResourceRow): CheckedMeta | null {
@@ -397,7 +416,7 @@ export function ResourcesPage() {
     closeFilterIfMobile()
   }
 
-  function changeResult(next: 'all' | 'magnet' | 'ed2k' | '115share' | 'stub' | 'failed') {
+  function changeResult(next: ResultFilter) {
     setResult(next)
     if (next !== 'all') {
       setSource('all')
@@ -487,7 +506,12 @@ export function ResourcesPage() {
       const removed = Number(result.removed || 0)
       const queued = Number(result.queued || 0)
       const failed = Number(result.failed || 0)
-      if (result.mode === 'queued' && queued > 0) {
+      const started = Number(result.started || 0)
+      if (result.mode === 'background' && started > 0) {
+        toast.success(
+          `已在后台重爬 ${started} 条 · 进度见「爬虫状态」活动日志，完成后会写「已入库批量重爬结束」`,
+        )
+      } else if (result.mode === 'queued' && queued > 0) {
         toast.success(
           `已入队 ${queued} 条` + (failed > 0 ? ` · 跳过 ${failed}` : '') + ' · 连续调度将依次抓取入库',
         )
@@ -504,7 +528,9 @@ export function ResourcesPage() {
       }
       setCheckedIds([])
       setCheckedMeta({})
-      await load({ silent: true })
+      if (result.mode !== 'background') {
+        await load({ silent: true })
+      }
     } catch (err) {
       toast.error(err instanceof Error ? err.message : '批量重爬失败')
     } finally {
@@ -753,6 +779,7 @@ export function ResourcesPage() {
                 {(
                   [
                     ['all', '全部'],
+                    ['multi', '×N 合集'],
                     ['magnet', '磁力'],
                     ['ed2k', 'ED2K'],
                     ['115share', '115分享'],
@@ -765,6 +792,7 @@ export function ResourcesPage() {
                     type="button"
                     className={result === id ? 'dim-item active' : 'dim-item'}
                     onClick={() => changeResult(id)}
+                    title={id === 'multi' ? '结果列带 ×N 的多子资源合并帖' : undefined}
                   >
                     <span className="dim-item-label">{label}</span>
                     <span className="dim-item-count">{resultFacets[id] ?? 0}</span>
@@ -824,8 +852,8 @@ export function ResourcesPage() {
               {total === 0
                 ? '共 0 条'
                 : checkedIds.length > 0
-                  ? `已选 ${checkedIds.length} · 第 ${rowOffset + 1}–${rowOffset + items.length} 条，共 ${total} 条`
-                  : `第 ${rowOffset + 1}–${rowOffset + items.length} 条，共 ${total} 条`}
+                  ? `已选 ${checkedIds.length} · 第 ${rowOffset + 1}–${rangeEnd} 条，共 ${total} 条`
+                  : `第 ${rowOffset + 1}–${rangeEnd} 条，共 ${total} 条`}
             </span>
             <button
               type="button"

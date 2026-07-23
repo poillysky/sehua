@@ -604,9 +604,13 @@ async def resources_recrawl(
     _user: dict = Depends(require_permission("crawl.run")),
 ) -> dict:
     """已入库资源按来源帖重爬；同 hash upsert，不因标题产生重复。"""
+    from workers.crawl_executor import await_crawl
     from workers.recrawl import recrawl_imported_resource
 
-    result = await recrawl_imported_resource(body.hash)
+    result = await await_crawl(
+        recrawl_imported_resource(body.hash),
+        name="imported-recrawl-one",
+    )
     if result.get("reason") in {"busy", "loop_running"} or result.get("skipped"):
         raise HTTPException(
             status_code=409,
@@ -623,24 +627,89 @@ async def resources_recrawl_batch(
     body: RecrawlBatchBody,
     _user: dict = Depends(require_permission("crawl.run")),
 ) -> dict:
-    """批量已入库重爬：空闲时共用会话顺序抓；连续调度中只重新入队。"""
-    from workers.recrawl import recrawl_imported_resources
+    """批量已入库重爬。
 
-    result = await recrawl_imported_resources(body.hashes)
-    if result.get("reason") in {"busy", "loop_running"} or result.get("skipped"):
-        raise HTTPException(
-            status_code=409,
-            detail=str(result.get("error") or "爬虫忙，请稍后再试"),
+    连续调度中：同步入队后立即返回。
+    空闲立即抓：爬虫线程后台执行，不堵 uvicorn 主循环。
+    """
+    from workers.crawl_executor import await_crawl, spawn_crawl
+    from workers.recrawl import recrawl_imported_resources
+    from workers.runner import _log_activity, crawl_status
+
+    hashes = list(body.hashes or [])
+    if len(hashes) > 2000:
+        raise HTTPException(status_code=400, detail="一次最多重爬 2000 条")
+
+    st = crawl_status()
+    # 入队路径很快，可同步返回（也走爬虫线程，避免偶发堵主循环）
+    if st.get("looping"):
+        result = await await_crawl(
+            recrawl_imported_resources(hashes),
+            name="imported-recrawl-queue",
         )
-    if (
-        not result.get("ok")
-        and int(result.get("imported") or 0) == 0
-        and int(result.get("queued") or 0) == 0
-        and int(result.get("removed") or 0) == 0
-    ):
-        detail = str(result.get("error") or "批量重爬失败")
-        raise HTTPException(status_code=400, detail=detail)
-    return {"message": "ok", "result": result}
+        if result.get("reason") in {"busy", "loop_running"} or result.get("skipped"):
+            raise HTTPException(
+                status_code=409,
+                detail=str(result.get("error") or "爬虫忙，请稍后再试"),
+            )
+        if (
+            not result.get("ok")
+            and int(result.get("imported") or 0) == 0
+            and int(result.get("queued") or 0) == 0
+            and int(result.get("removed") or 0) == 0
+        ):
+            raise HTTPException(
+                status_code=400,
+                detail=str(result.get("error") or "批量重爬失败"),
+            )
+        return {"message": "ok", "result": result}
+
+    if st.get("running"):
+        raise HTTPException(status_code=409, detail="爬虫正在执行，请稍后再重爬")
+
+    cleaned: list[str] = []
+    seen: set[str] = set()
+    for h in hashes:
+        key = (h or "").strip()
+        if len(key) < 8 or key in seen:
+            continue
+        seen.add(key)
+        cleaned.append(key)
+    if not cleaned:
+        raise HTTPException(status_code=400, detail="未提供有效 hash")
+
+    _log_activity(f"已入库批量重爬 · 后台启动 {len(cleaned)} 条")
+
+    async def _job() -> None:
+        try:
+            result = await recrawl_imported_resources(cleaned)
+            if result.get("skipped") or result.get("reason") in {"busy", "loop_running"}:
+                _log_activity(
+                    f"已入库批量重爬未启动 · {result.get('error') or '爬虫忙'}"
+                )
+        except Exception as exc:
+            logging.getLogger(__name__).exception("background imported recrawl")
+            try:
+                _log_activity(f"已入库批量重爬异常结束 · {exc}")
+            except Exception:
+                pass
+
+    spawn_crawl(_job(), name="imported-recrawl-batch")
+    return {
+        "message": "ok",
+        "result": {
+            "ok": True,
+            "mode": "background",
+            "started": len(cleaned),
+            "imported": 0,
+            "queued": 0,
+            "failed": 0,
+            "note": (
+                f"已在后台重爬 {len(cleaned)} 条，进度见爬虫活动日志；"
+                "完成后会写「已入库批量重爬结束」。可用紧急停止中断。"
+            ),
+        },
+    }
 
 
 @app.post("/parse/thread")

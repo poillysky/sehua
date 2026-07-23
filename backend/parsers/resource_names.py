@@ -10,26 +10,89 @@ _PLACEHOLDER_MAGNET_RE = re.compile(r"^magnet-[0-9A-Fa-f]{8}$", re.I)
 # ---------------------------------------------------------------------------
 # 真正「子资源标题 / 资源名」结构标签（子标题切分、上下文命名共用）
 #
-# 2026-07 对 resource_sources.description 抽样约 8 万条：
-#   【影片名称】≈7.7万  【资源名称】≈0.27万
-#   【种子名称】/【作品名称】/【片名】等结构键 = 0（不进 description）
-#
 # 板块口径：
 #   BT 原创电影 → 影片名称
 #   综合 95 / 网友原创 141 → 资源名称
 #   转帖 142 → 资源名称 或 影片名称（二选一）
 #
 # 【种子名称】只是种子文件名，不是子标题，切段时绝不能当边界。
-# 正文偶见繁体【影片名稱】/【資源名稱】，匹配时与简体等价。
+# 简繁及常见异写均认；匹配时与规范键等价。
 # ---------------------------------------------------------------------------
 SUBRESOURCE_TITLE_LABELS: tuple[str, ...] = ("影片名称", "资源名称")
 
-# 匹配用（简繁）；顺序：影片类优先，再资源类；组内简体在前
-SUBRESOURCE_TITLE_MATCH_FORMS: tuple[str, ...] = (
+# 影片类子标题（简繁/异写）；优先于资源类
+FILM_TITLE_FORMS: tuple[str, ...] = (
     "影片名称",
     "影片名稱",
+    "影片名",
+    "影片标题",
+    "影片標題",
+    "影片题名",
+    "影片題名",
+    "视频名称",
+    "視頻名稱",
+    "视频名稱",
+    "視頻名称",
+)
+
+# 资源类子标题（简繁/异写）
+RESOURCE_TITLE_FORMS: tuple[str, ...] = (
     "资源名称",
     "資源名稱",
+    "资源名稱",
+    "資源名称",
+    "资源名",
+    "資源名",
+    "资源标题",
+    "資源標題",
+    "资源標題",
+    "資源标题",
+    "作品名称",
+    "作品名稱",
+    "片名",
+)
+
+# 匹配用：影片类优先，再资源类；组内简体/常见写在前
+SUBRESOURCE_TITLE_MATCH_FORMS: tuple[str, ...] = FILM_TITLE_FORMS + RESOURCE_TITLE_FORMS
+
+# 块内字段异写（取字段值时用；不含子标题）
+SIZE_FIELD_FORMS: tuple[str, ...] = (
+    "影片大小",
+    "影片容量",
+    "资源大小",
+    "資源大小",
+    "文件大小",
+    "檔案大小",
+    "档案大小",
+)
+FORMAT_FIELD_FORMS: tuple[str, ...] = (
+    "影片格式",
+    "资源类型",
+    "資源類型",
+    "资源類型",
+    "資源类型",
+    "檔案格式",
+    "文件格式",
+)
+NOTE_FIELD_FORMS: tuple[str, ...] = (
+    "影片说明",
+    "影片說明",
+    "资源说明",
+    "資源說明",
+    "资源說明",
+    "資源说明",
+    "是否有码",
+    "是否有碼",
+    "有无码",
+    "有無碼",
+    "影片码别",
+    "影片碼別",
+)
+TORRENT_FIELD_FORMS: tuple[str, ...] = (
+    "种子名称",
+    "種子名稱",
+    "种子名稱",
+    "種子名称",
 )
 
 _SUBRESOURCE_NAME_RES = tuple(
@@ -47,7 +110,9 @@ _DESC_LABEL_LINE_RE = re.compile(
 )
 
 _TORRENT_NAME_RE = re.compile(
-    r"【\s*(?:种子名称|種子名稱)\s*】\s*[:：]?\s*(.+?)(?=\s*【|\s*magnet:|\s*ed2k:|\s*$)",
+    r"【\s*(?:"
+    + "|".join(map(re.escape, TORRENT_FIELD_FORMS))
+    + r")\s*】\s*[:：]?\s*(.+?)(?=\s*【|\s*magnet:|\s*ed2k:|\s*$)",
     re.I | re.S,
 )
 
@@ -98,7 +163,7 @@ def context_subresource_title(
 ) -> str:
     """链接旁子资源名：只认【影片名称】/【资源名称】。
 
-    合集常见顺序是「链接 → 子标题」，故先后文再前文最近一条。
+    单链就近：先后文再前文。多链合集由 pair_magnet_to_subresource_meta 按布局重绑。
     """
     before = (blob or "")[max(0, start - 280) : start]
     after = (blob or "")[end : end + 480]
@@ -118,24 +183,18 @@ def context_subresource_title(
 
 
 def subtitle_from_description(description: str | None) -> str:
-    """从结构化 description 取第一条【资源名称】/【影片名称】。"""
+    """从结构化 description 取第一条【资源名称】/【影片名称】（含繁体异写）。"""
     text = (description or "").strip()
     if not text:
         return ""
-    # 影片名称优先（与 SUBRESOURCE_TITLE_LABELS 一致）
-    wanted = {
-        "影片名称",
-        "影片名稱",
-        "资源名称",
-        "資源名稱",
-    }
+    wanted = set(SUBRESOURCE_TITLE_MATCH_FORMS)
     found: dict[str, str] = {}
     for m in _DESC_LABEL_LINE_RE.finditer(text):
         lab = (m.group(1) or "").strip()
         val = _clean_label_value(m.group(2) or "")
         if lab in wanted and val and lab not in found:
             found[lab] = val
-    for lab in ("影片名称", "影片名稱", "资源名称", "資源名稱"):
+    for lab in SUBRESOURCE_TITLE_MATCH_FORMS:
         if lab in found:
             return found[lab]
     return ""

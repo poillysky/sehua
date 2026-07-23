@@ -7,10 +7,18 @@ from parsers.resource_names import SUBRESOURCE_TITLE_LABELS, SUBRESOURCE_TITLE_M
 
 
 def test_subresource_title_labels_frozen():
-    """库抽样确认的真名标签；改此常量前先重扫 description。"""
+    """规范键仍是影片名称/资源名称；匹配表含简繁异写。"""
     assert SUBRESOURCE_TITLE_LABELS == ("影片名称", "资源名称")
-    assert "影片名稱" in SUBRESOURCE_TITLE_MATCH_FORMS
-    assert "資源名稱" in SUBRESOURCE_TITLE_MATCH_FORMS
+    for lab in (
+        "影片名稱",
+        "資源名稱",
+        "視頻名稱",
+        "作品名稱",
+        "片名",
+        "资源名",
+        "影片标题",
+    ):
+        assert lab in SUBRESOURCE_TITLE_MATCH_FORMS
 
 
 def test_parse_magnet_uses_film_name_label():

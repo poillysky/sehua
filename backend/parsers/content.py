@@ -7,41 +7,57 @@ import re
 from dataclasses import dataclass, field
 from urllib.parse import urljoin
 
-from parsers.resource_names import SUBRESOURCE_TITLE_LABELS, SUBRESOURCE_TITLE_MATCH_FORMS
+from parsers.resource_names import (
+    FILM_TITLE_FORMS,
+    FORMAT_FIELD_FORMS,
+    NOTE_FIELD_FORMS,
+    RESOURCE_TITLE_FORMS,
+    SIZE_FIELD_FORMS,
+    SUBRESOURCE_TITLE_LABELS,
+    SUBRESOURCE_TITLE_MATCH_FORMS,
+    TORRENT_FIELD_FORMS,
+)
 
 # BT + ED2K board label styles commonly used on sehuatang（2026-07 抽样核对）
 LABEL_KEYS = (
-    "影片名称",
-    "影片名稱",
-    "资源名称",
-    "資源名稱",
+    *SUBRESOURCE_TITLE_MATCH_FORMS,
     "出演女优",
-    "影片容量",
-    "影片大小",
-    "资源大小",
-    "文件大小",
-    "影片格式",
-    "资源类型",
-    "资源数量",
-    "是否有码",
-    "有无码",
-    "影片码别",
+    "出演女優",
+    *SIZE_FIELD_FORMS,
+    *FORMAT_FIELD_FORMS,
+    *NOTE_FIELD_FORMS,
     "有无水印",
+    "有無浮水印",
     "有无第三方水印",
+    "有無第三方浮水印",
     "第三方水印",
+    "第三方浮水印",
     "解压密码",
+    "解壓密碼",
     "提取密码",
+    "提取密碼",
     "资源密码",
+    "資源密碼",
     "种子期限",
+    "種子期限",
     "下载方式",
+    "下載方式",
     "下载工具",
+    "下載工具",
     "时间长度",
+    "時間長度",
     "影片有无声音",
+    "影片有無聲音",
     "剧情连拍截图/缩略图",
+    "劇情連拍截圖/縮略圖",
     "剧情连拍截图",
+    "劇情連拍截圖",
     "资源预览",
+    "資源預覽",
     "查重证明图",
+    "查重證明圖",
     "前缀证明图",
+    "前綴證明圖",
 )
 
 # 详情描述按板块白名单（与论坛配置「结构卡片」字段对齐）
@@ -65,16 +81,47 @@ DESCRIPTION_LABEL_ALIASES = {
     "影片名称": "资源名称",
     "影片名稱": "资源名称",
     "資源名稱": "资源名称",
+    "资源名稱": "资源名称",
+    "資源名称": "资源名称",
+    "影片名": "资源名称",
+    "资源名": "资源名称",
+    "資源名": "资源名称",
+    "视频名称": "资源名称",
+    "視頻名稱": "资源名称",
+    "作品名称": "资源名称",
+    "作品名稱": "资源名称",
+    "片名": "资源名称",
+    "影片标题": "资源名称",
+    "影片標題": "资源名称",
+    "资源标题": "资源名称",
+    "資源標題": "资源名称",
     "影片格式": "资源类型",
+    "資源類型": "资源类型",
+    "资源類型": "资源类型",
+    "資源类型": "资源类型",
+    "檔案格式": "资源类型",
+    "文件格式": "资源类型",
     "文件大小": "资源大小",
+    "檔案大小": "资源大小",
+    "档案大小": "资源大小",
     "影片容量": "资源大小",
     "影片大小": "资源大小",
+    "資源大小": "资源大小",
     "有无码": "是否有码",
+    "有無碼": "是否有码",
+    "是否有碼": "是否有码",
     "影片码别": "是否有码",
+    "影片碼別": "是否有码",
     "有无水印": "有无第三方水印",
+    "有無浮水印": "有无第三方水印",
     "第三方水印": "有无第三方水印",
+    "第三方浮水印": "有无第三方水印",
+    "有無第三方浮水印": "有无第三方水印",
     "提取密码": "解压密码",
+    "提取密碼": "解压密码",
+    "解壓密碼": "解压密码",
     "资源密码": "解压密码",
+    "資源密碼": "解压密码",
 }
 
 # profile: labels 顺序；exclusive 组内只保留靠前且有值的一项；aliases 写入展示键
@@ -407,9 +454,9 @@ def extract_first_postmessage_html(html: str) -> str:
 
 
 def extract_lz_posts_html(html: str, *, limit: int = 5) -> list[str]:
-    """取楼主各层 postmessage（含二楼补链），用于抽 ed2k/磁力/115 分享。
+    """取主贴（一楼）postmessage，用于抽链/子资源。
 
-    元数据仍只用一楼；链接语料可并入楼主后续楼。无楼主标记时退化为前 limit 层。
+    回帖一律不纳入（含楼主二楼补链）。limit 保留兼容，实际最多返回 1 段。
     """
     src = html or ""
     if not src:
@@ -433,15 +480,15 @@ def extract_lz_posts_html(html: str, *, limit: int = 5) -> list[str]:
     if not posts:
         return []
 
-    lz_bodies = [body for body, is_lz in posts if is_lz]
-    if lz_bodies:
-        return lz_bodies[: max(1, limit)]
-    # 无明确楼主标：仍取前几层（常见一楼封面、二楼补链）
-    return [body for body, _ in posts[: max(1, limit)]]
+    # 优先带「楼主」标的第一层（通常即一楼主贴）；否则只取物理一楼
+    for body, is_lz in posts:
+        if is_lz:
+            return [body]
+    return [posts[0][0]]
 
 
 def extract_lz_scope_html(html: str, *, limit: int = 5) -> str:
-    """楼主各层帖块（含 postmessage 前的 locked/需回复提示），不含回帖。
+    """主贴帖块（含 postmessage 前的 locked/需回复提示），不含回帖。
 
     用于需回复/购买等门控：提示常在 postmessage 外的同楼 DOM。
     """
@@ -464,21 +511,23 @@ def extract_lz_scope_html(html: str, *, limit: int = 5) -> str:
     if not scopes:
         return ""
 
-    lz_scopes = [body for body, is_lz in scopes if is_lz]
-    if lz_scopes:
-        return "\n".join(lz_scopes[: max(1, limit)])
-    return "\n".join(body for body, _ in scopes[: max(1, limit)])
+    for body, is_lz in scopes:
+        if is_lz:
+            return body
+    return scopes[0][0]
 
 
 def extract_link_corpus_html(html: str, *, limit: int = 5) -> str:
-    """链接抽取语料：楼主多层正文 + 附件注入块（postmessage_attach*）。"""
-    parts = extract_lz_posts_html(html, limit=limit)
-    if not parts:
-        first = extract_first_postmessage_html(html)
-        # 无 postmessage 时 first==整页；勿把回帖/页脚吞进链接语料
-        if first and first != (html or ""):
-            parts = [first]
-    # 附件下载后 inject_attachment_text 写入的块（非纯数字楼 id，楼主扫描会跳过）
+    """链接/子资源语料：仅主贴一楼 + 附件注入块。回帖不参与。"""
+    del limit  # 兼容旧调用
+    parts: list[str] = []
+    first = extract_first_postmessage_html(html)
+    # 无 postmessage 时 first==整页；勿把回帖/页脚吞进链接语料
+    if first and first != (html or ""):
+        parts.append(first)
+    else:
+        parts.extend(extract_lz_posts_html(html, limit=1))
+    # 附件下载后 inject_attachment_text 写入的块（非纯数字楼 id）
     for m in re.finditer(
         r'id=["\']postmessage_attach\d+["\'][^>]*>(.*?)</div>',
         html or "",
@@ -715,10 +764,358 @@ _SUBRESOURCE_TITLE_RE = re.compile(
     re.I,
 )
 
+# 子标题标签后的取值（到下一结构键 / 磁力 / 结尾）
+_SUBRESOURCE_TITLE_VALUE_RE = re.compile(
+    r"^\s*[:：]?\s*(.+?)(?=\s*【|\s*magnet:|\s*ed2k:|\s*$)",
+    re.I | re.S,
+)
+
 
 def iter_subresource_title_spans(html: str) -> list[tuple[int, int]]:
     """返回每个真正子标题标签的 (start, end) 位置，按文档顺序。"""
     return [(m.start(), m.end()) for m in _SUBRESOURCE_TITLE_RE.finditer(html or "")]
+
+
+def _magnet_positions_in_scope(scope: str, wanted: set[str] | None = None) -> list[tuple[str, int, int]]:
+    """文档序磁力位置；(hash, start, end)。同 hash 留首次。"""
+    mag_pos: list[tuple[str, int, int]] = []
+    seen_h: set[str] = set()
+    for m in re.finditer(r"magnet:\?xt=urn:btih:([A-Fa-f0-9]{40})", scope, re.I):
+        h = m.group(1).upper()
+        if h in seen_h:
+            continue
+        seen_h.add(h)
+        mag_pos.append((h, m.start(), m.end()))
+    if wanted:
+        upper = scope.upper()
+        for h in wanted:
+            if h in seen_h:
+                continue
+            idx = upper.find(h)
+            if idx < 0:
+                continue
+            seen_h.add(h)
+            start = scope.rfind("magnet:", max(0, idx - 40), idx)
+            if start < 0:
+                start = idx
+            mag_pos.append((h, start, idx + len(h)))
+    mag_pos.sort(key=lambda x: x[1])
+    return mag_pos
+
+
+def _detect_magnet_title_layout(
+    titles: list[tuple[int, int]],
+    mag_pos: list[tuple[str, int, int]],
+) -> str:
+    """识别合集切段布局。
+
+    - title_then_magnet：【影片名称】→大小/截图→磁力（BT 合集常见，如 tid 3580931）
+    - magnet_then_title：磁力→【影片名称】→截图（旧合集/测试样例）
+    """
+    if not titles or not mag_pos:
+        return "magnet_then_title"
+    if mag_pos[0][1] < titles[0][0]:
+        return "magnet_then_title"
+    return "title_then_magnet"
+
+
+def _size_from_subresource_block(scope: str, label_end: int, next_start: int) -> int:
+    """从本子标题段内取【影片大小】/【资源大小】或片名里的 [MP4/ 899M]。"""
+    from parsers.magnet import _size_from_label
+
+    chunk = scope[label_end:next_start]
+    chunk = re.sub(r"<[^>]+>", " ", chunk or "")
+    chunk = re.sub(r"&nbsp;", " ", chunk, flags=re.I)
+    sm = re.search(
+        r"【\s*(?:"
+        + "|".join(map(re.escape, SIZE_FIELD_FORMS))
+        + r")\s*】\s*[:：]?\s*([0-9.]+)\s*(T|TB|G|GB|M|MB|K|KB)?",
+        chunk,
+        re.I,
+    )
+    if sm:
+        return _size_from_label(sm.group(1), sm.group(2))
+    emb = re.search(
+        r"\[\s*(?:MP4|MKV|AVI|WMV|MOV|FLV|TS|ISO)?\s*/\s*([0-9.]+)\s*([KMGT])B?\s*\]",
+        chunk,
+        re.I,
+    )
+    if emb:
+        return _size_from_label(emb.group(1), emb.group(2))
+    return 0
+
+
+def _block_field(chunk: str, *labels: str) -> str:
+    """从子资源块文本取结构字段（不含子标题本身）。"""
+    if not chunk or not labels:
+        return ""
+    alts = "|".join(re.escape(x) for x in labels)
+    m = re.search(
+        rf"【\s*(?:{alts})\s*】\s*[:：]?\s*(.+?)(?=\s*【|\s*magnet:|\s*ed2k:|\s*$)",
+        chunk,
+        re.I | re.S,
+    )
+    if not m:
+        return ""
+    val = re.sub(r"<[^>]+>", " ", m.group(1) or "")
+    val = re.sub(r"&nbsp;", " ", val, flags=re.I)
+    val = re.sub(r"\s+", " ", val).strip().strip("：:|｜/\\")
+    return val[:200]
+
+
+@dataclass(slots=True)
+class SubresourceBlock:
+    """合集中一条完整子资源块（名称→大小→格式→说明→截图→种子→磁力）。"""
+
+    infohash: str
+    title: str
+    size: int = 0
+    format: str = ""
+    note: str = ""
+    torrent_name: str = ""
+    preview_images: list[str] = field(default_factory=list)
+    description: str = ""
+
+
+def _title_label_kind(scope: str, t_start: int, t_end: int) -> str:
+    """子标题标签口径：film | resource（简繁/异写均认）。"""
+    raw = scope[t_start:t_end] or ""
+    m = re.search(r"【\s*([^】]+?)\s*】", raw)
+    lab = re.sub(r"\s+", "", (m.group(1) if m else raw))
+    if lab in RESOURCE_TITLE_FORMS:
+        return "resource"
+    if lab in FILM_TITLE_FORMS:
+        return "film"
+    # 片名是「影片名称」子串，不能用 contains；仅完整标签兜底
+    if any(x in lab for x in ("资源", "資源", "作品")):
+        return "resource"
+    return "film"
+
+
+def _build_block_description(
+    *,
+    title: str,
+    size_label: str,
+    fmt: str,
+    note: str,
+    kind: str = "film",
+) -> str:
+    """按子标题口径输出块描述：影片* 或 资源*。"""
+    if kind == "resource":
+        name_k, size_k, fmt_k, note_k = "资源名称", "资源大小", "资源类型", "资源说明"
+    else:
+        name_k, size_k, fmt_k, note_k = "影片名称", "影片大小", "影片格式", "影片说明"
+    lines: list[str] = []
+    if title:
+        lines.append(f"【{name_k}】：{title}")
+    if size_label:
+        lines.append(f"【{size_k}】：{size_label}")
+    if fmt:
+        lines.append(f"【{fmt_k}】：{fmt}")
+    if note:
+        # 是否有码等短枚举仍用原文键更贴切时，统一进说明行
+        lines.append(f"【{note_k}】：{note}")
+    return "\n".join(lines)
+
+
+def extract_subresource_blocks(
+    html: str,
+    infohashes: list[str] | None = None,
+    *,
+    base_url: str = "",
+    limit_per: int = 5,
+    fallback_title: str = "",
+) -> list[SubresourceBlock]:
+    """按子标题切段：一段 = 一个子资源（段内多个磁力只取第一个）。
+
+    规则：
+    - 无子标题：整段主贴归帖标题，所有链同属这一条子资源
+    - 1 个子标题：主贴内该标题下全部链同属它
+    - ≥2 个子标题：第 i 个标题 → 下一个标题之前（最后一段到文尾）
+    """
+    scope = extract_first_postmessage_html(html) or (html or "")
+    if not scope.strip():
+        scope = html or ""
+
+    wanted: set[str] | None = None
+    if infohashes is not None:
+        wanted = {(h or "").strip().upper() for h in infohashes if (h or "").strip()}
+        if not wanted:
+            return []
+
+    mag_pos = _magnet_positions_in_scope(scope, wanted)
+    if wanted:
+        # 只要还在 wanted 里的 hash（可能仅 ed2k）；无位置的稍后无法切段
+        mag_pos = [x for x in mag_pos if x[0] in wanted]
+    if not mag_pos:
+        return []
+
+    titles = iter_subresource_title_spans(scope)
+    lim = max(1, int(limit_per or 5))
+    out: list[SubresourceBlock] = []
+    seen: set[str] = set()
+
+    # 无子标题：整帖一段，标题用帖子标题
+    if not titles:
+        name = (fallback_title or "").strip()[:255]
+        if not name:
+            return []
+        paired = mag_pos[0][0]
+        raw_chunk = scope
+        text_chunk = re.sub(r"<[^>]+>", " ", raw_chunk or "")
+        text_chunk = re.sub(r"&nbsp;", " ", text_chunk, flags=re.I)
+        size = _size_from_subresource_block(scope, 0, len(scope))
+        size_label = _block_field(text_chunk, *SIZE_FIELD_FORMS)
+        fmt = _block_field(text_chunk, *FORMAT_FIELD_FORMS)
+        note = _block_field(text_chunk, *NOTE_FIELD_FORMS)
+        torrent = _block_field(text_chunk, *TORRENT_FIELD_FORMS)
+        imgs = extract_preview_images(raw_chunk, limit=lim, base_url=base_url)
+        desc = _build_block_description(
+            title=name, size_label=size_label, fmt=fmt, note=note, kind="film"
+        )
+        return [
+            SubresourceBlock(
+                infohash=paired,
+                title=name,
+                size=size,
+                format=fmt,
+                note=note,
+                torrent_name=torrent,
+                preview_images=imgs,
+                description=desc,
+            )
+        ]
+
+    layout = _detect_magnet_title_layout(titles, mag_pos)
+
+    for i, (t_start, t_end) in enumerate(titles):
+        next_start = titles[i + 1][0] if i + 1 < len(titles) else len(scope)
+        prev_end = titles[i - 1][1] if i > 0 else 0
+        name = _subresource_title_value(scope, t_end, next_start)
+        if not name:
+            continue
+
+        # 字段区：本标题值之后 → 下一标题之前（最后到文尾）
+        field_lo, field_hi = t_end, next_start
+        # 磁力归属：
+        # - 名称在前：本标题起 → 下一标题前
+        # - 磁力在前：上一标题结束 → 本标题起（旧布局）
+        if layout == "title_then_magnet":
+            mag_lo, mag_hi = t_start, next_start
+        else:
+            mag_lo, mag_hi = prev_end, t_start
+
+        in_seg = [
+            (h, s, e) for h, s, e in mag_pos if mag_lo <= s < mag_hi and h not in seen
+        ]
+        if not in_seg:
+            continue
+        # 一段一个子资源：取段内第一个磁力
+        paired = in_seg[0][0]
+        seen.add(paired)
+
+        raw_chunk = scope[field_lo:field_hi]
+        text_chunk = re.sub(r"<[^>]+>", " ", raw_chunk or "")
+        text_chunk = re.sub(r"&nbsp;", " ", text_chunk, flags=re.I)
+        size = _size_from_subresource_block(scope, field_lo, field_hi)
+        size_label = _block_field(text_chunk, *SIZE_FIELD_FORMS)
+        if not size_label and size > 0:
+            emb = re.search(
+                r"\[\s*(?:MP4|MKV|AVI|WMV|MOV|FLV|TS|ISO)?\s*/\s*([0-9.]+)\s*([KMGT])B?\s*\]",
+                name,
+                re.I,
+            )
+            if emb:
+                size_label = f"{emb.group(1)}{emb.group(2).upper()}"
+        fmt = _block_field(text_chunk, *FORMAT_FIELD_FORMS)
+        note = _block_field(text_chunk, *NOTE_FIELD_FORMS)
+        torrent = _block_field(text_chunk, *TORRENT_FIELD_FORMS)
+        imgs = extract_preview_images(raw_chunk, limit=lim, base_url=base_url)
+        kind = _title_label_kind(scope, t_start, t_end)
+        desc = _build_block_description(
+            title=name,
+            size_label=size_label,
+            fmt=fmt,
+            note=note,
+            kind=kind,
+        )
+        out.append(
+            SubresourceBlock(
+                infohash=paired,
+                title=name,
+                size=size,
+                format=fmt,
+                note=note,
+                torrent_name=torrent,
+                preview_images=imgs,
+                description=desc,
+            )
+        )
+    return out
+
+
+def _pair_hash_for_title(
+    *,
+    layout: str,
+    mag_pos: list[tuple[str, int, int]],
+    wanted: set[str],
+    prev_end: int,
+    t_start: int,
+    t_end: int,
+    next_start: int,
+) -> str | None:
+    if layout == "title_then_magnet":
+        for h, m_start, _m_end in mag_pos:
+            if m_start < t_end:
+                continue
+            if m_start >= next_start:
+                break
+            if h in wanted:
+                return h
+        return None
+    paired: str | None = None
+    for h, m_start, _m_end in mag_pos:
+        if m_start < prev_end:
+            continue
+        if m_start >= t_start:
+            break
+        if h in wanted:
+            paired = h
+    return paired
+
+
+def _subresource_title_value(scope: str, label_end: int, next_start: int) -> str:
+    """取【影片名称】/【资源名称】标签后的片名。"""
+    chunk = scope[label_end:next_start]
+    chunk = re.sub(r"<[^>]+>", " ", chunk or "")
+    chunk = re.sub(r"&nbsp;", " ", chunk, flags=re.I)
+    chunk = re.sub(r"\s+", " ", chunk).strip()
+    m = _SUBRESOURCE_TITLE_VALUE_RE.match(chunk)
+    if not m:
+        return ""
+    name = (m.group(1) or "").strip().strip("：:|｜/\\")
+    return name[:255]
+
+
+def pair_magnet_to_subresource_title(
+    html: str,
+    infohashes: list[str],
+) -> dict[str, str]:
+    """子标题 ↔ 磁力配对（自动识别名称在前或磁力在前）。"""
+    meta = pair_magnet_to_subresource_meta(html, infohashes)
+    return {h: title for h, (title, _size) in meta.items() if title}
+
+
+def pair_magnet_to_subresource_meta(
+    html: str,
+    infohashes: list[str],
+) -> dict[str, tuple[str, int]]:
+    """返回 infohash → (子标题, 字节大小)。整块字段同源，见 extract_subresource_blocks。"""
+    return {
+        b.infohash: (b.title, int(b.size or 0))
+        for b in extract_subresource_blocks(html, infohashes)
+        if b.title
+    }
 
 
 def extract_preview_images_by_infohash(
@@ -728,73 +1125,25 @@ def extract_preview_images_by_infohash(
     base_url: str = "",
     limit_per: int = 5,
 ) -> dict[str, list[str]]:
-    """按真正子标题切段，把预览图挂到对应磁力/子资源。
+    """按子资源块挂预览图（与名称/大小/磁力同一块）。"""
+    out: dict[str, list[str]] = {}
+    for b in extract_subresource_blocks(
+        html, infohashes, base_url=base_url, limit_per=limit_per
+    ):
+        if b.preview_images:
+            out[b.infohash] = list(b.preview_images)
+    if out:
+        return out
 
-    通用规则：
-    - 子标题只认 SUBRESOURCE_TITLE_LABELS（【影片名称】/【资源名称】）
-    - 【种子名称】不是子标题，不能切开资源块
-    - 本子标题 → 下一个子标题之间的内容，都属于本子资源
-    - 磁力通常在子标题前方：取「上一个子标题之后 → 本子标题之前」里最后一条磁力，与本段预览图配对
-    """
+    # 无真正子标题时：退回按磁力切段
     scope = extract_first_postmessage_html(html) or (html or "")
     if not scope.strip():
         scope = html or ""
-
     wanted = {(h or "").strip().upper() for h in infohashes if (h or "").strip()}
     if not wanted:
         return {}
-
-    # 磁力位置（文档顺序，同 hash 留首次）
-    mag_pos: list[tuple[str, int, int]] = []
-    seen_h: set[str] = set()
-    for m in re.finditer(r"magnet:\?xt=urn:btih:([A-Fa-f0-9]{40})", scope, re.I):
-        h = m.group(1).upper()
-        if h in seen_h:
-            continue
-        seen_h.add(h)
-        mag_pos.append((h, m.start(), m.end()))
-    # 亦兼容裸 infohash（少见）
-    upper = scope.upper()
-    for h in wanted:
-        if h in seen_h:
-            continue
-        idx = upper.find(h)
-        if idx < 0:
-            continue
-        seen_h.add(h)
-        start = scope.rfind("magnet:", max(0, idx - 40), idx)
-        if start < 0:
-            start = idx
-        mag_pos.append((h, start, idx + len(h)))
-    mag_pos.sort(key=lambda x: x[1])
-
-    titles = iter_subresource_title_spans(scope)
+    mag_pos = _magnet_positions_in_scope(scope, wanted)
     lim = max(1, limit_per)
-    out: dict[str, list[str]] = {}
-
-    if titles:
-        for i, (t_start, t_end) in enumerate(titles):
-            prev_end = titles[i - 1][1] if i > 0 else 0
-            next_start = titles[i + 1][0] if i + 1 < len(titles) else len(scope)
-            # 本子标题到下一子标题 = 本子资源数据（含截图）
-            block = scope[t_end:next_start]
-            imgs = extract_preview_images(block, limit=lim, base_url=base_url)
-            if not imgs:
-                continue
-            # 配对：上一段结束 → 本子标题之前，最后一条磁力
-            paired: str | None = None
-            for h, m_start, _m_end in mag_pos:
-                if m_start < prev_end:
-                    continue
-                if m_start >= t_start:
-                    break
-                if h in wanted:
-                    paired = h
-            if paired and paired not in out:
-                out[paired] = imgs
-        return out
-
-    # 无真正子标题时：退回按磁力切段（仅取本条之后、下一条之前）
     for i, (h, _start, end) in enumerate(mag_pos):
         if h not in wanted:
             continue
@@ -820,7 +1169,7 @@ def parse_thread_content(html: str, tid: int = 0, *, base_url: str = "") -> Thre
     plain = _clean_text(op_html)
     block = extract_blockcode_text(op_html)
     if not block:
-        # 一楼无 blockcode：扫楼主语料（含二楼补链），勿扫回帖
+        # 一楼无 blockcode：再扫主贴语料（含附件注入），勿扫回帖
         corpus = extract_link_corpus_html(html)
         if corpus:
             block = extract_blockcode_text(corpus)
