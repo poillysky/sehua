@@ -1200,6 +1200,16 @@ a {
   overflow-wrap: anywhere;
 }
 
+.detail-field a.detail-source-link {
+  color: var(--primary);
+  text-decoration: none;
+  word-break: break-all;
+}
+
+.detail-field a.detail-source-link:hover {
+  text-decoration: underline;
+}
+
 .desc-block {
   margin: 0;
   white-space: pre-wrap;
@@ -4669,11 +4679,11 @@ a {
     display: none !important;
   }
 
-  /* 工具栏：筛选+搜索一行，操作按钮紧凑 */
+  /* 工具栏：搜索独占加高一行；筛选与操作另排 */
   .table-toolbar {
     flex-wrap: wrap;
     align-items: center;
-    gap: 6px;
+    gap: 8px;
     padding: 8px;
   }
 
@@ -4682,9 +4692,9 @@ a {
     align-items: center;
     justify-content: center;
     flex: 0 0 auto;
-    min-height: 34px;
+    min-height: 40px;
     line-height: 1;
-    padding: 0 10px;
+    padding: 0 12px;
     order: 0;
     overflow: hidden;
     max-width: 72px;
@@ -4706,15 +4716,19 @@ a {
   .table-toolbar input[type='search'] {
     flex: 1 1 0;
     max-width: none;
-    min-width: 0;
+    min-width: 8rem;
     order: 1;
-    padding: 6px 10px;
+    min-height: 44px;
+    padding: 10px 14px;
+    font-size: 16px; /* iOS 避免输入框自动放大 */
+    border-radius: 10px;
+    box-sizing: border-box;
   }
 
   .toolbar-meta {
     order: 2;
     margin-left: 0;
-    flex: 1 1 auto;
+    flex: 1 1 100%;
     min-width: 0;
     font-size: 11px;
     white-space: nowrap;
@@ -4725,7 +4739,7 @@ a {
   .table-toolbar > .btn:not(.mobile-only) {
     order: 3;
     flex: 0 0 auto;
-    min-height: 34px;
+    min-height: 36px;
     padding: 0 10px;
     justify-content: center;
   }
@@ -4861,36 +4875,39 @@ a {
     padding-bottom: calc(12px + var(--bottom-h) + env(safe-area-inset-bottom, 0px));
   }
 
+  /* 夹在顶栏与底栏之间，避免 92dvh 在 iOS 标签页裁掉关闭按钮 */
   .crawler-discarded-backdrop {
     display: flex;
-    align-items: flex-end;
+    align-items: stretch;
     justify-content: stretch;
+    inset: var(--header-h) 0 calc(var(--bottom-h) + env(safe-area-inset-bottom, 0px)) 0;
     padding: 0;
-    padding-top: env(safe-area-inset-top, 0px);
+    box-sizing: border-box;
   }
 
   .crawler-discarded-modal {
     width: 100%;
     max-width: none;
-    height: min(92dvh, calc(100dvh - env(safe-area-inset-top, 0px)));
-    max-height: min(92dvh, calc(100dvh - env(safe-area-inset-top, 0px)));
+    height: 100%;
+    max-height: 100%;
     margin: 0;
-    border-radius: 16px 16px 0 0;
+    border-radius: 14px 14px 0 0;
     border-left: 0;
     border-right: 0;
     border-bottom: 0;
   }
 
   .crawler-discarded-modal-head {
-    padding: 18px 14px 12px;
-    gap: 10px;
+    padding: 12px 10px 10px 14px;
+    gap: 8px;
     position: relative;
+    align-items: flex-start;
   }
 
   .crawler-discarded-modal-head::before {
     content: '';
     position: absolute;
-    top: 6px;
+    top: 5px;
     left: 50%;
     width: 36px;
     height: 4px;
@@ -4899,29 +4916,42 @@ a {
     background: color-mix(in srgb, var(--muted) 55%, transparent);
   }
 
+  .crawler-discarded-modal-head .crawler-discarded-title {
+    padding-top: 6px;
+    min-width: 0;
+  }
+
   .crawler-discarded-modal-head h3 {
-    font-size: 16px;
+    font-size: 14px;
+    line-height: 1.25;
   }
 
   .crawler-discarded-modal-head .icon-only {
-    min-width: 44px;
-    min-height: 44px;
-    width: 44px;
-    height: 44px;
+    flex: 0 0 auto;
+    align-self: flex-start;
+    margin-top: 2px;
+    min-width: 36px;
+    min-height: 36px;
+    width: 36px;
+    height: 36px;
   }
 
   .crawler-discarded-sub {
-    display: block;
-    margin-top: 4px;
-    font-size: 11px;
-    line-height: 1.4;
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+    line-clamp: 2;
+    overflow: hidden;
+    margin-top: 2px;
+    font-size: 10px;
+    line-height: 1.3;
   }
 
   .crawler-discarded-modal-body .crawler-discarded-tools {
     flex-direction: column;
     align-items: stretch;
-    gap: 10px;
-    padding: 10px 12px;
+    gap: 8px;
+    padding: 8px 10px;
   }
 
   .crawler-discarded-modal-body .crawler-discarded-tabs {
@@ -4932,8 +4962,9 @@ a {
   .crawler-discarded-modal-body .crawler-discarded-tab {
     flex: 1 1 0;
     text-align: center;
-    min-height: 36px;
-    font-size: 13px;
+    min-height: 30px;
+    font-size: 11px;
+    padding: 4px 6px;
   }
 
   .crawler-discarded-tools-row {
@@ -4971,14 +5002,15 @@ a {
   }
 
   .crawler-discarded-modal-body .crawler-discarded-log {
-    min-height: 9.5rem;
+    flex: 0 0 auto;
+    min-height: 0;
   }
 
   .crawler-discarded-modal-body .crawler-discarded-log-body,
   .crawler-discarded-modal-body .crawler-discarded-log-body.activity-log {
-    height: 9.5rem;
-    min-height: 9.5rem;
-    max-height: 9.5rem;
+    height: 5.5rem;
+    min-height: 5.5rem;
+    max-height: 5.5rem;
   }
 
   .crawler-discarded-cards.is-loading {
@@ -4986,30 +5018,70 @@ a {
   }
 
   .crawler-discarded-card {
-    padding: 14px 14px;
+    gap: 4px;
+    padding: 8px 10px;
   }
 
   .crawler-discarded-card-title {
-    font-size: 15px;
+    font-size: 12px;
+    line-height: 1.3;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    word-break: normal;
+  }
+
+  .crawler-discarded-card-time,
+  .crawler-discarded-card-meta {
+    font-size: 10px;
+    white-space: nowrap;
+  }
+
+  .crawler-discarded-card-meta {
+    flex-wrap: nowrap;
+    overflow: hidden;
+    gap: 4px 8px;
+  }
+
+  .crawler-discarded-card-reason {
+    font-size: 10px;
+    line-height: 1.3;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    word-break: normal;
+  }
+
+  .crawler-discarded-badge {
+    font-size: 9px;
+    padding: 1px 5px;
+  }
+
+  .crawler-discarded-empty {
+    font-size: 10px;
+    padding: 12px 8px;
   }
 
   .crawler-discarded-modal-body .crawler-discarded-foot {
-    gap: 10px;
+    gap: 8px;
     flex-wrap: wrap;
-    padding: 10px 12px;
-    padding-bottom: calc(12px + env(safe-area-inset-bottom, 0px));
+    padding: 8px 10px;
+    /* 底栏已在 backdrop inset 中预留，此处不再叠 safe-area */
+    padding-bottom: 8px;
+    font-size: 11px;
   }
 
   .crawler-discarded-modal-body .crawler-discarded-pager {
     width: 100%;
     display: flex;
-    gap: 8px;
+    gap: 6px;
   }
 
   .crawler-discarded-modal-body .crawler-discarded-pager .crawler-action {
     flex: 1;
     justify-content: center;
-    min-height: 44px;
+    min-height: 36px;
+    font-size: 12px;
   }
 
   .crawler-toolbar {
@@ -5646,16 +5718,109 @@ a {
   }
 
   html.ios-pwa .crawler-discarded-backdrop {
-    padding-top: env(safe-area-inset-top, 0px);
+    inset: calc(var(--header-h) + env(safe-area-inset-top, 0px)) 0
+      calc(var(--bottom-h) + env(safe-area-inset-bottom, 0px)) 0;
+    padding: 0;
   }
 
   html.ios-pwa .crawler-discarded-modal {
-    height: calc(100vh - env(safe-area-inset-top, 0px) - 8px);
-    max-height: calc(100vh - env(safe-area-inset-top, 0px) - 8px);
+    height: 100%;
+    max-height: 100%;
   }
 
   html.ios-pwa .crawler-discarded-modal-body .crawler-discarded-foot {
-    padding-bottom: calc(14px + env(safe-area-inset-bottom, 0px));
+    padding-bottom: 12px;
+  }
+}
+
+/* iOS 标签页 / 中宽屏：明细表更小字号、单行不换行（可横向滑） */
+@media (max-width: 1200px) {
+  .crawler-discarded-modal-body .crawler-discarded-table {
+    font-size: 9px;
+    width: max-content;
+    min-width: 100%;
+  }
+
+  .crawler-discarded-modal-body .crawler-discarded-table th,
+  .crawler-discarded-modal-body .crawler-discarded-table td {
+    padding: 3px 5px;
+    white-space: nowrap;
+    vertical-align: middle;
+    line-height: 1.2;
+  }
+
+  .crawler-discarded-modal-body .crawler-discarded-table .mono {
+    font-size: 9px;
+  }
+
+  .crawler-discarded-modal-body .crawler-discarded-badge {
+    font-size: 9px;
+    padding: 1px 5px;
+  }
+
+  .crawler-discarded-modal-body .crawler-discarded-title-cell,
+  .crawler-discarded-modal-body .crawler-discarded-reason {
+    max-width: 10rem;
+  }
+
+  .crawler-discarded-modal-body .crawler-discarded-empty {
+    font-size: 9px;
+    white-space: nowrap;
+    text-align: center;
+    padding: 12px 8px;
+  }
+
+  .crawler-discarded-modal-body .crawler-discarded-check {
+    width: 14px;
+    height: 14px;
+  }
+}
+
+/* iPad / 中宽：同样夹在顶栏底栏之间，避免关闭钮被顶出可视区 */
+@media (max-width: 960px) and (min-width: 769px) {
+  .crawler-discarded-backdrop {
+    display: flex;
+    align-items: stretch;
+    justify-content: stretch;
+    inset: var(--header-h) 0 calc(var(--bottom-h) + env(safe-area-inset-bottom, 0px)) 0;
+    padding: 0;
+    box-sizing: border-box;
+  }
+
+  .crawler-discarded-modal {
+    width: 100%;
+    max-width: none;
+    height: 100%;
+    max-height: 100%;
+    margin: 0;
+    border-radius: 14px 14px 0 0;
+    border-left: 0;
+    border-right: 0;
+    border-bottom: 0;
+  }
+
+  .crawler-discarded-modal-head {
+    align-items: flex-start;
+    gap: 8px;
+    padding: 12px 10px 10px 14px;
+  }
+
+  .crawler-discarded-modal-head .icon-only {
+    flex: 0 0 auto;
+    min-width: 40px;
+    min-height: 40px;
+  }
+
+  .crawler-discarded-sub {
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+    line-clamp: 2;
+    overflow: hidden;
+  }
+
+  .crawler-discarded-modal-body .crawler-discarded-foot {
+    padding-bottom: 10px;
   }
 }
 

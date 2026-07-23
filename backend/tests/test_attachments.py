@@ -475,16 +475,33 @@ def test_filter_all_link_attachments_order_and_limit():
         DownloadAttachment("p.zip", "u", "zip"),
         DownloadAttachment("links.docx", "u", "doc"),
     ]
-    got = filter_all_link_attachments(atts, limit=10)
-    assert [a.kind for a in got] == ["txt", "excel", "doc", "zip", "rar", "torrent"]
+    # 默认 / 电驴：txt → zip/rar → excel/doc → torrent
+    got = filter_all_link_attachments(atts, limit=10, preferred_link="ed2k")
+    assert [a.kind for a in got] == ["txt", "zip", "rar", "excel", "doc", "torrent"]
     assert [a.name for a in got] == [
         "a.txt",
-        "b.xlsx",
-        "links.docx",
         "p.zip",
         "z.rar",
+        "b.xlsx",
+        "links.docx",
         "seed.torrent",
     ]
+
+    # 磁力：torrent → excel/doc/txt → zip/rar
+    got_m = filter_all_link_attachments(atts, limit=10, preferred_link="magnet")
+    assert [a.kind for a in got_m] == ["torrent", "excel", "doc", "txt", "zip", "rar"]
+    assert got_m[0].name == "seed.torrent"
+
+
+def test_filter_all_link_attachments_both_uses_magnet_order():
+    from parsers.attachments import filter_all_link_attachments, DownloadAttachment
+
+    atts = [
+        DownloadAttachment("a.txt", "u", "txt"),
+        DownloadAttachment("seed.torrent", "u", "torrent"),
+    ]
+    got = filter_all_link_attachments(atts, preferred_link="both")
+    assert [a.kind for a in got] == ["torrent", "txt"]
 
 
 def _minimal_docx(body_text: str) -> bytes:
@@ -599,3 +616,31 @@ def test_nested_zip_prefers_excel_magnet_over_115_txt():
     text = _extract_txt_from_archive(outer.getvalue(), "zip")
     assert "magnet:?xt=urn:btih:" in text
     assert "115://" not in text
+
+
+def test_push_member_text_stops_on_magnet():
+    from crawler.attachments import _push_member_text
+
+    chunks: list[str] = []
+    assert _push_member_text(chunks, "only 115sha noise") is None
+    early = _push_member_text(
+        chunks,
+        "magnet:?xt=urn:btih:dddddddddddddddddddddddddddddddddddddddd",
+    )
+    assert early is not None
+    assert "magnet:?xt=urn:btih:" in early
+
+
+def test_zip_stops_after_first_member_with_magnet():
+    """压缩包内先遇到目标链即可返回，不必扫完后续成员。"""
+    from crawler.attachments import _extract_txt_from_archive
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as z:
+        z.writestr(
+            "1.txt",
+            "magnet:?xt=urn:btih:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+        )
+        z.writestr("2.txt", "should not be required\n" + ("noise\n" * 200))
+    text = _extract_txt_from_archive(buf.getvalue(), "zip")
+    assert "magnet:?xt=urn:btih:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee" in text

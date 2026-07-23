@@ -178,6 +178,7 @@ async def parse_thread_for_admin(
                 thread_url=thread_url,
                 attachment_kind=attachment_kind,
                 timeout=max(15.0, attach_timeout),
+                preferred_link=preferred_link,
             )
             attachment_denied = attach_res.denied
             attachment_failed = attach_res.failed and not attach_res.downloaded
@@ -224,6 +225,7 @@ async def parse_thread_for_admin(
                         thread_url=thread_url,
                         attachment_kind=next_kind,
                         timeout=max(15.0, attach_timeout),
+                        preferred_link=preferred_link,
                     )
                     attachment_denied = attachment_denied or attach_res2.denied
                     attachment_failed = attachment_failed or (attach_res2.failed and not attach_res2.downloaded)

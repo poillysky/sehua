@@ -1514,7 +1514,19 @@ function DetailTabs({
           <div className="detail-grid">
             <div className="detail-field full">
               <span className="lbl">来源 URL</span>
-              <span className="val mono">{row.sourceUrl || '—'}</span>
+              {row.sourceUrl ? (
+                <a
+                  className="val mono detail-source-link"
+                  href={row.sourceUrl}
+                  target="_blank"
+                  rel="noreferrer"
+                  title="在新标签打开来源帖"
+                >
+                  {row.sourceUrl}
+                </a>
+              ) : (
+                <span className="val mono">—</span>
+              )}
             </div>
             <div className="detail-field">
               <span className="lbl">来源论坛</span>

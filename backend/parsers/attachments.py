@@ -193,25 +193,61 @@ def filter_torrent_attachments(
     return filtered[:lim]
 
 
+# 按板块主链频次：多附件时先试更可能含目标链的类型
+_ATTACH_ORDER_ED2K = {
+    "txt": 0,
+    "zip": 1,
+    "rar": 2,
+    "excel": 3,
+    "doc": 4,
+    "torrent": 5,
+}
+_ATTACH_ORDER_MAGNET = {
+    "torrent": 0,
+    "excel": 1,
+    "doc": 2,
+    "txt": 3,
+    "zip": 4,
+    "rar": 5,
+}
+
+
+def _attach_kind_order(preferred_link: str | None) -> dict[str, int]:
+    pref = (preferred_link or "ed2k").strip().lower()
+    if pref in {"magnet", "both"}:
+        return _ATTACH_ORDER_MAGNET
+    return _ATTACH_ORDER_ED2K
+
+
 def filter_all_link_attachments(
     attachments: list[DownloadAttachment],
     *,
     limit: int = MAX_ATTACHMENTS_PER_THREAD,
+    preferred_link: str | None = None,
 ) -> list[DownloadAttachment]:
-    """全部可抽链附件：txt → excel → doc → zip/rar → torrent，逐个轮询。"""
-    tail = filter_tail_attachments(attachments, limit=limit)
-    torrents = filter_torrent_attachments(attachments, limit=limit)
-    seen: set[str] = set()
-    out: list[DownloadAttachment] = []
-    for item in [*tail, *torrents]:
-        key = f"{item.kind}:{item.name}:{item.url}"
-        if key in seen:
-            continue
-        seen.add(key)
-        out.append(item)
-        if len(out) >= limit:
-            break
-    return out
+    """全部可抽链附件，按板块主链类型排序后逐个轮询。
+
+    - 电驴板：txt → zip/rar → excel/doc → torrent
+    - 磁力/双链：torrent → excel/doc/txt → zip/rar
+    """
+    candidates = [
+        item
+        for item in attachments
+        if item.kind in ("txt", "excel", "doc", "zip", "rar", "torrent")
+    ]
+    filtered = [
+        item
+        for item in candidates
+        if item.kind == "torrent"
+        or not _looks_like_directory_attachment(item.name, kind=item.kind)
+    ]
+    # 目录类过滤后若只剩空：保留 txt（与 filter_tail 一致）
+    if not filtered:
+        filtered = [item for item in candidates if item.kind == "txt"]
+    order = _attach_kind_order(preferred_link)
+    filtered.sort(key=lambda a: (order.get(a.kind, 9), a.name))
+    lim = max(1, min(int(limit), MAX_ATTACHMENTS_PER_THREAD))
+    return filtered[:lim]
 
 
 def pick_ed2k_attachment_kind(base_url: str, html: str) -> str:

@@ -170,6 +170,7 @@ async def process_thread(
                 thread_url=thread_url,
                 attachment_kind=attachment_kind,
                 timeout=max(15.0, attach_timeout),
+                preferred_link=link_pref,
             )
             attach_tried = True
             attachment_text = attach_res.text or ""
@@ -197,8 +198,10 @@ async def process_thread(
                     preferred_link=link_pref,
                 )
                 # 电驴板：txt/zip/excel 无果再试种子；磁力/双链：种子无果再试 txt/excel
+                # stub/无权不再二轮（已能判定）；仅 retry/failed 等才回退
                 if (
-                    outcome.verdict not in {"import", "skipped"}
+                    outcome.verdict not in {"import", "skipped", "stub"}
+                    and not attach_res.denied
                     and looks_like_attachment_zone(html)
                     and (
                         (link_pref == "ed2k" and attachment_kind == "txt_tail")
@@ -216,6 +219,7 @@ async def process_thread(
                         thread_url=thread_url,
                         attachment_kind=next_kind,
                         timeout=max(15.0, attach_timeout),
+                        preferred_link=link_pref,
                     )
                     if attach_res2.text and should_skip_as_115sha_only(attach_res2.text):
                         attachment_text = (attachment_text + "\n" + attach_res2.text).strip()

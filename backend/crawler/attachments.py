@@ -157,6 +157,16 @@ def _pick_best_archive_texts(chunks: list[str]) -> str:
     return "\n\n".join(cleaned)
 
 
+def _push_member_text(member_texts: list[str], text: str) -> str | None:
+    """追加成员语料；已含 magnet/ed2k 则返回合并结果供提前结束。"""
+    if not (text or "").strip():
+        return None
+    member_texts.append(text)
+    if _text_has_importable_link(text):
+        return _pick_best_archive_texts(member_texts)
+    return None
+
+
 def _text_from_archive_member(name: str, data: bytes) -> str:
     lower = (name or "").lower()
     if lower.endswith(".torrent"):
@@ -268,8 +278,10 @@ def _extract_via_7z(
                 except OSError:
                     continue
                 text = _text_from_archive_member(path.name, raw_member)
+                early = _push_member_text(member_texts, text)
+                if early:
+                    return early
                 if text.strip():
-                    member_texts.append(text)
                     log.debug("7z member %s → %s chars", path.name, len(text))
             # 内层 zip/rar：逐个再解
             for path in sorted(out_dir.rglob("*")):
@@ -291,8 +303,9 @@ def _extract_via_7z(
                 text = _extract_txt_from_archive(
                     nested, kind, passwords=pwds, depth=depth + 1
                 )
-                if text.strip():
-                    member_texts.append(text)
+                early = _push_member_text(member_texts, text)
+                if early:
+                    return early
             best = _pick_best_archive_texts(member_texts)
             if best.strip():
                 return best
@@ -323,8 +336,9 @@ def _extract_zip_pyzipper(
                     except Exception:
                         continue
                     text = _text_from_archive_member(name, raw_member)
-                    if text.strip():
-                        member_texts.append(text)
+                    early = _push_member_text(member_texts, text)
+                    if early:
+                        return early
                 for name, kind in _nested_archive_members(names):
                     try:
                         nested = archive.read(name)
@@ -333,8 +347,9 @@ def _extract_zip_pyzipper(
                     text = _extract_txt_from_archive(
                         nested, kind, passwords=pwds, depth=depth + 1
                     )
-                    if text.strip():
-                        member_texts.append(text)
+                    early = _push_member_text(member_texts, text)
+                    if early:
+                        return early
                 best = _pick_best_archive_texts(member_texts)
                 if best.strip():
                     return best
@@ -374,8 +389,9 @@ def _extract_rar_text(
                                 except Exception:
                                     continue
                                 text = _text_from_archive_member(name, raw_member)
-                                if text.strip():
-                                    member_texts.append(text)
+                                early = _push_member_text(member_texts, text)
+                                if early:
+                                    return early
                             for name, kind in _nested_archive_members(names):
                                 try:
                                     nested = archive.read(name)
@@ -384,8 +400,9 @@ def _extract_rar_text(
                                 text = _extract_txt_from_archive(
                                     nested, kind, passwords=pwds, depth=depth + 1
                                 )
-                                if text.strip():
-                                    member_texts.append(text)
+                                early = _push_member_text(member_texts, text)
+                                if early:
+                                    return early
                             best = _pick_best_archive_texts(member_texts)
                             if best.strip():
                                 return best
@@ -438,7 +455,9 @@ def _extract_zip_txt(
                     continue
                 text = _text_from_archive_member(name, raw)
                 if text.strip():
-                    member_texts.append(text)
+                    early = _push_member_text(member_texts, text)
+                    if early:
+                        return early
                     break
         for name, kind in _nested_archive_members(names):
             for pwd in pwd_attempts:
@@ -450,7 +469,9 @@ def _extract_zip_txt(
                     nested, kind, passwords=pwds, depth=depth + 1
                 )
                 if text.strip():
-                    member_texts.append(text)
+                    early = _push_member_text(member_texts, text)
+                    if early:
+                        return early
                     break
         best = _pick_best_archive_texts(member_texts)
         if best.strip():
@@ -837,6 +858,10 @@ class AttachmentDownloader:
             if text.strip():
                 return text, denied, downloaded
 
+        # 页面直链已明确无权且无字节：UI 再点一次通常同样失败，省一轮
+        if fetch_denied and not data:
+            return "", True, downloaded
+
         suffix = _attachment_ui_suffix(attachment)
         ui_data, ui_denied = await self._download_raw_via_ui(
             attachment, timeout, suffix=suffix
@@ -857,10 +882,12 @@ class AttachmentDownloader:
         *,
         max_files: int = MAX_ATTACHMENTS_PER_THREAD,
         timeout: float = 45,
+        preferred_link: str | None = None,
     ) -> AttachmentFetchResult:
-        """正文无链：按 txt → excel → doc → zip/rar → torrent 逐个轮询，不提前停。
+        """正文无链：按板块主链频次排序后逐个轮询附件。
 
-        压缩包内也会逐个试 txt/excel/doc，嵌套 zip/rar 用帖内密码递归再解。
+        已抽到 magnet/ed2k 即停（判定够用）；115sha 等无目标链仍继续试下一附件。
+        压缩包内同样：成员一旦含目标链即返回。
         """
         if not self.session._ready:
             return AttachmentFetchResult(failed=True)
@@ -868,6 +895,7 @@ class AttachmentDownloader:
         attachments = filter_all_link_attachments(
             extract_download_attachments(base_url, html),
             limit=max_files,
+            preferred_link=preferred_link,
         )
         if not attachments:
             return AttachmentFetchResult()
@@ -896,6 +924,14 @@ class AttachmentDownloader:
                     )
                     continue
                 chunks.append(text)
+                if _text_has_importable_link(text):
+                    log.info(
+                        "Attachment %s (%s) → %s chars with magnet/ed2k — stop polling",
+                        attachment.name,
+                        attachment.kind,
+                        len(text),
+                    )
+                    break
                 log.info(
                     "Attachment %s (%s) → %s chars — continue polling",
                     attachment.name,
@@ -923,10 +959,15 @@ class AttachmentDownloader:
         *,
         max_files: int = MAX_ATTACHMENTS_PER_THREAD,
         timeout: float = 45,
+        preferred_link: str | None = None,
     ) -> AttachmentFetchResult:
-        """与 download_tail 相同：全类型附件逐个轮询（含种子转磁力）。"""
+        """与 download_tail 相同：全类型附件按板块频次逐个轮询。"""
         return await self.download_tail(
-            html, base_url, max_files=max_files, timeout=timeout
+            html,
+            base_url,
+            max_files=max_files,
+            timeout=timeout,
+            preferred_link=preferred_link or "magnet",
         )
 
 
@@ -937,8 +978,9 @@ async def fetch_attachments_for_outcome(
     thread_url: str,
     attachment_kind: str,
     timeout: float = 45,
+    preferred_link: str | None = None,
 ) -> AttachmentFetchResult:
-    """按判定 kind 下载：txt_tail | torrent。"""
+    """按判定 kind 下载：txt_tail | torrent；轮询顺序跟板块主链。"""
     downloader = AttachmentDownloader(session)
     try:
         page_html = await downloader.ensure_thread_page(thread_url)
@@ -947,8 +989,17 @@ async def fetch_attachments_for_outcome(
     except Exception as exc:
         log.warning("Navigate to thread for attachments failed: %s", exc)
 
+    # attachment_kind 仅作缺省主链提示；显式 preferred_link 优先
+    link_pref = preferred_link
+    if not link_pref:
+        link_pref = "magnet" if attachment_kind == "torrent" else "ed2k"
+
     if attachment_kind == "torrent":
-        return await downloader.download_torrents(html, thread_url, timeout=timeout)
+        return await downloader.download_torrents(
+            html, thread_url, timeout=timeout, preferred_link=link_pref
+        )
     if attachment_kind == "txt_tail":
-        return await downloader.download_tail(html, thread_url, timeout=timeout)
+        return await downloader.download_tail(
+            html, thread_url, timeout=timeout, preferred_link=link_pref
+        )
     return AttachmentFetchResult(failed=True)
