@@ -104,7 +104,8 @@ def build_assets(
             ParsedAsset(
                 link_kind="ed2k",
                 hash=link.hash,
-                filename=link.filename,
+                # 子资源名用帖内真名；链内 filename 仅保留在 uri 里
+                filename=(link.display_name or "").strip(),
                 size=link.size,
                 uri=link.link,
                 is_primary=False,

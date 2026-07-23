@@ -25,7 +25,7 @@ def persist_dual_parse(
     """Persist one thread parse. Returns {count, stub, hash, link_kind}.
 
     - 主资源名 title = 帖子标题
-    - 子资源名 filename = 有真实文件名用自己的，没有则用标题
+    - 子资源名 filename = 【影片名称】/【资源名称】；没有则用主标题（不用 ed2k/dn 链内名）
     - 多磁力/多 ed2k：按 hash 各写一条
     """
     source_id = ensure_source(conn, source_key, source_name, "web")
@@ -83,6 +83,7 @@ def persist_dual_parse(
             title=main_name,
             hash_value=asset.hash,
             link_uri=asset.uri,
+            description=parsed.description or "",
         )
         link = Ed2kLink(
             filename=sub_name,

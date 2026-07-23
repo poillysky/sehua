@@ -2,12 +2,11 @@
 
 from __future__ import annotations
 
-import html as html_lib
 import re
 from dataclasses import dataclass
 from urllib.parse import unquote
 
-from parsers.resource_names import SUBRESOURCE_TITLE_MATCH_FORMS
+from parsers.resource_names import context_subresource_title
 
 MAGNET_URI_RE = re.compile(
     r"magnet:\?xt=urn:btih:(?:[A-Fa-f0-9]{40}|[a-zA-Z2-7]{32})(?:&[^\s<>\"'\]【】]+)?",
@@ -21,19 +20,6 @@ BTIH_RE = re.compile(
 DN_RE = re.compile(r"(?:^|&)dn=([^&]+)", re.I)
 XL_RE = re.compile(r"(?:^|&)xl=(\d+)", re.I)
 
-# 真子标题取值（简繁；顺序与 SUBRESOURCE_TITLE_MATCH_FORMS 一致）
-_SUBRESOURCE_NAME_RES = tuple(
-    re.compile(
-        rf"【\s*{re.escape(lab)}\s*】\s*[:：]?\s*(.+?)(?=\s*【|\s*magnet:|\s*$)",
-        re.I | re.S,
-    )
-    for lab in SUBRESOURCE_TITLE_MATCH_FORMS
-)
-# 【种子名称】/【種子名稱】仅作占位名兜底，不是子标题
-_TORRENT_NAME_RE = re.compile(
-    r"【\s*(?:种子名称|種子名稱)\s*】\s*[:：]?\s*(.+?)(?=\s*【|\s*magnet:|\s*$)",
-    re.I | re.S,
-)
 _FILM_SIZE_RE = re.compile(
     r"【\s*影片大小\s*】\s*[:：]?\s*([0-9.]+)\s*(T|TB|G|GB|M|MB|K|KB)?",
     re.I,
@@ -144,14 +130,6 @@ def _normalize_infohash(raw: str) -> str:
     return unquote(raw.strip()).upper()
 
 
-def _clean_label_value(raw: str) -> str:
-    text = html_lib.unescape(raw or "")
-    text = re.sub(r"<[^>]+>", " ", text)
-    text = re.sub(r"&nbsp;", " ", text, flags=re.I)
-    text = re.sub(r"\s+", " ", text).strip()
-    return text
-
-
 def _size_from_label(raw_num: str, unit: str | None) -> int:
     try:
         val = float(raw_num)
@@ -170,40 +148,12 @@ def _size_from_label(raw_num: str, unit: str | None) -> int:
     return int(val * mult)
 
 
-def _pick_subresource_title(window: str, *, prefer_last: bool) -> str:
-    """从窗口取真正子标题值；标签优先级见 SUBRESOURCE_TITLE_LABELS。"""
-    if not window:
-        return ""
-    for cre in _SUBRESOURCE_NAME_RES:
-        hits = list(cre.finditer(window))
-        if not hits:
-            continue
-        m = hits[-1] if prefer_last else hits[0]
-        name = _clean_label_value(m.group(1))
-        if name:
-            return name
-    return ""
-
-
 def _context_name_and_size(blob: str, start: int, end: int) -> tuple[str, int]:
-    """子资源名只认 SUBRESOURCE_TITLE_LABELS；【种子名称】不是子标题。"""
-    before = blob[max(0, start - 280) : start]
-    after = blob[end : end + 480]
-    before = re.sub(r"<[^>]+>", " ", before)
-    after = re.sub(r"<[^>]+>", " ", after)
-
-    # 合集常见：magnet → 【影片名称】/【资源名称】；先看后文，再看前文最近一条
-    name = _pick_subresource_title(after, prefer_last=False)
-    if not name:
-        name = _pick_subresource_title(before, prefer_last=True)
-    # 【种子名称】仅作占位名最后兜底
-    if not name:
-        torr = None
-        for m in _TORRENT_NAME_RE.finditer(before):
-            torr = m
-        if torr:
-            name = _clean_label_value(torr.group(1))
-
+    """子资源名只认【影片名称】/【资源名称】；链旁尺寸另取。"""
+    name = context_subresource_title(
+        blob, start, end, allow_torrent_fallback=True
+    )
+    after = re.sub(r"<[^>]+>", " ", blob[end : end + 480])
     size = 0
     sm = _FILM_SIZE_RE.search(after)
     if sm:
@@ -247,8 +197,8 @@ def parse_magnet_text(text: str) -> list[MagnetLink]:
         if not parsed or parsed.infohash in seen:
             continue
         ctx_name, ctx_size = _context_name_and_size(blob, match.start(), match.end())
-        # 上下文名优先于占位 magnet-XXXX；dn= 真实名仍保留优先
-        if ctx_name and (parsed.filename.startswith("magnet-") or not parsed.filename):
+        # 子资源名 = 帖内【影片名称】/【资源名称】，优先于 dn= 链内名
+        if ctx_name:
             parsed = MagnetLink(
                 infohash=parsed.infohash,
                 filename=ctx_name[:255],

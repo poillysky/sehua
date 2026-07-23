@@ -1,29 +1,96 @@
 import { Ed2kResourceProps } from "@/types";
 
+/** 无有效子资源名：空、纯 hash、磁力占位 magnet-xxxxxxxx */
+const PLACEHOLDER_MAGNET_NAME_RE = /^magnet-[0-9a-f]{8}$/i;
+
+function isMissingSubName(
+  name?: string | null,
+  hash?: string | null,
+): boolean {
+  const n = (name || "").trim();
+  if (!n) return true;
+  const h = (hash || "").trim().toUpperCase();
+  if (h && n.toUpperCase() === h) return true;
+  if (h.length >= 8 && n.toUpperCase() === h.slice(0, 8)) return true;
+  if (PLACEHOLDER_MAGNET_NAME_RE.test(n)) return true;
+  return false;
+}
+
+/** ed2k URI / magnet dn= 链内技术名（不是子资源名） */
+function linkEmbeddedName(
+  item: Pick<Ed2kResourceProps, "ed2k_link" | "ed2k_links">,
+): string | null {
+  const links = [
+    ...(Array.isArray(item.ed2k_links) ? item.ed2k_links : []),
+    item.ed2k_link || "",
+  ].filter(Boolean);
+
+  for (const link of links) {
+    const ed2k = parseEd2kLink(link);
+    if (ed2k?.filename) {
+      try {
+        return decodeURIComponent(ed2k.filename).trim();
+      } catch {
+        return ed2k.filename.trim();
+      }
+    }
+    const dn = link.match(/[?&]dn=([^&]+)/i);
+    if (dn?.[1]) {
+      try {
+        return decodeURIComponent(dn[1].replace(/\+/g, " ")).trim();
+      } catch {
+        return dn[1].trim();
+      }
+    }
+  }
+  return null;
+}
+
 export function getDisplayTitle(
-  item: Pick<Ed2kResourceProps, "title" | "name" | "description">,
+  item: Pick<
+    Ed2kResourceProps,
+    "title" | "name" | "description" | "hash" | "ed2k_link" | "ed2k_links"
+  >,
 ) {
-  // 主标题：资源名称 / 影片名称 → 帖子标题 → 文件名
+  // 子资源名 = 帖内【资源名称】/【影片名称】，不是 ed2k/dn 链内名
+  // 多资源时 name 已是各条目上下文标题
   const fromDesc =
     getDescriptionField(item.description, "资源名称") ||
     getDescriptionField(item.description, "影片名称");
-  const title = item.title?.trim();
-  const name = item.name?.trim();
-  return fromDesc || title || name || "";
+  const name = item.name?.trim() || "";
+  const title = item.title?.trim() || "";
+  const embedded = linkEmbeddedName(item);
+  const nameOk =
+    !isMissingSubName(name, item.hash) &&
+    (!embedded || name.toLowerCase() !== embedded.toLowerCase());
+
+  if (nameOk && name !== title) {
+    return name;
+  }
+  if (fromDesc) {
+    return fromDesc;
+  }
+  if (nameOk) {
+    return name;
+  }
+  return title || name || "";
 }
 
 export function getDisplayFilename(
-  item: Pick<Ed2kResourceProps, "title" | "name" | "description">,
+  item: Pick<
+    Ed2kResourceProps,
+    "title" | "name" | "description" | "hash" | "ed2k_link" | "ed2k_links"
+  >,
 ) {
-  // 与主标题不同时，返回文件名作次要信息
-  const display = getDisplayTitle(item);
-  const name = item.name?.trim();
+  // 子资源与主资源不同时，返回主资源名作次要信息
+  const name = getDisplayTitle(item);
+  const title = item.title?.trim();
 
-  if (!name || !display || name === display) {
+  if (!title || !name || title === name) {
     return null;
   }
 
-  return name;
+  return title;
 }
 
 export type DescriptionLine = {

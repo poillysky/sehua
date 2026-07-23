@@ -39,6 +39,8 @@ class Ed2kLink:
     size: int
     hash: str
     link: str
+    # 帖内【影片名称】/【资源名称】；空则入库时用主标题，不用链内 filename
+    display_name: str = ""
 
 
 def normalize_ed2k_corpus(text: str) -> str:
@@ -70,6 +72,8 @@ def build_search_string(
 
 
 def parse_ed2k_text(text: str) -> list[Ed2kLink]:
+    from parsers.resource_names import context_subresource_title
+
     results: list[Ed2kLink] = []
     seen: set[str] = set()
     blob = normalize_ed2k_corpus(text or "")
@@ -81,12 +85,14 @@ def parse_ed2k_text(text: str) -> list[Ed2kLink]:
         if file_hash in seen:
             continue
         seen.add(file_hash)
+        display = context_subresource_title(blob, match.start(), match.end())
         results.append(
             Ed2kLink(
                 filename=filename,
                 size=size,
                 hash=file_hash,
                 link=build_ed2k_link(filename, size, file_hash),
+                display_name=(display[:255] if display else ""),
             )
         )
 

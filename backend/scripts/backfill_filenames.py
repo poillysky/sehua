@@ -1,4 +1,6 @@
-"""回填 ed2k_resources.filename：无名/占位 → 用 resource_sources.title；有名保留。
+"""回填 ed2k_resources.filename：子资源名=【影片名称】/【资源名称】，不用链内名。
+
+规则与 resolve_sub_filename 一致：拒绝 ed2k/dn 技术名 → 描述真名 → 帖子标题。
 
 用法（在 backend 目录）:
   .venv\\Scripts\\python.exe -m scripts.backfill_filenames
@@ -46,6 +48,7 @@ def backfill(*, dry_run: bool = False, batch: int = 500) -> dict[str, int]:
                 title=str(title or ""),
                 hash_value=h,
                 link_uri=str(ed2k_link or ""),
+                description=str(description or ""),
             )
             if new_name == old_name:
                 skipped += 1

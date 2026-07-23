@@ -1,10 +1,8 @@
-"""资源命名：主资源 title=帖子标题；子资源 filename=有名用自己的，无名用标题。"""
+"""资源命名：主资源 title=帖子标题；子资源=【影片名称】/【资源名称】，不是链内文件名。"""
 
 from __future__ import annotations
 
 import re
-
-from parsers.ed2k import parse_ed2k_text
 
 # 解析器对无 dn 磁力的占位名：magnet-A14DF085
 _PLACEHOLDER_MAGNET_RE = re.compile(r"^magnet-[0-9A-Fa-f]{8}$", re.I)
@@ -34,6 +32,25 @@ SUBRESOURCE_TITLE_MATCH_FORMS: tuple[str, ...] = (
     "資源名稱",
 )
 
+_SUBRESOURCE_NAME_RES = tuple(
+    re.compile(
+        rf"【\s*{re.escape(lab)}\s*】\s*[:：]?\s*(.+?)(?=\s*【|\s*magnet:|\s*ed2k:|\s*$)",
+        re.I | re.S,
+    )
+    for lab in SUBRESOURCE_TITLE_MATCH_FORMS
+)
+
+# description 行式：【资源名称】value
+_DESC_LABEL_LINE_RE = re.compile(
+    r"^【\s*([^】]+)\s*】\s*[:：]?\s*(.+)$",
+    re.M,
+)
+
+_TORRENT_NAME_RE = re.compile(
+    r"【\s*(?:种子名称|種子名稱)\s*】\s*[:：]?\s*(.+?)(?=\s*【|\s*magnet:|\s*ed2k:|\s*$)",
+    re.I | re.S,
+)
+
 
 def is_missing_filename(filename: str | None, *, hash_value: str = "") -> bool:
     """无有效文件名：空、磁力占位、或等于 hash。"""
@@ -50,26 +67,93 @@ def is_missing_filename(filename: str | None, *, hash_value: str = "") -> bool:
     return False
 
 
+def _clean_label_value(raw: str) -> str:
+    text = re.sub(r"<[^>]+>", " ", raw or "")
+    text = re.sub(r"\s+", " ", text).strip()
+    text = text.strip("：:|｜/\\")
+    return text.strip()
+
+
+def pick_subresource_title(window: str, *, prefer_last: bool) -> str:
+    """从窗口取真正子标题值；标签优先级见 SUBRESOURCE_TITLE_LABELS。"""
+    if not window:
+        return ""
+    for cre in _SUBRESOURCE_NAME_RES:
+        hits = list(cre.finditer(window))
+        if not hits:
+            continue
+        m = hits[-1] if prefer_last else hits[0]
+        name = _clean_label_value(m.group(1))
+        if name:
+            return name
+    return ""
+
+
+def context_subresource_title(
+    blob: str,
+    start: int,
+    end: int,
+    *,
+    allow_torrent_fallback: bool = False,
+) -> str:
+    """链接旁子资源名：只认【影片名称】/【资源名称】。
+
+    合集常见顺序是「链接 → 子标题」，故先后文再前文最近一条。
+    """
+    before = (blob or "")[max(0, start - 280) : start]
+    after = (blob or "")[end : end + 480]
+    before = re.sub(r"<[^>]+>", " ", before)
+    after = re.sub(r"<[^>]+>", " ", after)
+
+    name = pick_subresource_title(after, prefer_last=False)
+    if not name:
+        name = pick_subresource_title(before, prefer_last=True)
+    if not name and allow_torrent_fallback:
+        torr = None
+        for m in _TORRENT_NAME_RE.finditer(before):
+            torr = m
+        if torr:
+            name = _clean_label_value(torr.group(1))
+    return name
+
+
+def subtitle_from_description(description: str | None) -> str:
+    """从结构化 description 取第一条【资源名称】/【影片名称】。"""
+    text = (description or "").strip()
+    if not text:
+        return ""
+    # 影片名称优先（与 SUBRESOURCE_TITLE_LABELS 一致）
+    wanted = {
+        "影片名称",
+        "影片名稱",
+        "资源名称",
+        "資源名稱",
+    }
+    found: dict[str, str] = {}
+    for m in _DESC_LABEL_LINE_RE.finditer(text):
+        lab = (m.group(1) or "").strip()
+        val = _clean_label_value(m.group(2) or "")
+        if lab in wanted and val and lab not in found:
+            found[lab] = val
+    for lab in ("影片名称", "影片名稱", "资源名称", "資源名稱"):
+        if lab in found:
+            return found[lab]
+    return ""
+
+
 def filename_from_link(uri: str | None) -> str:
-    """从 ed2k URI 抽文件名；磁力无 dn 则空。"""
+    """从 ed2k URI / magnet dn= 抽链内文件名（技术名，不是子资源名）。"""
     raw = (uri or "").strip()
     if not raw:
         return ""
     if raw.lower().startswith("ed2k://"):
-        parsed = parse_ed2k_text(raw)
-        if parsed and parsed[0].filename:
-            return parsed[0].filename.strip()
+        m = re.search(r"ed2k://\|file\|([^|]+)\|", raw, re.I)
+        if m:
+            return m.group(1).strip()
+        return ""
     if "dn=" in raw.lower():
-        # 简易抽 dn（完整解析走 magnet 模块更稳，这里够用）
         from urllib.parse import unquote
-        from parsers.magnet import parse_magnet_text
 
-        mags = parse_magnet_text(raw)
-        if mags and mags[0].filename and not is_missing_filename(
-            mags[0].filename, hash_value=mags[0].infohash
-        ):
-            return mags[0].filename.strip()
-        # dn 存在但被当成占位时仍尝试 query
         m = re.search(r"[?&]dn=([^&]+)", raw, re.I)
         if m:
             return unquote(m.group(1).replace("+", " ")).strip()
@@ -82,16 +166,29 @@ def resolve_sub_filename(
     title: str | None,
     hash_value: str = "",
     link_uri: str = "",
+    description: str = "",
 ) -> str:
-    """子资源名：有真实文件名用自己的，否则用主资源标题，再否则 hash。"""
+    """子资源名：【影片名称】/【资源名称】→ 主资源标题；绝不用 ed2k/dn 链内名。"""
     main = (title or "").strip()
-    candidates = [
-        (inner_name or "").strip(),
-        filename_from_link(link_uri),
-    ]
-    for cand in candidates:
-        if cand and not is_missing_filename(cand, hash_value=hash_value):
-            return cand[:255]
+    link_name = filename_from_link(link_uri)
+    link_norm = link_name.strip().lower()
+
+    def _usable(cand: str | None) -> str:
+        text = (cand or "").strip()
+        if not text or is_missing_filename(text, hash_value=hash_value):
+            return ""
+        # 与链内技术名相同 → 不是子资源名
+        if link_norm and text.lower() == link_norm:
+            return ""
+        return text
+
+    for cand in (
+        inner_name,
+        subtitle_from_description(description),
+    ):
+        got = _usable(cand)
+        if got:
+            return got[:255]
     if main:
         return main[:255]
     h = (hash_value or "").strip() or "resource"

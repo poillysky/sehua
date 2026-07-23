@@ -58,12 +58,12 @@ def test_parse_magnet_uses_resource_name_label():
     assert links[1].filename == "综合区合集乙"
 
 
-def test_parse_magnet_keeps_dn_over_label():
+def test_parse_magnet_prefers_label_over_dn():
     text = """
     【种子名称】: ignore.torrent
     magnet:?xt=urn:btih:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA&dn=real-name.mp4
-    【影片名称】: should-not-win
+    【影片名称】: should-win
     """
     links = parse_magnet_text(text)
     assert len(links) == 1
-    assert links[0].filename == "real-name.mp4"
+    assert links[0].filename == "should-win"
