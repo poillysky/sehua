@@ -93,14 +93,16 @@ export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
   })
 
   if (res.status === 401) {
-    // Bearer 可能已失效但 Cookie 仍有效：清掉本地 token 后不带 Authorization 再试一次
-    if (token && !headers.has('X-Auth-Retry')) {
-      setToken(null)
+    // Bearer 失效时先靠 Cookie 重试；成功前不要清 localStorage（1.1.20 过早 clear 会让手机只剩坏 Cookie 时立刻掉线）
+    const alreadyRetried = headers.get('X-Auth-Retry') === '1'
+    if (token && !alreadyRetried) {
       const retryHeaders = new Headers(init.headers)
       if (!retryHeaders.has('Content-Type') && init.body) {
         retryHeaders.set('Content-Type', 'application/json')
       }
       retryHeaders.set('X-Auth-Retry', '1')
+      // 故意不带 Authorization，只走 Cookie
+      retryHeaders.delete('Authorization')
       const retry = await fetch(path, {
         ...init,
         headers: retryHeaders,
@@ -120,9 +122,8 @@ export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
         }
         throw new Error(formatApiDetail(detail, `请求失败（${retry.status}）`))
       }
-    } else {
-      setToken(null)
     }
+    setToken(null)
     throw new Error('未登录或登录已过期')
   }
 

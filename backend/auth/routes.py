@@ -76,7 +76,7 @@ def _user_payload(user) -> dict:
 
 
 @router.get("/status")
-def auth_status(request: Request, response: Response) -> dict:
+def auth_status(request: Request) -> dict:
     user = get_current_user(request)
     has_users = False
     if auth_required():
@@ -85,24 +85,12 @@ def auth_status(request: Request, response: Response) -> dict:
             has_users = count_users(conn) > 0
         finally:
             conn.close()
-
-    # 滑动续期：手机挂后台再回来时，只要 Cookie/Token 仍有效就签发新令牌，避免「容器没停却掉线」
-    refreshed: str | None = None
-    if user and auth_required() and int(user.get("id") or 0) > 0:
-        refreshed = create_access_token(
-            user_id=int(user["id"]),
-            username=str(user.get("username") or ""),
-            roles=list(user.get("roles") or []),
-        )
-        _set_auth_cookie(response, refreshed)
-
     return {
         "auth_required": auth_required(),
         "authenticated": user is not None,
         "has_users": has_users,
         "user": _user_payload(user) if user else None,
         "roles": list(ROLE_PERMISSIONS.keys()),
-        "token": refreshed,
     }
 
 

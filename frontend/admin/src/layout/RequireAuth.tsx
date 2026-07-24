@@ -1,18 +1,14 @@
 import { Navigate, useLocation } from 'react-router-dom'
 import { useEffect, useRef, useState } from 'react'
-import { fetchAuthStatus, type AuthUser } from '../api/auth'
+import { fetchAuthStatus, getToken, type AuthUser } from '../api/auth'
 import { AppShell } from './AppShell'
 
-function isTransientAuthError(err: unknown): boolean {
-  if (!(err instanceof Error)) return false
-  const msg = err.message || ''
-  // 1.1.7 起 status 有 8s 超时；爬虫占满时会 abort，不能当成掉线
-  if (err.name === 'AbortError') return true
-  if (msg.includes('后端无响应') || msg.includes('AbortError')) return true
-  if (/failed to fetch|networkerror|load failed|网络连接失败/i.test(msg)) return true
-  return false
-}
-
+/**
+ * 登录门禁。
+ *
+ * 1.1.7 起每次切页都重查 /status，并在超时后当成未登录 → 手机/爬虫忙时被踢。
+ * 这里只在挂载时查一次；切页不重查、不卸载 AppShell。
+ */
 export function RequireAuth() {
   const location = useLocation()
   const [ready, setReady] = useState(false)
@@ -20,15 +16,11 @@ export function RequireAuth() {
   const [user, setUser] = useState<AuthUser | null>(null)
   const [hint, setHint] = useState('检查登录状态…')
   const [retryTick, setRetryTick] = useState(0)
-  const authedRef = useRef(false)
+  const checkedRef = useRef(false)
 
   useEffect(() => {
     let cancelled = false
-    const soft = authedRef.current
-    if (!soft) {
-      setReady(false)
-      setHint('检查登录状态…')
-    }
+    setHint('检查登录状态…')
 
     fetchAuthStatus()
       .then((status) => {
@@ -36,19 +28,22 @@ export function RequireAuth() {
         const allowed = !status.auth_required || status.authenticated
         setOk(allowed)
         setUser(status.user)
-        authedRef.current = Boolean(allowed && status.user)
+        checkedRef.current = true
         if (!allowed) setHint('未登录或登录已过期')
       })
       .catch((err) => {
         if (cancelled) return
-        // 已登录会话：短暂超时/网络抖动只提示，不踢回登录页
-        if (authedRef.current && isTransientAuthError(err)) {
-          setHint(err instanceof Error ? err.message : '检查登录失败')
+        // 网络抖动：本地仍有 token 时不踢登录（手机断网/后端忙常见）
+        if (getToken()) {
+          if (!checkedRef.current) {
+            setHint(err instanceof Error ? err.message : '检查登录失败，可重试')
+            setOk(false)
+            setUser(null)
+          }
           return
         }
         setOk(false)
         setUser(null)
-        authedRef.current = false
         setHint(err instanceof Error ? err.message : '检查登录失败')
       })
       .finally(() => {
@@ -58,7 +53,7 @@ export function RequireAuth() {
     return () => {
       cancelled = true
     }
-  }, [location.pathname, retryTick])
+  }, [retryTick])
 
   if (!ready) {
     return (
@@ -69,8 +64,7 @@ export function RequireAuth() {
   }
 
   if (!ok || !user) {
-    // 首次检查因后端忙失败：留在门禁页可重试，避免误当成「掉线」
-    if (hint && !hint.includes('未登录')) {
+    if (getToken() && hint && !hint.includes('未登录')) {
       return (
         <div className="login-page">
           <p className="hint">{hint}</p>

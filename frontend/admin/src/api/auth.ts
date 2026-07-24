@@ -32,25 +32,9 @@ export type AuthStatus = {
   user: AuthUser | null
 }
 
-export async function fetchAuthStatus() {
-  // 超时放宽：爬虫忙时 8s 不够，过短会让 RequireAuth 误判掉线（1.1.7 回归）
-  const ctrl = new AbortController()
-  const timer = window.setTimeout(() => ctrl.abort(), 30000)
-  try {
-    const status = await api<AuthStatus & { token?: string }>('/api/auth/status', {
-      signal: ctrl.signal,
-    })
-    // 后端滑动续期时同步本地 Bearer，避免旧 token 挡住 Cookie
-    if (status.token) setToken(status.token)
-    return status
-  } catch (err) {
-    if (err instanceof DOMException && err.name === 'AbortError') {
-      throw new Error('后端无响应（可能正在爬帖占满），请稍后刷新或先停止爬虫')
-    }
-    throw err
-  } finally {
-    window.clearTimeout(timer)
-  }
+export function fetchAuthStatus() {
+  // 不要 AbortController：1.1.7 给 status 加 8s 超时后，爬虫忙/手机回前台会误踢登录
+  return api<AuthStatus>('/api/auth/status')
 }
 
 export async function login(username: string, password: string) {
