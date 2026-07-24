@@ -156,7 +156,12 @@ def is_missing_thread(html: str, title: str = "") -> bool:
 
 
 def is_tid_known(conn: Any, tid: int, thread_url: str) -> bool:
-    """已入库资源或已在 crawl_pages（其它入口写入）则跳过；随机模式自身不写队列。"""
+    """已入库资源或已在 crawl_pages（其它入口写入）则跳过；随机模式自身不写队列。
+
+    resource_sources 只用规范 URL 等值查询（勿 OR LIKE '%thread-tid%'，会 seq scan）。
+    """
+    from db.resource_db import connect_resource
+
     url = canonical_thread_url(thread_url) or thread_url
     if is_thread_known(conn, url):
         return True
@@ -171,16 +176,24 @@ def is_tid_known(conn: Any, tid: int, thread_url: str) -> bool:
     )
     if cur.fetchone():
         return True
-    cur.execute(
-        """
-        SELECT 1 FROM resource_sources
-        WHERE source_url = %s
-           OR source_url LIKE %s
-        LIMIT 1
-        """,
-        (url, f"%thread-{int(tid)}-%"),
-    )
-    return bool(cur.fetchone())
+    rconn = connect_resource()
+    try:
+        with rconn.cursor() as rcur:
+            rcur.execute(
+                """
+                SELECT 1 FROM resource_sources
+                WHERE source_url = %s
+                LIMIT 1
+                """,
+                (url,),
+            )
+            return bool(rcur.fetchone())
+    finally:
+        if rconn is not conn:
+            try:
+                rconn.close()
+            except Exception:
+                pass
 
 
 async def run_random_tid_batch(

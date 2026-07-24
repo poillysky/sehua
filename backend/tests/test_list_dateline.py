@@ -528,6 +528,7 @@ def test_board_141_skips_young_posts(monkeypatch):
         return True
 
     monkeypatch.setattr(ls, "connect", lambda: _C())
+    monkeypatch.setattr(ls, "connect_resource", lambda: _C())
     monkeypatch.setattr(ls, "enqueue_thread", fake_enqueue_thread)
     monkeypatch.setattr(ls, "known_resource_tids", lambda conn, tids: set())
     monkeypatch.setattr(ls, "update_board_meta_by_tids", lambda *a, **k: 0)

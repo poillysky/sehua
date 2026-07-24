@@ -80,18 +80,32 @@ async def lifespan(_app: FastAPI):
 
     try:
         if using_separate_resource_db():
-            # 独立资源库视为已有库：只连接读写，不自动跑迁移建表
-            from db.resource_db import resource_dsn_kwargs
+            # 独立资源库：只跑加性索引迁移（IF NOT EXISTS），不跑 001 建表
+            from db.migrate import run_migrations
+            from db.resource_db import connect_resource, resource_dsn_kwargs
 
             dsn = resource_dsn_kwargs()
+            rconn = connect_resource()
+            try:
+                applied = run_migrations(
+                    only={
+                        "019_resource_sources_source_url_index.sql",
+                        "020_ed2k_resources_stub_index.sql",
+                    },
+                    conn=rconn,
+                    skip_crawl_conflicts=False,
+                )
+            finally:
+                rconn.close()
             logger.info(
-                "resource DB separate · %s:%s/%s (no auto-migrate)",
+                "resource DB separate · %s:%s/%s%s",
                 dsn.get("host"),
                 dsn.get("port"),
                 dsn.get("dbname"),
+                f" · applied {', '.join(applied)}" if applied else " · indexes up to date",
             )
     except Exception:
-        logger.exception("resource DB config check failed — check 数据管理 → 资源数据库")
+        logger.exception("resource DB config/migrate failed — check 数据管理 → 资源数据库")
         raise
 
     from workers.backup import start_backup_scheduler, stop_backup_scheduler

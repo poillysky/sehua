@@ -45,11 +45,11 @@ def resolve_forum_display_name(
 
 LINK_KIND_SQL = """
 CASE
-  WHEN lower(COALESCE(r.ed2k_link, '')) LIKE 'unavailable://thread/%%' THEN 'stub'
-  WHEN lower(COALESCE(r.ed2k_link, '')) LIKE 'magnet:%%' THEN 'magnet'
-  WHEN lower(COALESCE(r.ed2k_link, '')) LIKE 'ed2k://%%' THEN 'ed2k'
-  WHEN lower(COALESCE(r.ed2k_link, '')) LIKE '%%115cdn.com/s/%%'
-    OR lower(COALESCE(r.ed2k_link, '')) LIKE '%%115.com/s/%%' THEN '115share'
+  WHEN r.ed2k_link LIKE 'unavailable://thread/%%' THEN 'stub'
+  WHEN r.ed2k_link LIKE 'magnet:%%' THEN 'magnet'
+  WHEN r.ed2k_link LIKE 'ed2k://%%' THEN 'ed2k'
+  WHEN r.ed2k_link LIKE '%%115cdn.com/s/%%'
+    OR r.ed2k_link LIKE '%%115.com/s/%%' THEN '115share'
   ELSE 'failed'
 END
 """
@@ -83,7 +83,7 @@ NULLIF(BTRIM(COALESCE(rs.source_url, '')), '') IN (
   WHERE NULLIF(BTRIM(COALESCE(rs2.source_url, '')), '') IS NOT NULL
   GROUP BY BTRIM(rs2.source_url)
   HAVING COUNT(*) FILTER (
-    WHERE lower(COALESCE(r2.ed2k_link, '')) NOT LIKE 'unavailable://thread/%%'
+    WHERE COALESCE(r2.ed2k_link, '') NOT LIKE 'unavailable://thread/%%'
   ) > 1
 )
 """
@@ -137,33 +137,46 @@ def _ensure_resource_schema(conn: Any) -> None:
     global _schema_ready
     if _schema_ready:
         return
+    needed = (
+        "extract_password",
+        "preview_images",
+        "ed2k_links",
+        "import_outcome",
+        "board_fid",
+        "board_name",
+        "forum_id",
+        "description",
+    )
     with conn.cursor() as cur:
+        # 先查已有列，避免冷启动连打 8 次 ALTER（远程库可达数秒）
         cur.execute(
-            "ALTER TABLE resource_sources ADD COLUMN IF NOT EXISTS extract_password TEXT"
+            """
+            SELECT column_name
+            FROM information_schema.columns
+            WHERE table_schema = 'public'
+              AND table_name = 'resource_sources'
+              AND column_name = ANY(%s)
+            """,
+            (list(needed),),
         )
-        cur.execute(
-            "ALTER TABLE resource_sources ADD COLUMN IF NOT EXISTS preview_images TEXT[]"
-        )
-        cur.execute(
-            "ALTER TABLE resource_sources ADD COLUMN IF NOT EXISTS ed2k_links TEXT[]"
-        )
-        cur.execute(
-            "ALTER TABLE resource_sources ADD COLUMN IF NOT EXISTS import_outcome TEXT"
-        )
-        cur.execute(
-            "ALTER TABLE resource_sources ADD COLUMN IF NOT EXISTS board_fid TEXT"
-        )
-        cur.execute(
-            "ALTER TABLE resource_sources ADD COLUMN IF NOT EXISTS board_name TEXT"
-        )
-        cur.execute(
-            "ALTER TABLE resource_sources ADD COLUMN IF NOT EXISTS forum_id TEXT"
-        )
-        cur.execute(
-            "ALTER TABLE resource_sources ADD COLUMN IF NOT EXISTS description TEXT"
-        )
-        # 索引勿在热路径创建 INDEX（易与写入死锁）；updated_at 索引由迁移/运维创建
-    conn.commit()
+        have = {str(r[0]) for r in cur.fetchall()}
+        missing = [c for c in needed if c not in have]
+        for col in missing:
+            if col == "preview_images":
+                cur.execute(
+                    "ALTER TABLE resource_sources ADD COLUMN IF NOT EXISTS preview_images TEXT[]"
+                )
+            elif col == "ed2k_links":
+                cur.execute(
+                    "ALTER TABLE resource_sources ADD COLUMN IF NOT EXISTS ed2k_links TEXT[]"
+                )
+            else:
+                cur.execute(
+                    f"ALTER TABLE resource_sources ADD COLUMN IF NOT EXISTS {col} TEXT"
+                )
+        # 索引勿在热路径 CREATE INDEX（易与写入死锁）；updated_at / source_url 由迁移创建
+    if missing:
+        conn.commit()
     _schema_ready = True
 
 
@@ -363,17 +376,19 @@ def _url_has_real_resource(conn: Any, source_url: str) -> bool:
     url = (source_url or "").strip()
     if not url:
         return False
+    stub_prefix = f"{STUB_LINK_PREFIX}%"
     with conn.cursor() as cur:
+        # 等值匹配 source_url，便于走 idx_resource_sources_source_url
         cur.execute(
             """
             SELECT 1
-            FROM ed2k_resources r
-            JOIN resource_sources rs ON rs.hash = r.hash
-            WHERE NULLIF(BTRIM(COALESCE(rs.source_url, '')), '') = %s
-              AND lower(COALESCE(r.ed2k_link, '')) NOT LIKE %s
+            FROM resource_sources rs
+            JOIN ed2k_resources r ON r.hash = rs.hash
+            WHERE rs.source_url = %s
+              AND r.ed2k_link NOT LIKE %s
             LIMIT 1
             """,
-            (url, f"{STUB_LINK_PREFIX.lower()}%"),
+            (url, stub_prefix),
         )
         return cur.fetchone() is not None
 
@@ -483,51 +498,79 @@ def delete_resource_by_hash(conn: Any, resource_hash: str) -> bool:
 
 
 def delete_stub_by_source_url(conn: Any, source_url: str) -> bool:
-    """删除某帖对应的占位资源（unavailable://），真磁力/ED2K 不动。"""
+    """删除某帖对应的占位资源（unavailable://），真磁力/ED2K 不动。
+
+    必须避免对 ed2k_link 做全表 LOWER/LIKE：旧写法 OR + LIKE 会 seq scan
+    ~30 万行，单次真链入库常卡 15–25s。
+    """
     url = (source_url or "").strip()
     if not url:
         return False
     stub_hash = thread_stub_hash(url)
+    stub_prefix = f"{STUB_LINK_PREFIX}%"
+    hashes: set[str] = set()
     with conn.cursor() as cur:
+        # 1) 确定性占位 hash（主键）— O(1)
         cur.execute(
             """
-            SELECT r.hash FROM ed2k_resources r
-            JOIN resource_sources rs ON rs.hash = r.hash
-            WHERE (r.hash = %s OR rs.source_url = %s)
-              AND lower(COALESCE(r.ed2k_link, '')) LIKE %s
+            SELECT hash FROM ed2k_resources
+            WHERE hash = %s
+              AND ed2k_link LIKE %s
             """,
-            (stub_hash, url, f"{STUB_LINK_PREFIX.lower()}%"),
+            (stub_hash, stub_prefix),
         )
-        rows = cur.fetchall()
+        for row in cur.fetchall():
+            hashes.add(str(row[0]))
+        # 2) 同帖 URL 上的遗留占位（依赖 source_url 索引）
+        cur.execute(
+            """
+            SELECT rs.hash
+            FROM resource_sources rs
+            JOIN ed2k_resources r ON r.hash = rs.hash
+            WHERE rs.source_url = %s
+              AND r.ed2k_link LIKE %s
+            """,
+            (url, stub_prefix),
+        )
+        for row in cur.fetchall():
+            hashes.add(str(row[0]))
     ok = False
-    for row in rows:
-        if delete_resource_by_hash(conn, str(row[0])):
+    for h in hashes:
+        if delete_resource_by_hash(conn, h):
             ok = True
     return ok
 
 
 def known_resource_tids(conn: Any, tids: list[int]) -> set[int]:
-    """批量查询 resource_sources 中已有的帖 tid（按 source_url 匹配 thread-{tid}-）。"""
+    """批量查询 resource_sources 中已有的帖 tid（按规范 source_url 等值匹配）。
+
+    禁止 ``LIKE '%thread-{tid}-%'``：前导通配无法走 source_url 索引，
+    每页列表扫 ~30 万行可达数秒，NAS CPU 易报警。
+    """
+    from db.queue import canonical_thread_url, tid_from_url
+
     clean = sorted({int(t) for t in tids if t is not None and int(t) > 0})
     if not clean:
         return set()
     _ensure_resource_schema(conn)
-    patterns = [f"%thread-{tid}-%" for tid in clean]
+    urls = [
+        canonical_thread_url(f"https://www.sehuatang.net/thread-{tid}-1-1.html")
+        for tid in clean
+    ]
     with conn.cursor() as cur:
         cur.execute(
             """
-            SELECT DISTINCT (regexp_match(source_url, 'thread-(\\d+)-'))[1]::int AS tid
+            SELECT source_url
             FROM resource_sources
-            WHERE source_url IS NOT NULL
-              AND source_url <> ''
-              AND source_url LIKE ANY(%s)
+            WHERE source_url = ANY(%s)
             """,
-            (patterns,),
+            (urls,),
         )
         out: set[int] = set()
         for row in cur.fetchall():
-            if row and row[0] is not None:
-                out.add(int(row[0]))
+            tid = tid_from_url(str(row[0] or ""))
+            if tid is not None:
+                out.add(int(tid))
         return out
 
 
@@ -539,24 +582,27 @@ def update_board_meta_by_tids(
     board_name: str,
 ) -> int:
     """按 tid 批量更新资源板块字段；返回更新行数。"""
+    from db.queue import canonical_thread_url
+
     clean = sorted({int(t) for t in tids if t is not None and int(t) > 0})
     if not clean:
         return 0
     _ensure_resource_schema(conn)
     fid = str(board_fid or "").strip() or None
     name = (board_name or "").strip() or None
-    patterns = [f"%thread-{tid}-%" for tid in clean]
+    urls = [
+        canonical_thread_url(f"https://www.sehuatang.net/thread-{tid}-1-1.html")
+        for tid in clean
+    ]
     with conn.cursor() as cur:
         cur.execute(
             """
             UPDATE resource_sources
             SET board_fid = COALESCE(%s, board_fid),
                 board_name = COALESCE(NULLIF(%s, ''), board_name)
-            WHERE source_url IS NOT NULL
-              AND source_url <> ''
-              AND source_url LIKE ANY(%s)
+            WHERE source_url = ANY(%s)
             """,
-            (fid, name or "", patterns),
+            (fid, name or "", urls),
         )
         n = int(cur.rowcount or 0)
     conn.commit()
@@ -577,12 +623,14 @@ def _priority_stub_where(
 ) -> tuple[str, list[Any]]:
     """WHERE 子句 + 参数（不含 ORDER/LIMIT）。"""
     outcomes = list(ACCOUNT_STUB_OUTCOMES)
+    # 勿用 lower(COALESCE(ed2k_link))：会逼全表扫；前缀与 STUB_LINK_PREFIX 一致可走 stub 部分索引
     clauses = [
-        "lower(COALESCE(r.ed2k_link, '')) LIKE %s",
-        "COALESCE(rs.source_url, '') <> ''",
+        "r.ed2k_link LIKE %s",
+        "rs.source_url IS NOT NULL",
+        "rs.source_url <> ''",
         "rs.import_outcome IN %s",
     ]
-    params: list[Any] = [f"{STUB_LINK_PREFIX.lower()}%", tuple(outcomes)]
+    params: list[Any] = [f"{STUB_LINK_PREFIX}%", tuple(outcomes)]
     excl = [h for h in (exclude_hashes or []) if h]
     if excl:
         clauses.append("r.hash NOT IN %s")
@@ -1175,7 +1223,7 @@ def list_recent_resources(
                 FROM ed2k_resources r
                 JOIN resource_sources rs ON rs.hash = r.hash
                 JOIN sources s ON s.id = rs.source_id
-                WHERE NULLIF(BTRIM(COALESCE(rs.source_url, '')), '') = ANY(%s)
+                WHERE rs.source_url = ANY(%s)
                 ORDER BY r.created_at ASC NULLS LAST, rs.id ASC
                 """,
                 (urls,),
@@ -1246,7 +1294,7 @@ def _count_multi_asset_threads(
               ) t
               GROUP BY 1
               HAVING COUNT(*) FILTER (
-                WHERE lower(COALESCE(t.ed2k_link, '')) NOT LIKE 'unavailable://thread/%%'
+                WHERE COALESCE(t.ed2k_link, '') NOT LIKE 'unavailable://thread/%%'
               ) > 1
               {lim_sql}
             ) x
@@ -1273,7 +1321,7 @@ def _count_multi_asset_threads(
           ) t
           GROUP BY 1
           HAVING COUNT(*) FILTER (
-            WHERE lower(COALESCE(t.ed2k_link, '')) NOT LIKE 'unavailable://thread/%%'
+            WHERE COALESCE(t.ed2k_link, '') NOT LIKE 'unavailable://thread/%%'
           ) > 1
           {lim_sql}
         ) x
@@ -1327,7 +1375,7 @@ def _multi_asset_url_page(
         ) t
         GROUP BY 1
         HAVING COUNT(*) FILTER (
-          WHERE lower(COALESCE(t.ed2k_link, '')) NOT LIKE 'unavailable://thread/%%'
+          WHERE COALESCE(t.ed2k_link, '') NOT LIKE 'unavailable://thread/%%'
         ) > 1
         ORDER BY MAX(t.updated_at) DESC NULLS LAST
         LIMIT %s OFFSET %s
@@ -1386,7 +1434,7 @@ def list_resource_ids_for_selection(
                 SELECT BTRIM(rs.source_url), r.hash
                 FROM ed2k_resources r
                 JOIN resource_sources rs ON rs.hash = r.hash
-                WHERE NULLIF(BTRIM(COALESCE(rs.source_url, '')), '') = ANY(%s)
+                WHERE rs.source_url = ANY(%s)
                 ORDER BY r.created_at ASC NULLS LAST, rs.id ASC
                 """,
                 (urls,),
@@ -1463,7 +1511,7 @@ def _list_multi_asset_ids_for_selection(
               r.filename
             FROM ed2k_resources r
             JOIN resource_sources rs ON rs.hash = r.hash
-            WHERE NULLIF(BTRIM(COALESCE(rs.source_url, '')), '') = ANY(%s)
+            WHERE rs.source_url = ANY(%s)
             ORDER BY r.created_at ASC NULLS LAST, rs.id ASC
             """,
             (urls,),
@@ -1628,7 +1676,7 @@ def _list_multi_asset_resources(
             FROM ed2k_resources r
             JOIN resource_sources rs ON rs.hash = r.hash
             JOIN sources s ON s.id = rs.source_id
-            WHERE NULLIF(BTRIM(COALESCE(rs.source_url, '')), '') = ANY(%s)
+            WHERE rs.source_url = ANY(%s)
             ORDER BY r.created_at ASC NULLS LAST, rs.id ASC
             """,
             (urls,),
@@ -1674,11 +1722,11 @@ def _facet_thread_kind_expr(alias: str = "r") -> str:
     a = alias
     return f"""
 CASE
-  WHEN lower(COALESCE({a}.ed2k_link, '')) LIKE 'unavailable://thread/%%' THEN 'stub'
-  WHEN lower(COALESCE({a}.ed2k_link, '')) LIKE 'magnet:%%' THEN 'magnet'
-  WHEN lower(COALESCE({a}.ed2k_link, '')) LIKE 'ed2k://%%' THEN 'ed2k'
-  WHEN lower(COALESCE({a}.ed2k_link, '')) LIKE '%%115cdn.com/s/%%'
-    OR lower(COALESCE({a}.ed2k_link, '')) LIKE '%%115.com/s/%%' THEN '115share'
+  WHEN {a}.ed2k_link LIKE 'unavailable://thread/%%' THEN 'stub'
+  WHEN {a}.ed2k_link LIKE 'magnet:%%' THEN 'magnet'
+  WHEN {a}.ed2k_link LIKE 'ed2k://%%' THEN 'ed2k'
+  WHEN {a}.ed2k_link LIKE '%%115cdn.com/s/%%'
+    OR {a}.ed2k_link LIKE '%%115.com/s/%%' THEN '115share'
   ELSE 'failed'
 END
 """

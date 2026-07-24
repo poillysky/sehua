@@ -53,6 +53,13 @@ _COLONLESS_MAGNET_RE = re.compile(
     re.I,
 )
 
+# 防和谐砍首字母：agnet:?xt=urn:btih:HASH（tid 2506349）
+_CLIPPED_MAGNET_HEAD_RE = re.compile(
+    rf"(?<![A-Za-z0-9])agnet\s*:\s*\?\s*xt\s*=\s*urn\s*:\s*btih\s*:\s*"
+    rf"({_INFOHASH})",
+    re.I,
+)
+
 # Discuz「复制代码」旁裸 infohash（例：复制代码下载：f7809dc8…）
 # 转帖常见【哈希校验】：40位 hex（tid 3628517）
 #
@@ -155,6 +162,10 @@ def normalize_magnet_corpus(text: str) -> str:
         out,
     )
     out = _COLONLESS_MAGNET_RE.sub(
+        lambda m: f"magnet:?xt=urn:btih:{m.group(1)}",
+        out,
+    )
+    out = _CLIPPED_MAGNET_HEAD_RE.sub(
         lambda m: f"magnet:?xt=urn:btih:{m.group(1)}",
         out,
     )

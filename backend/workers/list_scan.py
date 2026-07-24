@@ -22,6 +22,7 @@ from crawler.throttle import THROTTLE
 from db.connection import connect
 from db.queue import enqueue_thread, update_crawl_board_meta_by_tids
 from db.repository import known_resource_tids, update_board_meta_by_tids
+from db.resource_db import connect_resource
 from parsers.boards import get_board_policy
 from parsers.list_dates import is_thread_old_enough
 from parsers.thread_gates import is_thread_login_required
@@ -176,15 +177,16 @@ def _enqueue_batch(
         return 0, 0
     if persist_enqueue:
         conn = connect()
+        rconn = connect_resource()
         try:
             tids = [int(t.tid) for t in batch if getattr(t, "tid", None)]
-            known = known_resource_tids(conn, tids) if tids else set()
+            known = known_resource_tids(rconn, tids) if tids else set()
             to_update = [tid for tid in tids if tid in known and tid not in seen]
             # 去重后再更新，避免同页重复 tid
             to_update = list(dict.fromkeys(to_update))
             if to_update:
                 n = update_board_meta_by_tids(
-                    conn,
+                    rconn,
                     to_update,
                     board_fid=str(board_fid),
                     board_name=board_name,
@@ -223,7 +225,15 @@ def _enqueue_batch(
                     out.enqueued += 1
                     page_enqueued += 1
         finally:
-            conn.close()
+            try:
+                conn.close()
+            except Exception:
+                pass
+            if rconn is not conn:
+                try:
+                    rconn.close()
+                except Exception:
+                    pass
     else:
         for t in batch:
             if t.tid in seen:

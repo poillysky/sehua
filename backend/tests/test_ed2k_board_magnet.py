@@ -289,6 +289,46 @@ def test_verify_captcha_label_not_treated_as_infohash_cue():
         assert parse_magnet_text(f"{lab} {h}") == []
 
 
+def test_parse_clipped_magnet_head_agnet():
+    """防和谐砍首字母：agnet:?xt=urn:btih:…（tid 2506349）。"""
+    h = "A888D42A29828F820CCD1F04B593B161EF953A92"
+    raw = f"下载地址：\nagnet:?xt=urn:btih:{h}"
+    assert "magnet:?xt=urn:btih:" in normalize_magnet_corpus(raw)
+    links = parse_magnet_text(raw)
+    assert len(links) == 1
+    assert links[0].infohash == h
+    assert has_target_link(raw, "magnet")
+
+
+def test_judge_imports_clipped_magnet_agnet():
+    h = "A888D42A29828F820CCD1F04B593B161EF953A92"
+    html = f"""
+    <html><head><title>【自转】【磁力链接】掐字母测试</title></head>
+    <body>
+    <span id="thread_subject">【自转】【磁力链接】掐字母测试</span>
+    <div id="postmessage_1">
+      【影片名称】：掐字母磁力
+      【下载地址】：
+      <div class="blockcode"><div id="code_x"><ol>
+        <li>agnet:?xt=urn:btih:{h}
+      </ol></div></div>
+    </div>
+    Powered by Discuz!
+    </body></html>
+    """
+    html = html + ("<!-- pad -->" * 900)
+    links = parse_magnet_text(html)
+    assert len(links) == 1 and links[0].infohash == h
+    out = judge_thread_html(
+        html,
+        board_fid="142:697",
+        list_title="【自转】【磁力链接】掐字母测试",
+        preferred_link="magnet",
+    )
+    assert out.verdict == "import"
+    assert out.link_kind == "magnet"
+
+
 def test_parse_truncated_ed2k_scheme():
     """发帖掐掉 e：d2k://|file|… 应还原为 ed2k。"""
     from parsers.ed2k import normalize_ed2k_corpus, parse_ed2k_text
