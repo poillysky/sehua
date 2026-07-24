@@ -454,9 +454,9 @@ def extract_first_postmessage_html(html: str) -> str:
 
 
 def extract_lz_posts_html(html: str, *, limit: int = 5) -> list[str]:
-    """取主贴（一楼）postmessage，用于抽链/子资源。
+    """取带「楼主」标的各层 postmessage（一楼 + 楼主二楼补链等）。
 
-    回帖一律不纳入（含楼主二楼补链）。limit 保留兼容，实际最多返回 1 段。
+    路人回帖不纳入。limit 限制最多纳入几层楼主帖。
     """
     src = html or ""
     if not src:
@@ -480,10 +480,11 @@ def extract_lz_posts_html(html: str, *, limit: int = 5) -> list[str]:
     if not posts:
         return []
 
-    # 优先带「楼主」标的第一层（通常即一楼主贴）；否则只取物理一楼
-    for body, is_lz in posts:
-        if is_lz:
-            return [body]
+    lim = max(1, int(limit or 5))
+    out = [body for body, is_lz in posts if is_lz][:lim]
+    if out:
+        return out
+    # 无楼主标时退回物理一楼
     return [posts[0][0]]
 
 
@@ -491,6 +492,7 @@ def extract_lz_scope_html(html: str, *, limit: int = 5) -> str:
     """主贴帖块（含 postmessage 前的 locked/需回复提示），不含回帖。
 
     用于需回复/购买等门控：提示常在 postmessage 外的同楼 DOM。
+    门控只看第一层楼主帖（通常即一楼），避免二楼正文干扰。
     """
     src = html or ""
     if not src:
@@ -518,15 +520,8 @@ def extract_lz_scope_html(html: str, *, limit: int = 5) -> str:
 
 
 def extract_link_corpus_html(html: str, *, limit: int = 5) -> str:
-    """链接/子资源语料：仅主贴一楼 + 附件注入块。回帖不参与。"""
-    del limit  # 兼容旧调用
-    parts: list[str] = []
-    first = extract_first_postmessage_html(html)
-    # 无 postmessage 时 first==整页；勿把回帖/页脚吞进链接语料
-    if first and first != (html or ""):
-        parts.append(first)
-    else:
-        parts.extend(extract_lz_posts_html(html, limit=1))
+    """链接/子资源语料：楼主各层（含二楼补链）+ 附件注入块。路人回帖不参与。"""
+    parts: list[str] = list(extract_lz_posts_html(html, limit=limit))
     # 附件下载后 inject_attachment_text 写入的块（非纯数字楼 id）
     for m in re.finditer(
         r'id=["\']postmessage_attach\d+["\'][^>]*>(.*?)</div>',
@@ -937,7 +932,9 @@ def extract_subresource_blocks(
     - 1 个子标题：主贴内该标题下全部链同属它
     - ≥2 个子标题：第 i 个标题 → 下一个标题之前（最后一段到文尾）
     """
-    scope = extract_first_postmessage_html(html) or (html or "")
+    # 楼主各层（一楼元数据 + 二楼补链）拼成切段语料；路人回帖仍排除
+    lz_parts = extract_lz_posts_html(html, limit=5)
+    scope = "\n".join(lz_parts) if lz_parts else (extract_first_postmessage_html(html) or (html or ""))
     if not scope.strip():
         scope = html or ""
 
@@ -1058,36 +1055,6 @@ def extract_subresource_blocks(
     return out
 
 
-def _pair_hash_for_title(
-    *,
-    layout: str,
-    mag_pos: list[tuple[str, int, int]],
-    wanted: set[str],
-    prev_end: int,
-    t_start: int,
-    t_end: int,
-    next_start: int,
-) -> str | None:
-    if layout == "title_then_magnet":
-        for h, m_start, _m_end in mag_pos:
-            if m_start < t_end:
-                continue
-            if m_start >= next_start:
-                break
-            if h in wanted:
-                return h
-        return None
-    paired: str | None = None
-    for h, m_start, _m_end in mag_pos:
-        if m_start < prev_end:
-            continue
-        if m_start >= t_start:
-            break
-        if h in wanted:
-            paired = h
-    return paired
-
-
 def _subresource_title_value(scope: str, label_end: int, next_start: int) -> str:
     """取【影片名称】/【资源名称】标签后的片名。"""
     chunk = scope[label_end:next_start]
@@ -1140,7 +1107,9 @@ def extract_preview_images_by_infohash(
         return out
 
     # 无真正子标题时：退回按磁力切段
-    scope = extract_first_postmessage_html(html) or (html or "")
+    # 楼主各层（一楼元数据 + 二楼补链）拼成切段语料；路人回帖仍排除
+    lz_parts = extract_lz_posts_html(html, limit=5)
+    scope = "\n".join(lz_parts) if lz_parts else (extract_first_postmessage_html(html) or (html or ""))
     if not scope.strip():
         scope = html or ""
     wanted = {(h or "").strip().upper() for h in infohashes if (h or "").strip()}

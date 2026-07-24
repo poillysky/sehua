@@ -184,7 +184,7 @@ def parse_thread_dual(
     extra_text: 附件解析出的文本（txt/zip/rar 内链或 torrent→magnet）并入语料
     board_fid: 用于按板块结构卡片筛选描述字段
 
-    元数据与链接/子资源均只取主贴一楼；回帖（含楼主二楼）不参与识别。
+    元数据仍取主贴字段；链接/子资源认楼主各层（含二楼补链），路人回帖不参与。
     """
     content = parse_thread_content(html, tid=tid, base_url=base_url)
     link_html = extract_link_corpus_html(html)

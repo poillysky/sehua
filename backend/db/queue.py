@@ -480,21 +480,35 @@ def count_pending(
 ) -> dict[str, int]:
     cur = conn.cursor()
     board_clause, params = _board_fid_sql(board_fid)
-
-    def _count(extra: str) -> int:
-        cur.execute(
-            f"""
-            SELECT COUNT(*) FROM crawl_pages
-            WHERE page_type = 'thread' AND status = 'pending' {board_clause} {extra}
-            """,
-            params or None,
-        )
-        return int(cur.fetchone()[0])
-
-    ready = _count(f"{PENDING_READY} {PENDING_NORMAL_ONLY}")
-    abnormal = _count(PENDING_ABNORMAL_ONLY)
-    deferred = _count("AND retry_after IS NOT NULL AND retry_after > now()")
-    workable = _count(PENDING_READY)
+    # 一次扫描汇总四类计数（原实现 4 次 COUNT，status 轮询会成倍放大）
+    cur.execute(
+        f"""
+        SELECT
+          COUNT(*) FILTER (
+            WHERE (retry_after IS NULL OR retry_after <= now())
+              AND COALESCE(last_error, '') = ''
+              AND COALESCE(fetch_fail_count, 0) = 0
+          ) AS ready,
+          COUNT(*) FILTER (
+            WHERE COALESCE(fetch_fail_count, 0) > 0
+               OR COALESCE(last_error, '') <> ''
+          ) AS abnormal,
+          COUNT(*) FILTER (
+            WHERE retry_after IS NOT NULL AND retry_after > now()
+          ) AS deferred,
+          COUNT(*) FILTER (
+            WHERE retry_after IS NULL OR retry_after <= now()
+          ) AS workable
+        FROM crawl_pages
+        WHERE page_type = 'thread' AND status = 'pending' {board_clause}
+        """,
+        params or None,
+    )
+    row = cur.fetchone() or (0, 0, 0, 0)
+    ready = int(row[0] or 0)
+    abnormal = int(row[1] or 0)
+    deferred = int(row[2] or 0)
+    workable = int(row[3] or 0)
     return {
         "ready": ready,
         "soft_ad": 0,

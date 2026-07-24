@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+import pytest
+
 from db.repository import (
-    MULTI_ASSET_URL_SQL,
     _assemble_thread_resource_row,
     _dedupe_preserve,
     _merge_preview_lists,
@@ -23,13 +24,13 @@ def test_merge_preview_lists_cap():
     assert got == ["u1", "u2", "u3"]
 
 
-def test_resource_list_where_multi_filter():
-    where_sql, params = _resource_list_where(link_kind="multi")
-    assert MULTI_ASSET_URL_SQL in where_sql
-    assert params == []
+def test_resource_list_where_rejects_multi_filter():
+    """合集禁止走通用 WHERE（MULTI_ASSET_URL_SQL 相关子查询会卡死）。"""
+    with pytest.raises(ValueError, match="multi"):
+        _resource_list_where(link_kind="multi")
     where_sql2, params2 = _resource_list_where(link_kind="magnet")
     assert "magnet" in params2
-    assert MULTI_ASSET_URL_SQL not in where_sql2
+    assert "GROUP BY" not in where_sql2
 
 
 def test_assemble_thread_merges_assets():

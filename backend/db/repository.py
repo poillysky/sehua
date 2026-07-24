@@ -63,7 +63,9 @@ CASE
 END
 """
 
-# 同帖 ≥2 条「真」子资源（合集）；占位 stub 不计入
+# 同帖 ≥2 条「真」子资源（合集）；占位 stub 不计入。
+# 仅作反例文档：禁止注入通用 WHERE（相关子查询全表 GROUP BY 会卡死）。
+# 合集查询必须走 _list_multi_asset_* / _multi_asset_url_page。
 MULTI_ASSET_URL_SQL = """
 NULLIF(BTRIM(COALESCE(rs.source_url, '')), '') IN (
   SELECT BTRIM(rs2.source_url)
@@ -804,8 +806,12 @@ def _resource_list_where(
         where.append(f"({LINK_KIND_SQL}) = %s")
         params.append(link_kind)
     elif link_kind == "multi":
-        # 同帖多子资源合并条目（合集）
-        where.append(MULTI_ASSET_URL_SQL)
+        # 禁止注入 MULTI_ASSET_URL_SQL（相关子查询全表 GROUP BY 会卡死）。
+        # 合集列表/全选/计数请走 _list_multi_asset_* / _multi_asset_url_page。
+        raise ValueError(
+            "link_kind='multi' must use dedicated multi-asset query paths, "
+            "not _resource_list_where"
+        )
     if q:
         # 走 filename / search_string 的 pg_trgm GIN（勿用 rs.title ILIKE，会逼全表扫）
         where.append(

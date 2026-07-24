@@ -1,4 +1,4 @@
-"""主贴一楼抽链；回帖（含楼主二楼）不纳入。"""
+"""主贴抽链：纳入楼主各层（含二楼补链），排除路人回帖。"""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ from parsers.links import parse_thread_dual
 from workers.thread_outcome import judge_thread_html
 
 
-def test_extract_lz_main_post_only_ignores_replies():
+def test_extract_lz_includes_lz_replies_ignores_guests():
     html = """
     <html><body>
     <div id="post_1">
@@ -27,18 +27,18 @@ def test_extract_lz_main_post_only_ignores_replies():
     </body></html>
     """
     posts = extract_lz_posts_html(html, limit=5)
-    assert len(posts) == 1
+    assert len(posts) == 2
     assert "封面图" in posts[0]
-    assert "115.com" not in posts[0]
-    assert "spam.mp4" not in posts[0]
+    assert "115.com" in posts[1]
+    assert all("spam.mp4" not in p for p in posts)
     corpus = extract_link_corpus_html(html)
     assert "封面图" in corpus
-    assert "115.com" not in corpus
+    assert "115.com" in corpus
     assert "spam.mp4" not in corpus
 
 
-def test_second_floor_link_not_imported():
-    """楼主二楼补链也不算：子资源/链接只认主贴。"""
+def test_second_floor_lz_link_imported():
+    """楼主二楼补链应入库；路人回帖仍忽略。"""
     html = """
     <html><head><title>【ed2k链接】小女巫露娜 - 论坛</title></head>
     <body>
@@ -59,8 +59,8 @@ def test_second_floor_link_not_imported():
     """
     html = html + ("<!-- pad -->" * 900)
     parsed = parse_thread_dual(html, preferred_link="ed2k")
-    assert parsed.primary_link_kind != "115share"
-    assert not parsed.share115_links
+    assert parsed.primary_link_kind == "115share"
+    assert parsed.share115_links
 
     out = judge_thread_html(
         html,
@@ -68,8 +68,8 @@ def test_second_floor_link_not_imported():
         list_title="【ed2k链接】小女巫露娜",
         preferred_link="ed2k",
     )
-    # 主贴无链 → 不应因二楼 115 而 import
-    assert out.verdict != "import" or out.link_kind != "115share"
+    assert out.verdict == "import"
+    assert out.link_kind == "115share"
 
 
 def test_main_post_magnet_keeps_reply_out():
@@ -98,3 +98,46 @@ def test_main_post_magnet_keeps_reply_out():
     hashes = {a.hash for a in parsed.assets if a.link_kind == "magnet"}
     assert h1 in hashes
     assert h2 not in hashes
+
+
+def test_tid2625357_style_lz_second_floor_magnet():
+    """一楼只有简介、楼主二楼贴磁力（tid 2625357 形态）。"""
+    h = "44AE2C54CBECE13E275312DA35964B5C866194DB"
+    html = f"""
+    <html><head><title>演示帖 - 论坛</title></head>
+    <body>
+    <span id="thread_subject">演示帖</span>
+    <div id="post_1">
+      <div class="authi"><img src="static/image/common/ico_lz.png" />&nbsp;楼主</div>
+      <div id="postmessage_111">
+        【影片名称】：演示片
+        【影片大小】：2320MB
+      </div>
+    </div>
+    <div id="post_2">
+      <div class="authi"><img src="static/image/common/ico_lz.png" />&nbsp;楼主</div>
+      <div id="postmessage_222">
+        磁力:&nbsp;&nbsp;magnet:?xt=urn:btih:{h}&amp;x._t-v1=555135672256563449
+      </div>
+    </div>
+    <div id="post_3">
+      <div class="authi">路人</div>
+      <div id="postmessage_333">magnet:?xt=urn:btih:CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC&dn=spam</div>
+    </div>
+    Powered by Discuz!
+    </body></html>
+    """
+    html = html + ("<!-- pad -->" * 900)
+    parsed = parse_thread_dual(html, preferred_link="magnet")
+    hashes = {a.hash for a in parsed.assets if a.link_kind == "magnet"}
+    assert h in hashes
+    assert "CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC" not in hashes
+
+    out = judge_thread_html(
+        html,
+        board_fid="103",
+        list_title="演示帖",
+        preferred_link="magnet",
+    )
+    assert out.verdict == "import"
+    assert out.link_kind == "magnet"

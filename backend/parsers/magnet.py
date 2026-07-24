@@ -12,7 +12,7 @@ from parsers.resource_names import context_subresource_title
 _INFOHASH = r"(?:[A-Fa-f0-9]{40}|[A-Fa-f0-9]{32}|[a-zA-Z2-7]{32})"
 
 MAGNET_URI_RE = re.compile(
-    rf"magnet:\?xt=urn:btih:{_INFOHASH}(?:&[^\s<>\"'\]【】]+)?",
+    rf"magnet:\?xt=urn:btih:{_INFOHASH}(?:&[^\s<>\"'\]【】]{{1,200}}){{0,12}}",
     re.I,
 )
 BTIH_RE = re.compile(
@@ -55,21 +55,40 @@ _COLONLESS_MAGNET_RE = re.compile(
 
 # Discuz「复制代码」旁裸 infohash（例：复制代码下载：f7809dc8…）
 # 转帖常见【哈希校验】：40位 hex（tid 3628517）
-# 【特征编码/特徵編碼/特征編碼…】简繁混写（tid 2856358 / 3094851）
+#
+# 「特征/验证」×「编码/编号」简繁组合（帖内实录）：
+#   特征*：可短写「特征码」（勿扩到「验证码」——会误伤站内验证码文案）
+#   验证*：必须「验证编号/验证编码」四字，禁止「验证码」
+# 另：「种子特码」结构不同，单独匹配。
 #
 # 禁止用裸「磁力」「BT」作线索：标题【BT/磁力】在大 HTML 上会触发灾难性回溯卡死进程。
 # 间隔必须有上限，禁止 (?:…)*? 扫整页。
+_BARE_HASH_FRONT_FEATURE = tuple(f"特{c}" for c in ("征", "徵"))
+_BARE_HASH_FRONT_VERIFY = tuple(
+    a + b for a in ("验", "驗") for b in ("证", "證", "証")
+)
+_BARE_HASH_BACK2 = tuple(
+    c + d for c in ("编", "編") for d in ("号", "號", "码", "碼")
+)
+_BARE_HASH_BACK1_FEATURE = ("码", "碼")  # 仅特征*短写；禁止验证码
+
 _BARE_INFOHASH_CUED_RE = re.compile(
     r"(?:"
     r"复制代码(?:下载)?"
     r"|哈希校验"
     r"|哈希值"
+    r"|雜湊校[验驗]"
+    r"|哈希校[验驗]"
     r"|磁力(?:链接|连接|鍊接)"
     r"|BT\s*(?:哈希|hash)"
     r"|info\s*hash"
     r"|种子(?:哈希|hash)"
-    r"|特[征徵][编編]?[码碼]"
-    # 转帖「种子特码/種子特碼」（tid 3286293）
+    r"|種子(?:哈希|hash)"
+    # 特征*：编码/编号 或 短写「特征码」
+    r"|特[征徵](?:[编編][号码碼號]|[码碼])"
+    # 验证*：必须带「编+号/码」，禁止「验证码」
+    r"|[验驗][证證証][编編][号码碼號]"
+    # 种子特码 / 種子特碼
     r"|[种種]子特[码碼]"
     r")"
     r"(?:[\s:：\|\[\]【】=\-_]|<[^>\n]{0,120}>){0,60}"
@@ -94,28 +113,22 @@ _MAGNET_BTIH_DATE_PREFIX_RE = re.compile(
 )
 
 
-def _already_magnet_btih(text: str, hash_value: str) -> bool:
-    return bool(
-        re.search(
-            rf"(?:magnet:\?|btih:)[^\n]{{0,40}}{re.escape(hash_value)}",
-            text,
-            re.I,
-        )
-    )
-
-
 def _expand_bare_infohashes(text: str) -> str:
     """把带提示语的裸 infohash 原地换成 magnet:?xt=urn:btih:…，便于后续统一解析。"""
     if not text:
         return ""
+    # 一次扫出文中已有 btih，避免每个线索都 re.search 全篇
+    known = {m.group(1).lower() for m in BTIH_RE.finditer(text)}
 
     def repl(m: re.Match[str]) -> str:
         h = m.group(1)
         before = text[max(0, m.start(1) - 32) : m.start(1)].lower()
         if "btih:" in before or "magnet:?" in before:
             return m.group(0)
-        if _already_magnet_btih(text, h):
+        key = h.lower()
+        if key in known:
             return m.group(0)
+        known.add(key)
         head = m.group(0)[: m.start(1) - m.start()]
         tail = m.group(0)[m.end(1) - m.start() :]
         # 与后文【标签】隔开，避免 magnet URI 吞进中文

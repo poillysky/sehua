@@ -88,6 +88,9 @@ class RandomTidLoopBody(BaseModel):
 def get_crawler_status(_user: dict = Depends(require_permission("crawler.view"))) -> dict:
     from parsers.boards import BOARD_POLICIES, enabled_queue_board_keys, queue_board_keys
 
+    # 紧急/手动停止后 running+stop 可能残留；轮询时幂等复位，避免 UI 一直忙碌
+    recover_stuck_after_stop()
+
     active = SITE_CRAWLER_FORUM_ID
     active_forum_name = SITE_CRAWLER_FORUM_ID
     cfg_forum_id = SITE_CRAWLER_FORUM_ID

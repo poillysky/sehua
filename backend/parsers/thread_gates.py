@@ -159,7 +159,7 @@ def normalize_title_core(title: str) -> str:
 
 
 def post_text(html: str, *, all_floors: bool = False) -> str:
-    """帖内正文纯文本。默认只取楼主（+附件注入块），忽略回帖。
+    """帖内正文纯文本。默认取楼主各层（+附件注入块），忽略路人回帖。
 
     all_floors=True 时拼接全部 postmessage_*（含回帖；仅诊断/兼容用）。
     """
@@ -232,17 +232,14 @@ def has_target_link(text: str, link_kind: str) -> bool:
 
     各板均认 115 网盘分享页（分享码资源可入库）。
     """
+    raw = text or ""
+    # 快路径：标准链无需全篇 normalize（爬虫判帖热路径）
+    if ED2K_RE.search(raw) or MAGNET_RE.search(raw) or RE_115_SHARE.search(raw):
+        return True
     from parsers.ed2k import normalize_ed2k_corpus
     from parsers.magnet import normalize_magnet_corpus
 
-    raw = text or ""
     blob = normalize_ed2k_corpus(normalize_magnet_corpus(raw))
-    if link_kind in {"ed2k", "magnet", "both"}:
-        return bool(
-            ED2K_RE.search(blob)
-            or MAGNET_RE.search(blob)
-            or RE_115_SHARE.search(blob)
-        )
     return bool(
         ED2K_RE.search(blob) or MAGNET_RE.search(blob) or RE_115_SHARE.search(blob)
     )

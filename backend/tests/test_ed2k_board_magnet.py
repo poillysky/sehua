@@ -26,6 +26,16 @@ def test_has_target_link_magnet_accepts_ed2k():
     assert has_target_link(MAGNET, "magnet")
 
 
+def test_parse_magnet_multi_query_params():
+    """URI 可带多个 & 参数（dn + xl），且单段有界。"""
+    h = "ABCDEF0123456789ABCDEF0123456789ABCDEF01"
+    raw = f"magnet:?xt=urn:btih:{h}&dn=demo.mp4&xl=1234567890&tr=udp://tracker.example/announce"
+    links = parse_magnet_text(raw)
+    assert len(links) == 1
+    assert links[0].infohash == h.upper()
+    assert links[0].size == 1234567890
+
+
 def test_incomplete_ed2k_not_target_link():
     """缺 hash 的半截 ed2k / d2k 不应算有目标链（常见发帖截断）。"""
     broken = "ed2k://|file|www.98T.la@demo.zip|509285037|"
@@ -159,11 +169,6 @@ def test_parse_bare_infohash_feature_code_label():
     assert "测试片子" in links[0].filename
     assert has_target_link(raw, "magnet")
 
-    # 繁体 / 短标签 / 简繁混写（tid 3094851：特征編碼）
-    for lab in ("特徵編碼", "特征码", "特徵碼", "特征編碼", "特徵编码"):
-        got = parse_magnet_text(f"【{lab}】：{h}")
-        assert len(got) == 1 and got[0].infohash == h.upper(), lab
-
 
 def test_parse_magnet_btih_wrapped_in_escaped_span():
     """blockcode 把 hash 包进 &lt;span&gt;（tid 3094851 磁力+特征编码同帖）。"""
@@ -215,6 +220,73 @@ def test_parse_seed_feature_code_and_dated_magnet():
     for lab in ("種子特碼", "种子特碼", "種子特码"):
         got = parse_magnet_text(f"【{lab}】：{h}")
         assert len(got) == 1 and got[0].infohash == h.upper(), lab
+
+
+def test_parse_verify_code_label():
+    """【驗證編號】裸 infohash（tid 2707462）。"""
+    h = "15427948b1a625fea4ce410e480a53c017c4c985"
+    raw = f"""
+    【影片名称】：验证编号样例
+    【影片大小】：1.2G
+    【驗證編號】：{h}
+    """
+    links = parse_magnet_text(raw)
+    assert len(links) == 1
+    assert links[0].infohash == h.upper()
+    assert "验证编号样例" in links[0].filename
+    assert has_target_link(raw, "magnet")
+
+
+def test_parse_feature_verify_all_recorded_combos():
+    """实录标签简繁组合：特征*可短写码；验证*禁止「验证码」以免误伤。"""
+    from parsers.magnet import (
+        _BARE_HASH_BACK1_FEATURE,
+        _BARE_HASH_BACK2,
+        _BARE_HASH_FRONT_FEATURE,
+        _BARE_HASH_FRONT_VERIFY,
+    )
+
+    h = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    labels: list[str] = []
+    for front in _BARE_HASH_FRONT_FEATURE:
+        for back in _BARE_HASH_BACK2:
+            labels.append(front + back)
+        for back in _BARE_HASH_BACK1_FEATURE:
+            labels.append(front + back)
+    for front in _BARE_HASH_FRONT_VERIFY:
+        for back in _BARE_HASH_BACK2:
+            labels.append(front + back)
+    for seed in ("种", "種"):
+        for code in ("码", "碼"):
+            labels.append(f"{seed}子特{code}")
+
+    assert "特征编码" in labels
+    assert "特徵碼" in labels
+    assert "特征码" in labels
+    assert "驗證編號" in labels
+    assert "验证编码" in labels
+    assert "种子特码" in labels
+    assert "验证码" not in labels
+    assert "驗證碼" not in labels
+
+    expected = (
+        len(_BARE_HASH_FRONT_FEATURE) * (len(_BARE_HASH_BACK2) + len(_BARE_HASH_BACK1_FEATURE))
+        + len(_BARE_HASH_FRONT_VERIFY) * len(_BARE_HASH_BACK2)
+        + 4
+    )
+    assert len(labels) == expected
+
+    for lab in labels:
+        got = parse_magnet_text(f"【{lab}】：{h}")
+        assert len(got) == 1 and got[0].infohash == h.upper(), lab
+
+
+def test_verify_captcha_label_not_treated_as_infohash_cue():
+    """「验证码」是站内验证码文案，不得把邻近 hex 扩成磁力。"""
+    h = "cccccccccccccccccccccccccccccccccccccccc"
+    for lab in ("验证码", "驗證碼", "验证碼", "驗證码"):
+        assert parse_magnet_text(f"请输入【{lab}】：{h}") == []
+        assert parse_magnet_text(f"{lab} {h}") == []
 
 
 def test_parse_truncated_ed2k_scheme():
