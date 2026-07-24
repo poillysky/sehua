@@ -871,9 +871,16 @@ async def run_crawl_once(
                 else:
                     consecutive_fail += 1
 
+                from workers.activity_format import format_thread_activity
+
                 _log_activity(
-                    f"抓帖 tid={tid} · {log_label}"
-                    + (" · 软文浏览器重读" if outcome.get("soft_browser_retried") else "")
+                    format_thread_activity(
+                        tid,
+                        outcome,
+                        prefix="抓帖",
+                        queue_note=log_label,
+                        soft_browser=bool(outcome.get("soft_browser_retried")),
+                    )
                 )
             except Exception as exc:
                 consecutive_fail += 1

@@ -48,6 +48,8 @@ export type CrawlerStatus = {
     current_title?: string
   }
   board_list_cursors?: Record<string, number>
+  /** 论坛入口 URL（逗号分隔），用于活动日志 tid 跳转 */
+  web_crawl_urls?: string
   activity: CrawlerActivity[]
   boards: { fid: string; name: string; pending: string | number; done: string | number }[]
   queue?: {

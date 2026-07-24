@@ -97,6 +97,14 @@ function activityLevelClass(msg: string): string {
   // 「失败 0」只是汇总计数，不当错误
   const failCount = m.match(/失败\s*(\d+)/)
   const zeroFail = failCount ? Number(failCount[1]) === 0 : false
+  // 跳过：琥珀（具体原因在文案里）
+  if (
+    (m.includes('跳过') || m.includes('随机跳过')) &&
+    !m.includes('跳过已入库') &&
+    !m.includes('列表所见均已入库')
+  ) {
+    return 'activity-skip'
+  }
   // 成功：绿（优先于「异常队列」等词）
   if (
     m.includes('本轮结束') ||
@@ -105,12 +113,12 @@ function activityLevelClass(msg: string): string {
     m.includes('进站就绪') ||
     m.includes('正常入库') ||
     m.includes('占位入库') ||
+    m.includes('随机入库') ||
     m.includes('已入库重爬结束') ||
     m.includes('已入库批量重爬结束') ||
     (m.includes('已入库批量重爬') && zeroFail) ||
     m.includes('扫新帖完成') ||
     m.includes('改板块') ||
-    m.includes('随机入库') ||
     m.includes('随机抓帖结束') ||
     m.includes('随机抓帖本轮结束') ||
     m.includes('随机抓帖连续调度已启动') ||
@@ -133,6 +141,7 @@ function activityLevelClass(msg: string): string {
     m.includes('本轮异常') ||
     m.includes('已入库重爬失败') ||
     (m.includes('抓帖') && m.includes('失败')) ||
+    m.includes('随机失败') ||
     m.includes('停板') ||
     m.includes('错误') ||
     (m.includes('失败') && !zeroFail && !m.includes('成功才出队'))
@@ -141,6 +150,62 @@ function activityLevelClass(msg: string): string {
   }
   // 普通信息：白
   return 'activity-info'
+}
+
+/** 从爬虫配置解析帖页根地址 */
+function forumThreadRoot(webCrawlUrls?: string | null): string {
+  const first = (webCrawlUrls || '')
+    .split(/[,，\s]+/)
+    .map((s) => s.trim())
+    .find(Boolean)
+  if (!first) return 'https://www.sehuatang.net/'
+  try {
+    const u = new URL(first.includes('://') ? first : `https://${first}`)
+    return `${u.protocol}//${u.host}/`
+  } catch {
+    return 'https://www.sehuatang.net/'
+  }
+}
+
+function threadPageUrl(tid: string, webCrawlUrls?: string | null): string {
+  return `${forumThreadRoot(webCrawlUrls)}thread-${tid}-1-1.html`
+}
+
+/** 活动日志：把 tid=123 渲染成可点击外链 */
+function ActivityMsg({ msg, webCrawlUrls }: { msg: string; webCrawlUrls?: string | null }) {
+  const text = msg || ''
+  const parts: Array<string | { tid: string }> = []
+  const re = /tid=(\d+)/gi
+  let last = 0
+  let m: RegExpExecArray | null
+  while ((m = re.exec(text))) {
+    if (m.index > last) parts.push(text.slice(last, m.index))
+    parts.push({ tid: m[1] })
+    last = m.index + m[0].length
+  }
+  if (last < text.length) parts.push(text.slice(last))
+  if (!parts.length) return <>{text}</>
+  return (
+    <>
+      {parts.map((p, i) =>
+        typeof p === 'string' ? (
+          <span key={i}>{p}</span>
+        ) : (
+          <a
+            key={`${p.tid}-${i}`}
+            className="activity-tid-link"
+            href={threadPageUrl(p.tid, webCrawlUrls)}
+            target="_blank"
+            rel="noopener noreferrer"
+            title={`打开帖子 tid=${p.tid}`}
+            onClick={(e) => e.stopPropagation()}
+          >
+            tid={p.tid}
+          </a>
+        ),
+      )}
+    </>
+  )
 }
 
 function formatResultLine(status: CrawlerStatus | null, runHint: string): string {
@@ -996,7 +1061,9 @@ export function CrawlerPage() {
                   activity.map((a, i) => (
                     <div key={`${a.t}-${i}-${a.msg}`} className={`activity-row ${activityLevelClass(a.msg)}`}>
                       <span className="activity-time">{a.t || '—'}</span>
-                      <span className="activity-msg">{a.msg}</span>
+                      <span className="activity-msg">
+                        <ActivityMsg msg={a.msg} webCrawlUrls={status?.web_crawl_urls} />
+                      </span>
                     </div>
                   ))
                 ) : (
@@ -1385,7 +1452,9 @@ export function CrawlerPage() {
                           className={`activity-row ${activityLevelClass(a.msg)}`}
                         >
                           <span className="activity-time">{a.t || '—'}</span>
-                          <span className="activity-msg">{a.msg}</span>
+                          <span className="activity-msg">
+                            <ActivityMsg msg={a.msg} webCrawlUrls={status?.web_crawl_urls} />
+                          </span>
                         </div>
                       ))
                     ) : (

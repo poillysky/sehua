@@ -345,7 +345,6 @@ async def run_random_tid_batch(
                     continue
 
                 verdict = str(outcome.get("verdict") or "failed")
-                label = str(outcome.get("outcome") or outcome.get("verdict_label") or verdict)
                 sample = {
                     "tid": tid,
                     "fid": board_fid or None,
@@ -358,21 +357,49 @@ async def run_random_tid_batch(
                 if verdict == "import":
                     result["imported"] += 1
                     THROTTLE.record_success()
-                    _log_activity(f"随机入库 tid={tid} · fid={board_fid or '—'} · {label}")
+                    from workers.activity_format import format_thread_activity
+
+                    _log_activity(
+                        format_thread_activity(
+                            tid,
+                            {**outcome, "board_name": board_name or outcome.get("board_name")},
+                            prefix="随机入库",
+                        )
+                    )
                 elif verdict == "stub":
                     result["stubbed"] += 1
                     THROTTLE.record_success()
-                    _log_activity(f"随机占位 tid={tid} · {label}")
+                    from workers.activity_format import format_thread_activity
+
+                    _log_activity(
+                        format_thread_activity(tid, outcome, prefix="随机占位")
+                    )
                 elif verdict == "skipped":
                     result["skipped"] += 1
                     THROTTLE.record_success()
-                    _log_activity(f"随机跳过 tid={tid} · {label}")
+                    from workers.activity_format import format_thread_activity
+
+                    _log_activity(
+                        format_thread_activity(tid, outcome, prefix="随机跳过")
+                    )
                 elif verdict == "failed":
                     result["failed"] += 1
-                    _log_activity(f"随机失败 tid={tid} · {label}")
+                    from workers.activity_format import format_thread_activity
+
+                    _log_activity(
+                        format_thread_activity(tid, outcome, prefix="随机失败")
+                    )
                 else:
                     result["other"] += 1
-                    _log_activity(f"随机 tid={tid} · {verdict} · {label}")
+                    from workers.activity_format import format_thread_activity
+
+                    _log_activity(
+                        format_thread_activity(
+                            tid,
+                            outcome,
+                            prefix=f"随机{verdict}",
+                        )
+                    )
 
                 if stop_on_persisted and result["imported"] + result["stubbed"] >= target:
                     break

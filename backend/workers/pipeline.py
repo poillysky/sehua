@@ -343,6 +343,7 @@ async def process_thread(
             "title": parsed.title or outcome.title,
             "magnets": len(parsed.magnets),
             "ed2k": len(parsed.ed2k_links),
+            "asset_count": len(parsed.assets),
             "primary": parsed.primary_link_kind,
             "board_fid": str(board_fid),
             "board_name": persist_board_name,

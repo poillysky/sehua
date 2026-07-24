@@ -469,7 +469,6 @@ def resources_recent(
             link_kind=link_kind,
             q=query,
         )
-        boards = list_resource_boards(conn)
         facets = list_resource_facets(
             conn,
             q=query,
@@ -477,8 +476,9 @@ def resources_recent(
             board_name=board_name,
             link_kind=link_kind,
         )
-        # 兼容旧前端：boards 为名称列表；新前端用 facets.boards
+        # 兼容旧前端：boards 为名称列表；优先用按帖 facet，避免再扫 DISTINCT
         facet_board_names = [b["name"] for b in facets.get("boards") or [] if b.get("name")]
+        boards = facet_board_names or list_resource_boards(conn)
         pages = max(1, (total + size - 1) // size) if total else 1
         return {
             "items": items,
@@ -487,7 +487,7 @@ def resources_recent(
             "page": page,
             "page_size": size,
             "pages": pages,
-            "boards": facet_board_names or boards,
+            "boards": boards,
             "facets": facets,
         }
     finally:

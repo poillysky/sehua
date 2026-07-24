@@ -231,6 +231,7 @@ def get_crawler_status(_user: dict = Depends(require_permission("crawler.view"))
         "random_progress": rnd,
         "account_stub_progress": stub_prog,
         "board_list_cursors": board_cursors,
+        "web_crawl_urls": str(cfg.get("web_crawl_urls") or ""),
         "activity": recent_activity(120),
         "boards": boards,
         "queue": qstats or st.get("queue") or {},

@@ -63,6 +63,15 @@ CASE
 END
 """
 
+# 仅 resource_sources 表上的同口径分组键（无 ed2k_resources 别名 r）
+RESOURCE_GROUP_KEY_RS_SQL = """
+CASE
+  WHEN NULLIF(BTRIM(COALESCE(rs.source_url, '')), '') IS NOT NULL
+    THEN 'url:' || BTRIM(rs.source_url)
+  ELSE 'hash:' || upper(rs.hash)
+END
+"""
+
 # 同帖 ≥2 条「真」子资源（合集）；占位 stub 不计入。
 # 仅作反例文档：禁止注入通用 WHERE（相关子查询全表 GROUP BY 会卡死）。
 # 合集查询必须走 _list_multi_asset_* / _multi_asset_url_page。
@@ -1657,7 +1666,22 @@ def _list_multi_asset_resources(
 
 
 _FACET_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
-_FACET_CACHE_TTL_SEC = 45.0
+_FACET_CACHE_TTL_SEC = 90.0
+
+
+def _facet_thread_kind_expr(alias: str = "r") -> str:
+    """与 LINK_KIND_SQL 同语义，可换表别名。"""
+    a = alias
+    return f"""
+CASE
+  WHEN lower(COALESCE({a}.ed2k_link, '')) LIKE 'unavailable://thread/%%' THEN 'stub'
+  WHEN lower(COALESCE({a}.ed2k_link, '')) LIKE 'magnet:%%' THEN 'magnet'
+  WHEN lower(COALESCE({a}.ed2k_link, '')) LIKE 'ed2k://%%' THEN 'ed2k'
+  WHEN lower(COALESCE({a}.ed2k_link, '')) LIKE '%%115cdn.com/s/%%'
+    OR lower(COALESCE({a}.ed2k_link, '')) LIKE '%%115.com/s/%%' THEN '115share'
+  ELSE 'failed'
+END
+"""
 
 
 def list_resource_facets(
@@ -1668,7 +1692,10 @@ def list_resource_facets(
     board_name: str | None = None,
     link_kind: str | None = None,
 ) -> dict[str, Any]:
-    """筛选维度计数。结果缓存数十秒，避免处理记录页每次全表统计卡住。"""
+    """筛选维度计数（按帖聚合，与处理记录列表口径一致）。
+
+    无筛选走全量按帖 GROUP BY（约 1–2s）+ 45s 缓存；有筛选用上限 COUNT / 近量样本，避免卡死。
+    """
     cache_key = "|".join(
         [
             (q or "").strip().lower(),
@@ -1682,13 +1709,6 @@ def list_resource_facets(
     if cached and now - cached[0] < _FACET_CACHE_TTL_SEC:
         return cached[1]
 
-    base_join = """
-        FROM ed2k_resources r
-        JOIN resource_sources rs ON rs.hash = r.hash
-        JOIN sources s ON s.id = rs.source_id
-    """
-    src_where, src_params = _facet_where(q=q, board_name=board_name, link_kind=link_kind)
-    board_where, board_params = _facet_where(q=q, source_type=source_type, link_kind=link_kind)
     result_where, result_params = _facet_where(q=q, source_type=source_type, board_name=board_name)
     unfiltered = not any(
         [
@@ -1710,76 +1730,159 @@ def list_resource_facets(
         "multi": 0,
     }
     boards: list[dict[str, Any]] = []
+    kind_expr = _facet_thread_kind_expr("r")
+
     with conn.cursor() as cur:
         if unfiltered:
-            # 无筛选：来源/板块用精确 COUNT；结果类型仍用近量样本估算比例（避免全表扫）
-            cur.execute(
-                """
-                SELECT COALESCE(NULLIF(s.source_type, ''), 'web') AS st, COUNT(*)
-                FROM resource_sources rs
-                JOIN sources s ON s.id = rs.source_id
-                GROUP BY 1
-                """
-            )
-            for st, n in cur.fetchall():
-                sources[str(st or "web")] = int(n)
-            sources["all"] = sum(sources[k] for k in ("web", "upload", "telegram"))
+            # 帖数快算 + 板块/结果并行查询，冷启动约 max(boards, kinds) 而非相加
+            from concurrent.futures import ThreadPoolExecutor
+
+            from db.resource_db import connect_resource
+
+            thread_all = int(_fast_thread_total(cur, "", []))
+            sources["all"] = thread_all
+            results["all"] = thread_all
 
             cur.execute(
                 """
-                SELECT
-                  CASE
-                    WHEN rs.board_name IS NULL OR rs.board_name = '' THEN '未分类'
-                    ELSE rs.board_name
-                  END AS board,
-                  COUNT(*) AS cnt
-                FROM resource_sources rs
-                GROUP BY 1
-                ORDER BY cnt DESC, board ASC
+                SELECT 1
+                FROM sources
+                WHERE COALESCE(NULLIF(source_type, ''), 'web') <> 'web'
+                LIMIT 1
                 """
             )
-            for name, n in cur.fetchall():
-                boards.append({"name": str(name), "count": int(n)})
+            has_non_web = cur.fetchone() is not None
 
-            est = sources["all"]
-            results["all"] = est
+            def _boards_query() -> list[dict[str, Any]]:
+                c2 = connect_resource()
+                try:
+                    with c2.cursor() as c:
+                        c.execute(
+                            f"""
+                            SELECT board, COUNT(*) FROM (
+                              SELECT
+                                {RESOURCE_GROUP_KEY_RS_SQL} AS gk,
+                                MIN(
+                                  CASE
+                                    WHEN rs.board_name IS NULL OR rs.board_name = '' THEN '未分类'
+                                    ELSE rs.board_name
+                                  END
+                                ) AS board
+                              FROM resource_sources rs
+                              GROUP BY 1
+                            ) t
+                            GROUP BY board
+                            ORDER BY COUNT(*) DESC, board ASC
+                            """
+                        )
+                        return [
+                            {"name": str(name), "count": int(n)} for name, n in c.fetchall()
+                        ]
+                finally:
+                    c2.close()
 
-            cur.execute(
-                f"""
-                SELECT kind, COUNT(*) AS cnt
-                FROM (
-                  SELECT ({LINK_KIND_SQL}) AS kind
-                  FROM ed2k_resources r
-                  ORDER BY r.updated_at DESC NULLS LAST
-                  LIMIT 20000
-                ) t
-                GROUP BY kind
-                """
+            def _kinds_query() -> dict[str, int]:
+                c2 = connect_resource()
+                try:
+                    with c2.cursor() as c:
+                        c.execute(
+                            f"""
+                            SELECT kind, COUNT(*) FROM (
+                              SELECT DISTINCT ON ({RESOURCE_GROUP_KEY_SQL})
+                                {RESOURCE_GROUP_KEY_SQL} AS gk,
+                                {kind_expr} AS kind
+                              FROM ed2k_resources r
+                              JOIN resource_sources rs ON rs.hash = r.hash
+                              ORDER BY {RESOURCE_GROUP_KEY_SQL}, r.updated_at DESC NULLS LAST
+                            ) t
+                            GROUP BY kind
+                            """
+                        )
+                        out_k: dict[str, int] = {}
+                        for kind, n in c.fetchall():
+                            out_k[str(kind or "failed")] = int(n)
+                        return out_k
+                finally:
+                    c2.close()
+
+            def _sources_query() -> dict[str, int]:
+                if not has_non_web:
+                    return {"web": thread_all, "upload": 0, "telegram": 0}
+                c2 = connect_resource()
+                try:
+                    with c2.cursor() as c:
+                        c.execute(
+                            f"""
+                            SELECT st, COUNT(*) FROM (
+                              SELECT
+                                {RESOURCE_GROUP_KEY_RS_SQL} AS gk,
+                                MIN(COALESCE(NULLIF(s.source_type, ''), 'web')) AS st
+                              FROM resource_sources rs
+                              JOIN sources s ON s.id = rs.source_id
+                              GROUP BY 1
+                            ) t
+                            GROUP BY st
+                            """
+                        )
+                        out_s = {"web": 0, "upload": 0, "telegram": 0}
+                        for st, n in c.fetchall():
+                            key = str(st or "web")
+                            if key in out_s:
+                                out_s[key] = int(n)
+                            else:
+                                out_s["web"] += int(n)
+                        return out_s
+                finally:
+                    c2.close()
+
+            with ThreadPoolExecutor(max_workers=3) as pool:
+                fut_boards = pool.submit(_boards_query)
+                fut_kinds = pool.submit(_kinds_query)
+                fut_sources = pool.submit(_sources_query)
+                boards = fut_boards.result()
+                kind_map = fut_kinds.result()
+                src_map = fut_sources.result()
+
+            for k, n in src_map.items():
+                sources[k] = int(n)
+            sources["all"] = sum(sources[k] for k in ("web", "upload", "telegram")) or thread_all
+            results["all"] = sources["all"]
+            for kind, n in kind_map.items():
+                results[kind] = int(n)
+            kind_sum = sum(
+                results.get(k, 0) for k in ("magnet", "ed2k", "115share", "stub", "failed")
             )
-            kind_rows = list(cur.fetchall())
-            sample_sum = sum(int(n) for _, n in kind_rows) or 1
-            scale = (est / sample_sum) if est > sample_sum else 1.0
-            for kind, n in kind_rows:
-                results[str(kind or "failed")] = int(int(n) * scale)
-            if results["all"] <= 0:
-                results["all"] = sum(
-                    results.get(k, 0) for k in ("magnet", "ed2k", "115share", "stub", "failed")
-                )
+            if kind_sum > 0 and abs(kind_sum - int(results["all"])) > max(
+                50, int(results["all"]) // 100
+            ):
+                results["all"] = kind_sum
+                if sources["upload"] == 0 and sources["telegram"] == 0:
+                    sources["all"] = kind_sum
+                    sources["web"] = kind_sum
         else:
-            # 有筛选：按当前条件取样（multi 不走 MULTI_ASSET_URL_SQL）
-            sample_limit = 3000 if (q or "").strip() else 5000
+            # 有筛选：帖数上限 COUNT 与列表一致；细项在近量窗口内按帖去重
             sample_where, sample_params = _facet_where(
                 q=q,
                 source_type=source_type if source_type not in (None, "", "all") else None,
                 board_name=board_name if board_name not in (None, "", "all") else None,
                 link_kind=link_kind if link_kind not in (None, "", "all") else None,
             )
+            thread_all = _fast_thread_total(
+                cur, sample_where, sample_params, q=q, capped=True
+            )
+            sources["all"] = int(thread_all)
+            results["all"] = int(thread_all)
+
+            sample_limit = 3000 if (q or "").strip() else 8000
             cur.execute(
                 f"""
                 SELECT
-                  r.ed2k_link,
+                  rs.source_url,
+                  r.hash,
                   rs.board_name,
-                  s.source_type
+                  s.source_type,
+                  r.ed2k_link,
+                  r.updated_at
                 FROM ed2k_resources r
                 JOIN resource_sources rs ON rs.hash = r.hash
                 JOIN sources s ON s.id = rs.source_id
@@ -1791,50 +1894,82 @@ def list_resource_facets(
             )
             sample = list(cur.fetchall())
 
-            def _kind(link: str | None) -> str:
-                return infer_resource_link_kind(link)
+            # gk -> (updated_at, source_type, board, link)
+            threads: dict[str, tuple[Any, str, str, str]] = {}
+            for source_url, h, bname, st, link, updated_at in sample:
+                url = (source_url or "").strip()
+                gk = f"url:{url}" if url else f"hash:{(h or '').upper()}"
+                st_n = (st or "").strip() or "web"
+                board_n = (bname or "").strip() or "未分类"
+                link_n = (link or "").strip()
+                prev = threads.get(gk)
+                if prev is None:
+                    threads[gk] = (updated_at, st_n, board_n, link_n)
+                    continue
+                prev_upd = prev[0]
+                # 同帖多行时保留更新更晚的（与列表 primary 一致）
+                if updated_at is not None and (prev_upd is None or updated_at > prev_upd):
+                    threads[gk] = (updated_at, st_n, board_n, link_n)
 
-            def _src(st: str | None) -> str:
-                return (st or "").strip() or "web"
+            sample_n = len(threads) or 1
+            scale = (thread_all / sample_n) if thread_all > sample_n else 1.0
 
-            sources["all"] = len(sample)
-            for row in sample:
-                st = _src(row[2])
-                sources[st] = int(sources.get(st, 0)) + 1
+            src_counts = {"web": 0, "upload": 0, "telegram": 0}
+            kind_counts = {
+                "magnet": 0,
+                "ed2k": 0,
+                "115share": 0,
+                "stub": 0,
+                "failed": 0,
+            }
+            for _upd, st_n, _board_n, link_n in threads.values():
+                if st_n in src_counts:
+                    src_counts[st_n] += 1
+                else:
+                    src_counts["web"] += 1
+                k = infer_resource_link_kind(link_n)
+                kind_counts[k if k in kind_counts else "failed"] += 1
 
-            results["all"] = len(sample)
-            for row in sample:
-                k = _kind(row[0])
-                results[k] = int(results.get(k, 0)) + 1
+            for k, n in src_counts.items():
+                sources[k] = int(round(n * scale))
+            for k, n in kind_counts.items():
+                results[k] = int(round(n * scale))
 
+            # 板块列表：有筛选时仍展示全局按帖板块分布（与原先「全局 boards」行为一致）
             global_key = "|||"
             global_hit = _FACET_CACHE.get(global_key)
             if global_hit and now - global_hit[0] < _FACET_CACHE_TTL_SEC:
                 boards = list(global_hit[1].get("boards") or [])
             else:
                 cur.execute(
-                    """
-                    SELECT
-                      CASE
-                        WHEN rs.board_name IS NULL OR rs.board_name = '' THEN '未分类'
-                        ELSE rs.board_name
-                      END AS board,
-                      COUNT(*) AS cnt
-                    FROM resource_sources rs
-                    GROUP BY 1
-                    ORDER BY cnt DESC, board ASC
+                    f"""
+                    SELECT board, COUNT(*) FROM (
+                      SELECT
+                        {RESOURCE_GROUP_KEY_RS_SQL} AS gk,
+                        MIN(
+                          CASE
+                            WHEN rs.board_name IS NULL OR rs.board_name = '' THEN '未分类'
+                            ELSE rs.board_name
+                          END
+                        ) AS board
+                      FROM resource_sources rs
+                      GROUP BY 1
+                    ) t
+                    GROUP BY board
+                    ORDER BY COUNT(*) DESC, board ASC
                     """
                 )
                 boards = [{"name": str(name), "count": int(n)} for name, n in cur.fetchall()]
 
-        # 仅额外统计 ×N 合集（轻量、有上限）；与磁力等可重叠
+        # ×N 合集：已是按帖轻量统计
         results["multi"] = _count_multi_asset_threads(
             cur, result_where, result_params, capped=True
         )
 
     out = {"sources": sources, "boards": boards, "results": results}
     _FACET_CACHE[cache_key] = (now, out)
-    # 防止缓存无限胀
+    if unfiltered:
+        _FACET_CACHE["|||"] = (now, out)
     if len(_FACET_CACHE) > 64:
         oldest = sorted(_FACET_CACHE.items(), key=lambda kv: kv[1][0])[:16]
         for k, _ in oldest:
