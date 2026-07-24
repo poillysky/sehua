@@ -325,11 +325,20 @@ export function CrawlerPage() {
   }, [queueModal, discStatus, discQ, discReason, discOffset])
 
   useEffect(() => {
-    void refresh()
-    const timer = window.setInterval(() => {
+    const tick = () => {
+      if (document.visibilityState === 'hidden') return
       void refresh()
-    }, 5000)
-    return () => window.clearInterval(timer)
+    }
+    tick()
+    const timer = window.setInterval(tick, 5000)
+    const onVis = () => {
+      if (document.visibilityState === 'visible') void refresh()
+    }
+    document.addEventListener('visibilitychange', onVis)
+    return () => {
+      window.clearInterval(timer)
+      document.removeEventListener('visibilitychange', onVis)
+    }
   }, [refresh])
 
   useEffect(() => {

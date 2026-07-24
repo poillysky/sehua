@@ -1,4 +1,4 @@
-import { api, getToken, setToken } from './client'
+import { api, getToken } from './client'
 
 export type BackupFileInfo = {
   exists: boolean
@@ -130,7 +130,6 @@ export async function importBackupFile(file: File): Promise<BackupImportResult> 
     credentials: 'include',
   })
   if (res.status === 401) {
-    setToken(null)
     throw new Error('未登录或登录已过期')
   }
   if (!res.ok) {

@@ -1,4 +1,11 @@
-import { api, getToken, setToken } from './client'
+import {
+  api,
+  clearSession,
+  getCachedUser,
+  getToken,
+  setCachedUser,
+  setToken,
+} from './client'
 
 export type AuthUser = {
   id: number
@@ -33,7 +40,7 @@ export type AuthStatus = {
 }
 
 export function fetchAuthStatus() {
-  // 不要 AbortController：1.1.7 给 status 加 8s 超时后，爬虫忙/手机回前台会误踢登录
+  // 不要 AbortController：1.1.7 给 status 加超时后，全屏回前台/爬虫忙会误踢
   return api<AuthStatus>('/api/auth/status')
 }
 
@@ -43,6 +50,7 @@ export async function login(username: string, password: string) {
     body: JSON.stringify({ username, password }),
   })
   if (data.token) setToken(data.token)
+  if (data.user) setCachedUser(data.user)
   return data
 }
 
@@ -50,7 +58,7 @@ export async function logout() {
   try {
     await api<{ message: string }>('/api/auth/logout', { method: 'POST' })
   } finally {
-    setToken(null)
+    clearSession()
   }
 }
 
@@ -113,4 +121,4 @@ export function can(user: AuthUser | null | undefined, permission: string) {
   return perms.includes('*') || perms.includes(permission) || (user.roles || []).includes('admin')
 }
 
-export { getToken, setToken }
+export { getToken, setToken, getCachedUser, setCachedUser, clearSession }

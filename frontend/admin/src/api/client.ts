@@ -1,5 +1,6 @@
 /** HTTP helpers shared by auth / resources APIs. */
 const TOKEN_KEY = 'collector_token'
+const USER_KEY = 'collector_user'
 
 const CJK_RE = /[\u4e00-\u9fff]/
 
@@ -69,13 +70,65 @@ function formatApiDetail(detail: unknown, fallback: string): string {
   return localizeErrorMessage(String(detail), fallback)
 }
 
+function readStorage(key: string): string | null {
+  try {
+    return localStorage.getItem(key) || sessionStorage.getItem(key)
+  } catch {
+    return null
+  }
+}
+
+function writeStorage(key: string, value: string | null) {
+  try {
+    if (!value) {
+      localStorage.removeItem(key)
+      sessionStorage.removeItem(key)
+      return
+    }
+    localStorage.setItem(key, value)
+    sessionStorage.setItem(key, value)
+  } catch {
+    /* iOS 全屏/私密模式可能拒写，忽略 */
+  }
+}
+
 export function getToken(): string | null {
-  return localStorage.getItem(TOKEN_KEY)
+  return readStorage(TOKEN_KEY)
 }
 
 export function setToken(token: string | null) {
-  if (!token) localStorage.removeItem(TOKEN_KEY)
-  else localStorage.setItem(TOKEN_KEY, token)
+  writeStorage(TOKEN_KEY, token)
+}
+
+export type CachedAuthUser = {
+  id: number
+  username: string
+  display_name?: string | null
+  roles: string[]
+  permissions?: string[]
+  is_active?: boolean
+}
+
+export function getCachedUser(): CachedAuthUser | null {
+  const raw = readStorage(USER_KEY)
+  if (!raw) return null
+  try {
+    const u = JSON.parse(raw) as CachedAuthUser
+    if (!u || typeof u.id !== 'number' || !u.username) return null
+    return u
+  } catch {
+    return null
+  }
+}
+
+export function setCachedUser(user: CachedAuthUser | null) {
+  writeStorage(USER_KEY, user ? JSON.stringify(user) : null)
+}
+
+/** 仅登出或确认会话失效时调用；接口 401 不要自动清（iOS 全屏回前台易误伤） */
+export function clearSession() {
+  setToken(null)
+  setCachedUser(null)
 }
 
 export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
@@ -93,7 +146,7 @@ export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
   })
 
   if (res.status === 401) {
-    // Bearer 失效时先靠 Cookie 重试；成功前不要清 localStorage（1.1.20 过早 clear 会让手机只剩坏 Cookie 时立刻掉线）
+    // Cookie 重试；成功前绝不 clearSession（全屏 PWA 回前台常短暂丢 Cookie）
     const alreadyRetried = headers.get('X-Auth-Retry') === '1'
     if (token && !alreadyRetried) {
       const retryHeaders = new Headers(init.headers)
@@ -101,7 +154,6 @@ export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
         retryHeaders.set('Content-Type', 'application/json')
       }
       retryHeaders.set('X-Auth-Retry', '1')
-      // 故意不带 Authorization，只走 Cookie
       retryHeaders.delete('Authorization')
       const retry = await fetch(path, {
         ...init,
@@ -123,7 +175,7 @@ export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
         throw new Error(formatApiDetail(detail, `请求失败（${retry.status}）`))
       }
     }
-    setToken(null)
+    // 保留本地 token，由 RequireAuth / 登出决定是否清会话
     throw new Error('未登录或登录已过期')
   }
 

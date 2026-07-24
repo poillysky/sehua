@@ -47,12 +47,29 @@ class ChangePasswordBody(BaseModel):
     new_password: str = Field(..., min_length=6, max_length=128)
 
 
-def _set_auth_cookie(response: Response, token: str) -> None:
+def _client_facing_https(request: Request) -> bool:
+    proto = (request.headers.get("x-forwarded-proto") or "").split(",")[0].strip().lower()
+    if proto == "https":
+        return True
+    if proto == "http":
+        return False
+    for key in ("origin", "referer"):
+        val = (request.headers.get(key) or "").strip().lower()
+        if val.startswith("https://"):
+            return True
+    return (request.url.scheme or "").lower() == "https"
+
+
+def _set_auth_cookie(response: Response, token: str, request: Request | None = None) -> None:
+    # 反代 HTTPS（如 clawer.xxx:16666）时打 Secure，减轻 iOS 主屏幕全屏丢 Cookie
+    secure = cookie_secure()
+    if request is not None and _client_facing_https(request):
+        secure = True
     response.set_cookie(
         key=cookie_name(),
         value=token,
         httponly=True,
-        secure=cookie_secure(),
+        secure=secure,
         samesite="lax",
         max_age=jwt_expire_hours() * 3600,
         path="/",
@@ -95,7 +112,7 @@ def auth_status(request: Request) -> dict:
 
 
 @router.post("/login")
-def login(body: LoginBody, response: Response) -> dict:
+def login(body: LoginBody, request: Request, response: Response) -> dict:
     conn = connect()
     try:
         found = get_user_by_username(conn, body.username.strip())
@@ -113,7 +130,7 @@ def login(body: LoginBody, response: Response) -> dict:
             roles=user.roles,
         )
         touch_last_login(conn, user.id)
-        _set_auth_cookie(response, token)
+        _set_auth_cookie(response, token, request)
         return {"message": "success", "token": token, "user": _user_payload(user)}
     finally:
         conn.close()

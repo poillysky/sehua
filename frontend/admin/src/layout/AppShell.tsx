@@ -38,6 +38,7 @@ export function AppShell({ user }: Props) {
     let cancelled = false
 
     async function check() {
+      if (document.visibilityState === 'hidden') return
       try {
         const data = await fetchHealth()
         if (cancelled) return
@@ -52,9 +53,14 @@ export function AppShell({ user }: Props) {
 
     void check()
     const timer = window.setInterval(() => void check(), 15000)
+    const onVis = () => {
+      if (document.visibilityState === 'visible') void check()
+    }
+    document.addEventListener('visibilitychange', onVis)
     return () => {
       cancelled = true
       window.clearInterval(timer)
+      document.removeEventListener('visibilitychange', onVis)
     }
   }, [])
 
