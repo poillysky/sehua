@@ -6,14 +6,17 @@ import {
   getCachedUser,
   getToken,
   setCachedUser,
+  setToken,
   type AuthUser,
 } from '../api/auth'
 import { AppShell } from './AppShell'
 
 /**
- * iOS 主屏幕全屏（standalone）离开几秒再回来常整页重载。
- * 必须先用本地 token+缓存用户乐观进入，再后台核对；
- * 仅当服务端明确 authenticated=false 才踢登录。
+ * 登录门禁。
+ *
+ * 注意：不能「本地无 token 就立刻 /login」。
+ * iOS 全屏 / Lucky HTTPS 下常见 Cookie 仍有效但 localStorage 空，
+ * 立刻踢登录会与 LoginPage「已登录则跳回」形成 replaceState 死循环。
  */
 export function RequireAuth() {
   const location = useLocation()
@@ -30,19 +33,10 @@ export function RequireAuth() {
     const token = getToken()
     const localUser = getCachedUser()
 
-    // 已有本地会话：先展示，再静默校验（全屏回前台不闪登录页）
     if (token && localUser) {
       setUser(localUser)
       setOk(true)
       setReady(true)
-    } else if (!token) {
-      setOk(false)
-      setUser(null)
-      setReady(true)
-      setHint('未登录或登录已过期')
-      return () => {
-        cancelled = true
-      }
     } else {
       setReady(false)
       setHint('检查登录状态…')
@@ -52,17 +46,28 @@ export function RequireAuth() {
       .then((status) => {
         if (cancelled) return
         if (!status.auth_required) {
-          setOk(true)
-          setUser(status.user || localUser)
+          const u = status.user || localUser
+          if (u) {
+            setCachedUser(u)
+            setUser(u)
+            setOk(true)
+          } else {
+            setOk(false)
+            setUser(null)
+            setHint('未登录或登录已过期')
+          }
           return
         }
         if (status.authenticated && status.user) {
           setCachedUser(status.user)
           setUser(status.user)
           setOk(true)
+          // Cookie 会话有效时补齐本地缓存，避免再次被误判未登录
+          if (!getToken() && (status as { token?: string }).token) {
+            setToken((status as { token?: string }).token || null)
+          }
           return
         }
-        // 明确未登录：清本地并踢出
         clearSession()
         setOk(false)
         setUser(null)
@@ -70,10 +75,9 @@ export function RequireAuth() {
       })
       .catch(() => {
         if (cancelled) return
-        // 网络抖动：有 token 就不踢（主屏幕全屏回前台常见）
-        if (token) {
+        if (token && localUser) {
           setOk(true)
-          if (localUser) setUser(localUser)
+          setUser(localUser)
           return
         }
         setOk(false)
@@ -87,7 +91,6 @@ export function RequireAuth() {
     return () => {
       cancelled = true
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- 仅挂载/重试时检查
   }, [retryTick])
 
   if (!ready) {
@@ -99,7 +102,7 @@ export function RequireAuth() {
   }
 
   if (!ok || !user) {
-    if (getToken() && hint && !hint.includes('未登录')) {
+    if (hint && !hint.includes('未登录')) {
       return (
         <div className="login-page">
           <p className="hint">{hint}</p>
@@ -108,6 +111,10 @@ export function RequireAuth() {
           </button>
         </div>
       )
+    }
+    // 已在登录页时不要再 Navigate，避免 replace 风暴
+    if (location.pathname === '/login') {
+      return null
     }
     return (
       <Navigate

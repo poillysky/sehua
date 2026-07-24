@@ -25,13 +25,20 @@ export function LoginPage() {
   }, [])
 
   useEffect(() => {
+    let cancelled = false
     fetchAuthStatus()
       .then((s) => {
-        if (!s.auth_required || s.authenticated) navigate(returnTo, { replace: true })
+        if (cancelled) return
+        if (!s.auth_required || s.authenticated) {
+          navigate(returnTo, { replace: true })
+        }
       })
       .catch(() => {
         /* stay on login */
       })
+    return () => {
+      cancelled = true
+    }
   }, [navigate, returnTo])
 
   async function onSubmit(e: FormEvent) {

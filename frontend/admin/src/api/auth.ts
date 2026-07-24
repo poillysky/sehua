@@ -40,8 +40,12 @@ export type AuthStatus = {
 }
 
 export function fetchAuthStatus() {
-  // 不要 AbortController：1.1.7 给 status 加超时后，全屏回前台/爬虫忙会误踢
-  return api<AuthStatus>('/api/auth/status')
+  // 不要 AbortController：超时会误踢；全屏回前台靠 Cookie/本地缓存恢复
+  return api<AuthStatus & { token?: string }>('/api/auth/status').then((status) => {
+    if (status.token) setToken(status.token)
+    if (status.user) setCachedUser(status.user)
+    return status
+  })
 }
 
 export async function login(username: string, password: string) {

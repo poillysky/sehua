@@ -48,15 +48,22 @@ class ChangePasswordBody(BaseModel):
 
 
 def _client_facing_https(request: Request) -> bool:
+    """判断浏览器侧是否 HTTPS（域名反代常见：外层 TLS，内层 HTTP）。
+
+    优先级：Origin/Referer 的 https > X-Forwarded-Proto=https。
+    若反代误传 proto=http，仍以浏览器 Origin 为准，避免 Secure Cookie 打错。
+    """
+    for key in ("origin", "referer"):
+        val = (request.headers.get(key) or "").strip().lower()
+        if val.startswith("https://"):
+            return True
+        if val.startswith("http://"):
+            return False
     proto = (request.headers.get("x-forwarded-proto") or "").split(",")[0].strip().lower()
     if proto == "https":
         return True
     if proto == "http":
         return False
-    for key in ("origin", "referer"):
-        val = (request.headers.get(key) or "").strip().lower()
-        if val.startswith("https://"):
-            return True
     return (request.url.scheme or "").lower() == "https"
 
 
@@ -93,7 +100,7 @@ def _user_payload(user) -> dict:
 
 
 @router.get("/status")
-def auth_status(request: Request) -> dict:
+def auth_status(request: Request, response: Response) -> dict:
     user = get_current_user(request)
     has_users = False
     if auth_required():
@@ -102,12 +109,24 @@ def auth_status(request: Request) -> dict:
             has_users = count_users(conn) > 0
         finally:
             conn.close()
+
+    # Cookie 有效但 localStorage 空时（iOS 全屏常见），补发 token 给前端缓存，避免登录页↔门禁死循环
+    refreshed: str | None = None
+    if user and auth_required() and int(user.get("id") or 0) > 0:
+        refreshed = create_access_token(
+            user_id=int(user["id"]),
+            username=str(user.get("username") or ""),
+            roles=list(user.get("roles") or []),
+        )
+        _set_auth_cookie(response, refreshed, request)
+
     return {
         "auth_required": auth_required(),
         "authenticated": user is not None,
         "has_users": has_users,
         "user": _user_payload(user) if user else None,
         "roles": list(ROLE_PERMISSIONS.keys()),
+        "token": refreshed,
     }
 
 

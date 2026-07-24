@@ -7,6 +7,8 @@ export default defineConfig({
     host: '0.0.0.0',
     port: 8081,
     strictPort: true,
+    // Lucky / 域名反代开发时 Host 不是 localhost
+    allowedHosts: ['.605081.xyz', 'localhost', '127.0.0.1'],
     proxy: {
       '/api': { target: 'http://127.0.0.1:8080', changeOrigin: true },
       '/static': { target: 'http://127.0.0.1:8080', changeOrigin: true },
@@ -19,5 +21,6 @@ export default defineConfig({
     host: '0.0.0.0',
     port: 8081,
     strictPort: true,
+    allowedHosts: ['.605081.xyz', 'localhost', '127.0.0.1'],
   },
 })
