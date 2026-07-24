@@ -1,8 +1,9 @@
-"""Hybrid fetch: browser for age gate + list; fingerprint HTTP for threads.
+"""Hybrid fetch: browser for age gate; fingerprint HTTP for lists + threads.
 
 Mode:
-- list / forumdisplay / forum-*-*.html → Playwright (reuse session after 18+)
-- thread / viewthread → curl_cffi HTTP with browser-synced cookies + safeid retry
+- list / forumdisplay / forum-*-*.html → HTTP first, browser fallback if shell/invalid
+- thread / viewthread → curl_cffi / browser-API HTTP + soft-shell browser retry
+- unknown entry probes → Playwright (conservative)
 """
 
 from __future__ import annotations
@@ -32,7 +33,7 @@ class FetchError(Exception):
 
 
 def detect_fetch_mode(url: str) -> Literal["browser", "http"]:
-    """列表走浏览器，帖子走 HTTP。"""
+    """列表与帖子默认 HTTP；不明入口仍走浏览器。"""
     u = (url or "").lower()
     path = urlparse(url).path.lower() if url else ""
     if "viewthread" in u or "thread-" in path or "mod=viewthread" in u:
@@ -43,13 +44,13 @@ def detect_fetch_mode(url: str) -> Literal["browser", "http"]:
         or path.rstrip("/").endswith("forum.php")
         or "/forum.php" in u
     ):
-        return "browser"
+        return "http"
     # 默认保守：不明 URL 用浏览器（进站探测等）
     return "browser"
 
 
 class Fetcher:
-    """浏览器过十八禁 + 读列表；HTTP（指纹）读帖子。"""
+    """浏览器过十八禁；HTTP 读列表/帖子（失败或壳页再回退浏览器）。"""
 
     def __init__(
         self,
@@ -65,6 +66,8 @@ class Fetcher:
         self._flaresolverr_url = (os.environ.get("SHT_FLARESOLVERR_URL") or "").strip() or None
         # 最近一次 get_thread_html 是否因软文/壳触发过浏览器整页重读
         self.last_soft_browser_retried: bool = False
+        # 最近一次 get_list_html 是否因 HTTP 不合格回退浏览器
+        self.last_list_browser_fallback: bool = False
 
     def set_referer(self, referer: str) -> None:
         self._referer = referer
@@ -106,7 +109,67 @@ class Fetcher:
         raise FetchError(str(last_err) if last_err else f"请求失败：{url}")
 
     async def get_list_html(self, url: str, retries: int = 3) -> str:
-        return await self.get_html(url, retries=retries, mode="browser")
+        """HTTP 读列表；遇安全壳 / 无效列表 / 失败时浏览器整页回退。"""
+        from crawler.parser import is_valid_forum_list
+        from parsers.thread_gates import is_safe_or_soft_shell
+
+        self.last_list_browser_fallback = False
+        last_err: Exception | None = None
+        for attempt in range(retries):
+            try:
+                html = ""
+                http_err: Exception | None = None
+                try:
+                    html = await self._get_http(url, raise_on_shell=False)
+                except (FetchError, OSError, RuntimeError) as exc:
+                    http_err = exc
+                    log.warning(
+                        "List HTTP failed (%s/%s): %s · %s",
+                        attempt + 1,
+                        retries,
+                        url,
+                        exc,
+                    )
+
+                need_browser = http_err is not None or not html
+                if not need_browser:
+                    need_browser = (
+                        is_safe_or_soft_shell(html)
+                        or SessionManager.is_safe_shell(html)
+                        or not is_valid_forum_list(html)
+                    )
+                    if need_browser:
+                        log.info(
+                            "List HTTP unusable → browser fallback (%s/%s): %s",
+                            attempt + 1,
+                            retries,
+                            url,
+                        )
+
+                if need_browser:
+                    html = await self._get_browser(url, raise_on_shell=False)
+                    self.last_list_browser_fallback = True
+
+                self._assert_usable_html(html, url, allow_soft=False)
+                if not is_valid_forum_list(html):
+                    raise FetchError(f"列表页无效：{url}")
+                self.session.save()
+                return html
+            except (FetchError, OSError, RuntimeError) as e:
+                last_err = e
+                log.warning(
+                    "List fetch attempt %d/%d failed: %s",
+                    attempt + 1,
+                    retries,
+                    e,
+                )
+                if attempt + 1 < retries:
+                    try:
+                        await self.session.bootstrap(force=True)
+                    except Exception as boot_err:
+                        log.warning("Re-bootstrap failed: %s", boot_err)
+                    await asyncio.sleep(2 * (attempt + 1))
+        raise FetchError(str(last_err) if last_err else f"请求失败：{url}")
 
     async def get_thread_html(self, url: str, retries: int = 3) -> str:
         """HTTP 读帖；遇软文/安全壳自动浏览器整页重试一次。"""

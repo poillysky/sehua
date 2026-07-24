@@ -7,11 +7,18 @@ from auth.permissions import has_permission
 from auth.tokens import decode_access_token
 
 
-def _extract_token(request: Request) -> str | None:
+def _extract_tokens(request: Request) -> list[str]:
+    """按优先级收集候选令牌；Bearer 失效时仍应能回退到 Cookie。"""
+    out: list[str] = []
     auth_header = request.headers.get("Authorization", "")
     if auth_header.startswith("Bearer "):
-        return auth_header[7:].strip() or None
-    return request.cookies.get(cookie_name())
+        bearer = auth_header[7:].strip()
+        if bearer:
+            out.append(bearer)
+    cookie = (request.cookies.get(cookie_name()) or "").strip()
+    if cookie and cookie not in out:
+        out.append(cookie)
+    return out
 
 
 def get_current_user(request: Request) -> dict | None:
@@ -24,18 +31,21 @@ def get_current_user(request: Request) -> dict | None:
             "is_active": True,
         }
 
-    token = _extract_token(request)
-    if not token:
-        return None
-    payload = decode_access_token(token)
-    if not payload:
-        return None
-    return {
-        "id": int(payload["sub"]),
-        "username": payload.get("username", ""),
-        "roles": payload.get("roles", []),
-        "is_active": True,
-    }
+    for token in _extract_tokens(request):
+        payload = decode_access_token(token)
+        if not payload:
+            continue
+        try:
+            user_id = int(payload["sub"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        return {
+            "id": user_id,
+            "username": payload.get("username", ""),
+            "roles": payload.get("roles", []),
+            "is_active": True,
+        }
+    return None
 
 
 def require_user(request: Request) -> dict:

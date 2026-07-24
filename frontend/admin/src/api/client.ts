@@ -93,7 +93,36 @@ export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
   })
 
   if (res.status === 401) {
-    setToken(null)
+    // Bearer 可能已失效但 Cookie 仍有效：清掉本地 token 后不带 Authorization 再试一次
+    if (token && !headers.has('X-Auth-Retry')) {
+      setToken(null)
+      const retryHeaders = new Headers(init.headers)
+      if (!retryHeaders.has('Content-Type') && init.body) {
+        retryHeaders.set('Content-Type', 'application/json')
+      }
+      retryHeaders.set('X-Auth-Retry', '1')
+      const retry = await fetch(path, {
+        ...init,
+        headers: retryHeaders,
+        credentials: 'include',
+      })
+      if (retry.ok) {
+        if (retry.status === 204) return undefined as T
+        return (await retry.json()) as T
+      }
+      if (retry.status !== 401) {
+        let detail: unknown = `HTTP ${retry.status}`
+        try {
+          const data = await retry.json()
+          detail = data.detail ?? data.message ?? detail
+        } catch {
+          /* ignore */
+        }
+        throw new Error(formatApiDetail(detail, `请求失败（${retry.status}）`))
+      }
+    } else {
+      setToken(null)
+    }
     throw new Error('未登录或登录已过期')
   }
 
