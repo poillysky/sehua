@@ -370,6 +370,9 @@ async def run_random_tid_batch(
                 if verdict == "import":
                     result["imported"] += 1
                     THROTTLE.record_success()
+                    from workers.import_rate import note_persisted
+
+                    note_persisted(kind="import")
                     from workers.activity_format import format_thread_activity
 
                     _log_activity(
@@ -382,6 +385,9 @@ async def run_random_tid_batch(
                 elif verdict == "stub":
                     result["stubbed"] += 1
                     THROTTLE.record_success()
+                    from workers.import_rate import note_persisted
+
+                    note_persisted(kind="stub")
                     from workers.activity_format import format_thread_activity
 
                     _log_activity(

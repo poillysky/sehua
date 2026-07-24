@@ -39,8 +39,14 @@ class _CrawlExecutor:
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         self._loop = loop
-        self._ready.set()
-        log.info("crawl executor loop ready (%s)", type(loop).__name__)
+
+        def _mark_ready() -> None:
+            # 必须在 run_forever 已启动后置位：此前 is_running() 仍为 False，
+            # 会导致「日志已 ready、立刻 submit 却报未就绪」的竞态（loop/start 500）。
+            self._ready.set()
+            log.info("crawl executor loop ready (%s)", type(loop).__name__)
+
+        loop.call_soon(_mark_ready)
         try:
             loop.run_forever()
         finally:

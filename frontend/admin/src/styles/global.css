@@ -2078,6 +2078,53 @@ a {
   color: var(--warn);
 }
 
+.metric-pill-rate .metric-val {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 0;
+  color: var(--muted);
+  transition: color 0.2s ease;
+}
+
+.metric-pill-rate .metric-rate-unit {
+  margin-left: 1px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  opacity: 0.75;
+}
+
+.metric-pill-rate.is-live {
+  background: var(--success-dim);
+  border-color: color-mix(in srgb, var(--success) 42%, var(--border));
+}
+
+.metric-pill-rate.is-live .metric-val {
+  color: var(--success);
+  animation: metric-rate-tick 0.35s ease;
+}
+
+.metric-pill-rate.is-live .metric-rate-unit {
+  opacity: 0.9;
+}
+
+@keyframes metric-rate-tick {
+  0% {
+    transform: translateY(2px);
+    opacity: 0.55;
+  }
+  100% {
+    transform: none;
+    opacity: 1;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .metric-pill-rate.is-live .metric-val {
+    animation: none;
+  }
+}
+
 .metric-pill-random {
   border-color: color-mix(in srgb, var(--primary) 35%, var(--border));
 }

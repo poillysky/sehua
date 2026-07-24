@@ -773,12 +773,18 @@ async def run_crawl_once(
                     try:
                         if verdict == "import":
                             result["imports"] += 1
+                            from workers.import_rate import note_persisted
+
+                            note_persisted(kind="import")
                             THROTTLE.record_success()
                             mark_thread_done(
                                 conn, thread_url, outcome=str(outcome.get("outcome") or "import")
                             )
                         elif verdict == "stub":
                             result["stubs"] += 1
+                            from workers.import_rate import note_persisted
+
+                            note_persisted(kind="stub")
                             THROTTLE.record_success()
                             mark_thread_done(
                                 conn, thread_url, outcome=str(outcome.get("outcome") or "stub")

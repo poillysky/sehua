@@ -446,6 +446,10 @@ export function CrawlerPage() {
   const stubFailed = Number(stubProg?.failed ?? 0)
   const delayCurrent = throttle?.fetch_delay_current ?? status?.request_delay
   const riskTripped = String(status?.last_result?.reason || '').includes('cooldown_tripped')
+  const importsPerMin = Number(
+    status?.import_rate?.per_minute ?? metrics?.imports_per_minute ?? 0,
+  )
+  const importRateWindow = Number(status?.import_rate?.window_sec ?? 60)
 
   // 账号爬占位后台跑：轮询进度刷新小字；结束后改成「结束」摘要，避免一直停在「进行中」
   useEffect(() => {
@@ -1049,6 +1053,16 @@ export function CrawlerPage() {
                       <span className="metric-lbl">当前请求延迟</span>
                     </span>
                   ) : null}
+                  <span
+                    className={`metric-pill metric-pill-rate${importsPerMin > 0 ? ' is-live' : ''}`}
+                    title={`近 ${importRateWindow} 秒滚动窗口内入库+占位帖数`}
+                  >
+                    <span className="metric-val" key={importsPerMin}>
+                      {importsPerMin}
+                      <span className="metric-rate-unit">/分</span>
+                    </span>
+                    <span className="metric-lbl">入库速度</span>
+                  </span>
                 </div>
               </div>
             </div>

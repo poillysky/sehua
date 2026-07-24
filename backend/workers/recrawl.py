@@ -826,9 +826,15 @@ async def recrawl_account_stubs() -> dict[str, Any]:
                 discarded_done += 1
                 if verdict == "import":
                     upgraded += 1
+                    from workers.import_rate import note_persisted
+
+                    note_persisted(kind="import")
                     _log_activity(f"账号爬未处理升级 · tid={tid} · {label}")
                 elif verdict == "stub":
                     still_stub += 1
+                    from workers.import_rate import note_persisted
+
+                    note_persisted(kind="stub")
                     _log_activity(f"账号爬未处理占位 · tid={tid} · {label}")
                 elif verdict == "skipped":
                     skipped_prep += 1
@@ -967,6 +973,9 @@ async def recrawl_account_stubs() -> dict[str, Any]:
                 finally:
                     conn.close()
                 upgraded += 1
+                from workers.import_rate import note_persisted
+
+                note_persisted(kind="import")
                 _log_activity(
                     f"账号爬占位升级 · tid={tid} · {label}"
                     + (" · 已删旧占位" if removed else "")
@@ -1351,8 +1360,14 @@ async def recrawl_discarded_tids(tids: list[int]) -> dict[str, Any]:
 
             if verdict == "import":
                 imports_n += 1
+                from workers.import_rate import note_persisted
+
+                note_persisted(kind="import")
             elif verdict == "stub":
                 stubs_n += 1
+                from workers.import_rate import note_persisted
+
+                note_persisted(kind="stub")
             elif verdict == "skipped":
                 skipped_n += 1
             elif verdict in {"retry", "need_attachments"} or "软文" in str(

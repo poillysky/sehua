@@ -203,6 +203,13 @@ def get_crawler_status(_user: dict = Depends(require_permission("crawler.view"))
             except (TypeError, ValueError):
                 continue
 
+    try:
+        from workers.import_rate import import_rate_snapshot
+
+        import_rate = import_rate_snapshot()
+    except Exception:
+        import_rate = {"per_minute": 0, "window_sec": 60}
+
     return {
         "forum_id": cfg_forum_id,
         "active_forum_id": active,
@@ -268,7 +275,9 @@ def get_crawler_status(_user: dict = Depends(require_permission("crawler.view"))
                 int(priority_stubs) + int(discarded_access_denied) + int(discarded_failed_kind)
             ),
             "board_updated": last.get("board_updated") or 0,
+            "imports_per_minute": import_rate.get("per_minute") or 0,
         },
+        "import_rate": import_rate,
     }
 
 
