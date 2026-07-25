@@ -16,6 +16,8 @@ from parsers.boards import (
 )
 
 FORUM_CONFIG_KEY = "forum_configs"
+# 连续调度「焦点论坛」：单进程同时只跑这一站；各论坛仍有独立 config / Cookie / 开关。
+# 兼容旧键名 active_forum_id；API 同时返回 focus_forum_id。
 ACTIVE_FORUM_KEY = "active_forum_id"
 
 # 官方永久入口（Telegram 频道公布）；逗号分隔，爬虫按序尝试
@@ -34,7 +36,7 @@ _LEGACY_WEB_CRAWL_URLS = {
 }
 
 FORUM_CRAWLER_DEFAULTS: dict[str, Any] = {
-    "web_crawler_enabled": True,
+    "web_crawler_enabled": False,
     "web_crawl_urls": DEFAULT_WEB_CRAWL_URLS,
     # 本站连续爬取：轮间无间隔（仅保留请求延迟 / 失败冷却）
     "web_crawler_interval_minutes": 0,
@@ -100,11 +102,11 @@ FORUM_2048_ID = "2048"
 FORUM_2048_MODULE = "crawler.forum_2048"
 DEFAULT_2048_WEB_CRAWL_URLS = ",".join(
     [
+        # 官方发布页（公告：域名频繁更换时按序替换试用）
         "https://fby.tfzqs88.com",
         "https://fby.js-bovey.com",
-        "https://ut2gw5.xc6ym5.com/",
-        "https://bbs.xfca2022.com",
-        "https://bbs.sbnlfe.cn",
+        "https://fby.chinpol.com",
+        "https://fby.syhsyh888.com",
     ]
 )
 # 可启用 + 可保存完整爬虫配置（板块拓扑 / 结构说明 / 限速等）
@@ -279,6 +281,19 @@ def _normalize_forum_config(
         len(crawl_urls) == 1 and crawl_urls[0].rstrip("/") in _LEGACY_WEB_CRAWL_URLS
     ):
         base["web_crawl_urls"] = DEFAULT_WEB_CRAWL_URLS
+    elif forum_id == FORUM_2048_ID:
+        # 发布页入口：缺任一官方发布页则整表换成当前默认（可替换使用）
+        joined = ",".join(crawl_urls).lower()
+        publish_hosts = (
+            "fby.tfzqs88.com",
+            "fby.js-bovey.com",
+            "fby.chinpol.com",
+            "fby.syhsyh888.com",
+        )
+        if not all(h in joined for h in publish_hosts):
+            base["web_crawl_urls"] = DEFAULT_2048_WEB_CRAWL_URLS
+        else:
+            base["web_crawl_urls"] = ",".join(crawl_urls)
     else:
         base["web_crawl_urls"] = ",".join(crawl_urls)
 
@@ -706,13 +721,51 @@ def save_forum_config(conn: Any, forum_id: str, config: dict) -> dict:
 
 
 def get_active_forum_id(conn: Any) -> str:
+    """连续调度焦点论坛 id（非「唯一存活论坛」）。"""
     return get_setting(conn, ACTIVE_FORUM_KEY, SITE_CRAWLER_FORUM_ID) or SITE_CRAWLER_FORUM_ID
 
 
+def get_focus_forum_id(conn: Any) -> str:
+    """语义别名：与 get_active_forum_id 相同。"""
+    return get_active_forum_id(conn)
+
+
 def set_active_forum_id(conn: Any, forum_id: str) -> str:
+    """设为连续调度焦点；不改其它论坛的 web_crawler_enabled。"""
     fid = (forum_id or SITE_CRAWLER_FORUM_ID).strip() or SITE_CRAWLER_FORUM_ID
+    if fid not in CONFIGURABLE_FORUM_IDS:
+        fid = SITE_CRAWLER_FORUM_ID
     save_settings(conn, {ACTIVE_FORUM_KEY: fid})
     return fid
+
+
+def forum_capabilities(forum_id: str) -> dict[str, Any]:
+    """论坛能力位（与内容填满程度解耦）。"""
+    fid = (forum_id or "").strip()
+    registered = fid in CONFIGURABLE_FORUM_IDS
+    crawlable = fid in FULL_CRAWLER_FORUM_IDS
+    return {
+        "registered": registered,
+        "configurable": registered,
+        "crawlable": crawlable,
+        "boards_ready": crawlable,
+        "parsers_ready": crawlable,
+    }
+
+
+def list_crawlable_forum_ids() -> list[str]:
+    return sorted(FULL_CRAWLER_FORUM_IDS)
+
+
+def enabled_crawler_forum_ids(conn: Any) -> list[str]:
+    """web_crawler_enabled=true 的已接入论坛（可多选武装，调度只跑焦点）。"""
+    configs = load_forum_configs_map(conn)
+    out: list[str] = []
+    for fid in list_crawlable_forum_ids():
+        cfg = configs.get(fid) or {}
+        if bool(cfg.get("web_crawler_enabled")):
+            out.append(fid)
+    return out
 
 # 正文【标签】展示名（供管理端；入库别名见 parsers.content.LABEL_KEYS）
 # 前两项 = 真正资源名 / 子标题（与 parsers.resource_names.SUBRESOURCE_TITLE_LABELS 一致）
@@ -828,6 +881,7 @@ def build_forums_payload(conn: Any) -> dict:
     dedicated_configs = {
         fid: cfg for fid, cfg in configs.items() if fid in CONFIGURABLE_FORUM_IDS
     }
+    focus_id = get_active_forum_id(conn)
     forums = [
         {
             "id": SITE_CRAWLER_FORUM_ID,
@@ -838,13 +892,16 @@ def build_forums_payload(conn: Any) -> dict:
             "site_dedicated": True,
             "crawler_registered": True,
             "crawler_module": SITE_CRAWLER_MODULE,
-            "board_count": len(boards_sht),
+            "capabilities": forum_capabilities(SITE_CRAWLER_FORUM_ID),
+            "board_count": len({str(b["fid"]) for b in boards_sht}),
+            "unit_count": len(boards_sht),
             "boards": boards_sht,
             "crawler_config": sehuatang_cfg,
             "structure_labels": list(STRUCTURE_LABELS),
             "format_guides": FORMAT_GUIDES,
             "policies": [
                 "本站专用爬虫：仅服务色花堂，配置不与其他论坛共用",
+                "连续调度只跑「调度焦点」论坛；本站可单独开/关爬虫开关",
                 "一次仅选一个工作板块进行采集",
                 "原创BT电影：除 fid 148（鲍鱼直播盒子）外白名单板块（磁力为主）",
                 "综合讨论区：fid=95 仅 typeid=716 情色分享 ED2K；141 网友原创 ED2K；142 转帖交流区磁力",
@@ -855,19 +912,22 @@ def build_forums_payload(conn: Any) -> dict:
         {
             "id": FORUM_2048_ID,
             "name": "2048",
-            "base_url": "https://ut2gw5.xc6ym5.com/",
+            "base_url": "https://fby.tfzqs88.com",
             "icon_url": "/h-forum-icon.png",
             "status": "active",
             "site_dedicated": False,
             "crawler_registered": True,
             "crawler_module": FORUM_2048_MODULE,
-            "board_count": len(boards_2048),
+            "capabilities": forum_capabilities(FORUM_2048_ID),
+            "board_count": len({str(b["fid"]) for b in boards_2048}),
+            "unit_count": len(boards_2048),
             "boards": boards_2048,
             "crawler_config": forum_2048_cfg,
             "structure_labels": list(STRUCTURE_LABELS_2048),
             "format_guides": FORMAT_GUIDES_2048,
             "policies": [
                 "独立爬虫：PHPWind「人人为我论坛」，配置与色花堂互不共用",
+                "与色花堂同级：可设为调度焦点、可单独开爬虫开关、可按 URL 导入",
                 "白名单子版：3/4/5/13/15/16/18/67/343/195/318；主链优先磁力，无磁力再 ED2K",
                 "fid=5 日本騎兵、fid=13 歐美新片需登录后免费购买，请在配置里填论坛 Cookie",
                 "列表 thread.php?fid= · 帖子 read.php?tid=；Cookie 用独立 jar",
@@ -875,9 +935,14 @@ def build_forums_payload(conn: Any) -> dict:
         },
     ]
     return {
-        "active_forum_id": get_active_forum_id(conn),
+        "active_forum_id": focus_id,
+        "focus_forum_id": focus_id,
         "site_crawler_forum_id": SITE_CRAWLER_FORUM_ID,
         "forums": forums,
         "forum_configs": dedicated_configs,
         "registered_crawler_forums": sorted(CONFIGURABLE_FORUM_IDS),
+        "crawlable_forum_ids": list_crawlable_forum_ids(),
+        "enabled_crawler_forum_ids": enabled_crawler_forum_ids(conn),
+        "scheduling_model": "single_process_focus",
+        "scheduling_note": "单进程：连续调度只跑焦点论坛；各论坛配置/Cookie/开关独立；手动扫帖/导入可指定任意已接入论坛",
     }

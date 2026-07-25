@@ -874,7 +874,7 @@ function forumCrawlerPayload(forumId) {
 
 function extractForumConfigFromSettings(settings) {
   return {
-    web_crawler_enabled: settings.web_crawler_enabled ?? true,
+    web_crawler_enabled: settings.web_crawler_enabled ?? false,
     web_crawler_hot_mode: false,
     web_crawler_auto_discover: settings.web_crawler_auto_discover ?? false,
     web_crawl_urls: settings.web_crawl_urls ?? "",
@@ -1876,7 +1876,7 @@ function stopForumTopologyPoll() {
 
 function renderForumConfigSummary(forum) {
   const cfg = forum.crawler_config || cachedForumConfigs[forum.id] || {};
-  const enabled = cfg.web_crawler_enabled ?? true;
+  const enabled = cfg.web_crawler_enabled ?? false;
   const listPages = cfg.web_crawler_list_pages_per_board ?? 15;
   const entry = cfg.web_crawl_urls || forum.base_url || "-";
   return `<div class="forum-config-summary">

@@ -15,7 +15,13 @@ from pathlib import Path
 from typing import Any, Optional
 
 from db.connection import connect
-from db.forum_configs import SITE_CRAWLER_FORUM_ID, load_forum_configs_map, save_forum_config
+from db.forum_configs import (
+    FULL_CRAWLER_FORUM_IDS,
+    enabled_crawler_forum_ids,
+    get_active_forum_id,
+    load_forum_configs_map,
+    save_forum_config,
+)
 from db.resource_db import connect_resource, resource_dsn_kwargs
 from db.settings_store import get_setting, set_setting
 
@@ -102,10 +108,20 @@ def load_backup_config(conn: Any | None = None) -> dict[str, Any]:
             "last_run_date": get_setting(conn, SETTING_LAST_RUN_DATE, "") or None,
             "file": backup_file_info(),
             "busy": is_backup_busy(),
+            "import_job": _import_job_snapshot(),
         }
     finally:
         if own:
             conn.close()
+
+
+def _import_job_snapshot() -> dict[str, Any]:
+    try:
+        from workers.backup_import import get_import_progress
+
+        return get_import_progress()
+    except Exception:
+        return {"active": False, "phase": "idle", "percent": 0, "message": ""}
 
 
 def save_backup_config(
@@ -181,19 +197,31 @@ def _sql_literal(value: Any) -> str:
 
 
 def _run_python_dump(tables: list[str], dest_tmp: Path) -> None:
-    """无 pg_dump 时的回退：按表导出 DELETE+INSERT（gzip）。"""
+    """无 pg_dump 时的回退：按表导出 DELETE+INSERT（gzip）。
+
+    使用服务端游标（named cursor）按批拉取，避免整表进客户端内存。
+    """
     conn = connect_resource()
     try:
+        # named cursor 必须在事务中；关闭自动提交
+        try:
+            conn.autocommit = False
+        except Exception:
+            pass
         with gzip.open(dest_tmp, "wt", encoding="utf-8", compresslevel=1) as gz:
             gz.write("-- sehuatang resource backup (python fallback)\n")
             gz.write("BEGIN;\n")
-            # 子表优先清空，再父表
             for name in reversed(tables):
                 gz.write(f"DELETE FROM {name};\n")
             for name in tables:
-                with conn.cursor() as cur:
+                # 每表独立命名游标，服务端流式
+                cur = conn.cursor(name=f"bak_{name[:40]}")
+                try:
+                    cur.itersize = 500
                     cur.execute(f"SELECT * FROM {name}")
-                    cols = [d[0] for d in cur.description]
+                    cols = [d[0] for d in cur.description] if cur.description else []
+                    if not cols:
+                        continue
                     col_sql = ", ".join(cols)
                     while True:
                         rows = cur.fetchmany(500)
@@ -202,7 +230,16 @@ def _run_python_dump(tables: list[str], dest_tmp: Path) -> None:
                         for row in rows:
                             vals = ", ".join(_sql_literal(v) for v in row)
                             gz.write(f"INSERT INTO {name} ({col_sql}) VALUES ({vals});\n")
+                finally:
+                    try:
+                        cur.close()
+                    except Exception:
+                        pass
             gz.write("COMMIT;\n")
+        try:
+            conn.commit()
+        except Exception:
+            pass
     finally:
         conn.close()
     if not dest_tmp.is_file() or dest_tmp.stat().st_size < 32:
@@ -286,31 +323,53 @@ async def _wait_crawler_idle(*, timeout: float = 90.0) -> bool:
 
 
 def _crawler_snapshot() -> dict[str, Any]:
+    """快照所有已开爬虫开关的论坛 + 当前调度焦点（备份后按原样恢复）。"""
     from workers.runner import crawl_status
 
     conn = connect()
     try:
-        configs = load_forum_configs_map(conn)
-        cfg = dict(configs.get(SITE_CRAWLER_FORUM_ID) or {})
-        was_enabled = bool(cfg.get("web_crawler_enabled"))
+        focus = get_active_forum_id(conn)
+        enabled_ids = enabled_crawler_forum_ids(conn)
     finally:
         conn.close()
     st = crawl_status()
+    running_forum = str(st.get("forum_id") or "").strip() or focus
     return {
-        "was_enabled": was_enabled,
+        "focus_forum_id": focus,
+        "enabled_forum_ids": list(enabled_ids),
+        "was_enabled": bool(enabled_ids),
         "was_looping": bool(st.get("looping")),
         "loop_kind": st.get("loop_kind"),
+        "loop_forum_id": running_forum,
     }
 
 
 async def _pause_crawler(snap: dict[str, Any]) -> None:
-    """按快照停止爬虫并等待空闲。"""
+    """停止 runner，并关闭快照中所有已开论坛的爬虫开关。"""
     from workers.runner import _log_activity, crawl_status, stop_crawler
 
     st = crawl_status()
+    enabled_ids = [str(x) for x in (snap.get("enabled_forum_ids") or []) if str(x).strip()]
     if snap.get("was_enabled") or st.get("running") or st.get("looping"):
-        _log_activity("备份：已暂停爬虫")
-        await stop_crawler(disable=True, wait_seconds=12.0, force_after=8.0)
+        label = "、".join(enabled_ids) if enabled_ids else "运行中任务"
+        _log_activity(f"备份：已暂停爬虫（{label}）")
+        # disable=False：由本函数按多论坛快照关开关，避免只关焦点站
+        await stop_crawler(disable=False, wait_seconds=12.0, force_after=8.0)
+
+        if enabled_ids:
+            conn = connect()
+            try:
+                configs = load_forum_configs_map(conn)
+                for fid in enabled_ids:
+                    if fid not in FULL_CRAWLER_FORUM_IDS:
+                        continue
+                    cfg = dict(configs.get(fid) or {})
+                    if cfg.get("web_crawler_enabled"):
+                        cfg["web_crawler_enabled"] = False
+                        save_forum_config(conn, fid, cfg)
+            finally:
+                conn.close()
+
         idle = await _wait_crawler_idle(timeout=90.0)
         if not idle:
             raise RuntimeError("等待爬虫停止超时，取消备份")
@@ -319,28 +378,37 @@ async def _pause_crawler(snap: dict[str, Any]) -> None:
 async def _resume_crawler(snap: dict[str, Any], *, ok: bool) -> None:
     from workers.runner import _log_activity, start_continuous_loop
 
-    if not snap.get("was_enabled"):
+    enabled_ids = [str(x) for x in (snap.get("enabled_forum_ids") or []) if str(x).strip()]
+    if not enabled_ids:
         return
 
     conn = connect()
     try:
         configs = load_forum_configs_map(conn)
-        cfg = dict(configs.get(SITE_CRAWLER_FORUM_ID) or {})
-        cfg["web_crawler_enabled"] = True
-        save_forum_config(conn, SITE_CRAWLER_FORUM_ID, cfg)
+        for fid in enabled_ids:
+            if fid not in FULL_CRAWLER_FORUM_IDS:
+                continue
+            cfg = dict(configs.get(fid) or {})
+            cfg["web_crawler_enabled"] = True
+            save_forum_config(conn, fid, cfg)
     finally:
         conn.close()
 
     kind = snap.get("loop_kind")
     label = "备份完成" if ok else "备份失败"
+    forums_label = "、".join(enabled_ids)
     if kind == "random_tid":
         from workers.random_tid import start_random_tid_loop
 
         start_random_tid_loop()
-        _log_activity(f"{label}·已恢复随机抓帖连续调度")
+        _log_activity(f"{label}·已恢复随机抓帖 · 论坛开关 {forums_label}")
     else:
         start_continuous_loop()
-        _log_activity(f"{label}·已恢复爬虫连续调度")
+        focus = str(snap.get("focus_forum_id") or snap.get("loop_forum_id") or "")
+        _log_activity(
+            f"{label}·已恢复连续调度 · 开关 {forums_label}"
+            + (f" · 焦点 {focus}" if focus else "")
+        )
 
 
 async def run_backup_once(*, trigger: str = "manual") -> dict[str, Any]:
@@ -354,7 +422,13 @@ async def run_backup_once(*, trigger: str = "manual") -> dict[str, Any]:
             "error": "备份正在进行中，请稍候",
         }
     _BUSY = True
-    snap: dict[str, Any] = {"was_enabled": False, "was_looping": False, "loop_kind": None}
+    snap: dict[str, Any] = {
+        "was_enabled": False,
+        "was_looping": False,
+        "loop_kind": None,
+        "enabled_forum_ids": [],
+        "focus_forum_id": "",
+    }
     backup_ok = False
     try:
         from workers.runner import _log_activity

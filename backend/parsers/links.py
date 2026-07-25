@@ -210,7 +210,8 @@ def parse_thread_dual(
         preferred=preferred_link,
         share115_links=share115_links,
     )
-    # 子资源：按子标题切段（无子标题则整帖用帖标题）；一段只留一个主链
+    # 子资源：按子标题切段（无子标题则整帖用帖标题）；
+    # 一段内多链全部入库；连续名称后接连续链接则 1:1
     hashes = [a.hash for a in assets if a.link_kind in {"magnet", "ed2k"} and a.hash]
     if hashes:
         blocks = extract_subresource_blocks(

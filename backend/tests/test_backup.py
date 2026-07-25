@@ -21,7 +21,17 @@ def _isolate_backup_paths(tmp_path, monkeypatch):
     if bk._LOCK.locked():
         bk._LOCK.release()
     bk._BUSY = False
+    # 避免其它用例污染独立资源库缓存
+    from db.resource_db import invalidate_resource_db_cache
+
+    invalidate_resource_db_cache()
+    monkeypatch.setattr(
+        bk,
+        "connect_resource",
+        lambda: type("C", (), {"close": lambda self: None})(),
+    )
     yield
+    invalidate_resource_db_cache()
 
 
 def test_backup_file_info_missing():
@@ -99,6 +109,7 @@ async def test_run_backup_keeps_old_on_failure(monkeypatch):
 @pytest.mark.asyncio
 async def test_pause_and_resume_when_enabled(monkeypatch):
     import workers.runner as runner
+    from db.forum_configs import FORUM_2048_ID, SITE_CRAWLER_FORUM_ID
 
     stop = AsyncMock()
     start_loop = MagicMock(return_value={"ok": True})
@@ -106,7 +117,12 @@ async def test_pause_and_resume_when_enabled(monkeypatch):
     monkeypatch.setattr(
         runner,
         "crawl_status",
-        lambda: {"running": True, "looping": True, "loop_kind": "deep"},
+        lambda: {
+            "running": True,
+            "looping": True,
+            "loop_kind": "deep",
+            "forum_id": SITE_CRAWLER_FORUM_ID,
+        },
     )
     monkeypatch.setattr(runner, "start_continuous_loop", start_loop)
     monkeypatch.setattr(runner, "_log_activity", lambda msg: None)
@@ -116,24 +132,74 @@ async def test_pause_and_resume_when_enabled(monkeypatch):
         def close(self):
             return None
 
+    saved: list[tuple[str, bool]] = []
+
     monkeypatch.setattr(bk, "connect", lambda: _Conn())
     monkeypatch.setattr(
         bk,
         "load_forum_configs_map",
-        lambda conn: {bk.SITE_CRAWLER_FORUM_ID: {"web_crawler_enabled": True}},
+        lambda conn: {
+            SITE_CRAWLER_FORUM_ID: {"web_crawler_enabled": True},
+            FORUM_2048_ID: {"web_crawler_enabled": True},
+        },
     )
-    monkeypatch.setattr(bk, "save_forum_config", lambda conn, fid, cfg: None)
+
+    def _save(conn, fid, cfg):
+        saved.append((fid, bool(cfg.get("web_crawler_enabled"))))
+
+    monkeypatch.setattr(bk, "save_forum_config", _save)
 
     snap = {
         "was_enabled": True,
         "was_looping": True,
         "loop_kind": "deep",
+        "enabled_forum_ids": [SITE_CRAWLER_FORUM_ID, FORUM_2048_ID],
+        "focus_forum_id": SITE_CRAWLER_FORUM_ID,
+        "loop_forum_id": SITE_CRAWLER_FORUM_ID,
     }
     await bk._pause_crawler(snap)
     stop.assert_awaited()
+    # disable=False：由备份按多论坛快照关开关
+    assert stop.await_args.kwargs.get("disable") is False
+    assert (SITE_CRAWLER_FORUM_ID, False) in saved
+    assert (FORUM_2048_ID, False) in saved
 
+    saved.clear()
     await bk._resume_crawler(snap, ok=True)
     start_loop.assert_called_once()
+    assert (SITE_CRAWLER_FORUM_ID, True) in saved
+    assert (FORUM_2048_ID, True) in saved
+
+
+@pytest.mark.asyncio
+async def test_crawler_snapshot_includes_all_enabled_forums(monkeypatch):
+    from db.forum_configs import FORUM_2048_ID, SITE_CRAWLER_FORUM_ID
+
+    class _Conn:
+        def close(self):
+            return None
+
+    monkeypatch.setattr(bk, "connect", lambda: _Conn())
+    monkeypatch.setattr(bk, "get_active_forum_id", lambda conn: FORUM_2048_ID)
+    monkeypatch.setattr(
+        bk,
+        "enabled_crawler_forum_ids",
+        lambda conn: [SITE_CRAWLER_FORUM_ID, FORUM_2048_ID],
+    )
+    monkeypatch.setattr(
+        "workers.runner.crawl_status",
+        lambda: {
+            "running": False,
+            "looping": True,
+            "loop_kind": "deep",
+            "forum_id": FORUM_2048_ID,
+        },
+    )
+    snap = bk._crawler_snapshot()
+    assert snap["focus_forum_id"] == FORUM_2048_ID
+    assert snap["enabled_forum_ids"] == [SITE_CRAWLER_FORUM_ID, FORUM_2048_ID]
+    assert snap["was_enabled"] is True
+    assert snap["loop_forum_id"] == FORUM_2048_ID
 
 
 def test_pg_dump_version_mismatch_falls_back_to_python(monkeypatch, tmp_path):

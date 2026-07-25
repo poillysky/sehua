@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import {
+  clearCrawlerActivity,
   fetchCrawlerStatus,
   fetchDiscardedTids,
   fetchQueueBrowse,
@@ -262,6 +263,7 @@ export function CrawlerPage() {
   const [status, setStatus] = useState<CrawlerStatus | null>(null)
   const [loading, setLoading] = useState(true)
   const [busy, setBusy] = useState(false)
+  const [clearingActivity, setClearingActivity] = useState(false)
   const [runHint, setRunHint] = useState('')
   const autoLoopTried = useRef(false)
   const stubWasActive = useRef(false)
@@ -652,6 +654,35 @@ export function CrawlerPage() {
     }
   }
 
+  const onClearActivity = async () => {
+    if (!activity.length && !clearingActivity) {
+      toast.info('活动日志已经是空的')
+      return
+    }
+    const ok = await confirmDialog({
+      title: '清理活动日志',
+      message: '将清空爬虫状态页活动日志面板中的历史记录，不影响待抓队列、游标与资源库。确定？',
+      confirmText: '清空日志',
+      danger: true,
+    })
+    if (!ok) return
+    setClearingActivity(true)
+    try {
+      const res = await clearCrawlerActivity()
+      setStatus((prev) =>
+        prev
+          ? { ...prev, activity: res.activity || [] }
+          : prev,
+      )
+      toast.success(`已清空活动日志 · ${res.deleted} 条`)
+      await refresh()
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : '清空日志失败')
+    } finally {
+      setClearingActivity(false)
+    }
+  }
+
   const onRetryAbnormal = async () => {
     if (abnormal <= 0) {
       toast.info('当前没有异常帖可重试')
@@ -846,15 +877,20 @@ export function CrawlerPage() {
     }
   }
 
-  const forumName = status?.active_forum_name || status?.active_forum_id || '论坛'
+  const forumName = status?.active_forum_name || status?.focus_forum_id || status?.active_forum_id || '论坛'
+  const runningForumHint =
+    status?.running_forum_id &&
+    status.running_forum_id !== (status.focus_forum_id || status.active_forum_id)
+      ? ` · 运行中 ${status.running_forum_id}`
+      : ''
 
   const runLabel = (() => {
     if (loading) return '读取中…'
     if (stopping || (running && !enabled && loopKind !== 'random_tid')) return `正在停止 · ${forumName}`
     if (stopping) return `正在停止 · ${forumName}`
     if (riskTripped) return `${forumName} · 风控熔断`
-    if (looping && loopKind === 'random_tid') return `随机抓帖连续中 · 每轮 200 · ${forumName}`
-    if (running || looping) return `正在执行 · ${forumName}`
+    if (looping && loopKind === 'random_tid') return `随机抓帖连续中 · 每轮 200 · ${forumName}${runningForumHint}`
+    if (running || looping) return `正在执行 · ${forumName}${runningForumHint}`
     if (enabled) return `${forumName} · 已开启 · 连续执行`
     return `${forumName} · 已关闭`
   })()
@@ -1083,6 +1119,18 @@ export function CrawlerPage() {
             <p className="hint crawler-result">{resultLine}</p>
 
             <div className="activity-log-wrap">
+              <div className="activity-log-head">
+                <span className="activity-log-title">活动日志</span>
+                <button
+                  type="button"
+                  className="btn ghost sm"
+                  disabled={busy || clearingActivity || !activity.length}
+                  title="清空活动日志面板"
+                  onClick={() => void onClearActivity()}
+                >
+                  {clearingActivity ? '清理中…' : '清理日志'}
+                </button>
+              </div>
               <div className="activity-log">
                 {activity.length ? (
                   activity.map((a, i) => (

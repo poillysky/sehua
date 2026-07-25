@@ -1,4 +1,4 @@
-"""人工导入：标准说明 + 按统一入库格式表单入库。"""
+"""人工导入：标准说明 + 按统一入库格式表单入库 + 帖子 URL 爬取入库。"""
 
 from __future__ import annotations
 
@@ -9,11 +9,22 @@ from pathlib import Path
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from pydantic import BaseModel, Field
 
+from api.zh_errors import user_facing_error
 from auth.deps import require_permission
+from db.connection import connect
+from db.forum_configs import (
+    FORUM_2048_ID,
+    FULL_CRAWLER_FORUM_IDS,
+    default_2048_forum_crawler_config,
+    default_forum_crawler_config,
+    load_forum_configs_map,
+)
 from db.resource_db import connect_resource
 from db.repository import ensure_source, upsert_resource
+from db.settings_store import get_setting
 from parsers.ed2k import Ed2kLink, parse_ed2k_text
 from parsers.magnet import parse_magnet_text
+from workers.thread_parse_test import parse_thread_for_admin
 
 router = APIRouter(prefix="/api/import", tags=["import"])
 
@@ -59,6 +70,117 @@ class ImportResult(BaseModel):
     message: str = "success"
     ed2k: int = 0
     magnets: int = 0
+
+
+class ImportFromUrlBody(BaseModel):
+    url: str = Field(..., min_length=8, description="帖子链接")
+    forum_id: str = Field(default="sehuatang", description="论坛 id：sehuatang / 2048")
+    board_fid: str = Field(default="", description="可选板块 fid；空则自动识别")
+
+
+@router.post("/from-url")
+async def import_from_url(
+    body: ImportFromUrlBody,
+    _user: dict = Depends(require_permission("import")),
+) -> dict:
+    """粘贴帖子 URL + 选择论坛 → 抓取解析并入库（与爬虫同一判定/写库路径）。"""
+    fid = (body.forum_id or "").strip() or "sehuatang"
+    if fid not in FULL_CRAWLER_FORUM_IDS:
+        raise HTTPException(status_code=400, detail="该论坛尚未接入按链接导入")
+
+    url = (body.url or "").strip()
+    if not url:
+        raise HTTPException(status_code=400, detail="帖子 URL 不能为空")
+
+    conn = connect()
+    try:
+        configs = load_forum_configs_map(conn)
+        if fid == FORUM_2048_ID:
+            fc = dict(configs.get(fid) or default_2048_forum_crawler_config())
+        else:
+            fc = dict(configs.get(fid) or default_forum_crawler_config())
+        site_proxy = get_setting(conn, "web_crawler_proxy", "")
+    finally:
+        conn.close()
+
+    if site_proxy and not fc.get("web_crawler_proxy"):
+        fc["web_crawler_proxy"] = site_proxy
+
+    from workers.backup import is_backup_busy
+    from workers.runner import end_exclusive, try_begin_exclusive
+
+    if is_backup_busy():
+        raise HTTPException(
+            status_code=409,
+            detail="正在备份或恢复数据，请等完成后再导入",
+        )
+    gate = try_begin_exclusive(
+        "url_import",
+        busy_hint="爬虫正忙，请稍后再导入（若开着自动爬取，可先到「爬虫」页点停止）",
+    )
+    if not gate.get("ok"):
+        reason = str(gate.get("reason") or "")
+        if reason == "loop_running":
+            detail = "正在自动爬取中，请先到「爬虫」页点停止，再回来导入"
+        elif reason == "busy":
+            detail = "爬虫正在处理其他任务，请稍等几秒再导入"
+        else:
+            detail = str(gate.get("error") or "系统正忙，请稍后再导入")
+        raise HTTPException(status_code=409, detail=detail)
+
+    try:
+        result = await parse_thread_for_admin(
+            url,
+            board_fid=(body.board_fid or "").strip(),
+            crawler_config=fc,
+            forum_id=fid,
+            persist=True,
+            replace_thread_assets=True,
+        )
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail=user_facing_error(exc, fallback="帖子 URL 无效"),
+        ) from exc
+    except Exception as exc:
+        raise HTTPException(
+            status_code=500,
+            detail=user_facing_error(exc, fallback="抓取失败，请稍后重试"),
+        ) from exc
+    finally:
+        end_exclusive()
+
+    persisted = result.get("persisted")
+    if not isinstance(persisted, dict):
+        outcome = str(result.get("import_outcome") or result.get("import_verdict_label") or "未能入库")
+        raise HTTPException(status_code=400, detail=outcome)
+
+    count = int(persisted.get("count") or 0)
+    title = str(result.get("title") or "")
+    outcome = str(result.get("import_outcome") or "")
+    kind = str(persisted.get("link_kind") or result.get("link_kind") or "")
+    stub = bool(persisted.get("stub"))
+    if count <= 0 and not stub:
+        raise HTTPException(status_code=400, detail=outcome or "未能入库")
+
+    msg = f"已入库 {count} 条" if count else ("已写占位" if stub else "完成")
+    if title:
+        msg = f"{msg} · {title[:60]}"
+    return {
+        "message": msg,
+        "count": count,
+        "forum_id": fid,
+        "title": title,
+        "link_kind": kind,
+        "stub": stub,
+        "hash": persisted.get("hash"),
+        "import_outcome": outcome,
+        "board_fid": result.get("board_fid"),
+        "board_name": result.get("board_name"),
+        "source_url": result.get("fetch_url") or url,
+        "magnets": int(result.get("final_magnet_count") or 0),
+        "ed2k": int(result.get("final_ed2k_count") or 0),
+    }
 
 
 def _parse_preview_images(raw: list[str] | str | None) -> list[str]:

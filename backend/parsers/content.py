@@ -300,6 +300,9 @@ IMAGE_SKIP_MARKERS = (
     "static/image/",
     "avatar",
     "uc_server/avatar",
+    "uc_server/data/avatar",
+    "uc_server/images/",
+    "noavatar",
     "logo",
     "/emoji",
     "smiley",
@@ -310,6 +313,28 @@ IMAGE_SKIP_MARKERS = (
     "common_56_",
     "/icon/",
     "favicon",
+    "medal/",
+    "ranklist",
+    "online_member",
+    "online_moderator",
+    "ico_lz",
+    "pn_post",
+    "thread-prev",
+    "thread-next",
+    "print.png",
+    "userinfo.gif",
+    "fj_btn",
+    "arw_r.gif",
+    "hot_1.gif",
+    # 二维码 / 加群码常见命名
+    "qrcode",
+    "qr_code",
+    "/qr/",
+    "weixinqr",
+    "wxqr",
+    "wx_qr",
+    "qqqr",
+    "%e4%ba%8c%e7%bb%b4%e7%a0%81",  # 二维码
     # PHPWind / 2048 站内 UI、懒加载占位
     "thumb-ing",
     "images/wind/",
@@ -321,6 +346,29 @@ IMAGE_SKIP_MARKERS = (
     "/file/rar.gif",
     "tip_bottom",
     "tip/small",
+)
+
+# img class / id：头像、在线图标、勋章等
+_IMG_NOISE_CLASS_RE = re.compile(
+    r"""\bclass\s*=\s*["'][^"']*\b(?:authicn|avtm|avatar|md_ctrl)\b""",
+    re.I,
+)
+_IMG_NOISE_ID_RE = re.compile(
+    r"""\bid\s*=\s*["'][^"']*(?:authicon|md_\d|favatar)""",
+    re.I,
+)
+# alt/title 明示二维码 / 头像
+_IMG_NOISE_LABEL_RE = re.compile(
+    r"(?:二维码|二維碼|qr\s*code|qrcode|头像|頭像|avatar|勋章|勳章|用户组|用戶組)",
+    re.I,
+)
+_IMG_WH_RE = re.compile(
+    r"""\b(?:width|height)\s*=\s*["']?(\d{1,4})""",
+    re.I,
+)
+# 签名档 / 头像栏整块去掉再抽图（避免签名里的广告图、二维码进预览）
+_STRIP_PREVIEW_BLOCKS_RE = re.compile(
+    r"(?is)<div[^>]*\bclass\s*=\s*[\"'][^\"']*\b(?:sign|avatar|favatar)\b[^\"']*[\"'][^>]*>.*?</div>",
 )
 BLOCKCODE_RE = re.compile(
     r'<(?:div|pre)[^>]*class="[^"]*blockcode[^"]*"[^>]*>(.*?)</(?:div|pre)>',
@@ -737,18 +785,50 @@ def _normalize_preview_url(base_url: str, src: str) -> str | None:
     # 站内极小图标 / 1x1 之类不算预览
     if re.search(r"(?:_icon|icon_)\.(?:gif|png|jpe?g|webp)(?:\?|$)", lowered):
         return None
+    # 文件名里带二维码/头像关键词
+    path_only = lowered.split("?", 1)[0]
+    if re.search(
+        r"(?:^|/)(?:qr|qrcode|weixin.?qr|wx.?qr|avatar|noavatar|logo)(?:[_-]|\.|$)",
+        path_only,
+    ):
+        return None
     return full
 
 
+def _img_tag_is_noise(attrs: str) -> bool:
+    """头像 / 在线标 / 勋章 / 二维码说明 / 过小图标。"""
+    raw = attrs or ""
+    if _IMG_NOISE_CLASS_RE.search(raw) or _IMG_NOISE_ID_RE.search(raw):
+        return True
+    for m in re.finditer(
+        r"""(?:alt|title)\s*=\s*["']([^"']*)["']""",
+        raw,
+        re.I,
+    ):
+        if _IMG_NOISE_LABEL_RE.search(m.group(1) or ""):
+            return True
+    dims = [int(x) for x in _IMG_WH_RE.findall(raw)]
+    # 两侧都不超过 120：多半是头像、图标、小二维码角标
+    if len(dims) >= 2 and max(dims[:2]) <= 120 and min(dims[:2]) <= 120:
+        return True
+    if len(dims) == 1 and dims[0] <= 80:
+        return True
+    return False
+
+
 def extract_preview_images(html: str, limit: int = 5, *, base_url: str = "") -> list[str]:
-    """提取帖内预览图：有几张取几张，最多 limit（默认 5）；过滤表情/用户组等装饰图。
+    """提取帖内预览图：有几张取几张，最多 limit（默认 5）；过滤表情/头像/二维码/论坛图标。
 
     属性优先级：Discuz zoomfile/file → PHPWind data-original 等懒加载 → src。
+    若存在 inpost/aid/zoomfile 正文图，只收这类，避免签名档/侧栏装饰图。
     """
-    urls: list[str] = []
+    blob = _STRIP_PREVIEW_BLOCKS_RE.sub(" ", html or "")
+    candidates: list[tuple[str, bool]] = []  # (url, is_content)
     seen: set[str] = set()
-    for tag in IMG_TAG_RE.finditer(html or ""):
+    for tag in IMG_TAG_RE.finditer(blob):
         attrs = tag.group(1) or ""
+        if _img_tag_is_noise(attrs):
+            continue
         by_name: dict[str, str] = {}
         for m in IMG_ATTR_RE.finditer(attrs):
             attr_name = m.group(0).split("=", 1)[0].strip().lower()
@@ -767,11 +847,19 @@ def extract_preview_images(html: str, limit: int = 5, *, base_url: str = "") -> 
         url = _normalize_preview_url(base_url, src)
         if not url or url in seen:
             continue
+        attrs_l = attrs.lower()
+        is_content = bool(
+            re.search(r"""\binpost\s*=\s*["']?1["']?""", attrs_l)
+            or re.search(r"""\baid\s*=\s*["']?\d+""", attrs_l)
+            or "zoomfile" in by_name
+            or ("file" in by_name and "zoom" in attrs_l)
+        )
         seen.add(url)
-        urls.append(url)
-        if len(urls) >= max(1, limit):
-            break
-    return urls
+        candidates.append((url, is_content))
+
+    preferred = [u for u, content in candidates if content]
+    pick = preferred if preferred else [u for u, _ in candidates]
+    return pick[: max(1, int(limit or 5))]
 
 
 # 子标题切分：认 SUBRESOURCE_TITLE_MATCH_FORMS（简繁 影片名称/资源名称；异写括号）
@@ -797,8 +885,13 @@ def iter_subresource_title_spans(html: str) -> list[tuple[int, int]]:
 
 
 def _magnet_positions_in_scope(scope: str, wanted: set[str] | None = None) -> list[tuple[str, int, int]]:
-    """文档序磁力位置；(hash, start, end)。同 hash 留首次。"""
-    mag_pos: list[tuple[str, int, int]] = []
+    """兼容旧名：文档序磁力/电驴位置；(hash, start, end)。"""
+    return _link_positions_in_scope(scope, wanted)
+
+
+def _link_positions_in_scope(scope: str, wanted: set[str] | None = None) -> list[tuple[str, int, int]]:
+    """文档序资源链位置；(hash, start, end)。同 hash 留首次。含 magnet + ed2k。"""
+    pos: list[tuple[str, int, int]] = []
     seen_h: set[str] = set()
     for m in re.finditer(
         r"magnet:\?xt=urn:btih:([A-Fa-f0-9]{40}|[A-Fa-f0-9]{32}|[a-zA-Z2-7]{32})",
@@ -809,7 +902,17 @@ def _magnet_positions_in_scope(scope: str, wanted: set[str] | None = None) -> li
         if h in seen_h:
             continue
         seen_h.add(h)
-        mag_pos.append((h, m.start(), m.end()))
+        pos.append((h, m.start(), m.end()))
+    for m in re.finditer(
+        r"ed2k://\|file\|[^\|\n]{1,300}\|\d+\|([A-Fa-f0-9]{32})\|",
+        scope,
+        re.I,
+    ):
+        h = m.group(1).upper()
+        if h in seen_h:
+            continue
+        seen_h.add(h)
+        pos.append((h, m.start(), m.end()))
     if wanted:
         upper = scope.upper()
         for h in wanted:
@@ -821,10 +924,12 @@ def _magnet_positions_in_scope(scope: str, wanted: set[str] | None = None) -> li
             seen_h.add(h)
             start = scope.rfind("magnet:", max(0, idx - 40), idx)
             if start < 0:
+                start = scope.rfind("ed2k:", max(0, idx - 80), idx)
+            if start < 0:
                 start = idx
-            mag_pos.append((h, start, idx + len(h)))
-    mag_pos.sort(key=lambda x: x[1])
-    return mag_pos
+            pos.append((h, start, idx + len(h)))
+    pos.sort(key=lambda x: x[1])
+    return pos
 
 
 def _detect_magnet_title_layout(
@@ -841,6 +946,24 @@ def _detect_magnet_title_layout(
     if mag_pos[0][1] < titles[0][0]:
         return "magnet_then_title"
     return "title_then_magnet"
+
+
+def _is_names_then_links_layout(
+    titles: list[tuple[int, int]],
+    link_pos: list[tuple[str, int, int]],
+) -> bool:
+    """连续 N 个资源名称后，再出现 N 个链接 → 按顺序 1:1。
+
+    判定：标题簇内无链；首链在最后一个标题标签之后。
+    """
+    if len(titles) < 2 or not link_pos:
+        return False
+    cluster_lo = titles[0][0]
+    cluster_hi = titles[-1][0]
+    for _h, s, _e in link_pos:
+        if cluster_lo <= s < cluster_hi:
+            return False
+    return link_pos[0][1] >= titles[-1][1]
 
 
 def _size_from_subresource_block(scope: str, label_end: int, next_start: int) -> int:
@@ -945,6 +1068,58 @@ def _build_block_description(
     return "\n".join(lines)
 
 
+def _assemble_subresource_block(
+    *,
+    paired: str,
+    name: str,
+    scope: str,
+    field_lo: int,
+    field_hi: int,
+    kind: str,
+    lim: int,
+    base_url: str,
+    preview_chunk: str | None = None,
+) -> SubresourceBlock:
+    raw_chunk = scope[field_lo:field_hi]
+    text_chunk = re.sub(r"<[^>]+>", " ", raw_chunk or "")
+    text_chunk = re.sub(r"&nbsp;", " ", text_chunk, flags=re.I)
+    size = _size_from_subresource_block(scope, field_lo, field_hi)
+    size_label = _block_field(text_chunk, *SIZE_FIELD_FORMS)
+    if not size_label and size > 0:
+        emb = re.search(
+            r"\[\s*(?:MP4|MKV|AVI|WMV|MOV|FLV|TS|ISO)?\s*/\s*([0-9.]+)\s*([KMGT])B?\s*\]",
+            name,
+            re.I,
+        )
+        if emb:
+            size_label = f"{emb.group(1)}{emb.group(2).upper()}"
+    fmt = _block_field(text_chunk, *FORMAT_FIELD_FORMS)
+    note = _block_field(text_chunk, *NOTE_FIELD_FORMS)
+    torrent = _block_field(text_chunk, *TORRENT_FIELD_FORMS)
+    imgs = extract_preview_images(
+        preview_chunk if preview_chunk is not None else raw_chunk,
+        limit=lim,
+        base_url=base_url,
+    )
+    desc = _build_block_description(
+        title=name,
+        size_label=size_label,
+        fmt=fmt,
+        note=note,
+        kind=kind,
+    )
+    return SubresourceBlock(
+        infohash=paired,
+        title=name,
+        size=size,
+        format=fmt,
+        note=note,
+        torrent_name=torrent,
+        preview_images=imgs,
+        description=desc,
+    )
+
+
 def extract_subresource_blocks(
     html: str,
     infohashes: list[str] | None = None,
@@ -953,12 +1128,12 @@ def extract_subresource_blocks(
     limit_per: int = 5,
     fallback_title: str = "",
 ) -> list[SubresourceBlock]:
-    """按子标题切段：一段 = 一个子资源（段内多个磁力只取第一个）。
+    """按子标题切段挂资源链。
 
     规则：
-    - 无子标题：整段主贴归帖标题，所有链同属这一条子资源
-    - 1 个子标题：主贴内该标题下全部链同属它
-    - ≥2 个子标题：第 i 个标题 → 下一个标题之前（最后一段到文尾）
+    - 无子标题：整段主贴归帖标题，只留一条主链（帖内多链视为同一主资源的重复）
+    - 有子标题：名称 i → 名称 i+1 为一段；段内全部 magnet/ed2k 同属该名称，全部入库
+    - 连续 N 个名称后才出现链接：按顺序 1:1 配对；多出的链挂到最后一个名称
     """
     # 楼主各层（一楼元数据 + 二楼补链）拼成切段语料；路人回帖仍排除
     lz_parts = extract_lz_posts_html(html, limit=5)
@@ -972,11 +1147,10 @@ def extract_subresource_blocks(
         if not wanted:
             return []
 
-    mag_pos = _magnet_positions_in_scope(scope, wanted)
+    link_pos = _link_positions_in_scope(scope, wanted)
     if wanted:
-        # 只要还在 wanted 里的 hash（可能仅 ed2k）；无位置的稍后无法切段
-        mag_pos = [x for x in mag_pos if x[0] in wanted]
-    if not mag_pos:
+        link_pos = [x for x in link_pos if x[0] in wanted]
+    if not link_pos:
         return []
 
     titles = iter_subresource_title_spans(scope)
@@ -984,38 +1158,78 @@ def extract_subresource_blocks(
     out: list[SubresourceBlock] = []
     seen: set[str] = set()
 
-    # 无子标题：整帖一段，标题用帖子标题
+    # 无子标题：整帖一段，标题用帖子标题；只留主链
     if not titles:
         name = (fallback_title or "").strip()[:255]
         if not name:
             return []
-        paired = mag_pos[0][0]
-        raw_chunk = scope
-        text_chunk = re.sub(r"<[^>]+>", " ", raw_chunk or "")
-        text_chunk = re.sub(r"&nbsp;", " ", text_chunk, flags=re.I)
-        size = _size_from_subresource_block(scope, 0, len(scope))
-        size_label = _block_field(text_chunk, *SIZE_FIELD_FORMS)
-        fmt = _block_field(text_chunk, *FORMAT_FIELD_FORMS)
-        note = _block_field(text_chunk, *NOTE_FIELD_FORMS)
-        torrent = _block_field(text_chunk, *TORRENT_FIELD_FORMS)
-        imgs = extract_preview_images(raw_chunk, limit=lim, base_url=base_url)
-        desc = _build_block_description(
-            title=name, size_label=size_label, fmt=fmt, note=note, kind="film"
-        )
+        paired = link_pos[0][0]
         return [
-            SubresourceBlock(
-                infohash=paired,
-                title=name,
-                size=size,
-                format=fmt,
-                note=note,
-                torrent_name=torrent,
-                preview_images=imgs,
-                description=desc,
+            _assemble_subresource_block(
+                paired=paired,
+                name=name,
+                scope=scope,
+                field_lo=0,
+                field_hi=len(scope),
+                kind="film",
+                lim=lim,
+                base_url=base_url,
             )
         ]
 
-    layout = _detect_magnet_title_layout(titles, mag_pos)
+    # 连续名称 → 连续链接：1:1
+    if _is_names_then_links_layout(titles, link_pos):
+        n_pair = min(len(titles), len(link_pos))
+        shared_tail = scope[titles[-1][1] : link_pos[0][1]]
+        for i in range(n_pair):
+            t_start, t_end = titles[i]
+            next_start = titles[i + 1][0] if i + 1 < len(titles) else link_pos[0][1]
+            name = _subresource_title_value(scope, t_end, next_start)
+            if not name:
+                continue
+            h = link_pos[i][0]
+            if h in seen:
+                continue
+            seen.add(h)
+            # 预览：标题簇后到首链前的公共图 + 本链到下一链之间的图
+            link_end = link_pos[i][2]
+            next_link = link_pos[i + 1][1] if i + 1 < len(link_pos) else len(scope)
+            preview_chunk = shared_tail + scope[link_end:next_link]
+            out.append(
+                _assemble_subresource_block(
+                    paired=h,
+                    name=name,
+                    scope=scope,
+                    field_lo=t_end,
+                    field_hi=next_start,
+                    kind=_title_label_kind(scope, t_start, t_end),
+                    lim=lim,
+                    base_url=base_url,
+                    preview_chunk=preview_chunk,
+                )
+            )
+        # 多出的链接挂到最后一个已配对名称
+        if out and len(link_pos) > n_pair:
+            last = out[-1]
+            for h, _s, _e in link_pos[n_pair:]:
+                if h in seen:
+                    continue
+                seen.add(h)
+                out.append(
+                    SubresourceBlock(
+                        infohash=h,
+                        title=last.title,
+                        size=last.size,
+                        format=last.format,
+                        note=last.note,
+                        torrent_name=last.torrent_name,
+                        preview_images=list(last.preview_images),
+                        description=last.description,
+                    )
+                )
+        return out
+
+    layout = _detect_magnet_title_layout(titles, link_pos)
 
     for i, (t_start, t_end) in enumerate(titles):
         next_start = titles[i + 1][0] if i + 1 < len(titles) else len(scope)
@@ -1026,60 +1240,36 @@ def extract_subresource_blocks(
 
         # 字段区：本标题值之后 → 下一标题之前（最后到文尾）
         field_lo, field_hi = t_end, next_start
-        # 磁力归属：
+        # 链归属：
         # - 名称在前：本标题起 → 下一标题前
-        # - 磁力在前：上一标题结束 → 本标题起（旧布局）
+        # - 链在前：上一标题结束 → 本标题起（旧布局）
         if layout == "title_then_magnet":
             mag_lo, mag_hi = t_start, next_start
         else:
             mag_lo, mag_hi = prev_end, t_start
 
         in_seg = [
-            (h, s, e) for h, s, e in mag_pos if mag_lo <= s < mag_hi and h not in seen
+            (h, s, e) for h, s, e in link_pos if mag_lo <= s < mag_hi and h not in seen
         ]
         if not in_seg:
             continue
-        # 一段一个子资源：取段内第一个磁力
-        paired = in_seg[0][0]
-        seen.add(paired)
 
-        raw_chunk = scope[field_lo:field_hi]
-        text_chunk = re.sub(r"<[^>]+>", " ", raw_chunk or "")
-        text_chunk = re.sub(r"&nbsp;", " ", text_chunk, flags=re.I)
-        size = _size_from_subresource_block(scope, field_lo, field_hi)
-        size_label = _block_field(text_chunk, *SIZE_FIELD_FORMS)
-        if not size_label and size > 0:
-            emb = re.search(
-                r"\[\s*(?:MP4|MKV|AVI|WMV|MOV|FLV|TS|ISO)?\s*/\s*([0-9.]+)\s*([KMGT])B?\s*\]",
-                name,
-                re.I,
-            )
-            if emb:
-                size_label = f"{emb.group(1)}{emb.group(2).upper()}"
-        fmt = _block_field(text_chunk, *FORMAT_FIELD_FORMS)
-        note = _block_field(text_chunk, *NOTE_FIELD_FORMS)
-        torrent = _block_field(text_chunk, *TORRENT_FIELD_FORMS)
-        imgs = extract_preview_images(raw_chunk, limit=lim, base_url=base_url)
         kind = _title_label_kind(scope, t_start, t_end)
-        desc = _build_block_description(
-            title=name,
-            size_label=size_label,
-            fmt=fmt,
-            note=note,
-            kind=kind,
-        )
-        out.append(
-            SubresourceBlock(
-                infohash=paired,
-                title=name,
-                size=size,
-                format=fmt,
-                note=note,
-                torrent_name=torrent,
-                preview_images=imgs,
-                description=desc,
+        # 段内全部链同属该资源名称，一并入库
+        for h, _s, _e in in_seg:
+            seen.add(h)
+            out.append(
+                _assemble_subresource_block(
+                    paired=h,
+                    name=name,
+                    scope=scope,
+                    field_lo=field_lo,
+                    field_hi=field_hi,
+                    kind=kind,
+                    lim=lim,
+                    base_url=base_url,
+                )
             )
-        )
     return out
 
 

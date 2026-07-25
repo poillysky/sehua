@@ -134,7 +134,7 @@ export function BasicForumConfigModal({
               <h3>{forum.name}</h3>
               {forum.base_url ? <p className="forum-card-url">{forum.base_url}</p> : null}
             </div>
-            {enabled ? <span className="tag tag-active">当前启用</span> : <span className="tag tag-done">配置已接入</span>}
+            {enabled ? <span className="tag tag-active">调度焦点</span> : <span className="tag tag-done">配置已接入</span>}
           </div>
           <button type="button" className="btn ghost" onClick={onClose}>
             关闭
@@ -275,7 +275,7 @@ export function BasicForumConfigModal({
                           className="forum-entry-urls-field"
                           spellCheck={false}
                           value={draft.web_crawl_urls}
-                          placeholder="https://ut2gw5.xc6ym5.com/"
+                          placeholder="https://fby.tfzqs88.com,https://fby.js-bovey.com,…"
                           onChange={(e) => setDraft({ ...draft, web_crawl_urls: e.target.value })}
                         />
                       </Field>
@@ -1570,7 +1570,7 @@ export function ForumConfigModal({
               <p className="forum-card-url">{forum.base_url}</p>
             </div>
             {isEnabled ? (
-              <span className="tag tag-active">本站专用 · 当前启用</span>
+              <span className="tag tag-active">本站专用 · 调度焦点</span>
             ) : (
               <span className="tag tag-done">本站专用爬虫</span>
             )}

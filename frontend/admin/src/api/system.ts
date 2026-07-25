@@ -1,4 +1,4 @@
-import { api, getToken } from './client'
+import { api, getToken, localizeErrorMessage } from './client'
 
 export type BackupFileInfo = {
   exists: boolean
@@ -6,6 +6,27 @@ export type BackupFileInfo = {
   filename?: string
   bytes: number
   mtime?: string | null
+}
+
+export type BackupImportJob = {
+  active: boolean
+  phase: string
+  percent: number
+  message: string
+  filename?: string
+  processed?: number
+  total?: number
+  ok?: boolean | null
+  error?: string | null
+  stats?: {
+    resources_inserted?: number
+    resources_updated?: number
+    resources_skipped?: number
+    tags_upserted?: number
+    resource_tags_linked?: number
+  } | null
+  started_at?: string | null
+  finished_at?: string | null
 }
 
 export type BackupStatus = {
@@ -20,6 +41,7 @@ export type BackupStatus = {
   last_run_date?: string | null
   file: BackupFileInfo
   busy?: boolean
+  import_job?: BackupImportJob
 }
 
 export type ResourceDbConfig = {
@@ -27,11 +49,20 @@ export type ResourceDbConfig = {
   enabled: boolean
   ready?: boolean
   using_primary: boolean
+  settings_unavailable?: boolean
+  writable?: boolean
+  role?: 'multi_terminal' | 'colocated_primary' | 'config_unavailable' | string
+  architecture?: {
+    metadata_db?: string
+    resource_db?: string
+  }
   host: string
   port: number | null
   user: string
   dbname: string
   has_password: boolean
+  settings_error?: string | null
+  env_override?: boolean
   effective?: {
     host: string
     port: number
@@ -103,47 +134,84 @@ export function runBackupNow() {
   })
 }
 
-export type BackupImportResult = {
+export type BackupImportStartResult = {
   message: string
+  started?: boolean
   ok: boolean
+  filename?: string
+  bytes?: number
+  busy?: boolean
+  import_job?: BackupImportJob
   error?: string
-  resources_inserted: number
-  resources_updated: number
-  resources_skipped: number
-  tags_upserted: number
-  resource_tags_linked: number
-  result?: Record<string, unknown>
 }
 
-export async function importBackupFile(file: File): Promise<BackupImportResult> {
+export type BackupImportStatus = {
+  message?: string
+  busy: boolean
+  import_job: BackupImportJob
+}
+
+export function fetchBackupImportStatus() {
+  return api<BackupImportStatus>('/api/system/backup/import/status')
+}
+
+export async function importBackupFile(
+  file: File,
+  opts?: { onProgress?: (pct: number) => void },
+): Promise<BackupImportStartResult> {
   const form = new FormData()
   form.append('file', file)
 
-  const headers = new Headers()
   const token = getToken()
-  if (token) headers.set('Authorization', `Bearer ${token}`)
 
-  const res = await fetch('/api/system/backup/import', {
-    method: 'POST',
-    headers,
-    body: form,
-    credentials: 'include',
+  // XHR：可显示上传进度；大文件在「请求到达后端写活动日志」之前会卡很久
+  const res = await new Promise<Response>((resolve, reject) => {
+    const xhr = new XMLHttpRequest()
+    xhr.open('POST', '/api/system/backup/import')
+    xhr.withCredentials = true
+    if (token) xhr.setRequestHeader('Authorization', `Bearer ${token}`)
+    xhr.upload.onprogress = (ev) => {
+      if (!ev.lengthComputable || !opts?.onProgress) return
+      // 上传阶段占整体 0–15%，解析合并由后端进度接口覆盖
+      opts.onProgress(Math.min(15, Math.round((ev.loaded / ev.total) * 15)))
+    }
+    xhr.onload = () => {
+      opts?.onProgress?.(15)
+      resolve(
+        new Response(xhr.responseText, {
+          status: xhr.status,
+          statusText: xhr.statusText,
+          headers: { 'Content-Type': xhr.getResponseHeader('Content-Type') || 'application/json' },
+        }),
+      )
+    }
+    xhr.onerror = () => reject(new Error('网络错误：备份上传中断'))
+    xhr.ontimeout = () => reject(new Error('上传超时：文件过大或反代超时过短'))
+    // 0 = 不限；实际仍受 Nginx / 外层反代限制
+    xhr.timeout = 0
+    xhr.send(form)
   })
+
   if (res.status === 401) {
     throw new Error('未登录或登录已过期')
   }
   if (!res.ok) {
     if (res.status === 413) {
-      throw new Error('上传文件过大（413）。请更新管理端镜像，或确认 Nginx client_max_body_size 已放宽')
+      throw new Error('上传文件太大，被服务器拒绝。请缩小文件或联系管理员调大上传限制')
     }
-    let detail: unknown = `HTTP ${res.status}`
+    let detail: unknown = null
     try {
       const data = await res.json()
-      detail = data.detail ?? data.message ?? detail
+      detail = data.detail ?? data.message
     } catch {
       /* ignore */
     }
-    throw new Error(typeof detail === 'string' ? detail : JSON.stringify(detail))
+    throw new Error(
+      localizeErrorMessage(
+        detail,
+        res.status === 409 ? '正在备份或导入，请稍候再试' : '导入失败，请稍后重试',
+      ),
+    )
   }
-  return (await res.json()) as BackupImportResult
+  return (await res.json()) as BackupImportStartResult
 }

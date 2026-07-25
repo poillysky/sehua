@@ -1,4 +1,4 @@
-import { api, getToken } from './client'
+import { api, getToken, localizeErrorMessage } from './client'
 
 export type ImportFormatField = {
   no: number
@@ -37,12 +37,41 @@ export type ImportResult = {
   magnets?: number
 }
 
+export type ImportFromUrlPayload = {
+  url: string
+  forum_id: string
+  board_fid?: string
+}
+
+export type ImportFromUrlResult = {
+  message: string
+  count: number
+  forum_id: string
+  title?: string
+  link_kind?: string
+  stub?: boolean
+  hash?: string | null
+  import_outcome?: string
+  board_fid?: string
+  board_name?: string
+  source_url?: string
+  magnets?: number
+  ed2k?: number
+}
+
 export function fetchImportSpec() {
   return api<ImportSpec>('/api/import/spec')
 }
 
 export function importText(body: ImportPayload) {
   return api<ImportResult>('/api/import/', {
+    method: 'POST',
+    body: JSON.stringify(body),
+  })
+}
+
+export function importFromUrl(body: ImportFromUrlPayload) {
+  return api<ImportFromUrlResult>('/api/import/from-url', {
     method: 'POST',
     body: JSON.stringify(body),
   })
@@ -65,14 +94,19 @@ export async function uploadPreviewImages(files: File[]): Promise<string[]> {
   })
   if (res.status === 401) throw new Error('未登录或登录已过期')
   if (!res.ok) {
-    let detail: unknown = `HTTP ${res.status}`
+    let detail: unknown = null
     try {
       const data = await res.json()
-      detail = data.detail || detail
+      detail = data.detail || data.message
     } catch {
       /* ignore */
     }
-    throw new Error(typeof detail === 'string' ? detail : JSON.stringify(detail))
+    throw new Error(
+      localizeErrorMessage(
+        detail,
+        res.status === 409 ? '当前有其他任务在进行，请稍后再试' : '操作失败，请稍后重试',
+      ),
+    )
   }
   const data = (await res.json()) as { urls?: string[] }
   return data.urls || []
@@ -103,14 +137,19 @@ export async function importFile(file: File, meta?: Omit<ImportPayload, 'links'>
     throw new Error('未登录或登录已过期')
   }
   if (!res.ok) {
-    let detail: unknown = `HTTP ${res.status}`
+    let detail: unknown = null
     try {
       const data = await res.json()
-      detail = data.detail || detail
+      detail = data.detail || data.message
     } catch {
       /* ignore */
     }
-    throw new Error(typeof detail === 'string' ? detail : JSON.stringify(detail))
+    throw new Error(
+      localizeErrorMessage(
+        detail,
+        res.status === 409 ? '当前有其他任务在进行，请稍后再试' : '导入失败，请稍后重试',
+      ),
+    )
   }
   return (await res.json()) as ImportResult
 }

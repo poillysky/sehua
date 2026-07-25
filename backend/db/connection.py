@@ -10,7 +10,8 @@ from dotenv import load_dotenv
 
 _BACKEND_ROOT = Path(__file__).resolve().parent.parent
 _ENV = _BACKEND_ROOT / ".env"
-load_dotenv(_ENV)
+# 本地 .env 优先于 shell 里残留的 POSTGRES_*，避免启错库端口
+load_dotenv(_ENV, override=True)
 
 # PowerShell UTF-8 BOM: key may be \ufeffPOSTGRES_HOST
 if not os.getenv("POSTGRES_HOST"):
@@ -64,7 +65,10 @@ def connection_mode() -> str:
 
 
 def connect():
-    """Postgres by default (ed2k schema). AUTH_BACKEND=sqlite|auto for fallback."""
+    """Postgres by default (ed2k schema). AUTH_BACKEND=sqlite|auto for fallback.
+
+    Postgres 走轻量连接池（close 归还）；SQLite 仍直连。
+    """
     global _mode
     backend = _auth_backend()
 
@@ -74,11 +78,23 @@ def connect():
 
     if backend == "postgres":
         _mode = "postgres"
-        return try_postgres()
+        from db.pg_pool import get_pooled_connection
+
+        return get_pooled_connection(
+            postgres_dsn_kwargs(),
+            pool_name="primary",
+            maxconn_env="POSTGRES_POOL_MAX",
+        )
 
     # auto
     try:
-        conn = try_postgres()
+        from db.pg_pool import get_pooled_connection
+
+        conn = get_pooled_connection(
+            postgres_dsn_kwargs(),
+            pool_name="primary",
+            maxconn_env="POSTGRES_POOL_MAX",
+        )
         _mode = "postgres"
         return conn
     except Exception:

@@ -69,6 +69,14 @@ export type ForumFormatGuide = {
   notes: string[]
 }
 
+export type ForumCapabilities = {
+  registered?: boolean
+  configurable?: boolean
+  crawlable?: boolean
+  boards_ready?: boolean
+  parsers_ready?: boolean
+}
+
 export type ForumItem = {
   id: string
   name: string
@@ -80,7 +88,10 @@ export type ForumItem = {
   site_dedicated?: boolean
   crawler_registered?: boolean
   crawler_module?: string | null
+  capabilities?: ForumCapabilities
   board_count?: number
+  /** 爬取单位数（含分类 fid:typeid）；未返回时用 boards.length */
+  unit_count?: number
   boards: ForumBoard[]
   /** planned / 未接入论坛为 null，避免套用色花堂通用配置 */
   crawler_config: ForumCrawlerConfig | null
@@ -93,8 +104,14 @@ export type ForumItem = {
 
 export type ForumRulesResponse = {
   active_forum_id: string
+  /** 与 active_forum_id 相同：连续调度焦点 */
+  focus_forum_id?: string
   site_crawler_forum_id?: string
   registered_crawler_forums?: string[]
+  crawlable_forum_ids?: string[]
+  enabled_crawler_forum_ids?: string[]
+  scheduling_model?: string
+  scheduling_note?: string
   forums: ForumItem[]
   forum_configs: Record<string, ForumCrawlerConfig>
 }
@@ -111,7 +128,7 @@ export function saveForumConfig(forumId: string, config: ForumCrawlerConfig) {
 }
 
 export function setActiveForum(forumId: string) {
-  return api<{ message: string; active_forum_id: string }>('/api/forum/active', {
+  return api<{ message: string; active_forum_id: string; focus_forum_id?: string }>('/api/forum/active', {
     method: 'PUT',
     body: JSON.stringify({ active_forum_id: forumId }),
   })

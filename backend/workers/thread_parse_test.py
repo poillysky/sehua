@@ -1,7 +1,8 @@
-"""管理端「解析测试」：浏览器过 18+ → HTTP 读帖 → 判定 / 附件（不入库）。"""
+"""管理端「解析测试」/ 按 URL 快捷入库：浏览器过 18+ → HTTP 读帖 → 判定 / 附件。"""
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 from typing import Any, Optional
@@ -84,8 +85,13 @@ async def parse_thread_for_admin(
     proxy_override: str = "",
     crawler_config: Optional[dict[str, Any]] = None,
     forum_id: str = "sehuatang",
+    persist: bool = False,
+    replace_thread_assets: bool = False,
 ) -> dict[str, Any]:
-    """使用本站混合抓取：浏览器过 18+ / 软文壳，HTTP 拉正文。默认不入库。"""
+    """使用本站混合抓取：浏览器过 18+ / 软文壳，HTTP 拉正文。
+
+    persist=True 时，判定为 import/stub 则写入资源库（与爬虫入库同一路径）。
+    """
     from crawler.sites import get_site_adapter
     from workers.session_factory import bootstrap_probe_for_forum
 
@@ -294,6 +300,12 @@ async def parse_thread_for_admin(
             base_url=thread_url,
             board_fid=board_fid_int,
         )
+        if adapter.engine == "phpwind":
+            from crawler.parser_phpwind import parse_thread_phpwind
+
+            detail = parse_thread_phpwind(html, tid=tid)
+            if detail.title and not (parsed.title or "").strip():
+                parsed.title = detail.title
         if not parsed.title and outcome.title:
             parsed.title = outcome.title
         from parsers.content import build_structured_description
@@ -319,6 +331,37 @@ async def parse_thread_for_admin(
             len(parsed.magnets) + len(parsed.ed2k_links) + len(parsed.share115_links)
         )
 
+        board_name = policy.name if policy else ""
+        persisted: dict[str, Any] | None = None
+        if persist and outcome.verdict in {"import", "stub"}:
+            from db.persist import persist_dual_parse
+            from db.resource_db import connect_resource
+
+            # stub 判定但已解析出链：清资产，走占位入库（与 pipeline 一致）
+            if outcome.verdict == "stub" and parsed.primary_link_kind != "none":
+                parsed.assets = []
+                parsed.magnets = []
+                parsed.ed2k_links = []
+                parsed.primary_link_kind = "none"
+
+            def _persist_sync() -> dict[str, Any]:
+                conn = connect_resource()
+                try:
+                    return persist_dual_parse(
+                        conn,
+                        parsed,
+                        source_url=thread_url,
+                        board_fid=policy.key if policy else board_fid_int,
+                        board_name=board_name,
+                        forum_id=forum_id,
+                        import_outcome=str(outcome.outcome or outcome.label or ""),
+                        replace_thread_assets=replace_thread_assets,
+                    )
+                finally:
+                    conn.close()
+
+            persisted = await asyncio.to_thread(_persist_sync)
+
         return {
             "input_url": original_url,
             "fetch_url": thread_url,
@@ -341,8 +384,8 @@ async def parse_thread_for_admin(
             ),
             "resource_count": _field_from_metadata(meta, "资源数量", "数量"),
             "extract_password": parsed.extract_password or "",
-            "board_fid": str(board_fid_int),
-            "board_name": policy.name if policy else "",
+            "board_fid": str(policy.key if policy else board_fid_int),
+            "board_name": board_name,
             "link_kind": outcome.link_kind or parsed.primary_link_kind,
             "login_required": login_required,
             "access_denied": access_denied,
@@ -386,6 +429,7 @@ async def parse_thread_for_admin(
             "soft_browser_retried": soft_browser_retried,
             "fetch_mode": "browser→http" if soft_browser_retried else "http",
             "host": urlparse(thread_url).netloc,
+            "persisted": persisted,
             **_import_verdict_fields(outcome.verdict, outcome.outcome, link_count),
         }
     finally:

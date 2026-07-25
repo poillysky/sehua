@@ -5,7 +5,13 @@ export type CrawlerActivity = { t: string; msg: string }
 export type CrawlerStatus = {
   forum_id: string
   active_forum_id: string
+  /** 与 active_forum_id 相同：连续调度焦点 */
+  focus_forum_id?: string
   active_forum_name?: string
+  /** 当前 runner 正在服务的论坛（可能与焦点一致） */
+  running_forum_id?: string | null
+  enabled_crawler_forum_ids?: string[]
+  scheduling_model?: string
   enabled: boolean
   active_board_fid: string
   enabled_board_fids?: string[]
@@ -105,6 +111,13 @@ export type CrawlerStatus = {
 
 export function fetchCrawlerStatus() {
   return api<CrawlerStatus>('/api/crawler/status')
+}
+
+export function clearCrawlerActivity() {
+  return api<{ message: string; deleted: number; activity: CrawlerActivity[] }>(
+    '/api/crawler/activity/clear',
+    { method: 'POST', body: '{}' },
+  )
 }
 
 export function setCrawlerEnabled(enabled: boolean, forumId?: string) {

@@ -1,5 +1,6 @@
 import { startTransition, useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { fetchImportSpec, importText, uploadPreviewImages, type ImportSpec } from '../api/importApi'
+import { fetchForumRules, type ForumBoard, type ForumItem } from '../api/forums'
+import { importFromUrl } from '../api/importApi'
 import {
   buildBoardFacetTree,
   deleteResourcesBatch,
@@ -1075,96 +1076,90 @@ export function ResourcesPage() {
   )
 }
 
+function dedupeForumBoards(list: ForumBoard[]): ForumBoard[] {
+  const byFid = new Map<string, ForumBoard>()
+  for (const b of list) {
+    const fid = String(b.fid)
+    if (!byFid.has(fid)) {
+      byFid.set(fid, {
+        ...b,
+        name: b.board_name || b.name.split('-')[0] || b.name,
+        key: fid,
+        typeid: '',
+      })
+    }
+  }
+  const deduped = Array.from(byFid.values())
+  deduped.sort((a, b) => (a.priority ?? 50) - (b.priority ?? 50) || a.name.localeCompare(b.name, 'zh-CN'))
+  return deduped
+}
+
 function QuickImportModal({ onClose, onImported }: { onClose: () => void; onImported: () => void }) {
-  const [spec, setSpec] = useState<ImportSpec | null>(null)
-  const [title, setTitle] = useState('')
-  const [fileSize, setFileSize] = useState('')
-  const [previewImages, setPreviewImages] = useState<string[]>([])
-  const [previewUrlDraft, setPreviewUrlDraft] = useState('')
-  const [forumName, setForumName] = useState('色花堂')
-  const [boardName, setBoardName] = useState('')
-  const [links, setLinks] = useState('')
-  const [sourceUrl, setSourceUrl] = useState('')
-  const [extractPassword, setExtractPassword] = useState('')
+  const [forums, setForums] = useState<ForumItem[]>([])
+  const [forumId, setForumId] = useState('sehuatang')
+  const [boards, setBoards] = useState<ForumBoard[]>([])
+  const [boardFid, setBoardFid] = useState('')
+  const [url, setUrl] = useState('')
   const [busy, setBusy] = useState(false)
-  const [uploading, setUploading] = useState(false)
   const [resultHint, setResultHint] = useState('')
 
   useEffect(() => {
-    void fetchImportSpec()
-      .then(setSpec)
-      .catch((err) => toast.error(err instanceof Error ? err.message : '加载导入标准失败'))
+    let cancelled = false
+    void fetchForumRules()
+      .then((data) => {
+        if (cancelled) return
+        const registered = new Set(data.registered_crawler_forums || ['sehuatang', '2048'])
+        const list = (data.forums || []).filter(
+          (f) => registered.has(f.id) || f.crawler_registered || f.id === 'sehuatang' || f.id === '2048',
+        )
+        setForums(list.length ? list : data.forums || [])
+        const active = data.active_forum_id || data.site_crawler_forum_id || list[0]?.id || 'sehuatang'
+        const forum = list.find((f) => f.id === active) || list[0] || data.forums?.[0]
+        const nextId = forum?.id || 'sehuatang'
+        setForumId(nextId)
+        setBoards(dedupeForumBoards(forum?.boards || []))
+      })
+      .catch((err) => toast.error(err instanceof Error ? err.message : '加载论坛列表失败'))
+    return () => {
+      cancelled = true
+    }
   }, [])
 
-  const buildMeta = () => {
-    const sizeRaw = fileSize.trim().replace(/,/g, '')
-    const sizeNum = sizeRaw && /^\d+$/.test(sizeRaw) ? Number(sizeRaw) : null
-    return {
-      title: title.trim() || undefined,
-      file_size: sizeNum && sizeNum > 0 ? sizeNum : null,
-      preview_images: previewImages.slice(0, 5),
-      forum_name: forumName.trim() || undefined,
-      board_name: boardName.trim() || undefined,
-      source_url: sourceUrl.trim() || undefined,
-      extract_password: extractPassword.trim() || undefined,
-    }
-  }
-
-  const addPreviewUrl = () => {
-    const url = previewUrlDraft.trim()
-    if (!url) return
-    if (previewImages.length >= 5) {
-      toast.warn('预览图最多 5 张')
-      return
-    }
-    if (previewImages.includes(url)) {
-      toast.warn('该预览图已添加')
-      return
-    }
-    setPreviewImages((prev) => [...prev, url].slice(0, 5))
-    setPreviewUrlDraft('')
-  }
-
-  const onUploadPreviews = async (fileList: FileList | null) => {
-    if (!fileList?.length) return
-    const room = 5 - previewImages.length
-    if (room <= 0) {
-      toast.warn('预览图最多 5 张')
-      return
-    }
-    const files = Array.from(fileList).slice(0, room)
-    setUploading(true)
-    try {
-      const urls = await uploadPreviewImages(files)
-      setPreviewImages((prev) => {
-        const next = [...prev]
-        for (const u of urls) {
-          if (!next.includes(u) && next.length < 5) next.push(u)
-        }
-        return next
-      })
-      toast.success(`已上传 ${urls.length} 张预览图`)
-    } catch (err) {
-      toast.error(err instanceof Error ? err.message : '预览图上传失败')
-    } finally {
-      setUploading(false)
-    }
+  const onForumChange = (id: string) => {
+    setForumId(id)
+    setBoardFid('')
+    const forum = forums.find((f) => f.id === id)
+    setBoards(dedupeForumBoards(forum?.boards || []))
   }
 
   const onSubmit = async () => {
-    if (!links.trim()) {
-      toast.warn('请填写第 6 项：magnet 或 ED2K 链接')
+    const threadUrl = url.trim()
+    if (!threadUrl) {
+      toast.warn('请粘贴帖子链接')
+      return
+    }
+    if (!forumId) {
+      toast.warn('请选择论坛')
       return
     }
     setBusy(true)
     setResultHint('')
     try {
-      const res = await importText({ links: links.trim(), ...buildMeta() })
-      const msg =
-        `成功导入 ${res.count} 条` +
-        (res.ed2k || res.magnets ? `（ED2K ${res.ed2k ?? 0} · magnet ${res.magnets ?? 0}）` : '')
+      const res = await importFromUrl({
+        url: threadUrl,
+        forum_id: forumId,
+        board_fid: boardFid.trim() || undefined,
+      })
+      const bits = [
+        res.message,
+        res.ed2k || res.magnets
+          ? `（ED2K ${res.ed2k ?? 0} · magnet ${res.magnets ?? 0}）`
+          : '',
+        res.import_outcome ? ` · ${res.import_outcome}` : '',
+      ]
+      const msg = bits.filter(Boolean).join('')
       setResultHint(msg)
-      toast.success(msg)
+      toast.success(res.message || '导入成功')
       onImported()
     } catch (err) {
       toast.error(err instanceof Error ? err.message : '导入失败')
@@ -1173,19 +1168,8 @@ function QuickImportModal({ onClose, onImported }: { onClose: () => void; onImpo
     }
   }
 
-  const onFillLinksFromFile = async (file: File | null) => {
-    if (!file) return
-    try {
-      const text = await file.text()
-      setLinks((prev) => (prev.trim() ? `${prev.trim()}\n${text.trim()}` : text.trim()))
-      toast.info('已填入链接区，请核对其他字段后点导入')
-    } catch {
-      toast.error('读取文件失败')
-    }
-  }
-
   return (
-    <div className="modal-backdrop import-modal-backdrop" role="presentation" onClick={onClose}>
+    <div className="modal-backdrop import-modal-backdrop" role="presentation" onClick={busy ? undefined : onClose}>
       <div
         className="modal-card card import-modal-panel"
         role="dialog"
@@ -1196,7 +1180,7 @@ function QuickImportModal({ onClose, onImported }: { onClose: () => void; onImpo
         <div className="modal-head import-modal-head">
           <div>
             <h3 id="quick-import-title">快速导入</h3>
-            <p className="import-modal-sub">统一入库格式 · 第 6 项链接必填</p>
+            <p className="import-modal-sub">粘贴帖子链接并选择论坛，自动抓取解析入库</p>
           </div>
           <button type="button" className="btn ghost sm icon-only" title="关闭" disabled={busy} onClick={onClose}>
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden>
@@ -1207,198 +1191,75 @@ function QuickImportModal({ onClose, onImported }: { onClose: () => void; onImpo
 
         <div className="modal-body import-modal-body import-modal-body--form">
           <ol className="import-form-list">
-            <li className="import-form-item">
-              <label className="import-form-label" htmlFor="qi-title">
+            <li className="import-form-item import-form-item--required">
+              <label className="import-form-label" htmlFor="qi-url">
                 <span className="resource-format-no">1</span>
                 <span>
-                  <strong>标题</strong>
-                  <small>可选；空则用链接内文件名</small>
+                  <strong>帖子链接</strong>
+                  <small>桌面或手机帖 URL</small>
                 </span>
               </label>
               <input
-                id="qi-title"
-                type="text"
-                value={title}
-                onChange={(e) => setTitle(e.target.value)}
-                placeholder="资源标题"
-              />
-            </li>
-
-            <li className="import-form-item">
-              <label className="import-form-label" htmlFor="qi-size">
-                <span className="resource-format-no">2</span>
-                <span>
-                  <strong>文件大小</strong>
-                  <small>字节数；空则用链接内大小</small>
-                </span>
-              </label>
-              <input
-                id="qi-size"
-                type="text"
-                inputMode="numeric"
-                value={fileSize}
-                onChange={(e) => setFileSize(e.target.value)}
-                placeholder="例如 2147483648"
-              />
-            </li>
-
-            <li className="import-form-item">
-              <div className="import-form-label">
-                <span className="resource-format-no">3</span>
-                <span>
-                  <strong>预览图</strong>
-                  <small>最多 5 张 · 可本地上传或粘贴 URL</small>
-                </span>
-              </div>
-              {previewImages.length ? (
-                <ul className="import-preview-grid">
-                  {previewImages.map((url) => (
-                    <li key={url} className="import-preview-thumb">
-                      <img src={url} alt="" />
-                      <button
-                        type="button"
-                        className="import-preview-remove"
-                        title="移除"
-                        onClick={() => setPreviewImages((prev) => prev.filter((u) => u !== url))}
-                      >
-                        ×
-                      </button>
-                    </li>
-                  ))}
-                </ul>
-              ) : (
-                <p className="hint import-preview-empty">尚未添加预览图</p>
-              )}
-              <div className="import-preview-tools">
-                <label className={`btn secondary sm import-file-btn ${uploading || previewImages.length >= 5 ? 'is-disabled' : ''}`}>
-                  {uploading ? '上传中…' : '上传图片'}
-                  <input
-                    type="file"
-                    accept="image/jpeg,image/png,image/webp,image/gif,.jpg,.jpeg,.png,.webp,.gif"
-                    multiple
-                    hidden
-                    disabled={busy || uploading || previewImages.length >= 5}
-                    onChange={(e) => {
-                      void onUploadPreviews(e.target.files)
-                      e.target.value = ''
-                    }}
-                  />
-                </label>
-                <div className="import-preview-url-row">
-                  <input
-                    type="text"
-                    value={previewUrlDraft}
-                    onChange={(e) => setPreviewUrlDraft(e.target.value)}
-                    onKeyDown={(e) => {
-                      if (e.key === 'Enter') {
-                        e.preventDefault()
-                        addPreviewUrl()
-                      }
-                    }}
-                    placeholder="或粘贴图片 URL 后添加"
-                    disabled={previewImages.length >= 5}
-                  />
-                  <button
-                    type="button"
-                    className="btn ghost sm"
-                    disabled={!previewUrlDraft.trim() || previewImages.length >= 5}
-                    onClick={addPreviewUrl}
-                  >
-                    添加
-                  </button>
-                </div>
-              </div>
-            </li>
-
-            <li className="import-form-item">
-              <label className="import-form-label" htmlFor="qi-forum">
-                <span className="resource-format-no">4</span>
-                <strong>来源论坛名</strong>
-              </label>
-              <input
-                id="qi-forum"
-                type="text"
-                value={forumName}
-                onChange={(e) => setForumName(e.target.value)}
-                placeholder="色花堂"
-              />
-            </li>
-
-            <li className="import-form-item">
-              <label className="import-form-label" htmlFor="qi-board">
-                <span className="resource-format-no">5</span>
-                <strong>来源板块名</strong>
-              </label>
-              <input
-                id="qi-board"
-                type="text"
-                value={boardName}
-                onChange={(e) => setBoardName(e.target.value)}
-                placeholder="如：亚洲无码原创"
+                id="qi-url"
+                type="url"
+                value={url}
+                onChange={(e) => setUrl(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') {
+                    e.preventDefault()
+                    void onSubmit()
+                  }
+                }}
+                placeholder="https://…/thread-…html 或 read.php?tid=…"
+                disabled={busy}
+                autoFocus
               />
             </li>
 
             <li className="import-form-item import-form-item--required">
-              <label className="import-form-label" htmlFor="qi-links">
-                <span className="resource-format-no">6</span>
-                <span>
-                  <strong>magnet 或 ED2K 链接</strong>
-                  <small>必填 · 可多行</small>
-                </span>
+              <label className="import-form-label" htmlFor="qi-forum">
+                <span className="resource-format-no">2</span>
+                <strong>论坛</strong>
               </label>
-              <textarea
-                id="qi-links"
-                rows={6}
-                className="import-textarea"
-                spellCheck={false}
-                value={links}
-                onChange={(e) => setLinks(e.target.value)}
-                placeholder={spec?.example || 'ed2k://|file|…|/ 或 magnet:?xt=urn:btih:…'}
-              />
-              <div className="import-links-tools">
-                <code className="import-code">{spec?.ed2k_format || 'ed2k://|file|<名>|<大小>|<hash>|/'}</code>
-                <label className="btn ghost sm import-file-btn">
-                  从 txt 填入
-                  <input
-                    type="file"
-                    accept=".txt,.text,text/plain"
-                    hidden
-                    disabled={busy}
-                    onChange={(e) => void onFillLinksFromFile(e.target.files?.[0] || null)}
-                  />
-                </label>
-              </div>
+              <select
+                id="qi-forum"
+                value={forumId}
+                onChange={(e) => onForumChange(e.target.value)}
+                disabled={busy || !forums.length}
+              >
+                {forums.length ? (
+                  forums.map((f) => (
+                    <option key={f.id} value={f.id}>
+                      {f.name}
+                    </option>
+                  ))
+                ) : (
+                  <option value="sehuatang">色花堂</option>
+                )}
+              </select>
             </li>
 
             <li className="import-form-item">
-              <label className="import-form-label" htmlFor="qi-source">
-                <span className="resource-format-no">7</span>
-                <strong>帖子原链接</strong>
-              </label>
-              <input
-                id="qi-source"
-                type="text"
-                value={sourceUrl}
-                onChange={(e) => setSourceUrl(e.target.value)}
-                placeholder="https://www.sehuatang.net/thread-…html"
-              />
-            </li>
-
-            <li className="import-form-item">
-              <label className="import-form-label" htmlFor="qi-pwd">
-                <span className="resource-format-no">8</span>
+              <label className="import-form-label" htmlFor="qi-board">
+                <span className="resource-format-no">3</span>
                 <span>
-                  <strong>资源解压密码</strong>
-                  <small>无则留空</small>
+                  <strong>板块</strong>
+                  <small>可选；空则自动识别</small>
                 </span>
               </label>
-              <input
-                id="qi-pwd"
-                type="text"
-                value={extractPassword}
-                onChange={(e) => setExtractPassword(e.target.value)}
-                placeholder="解压密码"
-              />
+              <select
+                id="qi-board"
+                value={boardFid}
+                onChange={(e) => setBoardFid(e.target.value)}
+                disabled={busy}
+              >
+                <option value="">自动识别</option>
+                {boards.map((b) => (
+                  <option key={b.key || b.fid} value={String(b.fid)}>
+                    {b.name}
+                  </option>
+                ))}
+              </select>
             </li>
           </ol>
 
@@ -1406,8 +1267,8 @@ function QuickImportModal({ onClose, onImported }: { onClose: () => void; onImpo
             <button type="button" className="btn ghost sm" disabled={busy} onClick={onClose}>
               取消
             </button>
-            <button type="button" className="btn primary sm" disabled={busy || uploading} onClick={() => void onSubmit()}>
-              {busy ? '导入中…' : '导入入库'}
+            <button type="button" className="btn primary sm" disabled={busy || !url.trim()} onClick={() => void onSubmit()}>
+              {busy ? '抓取入库中…' : '抓取入库'}
             </button>
           </div>
           {resultHint ? <p className="hint import-result">{resultHint}</p> : null}

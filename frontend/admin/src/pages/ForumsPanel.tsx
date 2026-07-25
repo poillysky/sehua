@@ -48,45 +48,71 @@ function ForumTileIcon({ forum }: { forum: ForumItem }) {
 
 function boardCounts(forum: ForumItem) {
   const boards = forum.boards || []
+  const uniqueFids = new Set(boards.map((b) => String(b.fid || '').trim()).filter(Boolean))
+  const enabledKeys = forum.crawler_config?.enabled_board_fids || []
   return {
-    total: forum.board_count ?? boards.length,
+    /** 独立 fid 数（真正板块） */
+    boards: forum.board_count ?? uniqueFids.size ?? 0,
+    /** 爬取单位数（含 fid:typeid 分类） */
+    units: forum.unit_count ?? boards.length,
     magnet: boards.filter((b) => b.primary_link === 'magnet').length,
     ed2k: boards.filter((b) => b.primary_link === 'ed2k').length,
+    both: boards.filter((b) => b.primary_link === 'both').length,
+    enabled: enabledKeys.length,
   }
+}
+
+function boardMetaText(forum: ForumItem) {
+  const counts = boardCounts(forum)
+  if (counts.units <= 0) return '基本配置 · 爬虫模块待接入'
+  const linkBits: string[] = []
+  if (counts.magnet) linkBits.push(`磁力 ${counts.magnet}`)
+  if (counts.ed2k) linkBits.push(`ED2K ${counts.ed2k}`)
+  if (counts.both) linkBits.push(`双链 ${counts.both}`)
+  // 色花堂等：板块 ≠ 采集单位（大量 fid:typeid）
+  const scope =
+    counts.boards > 0 && counts.boards !== counts.units
+      ? `${counts.boards} 板块 · ${counts.units} 单位`
+      : `${counts.units} 板块`
+  const enabled =
+    counts.enabled > 0 && counts.enabled !== counts.units
+      ? ` · 启用 ${counts.enabled}`
+      : ''
+  return `${scope}${enabled}${linkBits.length ? ` · ${linkBits.join(' · ')}` : ''}`
 }
 
 function activeNote(forum: ForumItem) {
   if (forum.site_dedicated || forum.id === 'sehuatang') {
-    return '当前启用 · 调度器将运行色花堂专用爬虫（本站；配置不与其它论坛共用）'
+    return '调度焦点 · 连续调度将跑色花堂专用爬虫（配置不与其它论坛共用）'
   }
-  if (hasFullCrawlerModule(forum)) {
-    return `当前启用 · 调度器将运行该论坛的专用爬虫程序（${forum.crawler_module}）`
+  if (forum.capabilities?.crawlable || hasFullCrawlerModule(forum)) {
+    return `调度焦点 · 连续调度将跑该论坛专用爬虫（${forum.crawler_module || forum.id}）`
   }
   if (forum.crawler_registered) {
-    return '当前启用 · 基本配置已接入；爬虫模块尚未实现，调度不会抓取该站'
+    return '调度焦点 · 基本配置已接入；爬虫能力位未就绪时调度不会抓取'
   }
-  return '当前启用 · 该论坛尚无专用爬虫，爬取任务会被跳过'
+  return '调度焦点 · 该论坛尚无专用爬虫，连续调度会跳过'
 }
 
-function forumBadge(forum: ForumItem, enabled: boolean) {
+function forumBadge(forum: ForumItem, focused: boolean) {
   if (forum.site_dedicated || forum.id === 'sehuatang') {
-    return enabled ? (
-      <span className="tag tag-active">本站专用 · 当前启用</span>
+    return focused ? (
+      <span className="tag tag-active">本站专用 · 调度焦点</span>
     ) : (
       <span className="tag tag-done">本站专用爬虫</span>
     )
   }
-  if (!forum.crawler_registered) {
+  if (!forum.crawler_registered && !forum.capabilities?.registered) {
     return <span className="tag tag-pending">待独立接入</span>
   }
-  if (!hasFullCrawlerModule(forum)) {
-    return enabled ? (
-      <span className="tag tag-active">配置已接入 · 当前启用</span>
+  if (!(forum.capabilities?.crawlable || hasFullCrawlerModule(forum))) {
+    return focused ? (
+      <span className="tag tag-active">配置已接入 · 调度焦点</span>
     ) : (
       <span className="tag tag-done">基本配置已接入</span>
     )
   }
-  return enabled ? <span className="tag tag-active">当前启用</span> : <span className="tag tag-done">专用爬虫已接入</span>
+  return focused ? <span className="tag tag-active">调度焦点</span> : <span className="tag tag-done">已接入</span>
 }
 
 function linkStatusText(state: LinkState) {
@@ -193,9 +219,11 @@ export function ForumsPanel() {
       const data = await fetchForumRules()
       const list = data.forums || []
       setForums(list)
-      setActiveForumId(data.active_forum_id || data.site_crawler_forum_id || 'sehuatang')
+      setActiveForumId(data.focus_forum_id || data.active_forum_id || data.site_crawler_forum_id || 'sehuatang')
       setSiteCrawlerId(data.site_crawler_forum_id || 'sehuatang')
-      const active = list.filter((f) => f.status === 'active' && f.crawler_registered)
+      const active = list.filter(
+        (f) => f.status === 'active' && (f.crawler_registered || f.capabilities?.crawlable),
+      )
       for (const forum of active) {
         void probeLink(forum.id)
       }
@@ -217,21 +245,17 @@ export function ForumsPanel() {
   const handleEnable = async (forumId: string) => {
     if (busy || forumId === activeForumId) return
     const target = forums.find((f) => f.id === forumId)
-    if (!target?.crawler_registered) {
-      toast.warn('该论坛尚无配置接入，不能启用')
+    if (!target?.crawler_registered && !target?.capabilities?.crawlable) {
+      toast.warn('该论坛尚未接入，不能设为调度焦点')
       return
     }
     setBusy(true)
     try {
       const res = await setActiveForum(forumId)
-      setActiveForumId(res.active_forum_id)
-      if (hasFullCrawlerModule(target)) {
-        toast.success(`已启用专用爬虫：${target.name}`)
-      } else {
-        toast.success(`已启用 ${target.name}（仅基本配置；调度暂不抓取）`)
-      }
+      setActiveForumId(res.active_forum_id || res.focus_forum_id || forumId)
+      toast.success(`已设为调度焦点：${target?.name || forumId}`)
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : '切换启用论坛失败')
+      toast.error(err instanceof Error ? err.message : '切换调度焦点失败')
     } finally {
       setBusy(false)
     }
@@ -279,7 +303,7 @@ export function ForumsPanel() {
       <div className="settings-panel-body">
         <div className="settings-card">
           <div className="settings-card-head">
-            <h4>当前爬虫</h4>
+            <h4>调度焦点</h4>
           </div>
           <div className="settings-card-body">
             <div className="forum-active-summary">
@@ -289,7 +313,7 @@ export function ForumsPanel() {
                   <span className="forum-active-note">{activeNote(activeForum)}</span>
                 </>
               ) : (
-                <span className="hint">未选择启用论坛</span>
+                <span className="hint">未选择调度焦点</span>
               )}
             </div>
 
@@ -299,10 +323,11 @@ export function ForumsPanel() {
               <div className="forum-icon-grid">
                 {forums.map((forum) => {
                   const dedicated = !!(forum.site_dedicated || forum.id === siteCrawlerId)
-                  const available = forum.status === 'active' && !!forum.crawler_registered
+                  const available =
+                    forum.status === 'active' &&
+                    !!(forum.crawler_registered || forum.capabilities?.crawlable)
                   const enabled = activeForumId === forum.id
-                  const fullModule = hasFullCrawlerModule(forum)
-                  const counts = boardCounts(forum)
+                  const fullModule = !!(forum.capabilities?.crawlable || hasFullCrawlerModule(forum))
                   const status = linkStatus[forum.id] || { state: 'pending' as const, detail: '' }
                   return (
                     <div
@@ -312,7 +337,7 @@ export function ForumsPanel() {
                       <div className="forum-icon-toolbar">
                         <label
                           className="forum-enable-radio"
-                          title={available ? '设为当前启用论坛' : '需配置接入后才可启用'}
+                          title={available ? '设为连续调度焦点（各论坛配置仍独立）' : '需接入后才可设为焦点'}
                         >
                           <input
                             type="radio"
@@ -323,7 +348,7 @@ export function ForumsPanel() {
                             onChange={() => void handleEnable(forum.id)}
                           />
                           <span className="forum-enable-dot" aria-hidden />
-                          <span>启用</span>
+                          <span>焦点</span>
                         </label>
                         {available ? (
                           <button
@@ -348,9 +373,7 @@ export function ForumsPanel() {
                         <span className="forum-icon-tile-name">{forum.name}</span>
                         {available ? (
                           <span className="forum-icon-tile-meta">
-                            {fullModule && counts.total > 0
-                              ? `${counts.total} 板块 · 磁力 ${counts.magnet} · ED2K ${counts.ed2k}`
-                              : '基本配置 · 爬虫模块待接入'}
+                            {fullModule ? boardMetaText(forum) : '基本配置 · 爬虫模块待接入'}
                           </span>
                         ) : (
                           <span className="forum-icon-tile-meta">配置不通用 · 需独立模块</span>

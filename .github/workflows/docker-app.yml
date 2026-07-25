@@ -1,0 +1,67 @@
+name: Build sehua-app image
+
+# 主栈镜像：backend + admin（与 search 分开构建 / 推送）
+on:
+  push:
+    branches: [main]
+    paths:
+      - "backend/**"
+      - "frontend/admin/**"
+      - "deploy/app/**"
+      - "database/**"
+      - "VERSION"
+      - ".github/workflows/docker-app.yml"
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  GHCR: ghcr.io
+  DOCKERHUB_USER: poillysky
+  RELEASE_TAG: "1.2.0"
+
+jobs:
+  app:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Login GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.GHCR }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Login Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ env.DOCKERHUB_USER }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: |
+            ${{ env.GHCR }}/${{ github.repository_owner }}/sehuatang-app
+            ${{ env.DOCKERHUB_USER }}/sehuatang-app
+          tags: |
+            type=raw,value=${{ env.RELEASE_TAG }},enable={{is_default_branch}}
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=semver,pattern={{version}}
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: deploy/app/Dockerfile
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha,scope=app
+          cache-to: type=gha,mode=max,scope=app
+          platforms: linux/amd64

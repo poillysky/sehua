@@ -8,5 +8,10 @@ ALTER TABLE resource_sources ADD COLUMN IF NOT EXISTS preview_images TEXT[];
 ALTER TABLE resource_sources ADD COLUMN IF NOT EXISTS ed2k_links TEXT[];
 ALTER TABLE resource_sources ADD COLUMN IF NOT EXISTS extract_password TEXT;
 
--- 爬虫队列侧 forum_id（012 已有；此处再保一次）
-ALTER TABLE crawl_pages ADD COLUMN IF NOT EXISTS forum_id TEXT;
+-- 爬虫队列侧 forum_id（012 已有；独立资源库无 crawl_pages 时跳过）
+DO $$
+BEGIN
+  IF to_regclass('public.crawl_pages') IS NOT NULL THEN
+    ALTER TABLE crawl_pages ADD COLUMN IF NOT EXISTS forum_id TEXT;
+  END IF;
+END $$;

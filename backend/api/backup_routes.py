@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
+import logging
+
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from pydantic import BaseModel, Field
 
@@ -12,7 +15,13 @@ from workers.backup import (
     run_backup_once,
     save_backup_config,
 )
-from workers.backup_import import run_backup_import
+from workers.backup_import import (
+    get_import_progress,
+    run_backup_import_background,
+    try_begin_import_job,
+)
+
+log = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/system", tags=["backup"])
 
@@ -43,10 +52,13 @@ def put_backup(
 @router.post("/backup/run")
 async def post_backup_run(_user: dict = Depends(require_permission("settings.write"))) -> dict:
     if is_backup_busy():
-        raise HTTPException(status_code=409, detail="备份正在进行中，请稍候")
+        raise HTTPException(status_code=409, detail="正在备份或导入，请稍候再试")
     result = await run_backup_once(trigger="manual")
     if result.get("skipped") and result.get("reason") == "busy":
-        raise HTTPException(status_code=409, detail=str(result.get("error") or "备份忙碌"))
+        raise HTTPException(
+            status_code=409,
+            detail=str(result.get("error") or "正在备份中，请稍候再试"),
+        )
     ok = bool(result.get("ok"))
     return {
         "message": "ok" if ok else "failed",
@@ -58,15 +70,46 @@ async def post_backup_run(_user: dict = Depends(require_permission("settings.wri
     }
 
 
+@router.get("/backup/import/status")
+def get_backup_import_status(
+    _user: dict = Depends(require_permission("settings.write")),
+) -> dict:
+    """导入进度（可离开数据管理页再回来继续看）。"""
+    job = get_import_progress()
+    return {
+        "message": "success",
+        "busy": is_backup_busy() or bool(job.get("active")),
+        "import_job": job,
+    }
+
+
 @router.post("/backup/import")
 async def post_backup_import(
     file: UploadFile = File(...),
     _user: dict = Depends(require_permission("settings.write")),
 ) -> dict:
-    """上传备份压缩包（.sql.gz / .zip）合并导入；按资源 hash、标签名去重。"""
-    if is_backup_busy():
-        raise HTTPException(status_code=409, detail="备份或导入正在进行中，请稍候")
+    """上传备份后后台异步导入；立刻返回，进度见 GET /backup/import/status。
+
+    边收边写磁盘，不全量进内存；后台 gzip 流式解析 + SQLite 中转后再入库。
+    """
+    import os
+    import tempfile
+    from pathlib import Path
+
+    from workers.backup_import import (
+        _MAX_UPLOAD_BYTES,
+        _UPLOAD_CHUNK,
+        _import_workdir,
+        abort_import_job,
+    )
+    from workers.runner import _log_activity
+
     filename = (file.filename or "").strip() or "upload.sql.gz"
+    _log_activity(f"资源库备份导入：已接到请求 · {filename}")
+
+    if is_backup_busy():
+        _log_activity("资源库备份导入：忙碌，已拒绝")
+        raise HTTPException(status_code=409, detail="正在备份或导入，请稍候再试")
     lower = filename.lower()
     if not (
         lower.endswith(".sql.gz")
@@ -74,26 +117,67 @@ async def post_backup_import(
         or lower.endswith(".sql")
         or lower.endswith(".zip")
     ):
+        _log_activity(f"资源库备份导入：格式不支持 · {filename}")
         raise HTTPException(
             status_code=400,
             detail="请上传 .sql.gz / .gz / .sql / .zip 格式的资源库备份",
         )
-    raw = await file.read()
-    if not raw:
-        raise HTTPException(status_code=400, detail="上传文件为空")
 
-    result = await run_backup_import(raw=raw, filename=filename)
-    if result.get("skipped") and result.get("reason") == "busy":
-        raise HTTPException(status_code=409, detail=str(result.get("error") or "导入忙碌"))
-    ok = bool(result.get("ok"))
+    job = try_begin_import_job(filename)
+    if job is None:
+        _log_activity("资源库备份导入：忙碌，已拒绝")
+        raise HTTPException(status_code=409, detail="正在备份或导入，请稍候再试")
+
+    _log_activity(f"资源库备份导入：正在落盘 · {filename}")
+    suffix = ".sql.gz" if lower.endswith(".sql.gz") else (Path(filename).suffix or ".bin")
+    fd, path_s = tempfile.mkstemp(
+        prefix="backup-up-", suffix=suffix, dir=str(_import_workdir())
+    )
+    upload_path = Path(path_s)
+    nbytes = 0
+    try:
+        with os.fdopen(fd, "wb") as out:
+            while True:
+                chunk = await file.read(_UPLOAD_CHUNK)
+                if not chunk:
+                    break
+                nbytes += len(chunk)
+                if nbytes > _MAX_UPLOAD_BYTES:
+                    raise ValueError(
+                        f"文件过大（上限 {_MAX_UPLOAD_BYTES // (1024 * 1024)} MB）"
+                    )
+                out.write(chunk)
+        if nbytes <= 0:
+            raise ValueError("上传文件为空")
+    except Exception as exc:
+        upload_path.unlink(missing_ok=True)
+        abort_import_job(message=str(exc))
+        _log_activity(f"资源库备份导入：落盘失败 · {exc}")
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    _log_activity(f"资源库备份导入：已落盘 {nbytes} 字节 · 后台流式合并 · {filename}")
+
+    async def _bg() -> None:
+        try:
+            await run_backup_import_background(
+                path=upload_path,
+                filename=filename,
+                cleanup_upload=True,
+            )
+        except Exception:
+            log.exception("backup import background crashed")
+            try:
+                upload_path.unlink(missing_ok=True)
+            except Exception:
+                pass
+
+    asyncio.create_task(_bg())
     return {
-        "message": "ok" if ok else "failed",
-        "ok": ok,
-        "error": result.get("error"),
-        "result": result,
-        "resources_inserted": result.get("resources_inserted") or 0,
-        "resources_updated": result.get("resources_updated") or 0,
-        "resources_skipped": result.get("resources_skipped") or 0,
-        "tags_upserted": result.get("tags_upserted") or 0,
-        "resource_tags_linked": result.get("resource_tags_linked") or 0,
+        "message": "started",
+        "started": True,
+        "ok": True,
+        "filename": filename,
+        "bytes": nbytes,
+        "busy": True,
+        "import_job": get_import_progress(),
     }

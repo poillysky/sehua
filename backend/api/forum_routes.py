@@ -32,7 +32,7 @@ router = APIRouter(prefix="/api/forum", tags=["forum"])
 
 FORUM_DEFAULT_ENTRY_URLS: dict[str, str] = {
     SITE_CRAWLER_FORUM_ID: DEFAULT_TEST_URL,
-    FORUM_2048_ID: "https://ut2gw5.xc6ym5.com/",
+    FORUM_2048_ID: "https://fby.tfzqs88.com",
 }
 
 
@@ -88,12 +88,17 @@ def put_active_forum(
     body: ActiveForumBody,
     _user: dict = Depends(require_permission("settings.write")),
 ) -> dict:
+    """设为连续调度焦点（不改其它论坛的爬虫开关）。"""
     if body.active_forum_id not in CONFIGURABLE_FORUM_IDS:
-        raise HTTPException(status_code=400, detail="只能启用已接入的论坛")
+        raise HTTPException(status_code=400, detail="只能设为已接入论坛的调度焦点")
     conn = connect()
     try:
         active = set_active_forum_id(conn, body.active_forum_id)
-        return {"message": "success", "active_forum_id": active}
+        return {
+            "message": "已设为调度焦点",
+            "active_forum_id": active,
+            "focus_forum_id": active,
+        }
     finally:
         conn.close()
 

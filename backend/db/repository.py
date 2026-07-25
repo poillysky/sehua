@@ -134,7 +134,7 @@ def infer_resource_link_kind(ed2k_link: str | None) -> str:
 
 
 def _ensure_resource_schema(conn: Any) -> None:
-    """补缺列（IF NOT EXISTS）；不改已有列数据。独立库与主库均可。"""
+    """补缺列（IF NOT EXISTS）；空库先建资源表，避免读列表直接 500。"""
     global _schema_ready
     if _schema_ready:
         return
@@ -149,6 +149,11 @@ def _ensure_resource_schema(conn: Any) -> None:
         "description",
     )
     with conn.cursor() as cur:
+        cur.execute("SELECT to_regclass('public.resource_sources')")
+        if cur.fetchone()[0] is None:
+            from db.migrate import ensure_resource_db_schema
+
+            ensure_resource_db_schema(conn)
         # 先查已有列，避免冷启动连打 8 次 ALTER（远程库可达数秒）
         cur.execute(
             """
@@ -460,6 +465,43 @@ def purge_crawl_data(conn: Any) -> None:
 
 def clear_forum_crawl_progress(conn: Any) -> int:
     """清空各论坛配置里的列表游标 / 捕新进度（不清 enabled / Cookie 等）。"""
+    return _clear_forum_progress_keys(
+        conn,
+        (
+            "board_list_cursors",
+            "board_head_catchup_on",
+            "board_head_progress",
+            "board_backfill_progress",
+        ),
+    )
+
+
+def clear_forum_head_catchup(conn: Any) -> dict[str, int]:
+    """只清捕新日期闸门与当日捕新进度页，不动深扫游标 / 队列。"""
+    from db.forum_configs import load_forum_configs_map
+
+    configs = load_forum_configs_map(conn)
+    date_entries = 0
+    progress_entries = 0
+    for raw in configs.values():
+        dates = (raw or {}).get("board_head_catchup_on") or {}
+        progress = (raw or {}).get("board_head_progress") or {}
+        if isinstance(dates, dict):
+            date_entries += len(dates)
+        if isinstance(progress, dict):
+            progress_entries += len(progress)
+    forums = _clear_forum_progress_keys(
+        conn,
+        ("board_head_catchup_on", "board_head_progress"),
+    )
+    return {
+        "forums": forums,
+        "date_entries": date_entries,
+        "progress_entries": progress_entries,
+    }
+
+
+def _clear_forum_progress_keys(conn: Any, keys: tuple[str, ...]) -> int:
     from db.forum_configs import load_forum_configs_map, save_forum_config
 
     configs = load_forum_configs_map(conn)
@@ -467,12 +509,7 @@ def clear_forum_crawl_progress(conn: Any) -> int:
     for forum_id, raw in configs.items():
         cfg = dict(raw or {})
         changed = False
-        for key in (
-            "board_list_cursors",
-            "board_head_catchup_on",
-            "board_head_progress",
-            "board_backfill_progress",
-        ):
+        for key in keys:
             if cfg.get(key):
                 cfg[key] = {}
                 changed = True
@@ -612,7 +649,7 @@ def known_resource_tids(
     urls: list[str] = []
     if is_phpwind(fid):
         adapter = get_site_adapter(fid)
-        base = root or "https://ut2gw5.xc6ym5.com/"
+        base = root or "https://fby.tfzqs88.com"
         for tid in clean:
             urls.append(
                 canonical_thread_url(adapter.build_thread_url(base, tid), forum_id=fid)
@@ -680,7 +717,7 @@ def update_board_meta_by_tids(
     urls: list[str] = []
     if is_phpwind(forum):
         adapter = get_site_adapter(forum)
-        base = root or "https://ut2gw5.xc6ym5.com/"
+        base = root or "https://fby.tfzqs88.com"
         for tid in clean:
             urls.append(
                 canonical_thread_url(adapter.build_thread_url(base, tid), forum_id=forum)

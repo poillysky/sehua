@@ -1,8 +1,22 @@
-"""资源库独立连接：配置存在主库 collector_settings；未启用时回落主库。"""
+"""资源库独立连接：配置存在主库 collector_settings；未启用时回落主库。
+
+架构约定：
+  - 主库（元数据）：仅本后端自用（队列 / 论坛配置 / 活动日志 / 设置）
+  - 资源库：多终端共享（管理端、搜索、其它客户端读写资源本体）
+
+紧急时可不用读主库设置，改用环境变量（主库 MultiXact 损坏时仍能指向独立库）:
+  RESOURCE_DB_ENABLED=true
+  RESOURCE_POSTGRES_HOST=192.168.2.38
+  RESOURCE_POSTGRES_PORT=5435
+  RESOURCE_POSTGRES_USER=postgres
+  RESOURCE_POSTGRES_PASSWORD=postgres
+  RESOURCE_POSTGRES_DB=ed2k
+"""
 
 from __future__ import annotations
 
 import logging
+import os
 import threading
 from typing import Any
 
@@ -18,26 +32,92 @@ SETTING_USER = "resource_postgres_user"
 SETTING_PASSWORD = "resource_postgres_password"
 SETTING_DB = "resource_postgres_db"
 
+_POOL_NAME = "resource"
 _CACHE_LOCK = threading.Lock()
 _CACHED_KWARGS: dict[str, Any] | None = None
 _CACHED_ENABLED: bool | None = None
+_LAST_SETTINGS_ERROR: str | None = None
+# 主库设置读失败且无环境变量覆盖：禁止假装「未启用」而写主库
+_SETTINGS_UNAVAILABLE: bool = False
+
+
+class ResourceDbConfigError(RuntimeError):
+    """资源库配置不可用；禁止回落主库写资源。"""
 
 
 def invalidate_resource_db_cache() -> None:
-    global _CACHED_KWARGS, _CACHED_ENABLED
+    global _CACHED_KWARGS, _CACHED_ENABLED, _SETTINGS_UNAVAILABLE, _LAST_SETTINGS_ERROR
     with _CACHE_LOCK:
         _CACHED_KWARGS = None
         _CACHED_ENABLED = None
+        _SETTINGS_UNAVAILABLE = False
+        _LAST_SETTINGS_ERROR = None
+    try:
+        from db.pg_pool import close_pool
+
+        close_pool(_POOL_NAME)
+    except Exception:
+        pass
 
 
 def primary_dsn_kwargs() -> dict[str, Any]:
     return dict(postgres_dsn_kwargs())
 
 
+def settings_unavailable() -> bool:
+    return bool(_SETTINGS_UNAVAILABLE)
+
+
+def _env_resource_override() -> dict[str, str] | None:
+    """环境变量覆盖独立资源库（优先于主库 collector_settings）。"""
+    enabled = (os.getenv("RESOURCE_DB_ENABLED") or "").strip().lower()
+    if enabled not in {"1", "true", "yes", "on"}:
+        return None
+    host = (os.getenv("RESOURCE_POSTGRES_HOST") or "").strip()
+    dbname = (os.getenv("RESOURCE_POSTGRES_DB") or "").strip()
+    if not host or not dbname:
+        log.warning(
+            "RESOURCE_DB_ENABLED 已开但缺少 RESOURCE_POSTGRES_HOST / RESOURCE_POSTGRES_DB，忽略"
+        )
+        return None
+    return {
+        "enabled": "true",
+        "host": host,
+        "port": (os.getenv("RESOURCE_POSTGRES_PORT") or "").strip(),
+        "user": (os.getenv("RESOURCE_POSTGRES_USER") or "").strip(),
+        "password": os.getenv("RESOURCE_POSTGRES_PASSWORD") or "",
+        "dbname": dbname,
+    }
+
+
+def _disabled_raw() -> dict[str, str]:
+    return {
+        "enabled": "false",
+        "host": "",
+        "port": "",
+        "user": "",
+        "password": "",
+        "dbname": "",
+    }
+
+
 def _load_raw_from_primary() -> dict[str, str]:
+    global _LAST_SETTINGS_ERROR, _SETTINGS_UNAVAILABLE
+    override = _env_resource_override()
+    if override is not None:
+        _LAST_SETTINGS_ERROR = None
+        _SETTINGS_UNAVAILABLE = False
+        log.info(
+            "独立资源库使用环境变量 · %s:%s/%s",
+            override.get("host"),
+            override.get("port") or "(default)",
+            override.get("dbname"),
+        )
+        return override
+
     conn = connect()
     try:
-        return {
+        out = {
             "enabled": get_setting(conn, SETTING_ENABLED, "false"),
             "host": get_setting(conn, SETTING_HOST, ""),
             "port": get_setting(conn, SETTING_PORT, ""),
@@ -45,21 +125,47 @@ def _load_raw_from_primary() -> dict[str, str]:
             "password": get_setting(conn, SETTING_PASSWORD, ""),
             "dbname": get_setting(conn, SETTING_DB, ""),
         }
+        _LAST_SETTINGS_ERROR = None
+        _SETTINGS_UNAVAILABLE = False
+        return out
+    except Exception as exc:
+        # 典型：MultiXact 损坏 — 不能假装「未启用」而把多终端资源写进主库
+        _LAST_SETTINGS_ERROR = str(exc)
+        _SETTINGS_UNAVAILABLE = True
+        log.exception(
+            "读取主库资源库配置失败，已禁止回落主库写资源（请用 RESOURCE_DB_* 或修复主库）: %s",
+            exc,
+        )
+        return _disabled_raw()
     finally:
         conn.close()
+
+
+def _require_settings_available() -> None:
+    if not _SETTINGS_UNAVAILABLE:
+        return
+    if _env_resource_override() is not None:
+        return
+    raise ResourceDbConfigError(
+        "无法读取主库里的资源库配置，已停止操作以免把资源写进仅本机可见的主库。"
+        "请修复主库，或设置环境变量 RESOURCE_DB_ENABLED=true 及 RESOURCE_POSTGRES_HOST / "
+        "RESOURCE_POSTGRES_DB（可选 PORT / USER / PASSWORD）。"
+    )
 
 
 def resource_db_config(*, mask_password: bool = True) -> dict[str, Any]:
     """供管理端展示；未配置时回显主库连接信息（只读提示）。"""
     primary = primary_dsn_kwargs()
     raw = _load_raw_from_primary()
+    settings_error = _LAST_SETTINGS_ERROR
+    unavailable = bool(_SETTINGS_UNAVAILABLE)
     enabled = str(raw.get("enabled") or "").strip().lower() in {"1", "true", "yes", "on"}
     host = (raw.get("host") or "").strip()
     port_s = (raw.get("port") or "").strip()
     user = (raw.get("user") or "").strip()
     password = raw.get("password") or ""
     dbname = (raw.get("dbname") or "").strip()
-    configured = bool(enabled and host and dbname)
+    configured = bool(enabled and host and dbname) and not unavailable
 
     try:
         port = int(port_s) if port_s else int(primary["port"])
@@ -81,14 +187,27 @@ def resource_db_config(*, mask_password: bool = True) -> dict[str, Any]:
         form_port = None
 
     out: dict[str, Any] = {
-        "enabled": enabled,
+        "enabled": enabled and not unavailable,
         "ready": configured,
         "using_primary": not configured,
+        "settings_unavailable": unavailable,
+        "writable": not unavailable,
+        # 架构角色：独立库 = 多终端共享；未启用 = 与主库同机（仅本机）
+        "role": "multi_terminal" if configured else (
+            "config_unavailable" if unavailable else "colocated_primary"
+        ),
+        "architecture": {
+            "metadata_db": "本后端自用（队列 / 配置 / 活动日志）",
+            "resource_db": "多终端共享（管理端 / 搜索 / 其它客户端）"
+            if configured
+            else "未启用独立库时资源与主库同机（仅建议单机开发）",
+        },
         "host": host if enabled else "",
         "port": form_port,
         "user": user if enabled else "",
         "dbname": dbname if enabled else "",
         "has_password": bool(password) if enabled else False,
+        "env_override": _env_resource_override() is not None,
         "effective": {
             "host": eff_host,
             "port": eff_port,
@@ -103,20 +222,27 @@ def resource_db_config(*, mask_password: bool = True) -> dict[str, Any]:
             "dbname": str(primary["dbname"]),
         },
     }
+    if settings_error:
+        out["settings_error"] = settings_error
     if not mask_password and configured:
         out["password"] = password
     return out
 
 
 def resource_dsn_kwargs() -> dict[str, Any]:
-    """实际连接参数：启用且填齐时用独立库，否则主库。"""
+    """实际连接参数：启用且填齐时用独立库，否则主库。
+
+    主库设置读失败且无环境变量时抛 ResourceDbConfigError（禁止写主库冒充资源库）。
+    """
     global _CACHED_KWARGS, _CACHED_ENABLED
     with _CACHE_LOCK:
-        if _CACHED_KWARGS is not None and _CACHED_ENABLED is not None:
+        if _CACHED_KWARGS is not None and _CACHED_ENABLED is not None and not _SETTINGS_UNAVAILABLE:
             return dict(_CACHED_KWARGS)
 
     primary = primary_dsn_kwargs()
     raw = _load_raw_from_primary()
+    _require_settings_available()
+
     enabled = str(raw.get("enabled") or "").strip().lower() in {"1", "true", "yes", "on"}
     host = (raw.get("host") or "").strip()
     dbname = (raw.get("dbname") or "").strip()
@@ -152,52 +278,77 @@ def resource_dsn_kwargs() -> dict[str, Any]:
 
 
 def using_separate_resource_db() -> bool:
-    resource_dsn_kwargs()
+    """是否应以独立资源库为准。
+
+    设置读失败时返回 True，迫使写路径走 fail-closed，避免静默写主库。
+    """
+    if _SETTINGS_UNAVAILABLE and _env_resource_override() is None:
+        return True
+    try:
+        resource_dsn_kwargs()
+    except ResourceDbConfigError:
+        return True
     with _CACHE_LOCK:
         return bool(_CACHED_ENABLED)
 
 
 def connect_resource():
-    """资源表读写连接。
+    """资源表读写连接（多终端共享库）。
 
-    独立库连不上时回落主库（避免迁库后错误 host 把整站状态接口拖死）。
+    已启用独立资源库时：连不上则直接失败，禁止静默回落主库。
+    主库设置读失败且无环境变量：直接失败。
+    未启用独立库时：使用主库（仅建议单机）。
     """
-    import psycopg2
+    from db.pg_pool import get_pooled_connection
 
-    kwargs = dict(resource_dsn_kwargs())
+    try:
+        kwargs = dict(resource_dsn_kwargs())
+    except ResourceDbConfigError:
+        raise
     kwargs.setdefault("connect_timeout", 5)
     try:
-        return psycopg2.connect(**kwargs)
+        return get_pooled_connection(
+            kwargs,
+            pool_name=_POOL_NAME,
+            maxconn_env="RESOURCE_POSTGRES_POOL_MAX",
+        )
+    except ResourceDbConfigError:
+        raise
     except Exception as exc:
         if not using_separate_resource_db():
             raise
-        primary = dict(primary_dsn_kwargs())
-        primary.setdefault("connect_timeout", 5)
-        log.warning(
-            "独立资源库不可用 %s:%s/%s（%s），本次回落主库；请在数据管理关闭独立资源库",
-            kwargs.get("host"),
-            kwargs.get("port"),
-            kwargs.get("dbname"),
-            exc,
-        )
-        return psycopg2.connect(**primary)
+        raise RuntimeError(
+            "独立资源库连不上，已停止操作以免写错库。"
+            f"请到「数据管理」检查资源库（{kwargs.get('host')}:{kwargs.get('port')}/{kwargs.get('dbname')}）"
+            "或暂时关闭独立资源库。"
+        ) from exc
 
 
 def open_resource_connection() -> tuple[Any | None, str | None]:
     """打开独立资源库连接。未启用独立库时返回 (None, None)。
 
-    启用时连不上则 (None, error)。
+    启用时连不上则 (None, error)，不回落主库。
     """
+    if _SETTINGS_UNAVAILABLE and _env_resource_override() is None:
+        return None, (
+            "无法读取主库里的资源库配置，已禁止写入。"
+            "请修复主库或设置 RESOURCE_DB_* 环境变量。"
+        )
     if not using_separate_resource_db():
         return None, None
     try:
         return connect_resource(), None
+    except ResourceDbConfigError as exc:
+        return None, str(exc)
     except Exception as exc:
-        dsn = resource_dsn_kwargs()
+        try:
+            dsn = resource_dsn_kwargs()
+        except Exception:
+            dsn = {}
         hint = (
             f"独立资源库连不上 {dsn.get('host')}:{dsn.get('port')}/{dsn.get('dbname')}：{exc}。"
             "跨 Docker 网络请填对方宿主机 IP（或 NAS IP）+ bridge 映射端口，"
-            "不要填本 compose 内的服务名 postgres。"
+            "不要填本 compose 内的服务名 postgres。已拒绝回落主库。"
         )
         return None, hint
 
@@ -271,7 +422,17 @@ def test_resource_db_connection(
         except Exception as exc:
             return {"ok": False, "using_primary": True, "message": str(exc)}
 
-    raw = _load_raw_from_primary()
+    try:
+        raw = _load_raw_from_primary()
+        if _SETTINGS_UNAVAILABLE and _env_resource_override() is None:
+            return {
+                "ok": False,
+                "using_primary": False,
+                "message": "无法读取主库资源库配置，请用环境变量或修复主库后再测",
+            }
+    except Exception as exc:
+        return {"ok": False, "using_primary": False, "message": str(exc)}
+
     h = (host or "").strip() or (raw.get("host") or "").strip()
     d = (dbname or "").strip() or (raw.get("dbname") or "").strip()
     u = (user or "").strip() or (raw.get("user") or "").strip() or str(primary["user"])
@@ -306,7 +467,7 @@ def test_resource_db_connection(
         return {
             "ok": True,
             "using_primary": False,
-            "message": f"资源库连通 · {h}:{p}/{d}",
+            "message": f"资源库连通（多终端共享）· {h}:{p}/{d}",
         }
     except Exception as exc:
         return {"ok": False, "using_primary": False, "message": str(exc)}

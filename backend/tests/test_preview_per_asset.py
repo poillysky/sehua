@@ -92,7 +92,7 @@ def test_preview_by_traditional_film_name():
 
 
 def test_pair_magnet_title_same_as_preview_logic():
-    """磁力在前、一个子标题：段内多磁力只保留第一条子资源。"""
+    """磁力在前、一个子标题：段内多磁力同属该片名一并挂名。"""
     h1 = "A14DF0858322E3D03BF0B2A1A2C781108602A3E1"
     h2 = "8585E3735BDD7C467B50047BC08BB472400C8CF4"
     html = f"""
@@ -106,12 +106,12 @@ def test_pair_magnet_title_same_as_preview_logic():
     """
     titles = pair_magnet_to_subresource_title(html, [h1, h2])
     previews = extract_preview_images_by_infohash(html, [h1, h2], limit_per=3)
-    assert h1 in titles
+    assert h1 in titles and h2 in titles
     assert "洗浴三闺蜜" in titles[h1]
-    assert h2 not in titles  # 同属第一段，不另开子资源
+    assert "洗浴三闺蜜" in titles[h2]
     assert h1 in previews
     assert previews[h1][0].endswith("bath.jpg")
-    assert h2 not in previews
+    assert h2 in previews
 
 
 def test_pair_title_then_magnet_layout():
@@ -284,7 +284,7 @@ def test_two_magnets_without_subtitles_keep_primary_only():
 
 
 def test_one_subtitle_owns_all_magnets_in_segment():
-    """一个子标题：段内多个磁力仍只产出一条子资源。"""
+    """一个子标题：段内多个磁力全部入库（同属该资源名称）。"""
     from parsers.links import parse_thread_dual
 
     h1 = "20D70DBFC950B719335BCED87AEE73DFB6848301"
@@ -299,9 +299,82 @@ def test_one_subtitle_owns_all_magnets_in_segment():
     </body></html>
     """
     parsed = parse_thread_dual(html, tid=1, preferred_link="magnet")
-    assert len(parsed.assets) == 1
-    assert parsed.assets[0].hash.upper() == h1
-    assert parsed.assets[0].filename == "唯一片名"
+    assert len(parsed.assets) == 2
+    by_hash = {a.hash.upper(): a for a in parsed.assets}
+    assert by_hash[h1].filename == "唯一片名"
+    assert by_hash[h2].filename == "唯一片名"
+    assert sum(1 for a in parsed.assets if a.is_primary) == 1
+
+
+def test_consecutive_names_then_links_one_to_one():
+    """连续 3 个资源名称，下面 3 个磁力 → 按顺序 1:1。"""
+    from parsers.links import parse_thread_dual
+
+    h1 = "1111111111111111111111111111111111111111"
+    h2 = "2222222222222222222222222222222222222222"
+    h3 = "3333333333333333333333333333333333333333"
+    html = f"""
+    <html><body>
+    <span id="thread_subject">合集三连</span>
+    <div id="postmessage_1">
+      【影片名称】：片子甲
+      【影片大小】：1.0G
+      【影片名称】：片子乙
+      【影片大小】：2.0G
+      【影片名称】：片子丙
+      【影片大小】：3.0G
+      <img src="https://cdn.example/x.jpg" />
+      magnet:?xt=urn:btih:{h1}
+      magnet:?xt=urn:btih:{h2}
+      magnet:?xt=urn:btih:{h3}
+    </div>
+    </body></html>
+    """
+    parsed = parse_thread_dual(html, tid=1, preferred_link="magnet")
+    assert len(parsed.assets) == 3
+    by_hash = {a.hash.upper(): a for a in parsed.assets}
+    assert by_hash[h1].filename == "片子甲"
+    assert by_hash[h2].filename == "片子乙"
+    assert by_hash[h3].filename == "片子丙"
+
+
+def test_segment_multi_link_then_next_name():
+    """名称A下两链 + 名称B下一链 → A 两条、B 一条。"""
+    from parsers.links import parse_thread_dual
+
+    h1 = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+    h2 = "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB"
+    h3 = "CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC"
+    html = f"""
+    <html><body>
+    <div id="postmessage_1">
+      【资源名称】：资源甲
+      magnet:?xt=urn:btih:{h1}
+      magnet:?xt=urn:btih:{h2}
+      【资源名称】：资源乙
+      magnet:?xt=urn:btih:{h3}
+    </div>
+    </body></html>
+    """
+    parsed = parse_thread_dual(html, tid=1, preferred_link="magnet")
+    assert len(parsed.assets) == 3
+    by_hash = {a.hash.upper(): a for a in parsed.assets}
+    assert by_hash[h1].filename == "资源甲"
+    assert by_hash[h2].filename == "资源甲"
+    assert by_hash[h3].filename == "资源乙"
+
+
+def test_parse_bare_infohash_seed_encoding_label():
+    """【种子编码】裸 infohash（色花堂/2048 常见叫法）。"""
+    from parsers.magnet import parse_magnet_text
+    from parsers.thread_gates import has_target_link
+
+    h = "dddddddddddddddddddddddddddddddddddddddd"
+    for lab in ("种子编码", "種子編碼", "种子编号", "特徵編號"):
+        raw = f"【{lab}】：{h}"
+        got = parse_magnet_text(raw)
+        assert len(got) == 1 and got[0].infohash == h.upper(), lab
+        assert has_target_link(raw, "magnet")
 
 
 def test_persist_uses_asset_preview_images(monkeypatch):
@@ -380,3 +453,21 @@ def test_phpwind_data_original_lazy_preview():
     assert content.preview_images == got
     assert all("thumb-ing" not in u for u in content.preview_images)
     assert all("close.gif" not in u for u in content.preview_images)
+
+
+def test_skip_avatar_qrcode_forum_icons():
+    """头像 / 二维码 / 论坛图标 / 签名档不进预览。"""
+    from parsers.content import extract_preview_images
+
+    html = """
+    <div class="avatar"><img src="/uc_server/data/avatar/000/01/02/03_avatar_middle.jpg" width="48" height="48" /></div>
+    <img class="authicn vm" id="authicon1" src="static/image/common/online_member.gif" />
+    <img src="static/image/common/medal/medal116.gif" alt="神评" width="30" height="30" />
+    <img src="https://cdn.example/weixin_qrcode.png" alt="加群二维码" width="200" height="200" />
+    <div class="sign"><img class="zoom" width="600" src="https://cdn.example/sign-ad.gif" /></div>
+    <img aid="9" inpost="1" class="zoom" width="600"
+         zoomfile="https://cdn.example/real-preview.jpg"
+         file="https://cdn.example/real-preview.jpg" src="static/image/common/none.gif" />
+    """
+    got = extract_preview_images(html, limit=5, base_url="https://www.sehuatang.net/")
+    assert got == ["https://cdn.example/real-preview.jpg"]

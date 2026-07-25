@@ -438,3 +438,88 @@ def test_judge_imports_fullwidth_colon_magnet():
     assert outcome.verdict == "import"
     assert outcome.parsed is not None
     assert outcome.parsed.magnets
+
+
+def test_parse_fully_spaced_magnet_scheme():
+    """m a g n e t : ? xt = urn : btih : HASH"""
+    h = "33C4355AE4E69DB5AAA568E825A552ED29FD75BB"
+    raw = f"m a g n e t : ? xt = urn : btih : {h}"
+    links = parse_magnet_text(raw)
+    assert len(links) == 1
+    assert links[0].infohash == h
+    assert has_target_link(raw, "magnet")
+
+
+def test_parse_magnet_missing_question_mark():
+    """magnet:xt=… / magnet://xt=…"""
+    h = "33C4355AE4E69DB5AAA568E825A552ED29FD75BB"
+    for raw in (
+        f"magnet:xt=urn:btih:{h}",
+        f"magnet:/xt=urn:btih:{h}",
+        f"magnet://xt=urn:btih:{h}",
+    ):
+        links = parse_magnet_text(raw)
+        assert len(links) == 1 and links[0].infohash == h, raw
+
+
+def test_parse_clipped_magnet_heads_extra():
+    """magne / magent / mgnet 砍字母变体。"""
+    h = "A888D42A29828F820CCD1F04B593B161EF953A92"
+    for head in ("magne", "magent", "mgnet"):
+        raw = f"{head}:?xt=urn:btih:{h}"
+        links = parse_magnet_text(raw)
+        assert len(links) == 1 and links[0].infohash == h, head
+
+
+def test_parse_btih_space_before_hash():
+    """magnet:?xt=urn:btih HASH（冒号被空格代替）"""
+    h = "33C4355AE4E69DB5AAA568E825A552ED29FD75BB"
+    raw = f"magnet:?xt=urn:btih {h}"
+    links = parse_magnet_text(raw)
+    assert len(links) == 1
+    assert links[0].infohash == h
+
+
+def test_parse_magnet_entity_colon_and_zwsp():
+    """&colon; / 零宽字符打断"""
+    h = "33C4355AE4E69DB5AAA568E825A552ED29FD75BB"
+    raw = f"magnet&colon;?xt=urn&colon;btih&colon;{h}"
+    links = parse_magnet_text(raw)
+    assert len(links) == 1
+    assert links[0].infohash == h
+    zw = f"mag\u200bnet:?xt=urn:btih:{h}"
+    assert len(parse_magnet_text(zw)) == 1
+
+
+def test_parse_ed2k_truncated_and_spaced_scheme():
+    from parsers.ed2k import normalize_ed2k_corpus, parse_ed2k_text
+
+    h = "ABCDEFABCDEFABCDEFABCDEFABCDEFAB"
+    body = f"demo.mp4|10|{h}|/"
+    for raw in (
+        f"d2k://|file|{body}",
+        f"e2k://|file|{body}",
+        f"edk://|file|{body}",
+        f"ed2://|file|{body}",
+        f"e d 2 k : / / | file |{body}",
+        f"ed2k:|file|{body}",
+        f"ed2k:/|file|{body}",
+    ):
+        fixed = normalize_ed2k_corpus(raw)
+        assert "ed2k://|file|" in fixed, raw
+        links = parse_ed2k_text(raw)
+        assert len(links) == 1 and links[0].hash == h, raw
+
+
+def test_parse_ed2k_spaced_pipes_and_fullwidth():
+    from parsers.ed2k import parse_ed2k_text
+
+    h = "ABCDEFABCDEFABCDEFABCDEFABCDEFAB"
+    raw = f"ed2k:// | file | demo.mp4 | 10 | {h} |/"
+    links = parse_ed2k_text(raw)
+    assert len(links) == 1
+    assert links[0].hash == h
+    fw = f"ed2k：／／｜file｜demo.mp4｜10｜{h}｜/"
+    links2 = parse_ed2k_text(fw)
+    assert len(links2) == 1
+    assert links2[0].hash == h

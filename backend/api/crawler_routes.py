@@ -87,7 +87,7 @@ class RandomTidLoopBody(BaseModel):
 
 
 def _resolve_crawler_forum_id(raw: str | None = None) -> str:
-    """优先请求体 forum_id，否则当前启用论坛，最后回退色花堂。"""
+    """优先请求体 forum_id，否则调度焦点论坛，最后回退色花堂。"""
     fid = (raw or "").strip()
     if fid in FULL_CRAWLER_FORUM_IDS:
         return fid
@@ -115,6 +115,7 @@ def get_crawler_status(_user: dict = Depends(require_permission("crawler.view"))
     cfg: dict = {}
     board_fid = ""
     enabled_fids: list[str] = []
+    enabled_crawler_ids: list[str] = []
     qstats: dict = {}
     discarded_stats: dict = {}
     discarded_access_denied = 0
@@ -124,14 +125,20 @@ def get_crawler_status(_user: dict = Depends(require_permission("crawler.view"))
     conn = connect()
     try:
         payload = build_forums_payload(conn)
-        active = str(payload.get("active_forum_id") or get_active_forum_id(conn) or SITE_CRAWLER_FORUM_ID)
+        active = str(
+            payload.get("focus_forum_id")
+            or payload.get("active_forum_id")
+            or get_active_forum_id(conn)
+            or SITE_CRAWLER_FORUM_ID
+        )
         forums = list(payload.get("forums") or [])
         active_forum = next((f for f in forums if str(f.get("id")) == active), None) or next(
             (f for f in forums if str(f.get("id")) == SITE_CRAWLER_FORUM_ID), None
         )
         active_forum_name = str((active_forum or {}).get("name") or active)
         configs = load_forum_configs_map(conn)
-        # 状态面板跟随「当前选用论坛」；无专爬时回退站点专爬配置
+        enabled_crawler_ids = list(payload.get("enabled_crawler_forum_ids") or [])
+        # 状态面板跟随「调度焦点」；无专爬时回退站点专爬配置
         cfg_forum_id = active if active in configs else SITE_CRAWLER_FORUM_ID
         cfg = dict(configs.get(cfg_forum_id) or configs.get(SITE_CRAWLER_FORUM_ID) or {})
         board_fid = str(cfg.get("active_board_fid") or "")
@@ -201,6 +208,9 @@ def get_crawler_status(_user: dict = Depends(require_permission("crawler.view"))
 
     st = crawl_status()
     last = st.get("last_result") or {}
+    running_forum_id = str(st.get("forum_id") or "").strip() or (
+        cfg_forum_id if st.get("running") or st.get("looping") else ""
+    )
     try:
         from workers.random_tid import random_progress
 
@@ -233,7 +243,11 @@ def get_crawler_status(_user: dict = Depends(require_permission("crawler.view"))
     return {
         "forum_id": cfg_forum_id,
         "active_forum_id": active,
+        "focus_forum_id": active,
         "active_forum_name": active_forum_name,
+        "running_forum_id": running_forum_id or None,
+        "enabled_crawler_forum_ids": enabled_crawler_ids,
+        "scheduling_model": "single_process_focus",
         "enabled": bool(cfg.get("web_crawler_enabled")),
         "active_board_fid": board_fid,
         "enabled_board_fids": enabled_fids,
@@ -301,6 +315,23 @@ def get_crawler_status(_user: dict = Depends(require_permission("crawler.view"))
     }
 
 
+@router.post("/activity/clear")
+def clear_crawler_activity(
+    _user: dict = Depends(require_permission("crawl.run")),
+) -> dict:
+    """清空爬虫活动日志面板（仅 crawl_activity_log，不动队列/游标）。"""
+    from db.activity import clear_activity_log
+
+    deleted = clear_activity_log()
+    # 清完写一条提示，方便确认面板已刷新
+    _log_activity(f"活动日志已清空 · 删除 {deleted} 条")
+    return {
+        "message": "success",
+        "deleted": deleted,
+        "activity": recent_activity(120),
+    }
+
+
 @router.put("/enabled")
 async def put_crawler_enabled(
     body: EnabledBody,
@@ -345,11 +376,11 @@ def _require_manual_idle(*, action: str) -> None:
     """手动操作前：连续调度拒绝；停止后卡住的 running+stop 则复位。"""
     st = crawl_status()
     if st.get("looping"):
-        raise HTTPException(status_code=409, detail=f"连续调度进行中，请先关闭后再{action}")
+        raise HTTPException(status_code=409, detail=f"正在自动爬取中，请先点停止后再{action}")
     recover_stuck_after_stop(activity=action)
     st = crawl_status()
     if st.get("running"):
-        raise HTTPException(status_code=409, detail="上一轮仍在执行，请稍候")
+        raise HTTPException(status_code=409, detail="爬虫正在处理其他任务，请稍候")
 
 
 @router.post("/run")
@@ -377,7 +408,7 @@ async def post_crawler_run(
         name="crawler-run",
     )
     if result.get("reason") == "loop_running":
-        raise HTTPException(status_code=409, detail=str(result.get("error") or "连续调度进行中"))
+        raise HTTPException(status_code=409, detail=str(result.get("error") or "正在自动爬取中，请先点停止"))
     return {"message": "ok" if result.get("ok") and not result.get("skipped") else "failed", "result": result}
 
 
@@ -401,9 +432,9 @@ async def post_crawler_scan_head(
         name="crawler-scan-head",
     )
     if result.get("reason") == "loop_running":
-        raise HTTPException(status_code=409, detail=str(result.get("error") or "连续调度进行中"))
+        raise HTTPException(status_code=409, detail=str(result.get("error") or "正在自动爬取中，请先点停止"))
     if result.get("reason") == "already_running":
-        raise HTTPException(status_code=409, detail="上一轮仍在执行，请稍候")
+        raise HTTPException(status_code=409, detail="爬虫正在处理其他任务，请稍候")
     return {"message": "ok" if result.get("ok") and not result.get("skipped") else "failed", "result": result}
 
 
@@ -430,9 +461,9 @@ async def post_crawler_random_tid(
         name="crawler-random-tid",
     )
     if result.get("reason") == "loop_running":
-        raise HTTPException(status_code=409, detail=str(result.get("error") or "连续调度进行中"))
+        raise HTTPException(status_code=409, detail=str(result.get("error") or "正在自动爬取中，请先点停止"))
     if result.get("reason") == "busy":
-        raise HTTPException(status_code=409, detail=str(result.get("error") or "爬虫正在执行"))
+        raise HTTPException(status_code=409, detail=str(result.get("error") or "爬虫正在处理其他任务，请稍候"))
     ok = bool(result.get("ok") and not result.get("skipped"))
     return {
         "message": "ok" if ok else "failed",
@@ -517,7 +548,7 @@ async def _post_queue_retry(kind: str) -> dict:
         name=f"crawler-queue-{kind}",
     )
     if result.get("reason") == "loop_running":
-        raise HTTPException(status_code=409, detail=str(result.get("error") or "连续调度进行中"))
+        raise HTTPException(status_code=409, detail=str(result.get("error") or "正在自动爬取中，请先点停止"))
     if result.get("skipped") or result.get("ok") is False:
         detail = str(
             result.get("error")
@@ -988,7 +1019,7 @@ async def post_recrawl_stubs(
     _require_manual_idle(action="账号重爬")
     result = start_account_stub_recrawl()
     if not result.get("ok") and result.get("reason") in ("busy", "loop_running"):
-        raise HTTPException(status_code=409, detail=str(result.get("error") or "爬虫正在执行"))
+        raise HTTPException(status_code=409, detail=str(result.get("error") or "爬虫正在处理其他任务，请稍候"))
     if not result.get("ok") and result.get("reason") == "no_account_cookie":
         raise HTTPException(status_code=400, detail=str(result.get("error") or "未配置账号 Cookie"))
     remaining = int(result.get("remaining") or result.get("budget") or 0)

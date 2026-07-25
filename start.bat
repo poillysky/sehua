@@ -6,11 +6,11 @@ cd /d "%~dp0"
 set "ROOT=%~dp0"
 set "BACKEND=%ROOT%backend"
 set "ADMIN=%ROOT%frontend\admin"
-set "SEARCH=%ROOT%next-web"
 set "PY=%BACKEND%\.venv\Scripts\python.exe"
 
 echo ========================================
-echo   sehuatang 一键启动
+echo   sehua 一键启动（API + 管理）
+echo   搜索请另开 start-search.bat
 echo ========================================
 echo.
 
@@ -29,13 +29,6 @@ if not exist "%ADMIN%\package.json" (
   exit /b 1
 )
 
-if not exist "%SEARCH%\package.json" (
-  echo [错误] 未找到搜索前端：
-  echo   %SEARCH%
-  pause
-  exit /b 1
-)
-
 if not exist "%ADMIN%\node_modules\" (
   echo [提示] 管理前端尚未安装依赖，正在 npm install ...
   pushd "%ADMIN%"
@@ -50,41 +43,24 @@ if not exist "%ADMIN%\node_modules\" (
   echo.
 )
 
-if not exist "%SEARCH%\node_modules\" (
-  echo [提示] 搜索前端尚未安装依赖，正在 npm install ...
-  pushd "%SEARCH%"
-  call npm install
-  if errorlevel 1 (
-    echo [错误] next-web npm install 失败
-    popd
-    pause
-    exit /b 1
-  )
-  popd
-  echo.
-)
-
-echo [1/3] 启动后端 API        :8080
-start "sehuatang-backend" /D "%BACKEND%" cmd /k ".venv\Scripts\python.exe -m uvicorn api.main:app --host 0.0.0.0 --port 8080 --reload"
+echo [1/2] 启动后端 API        :8080
+echo       DB  192.168.2.38:5436/ed2k
+start "sehua-api" /D "%BACKEND%" cmd /k ".venv\Scripts\python.exe -m uvicorn api.main:app --host 0.0.0.0 --port 8080 --reload"
 
 timeout /t 2 /nobreak >nul
 
-echo [2/3] 启动管理后台 Admin  :8081
-start "sehuatang-admin" /D "%ADMIN%" cmd /k "npm run dev"
-
-timeout /t 1 /nobreak >nul
-
-echo [3/3] 启动搜索前端 Search :3010
-start "sehuatang-search" /D "%SEARCH%" cmd /k "npm run dev"
+echo [2/2] 启动管理后台 Admin  :8081
+start "sehua-admin" /D "%ADMIN%" cmd /k "npm run dev"
 
 echo.
 echo ----------------------------------------
 echo  后端健康检查  http://127.0.0.1:8080/health
 echo  管理后台      http://localhost:8081
-echo  搜索前端      http://localhost:3010
-echo  默认账号      admin / admin123 （仅管理后台）
+echo  数据库        192.168.2.38:5436 / ed2k
+echo  默认账号      admin / admin123
 echo ----------------------------------------
-echo  已打开三个控制台窗口；关闭对应窗口即可停止。
+echo  窗口：sehua-api / sehua-admin（关闭即停）
+echo  搜索前端请运行 start-search.bat
 echo.
 pause
 endlocal

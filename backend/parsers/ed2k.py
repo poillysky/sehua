@@ -10,15 +10,27 @@ ED2K_RE = re.compile(
     re.IGNORECASE,
 )
 
-# 发帖人/站点常把协议掐掉字母：d2k / e2k / edk → ed2k
+# 发帖人/站点常把协议掐掉字母：d2k / e2k / edk / ed2 → ed2k
 _TRUNCATED_ED2K_SCHEME_RE = re.compile(
-    r"(?<![A-Za-z0-9])(?:d2k|e2k|edk)\s*:\s*/\s*/\s*\|?\s*file\s*\|",
+    r"(?<![A-Za-z0-9])(?:d2k|e2k|edk|ed2)\s*:\s*(?:/\s*){0,3}\|?\s*file\s*\|",
     re.IGNORECASE,
 )
 
-# e d 2 k : / / | file |
+# e d 2 k : / / | file |（字母间至少一处空格，避免误伤正常 ed2k）
 _SPACED_ED2K_SCHEME_RE = re.compile(
-    r"(?<![A-Za-z0-9])e\s*d\s*2\s*k\s*:\s*/\s*/\s*\|?\s*file\s*\|",
+    r"(?<![A-Za-z0-9])e\s+d\s+2\s+k\s*:\s*(?:/\s*){0,3}\|?\s*file\s*\|",
+    re.IGNORECASE,
+)
+
+# 缺斜杠 / 多斜杠：ed2k:|file| / ed2k:/|file| / ed2k:///|file|
+_ED2K_SLASH_FIX_RE = re.compile(
+    r"(?<![A-Za-z0-9])ed2k\s*:\s*(?:/\s*){0,3}\|?\s*file\s*\|",
+    re.IGNORECASE,
+)
+
+# 管道旁空格：ed2k:// | file | name | size | hash |
+_ED2K_SPACED_PIPES_RE = re.compile(
+    r"ed2k://\s*\|\s*file\s*\|\s*([^\|]+?)\s*\|\s*(\d+)\s*\|\s*([A-Fa-f0-9]{32})\s*\|",
     re.IGNORECASE,
 )
 
@@ -27,8 +39,16 @@ _FULLWIDTH_TRANS = str.maketrans(
         "：": ":",
         "｜": "|",
         "／": "/",
+        "．": ".",
+        "\u200b": "",
+        "\u200c": "",
+        "\u200d": "",
+        "\ufeff": "",
+        "\u00ad": "",
     }
 )
+
+_ENTITY_PIPE_RE = re.compile(r"&vert;|&#0*124;|&#x0*7c;", re.I)
 
 ARCHIVE_EXTENSIONS = (".zip", ".rar", ".7z", ".cbz", ".cbr")
 
@@ -44,12 +64,18 @@ class Ed2kLink:
 
 
 def normalize_ed2k_corpus(text: str) -> str:
-    """还原被掐字母 / 全角 / 空格拆开的 ed2k 协议头。"""
+    """还原被掐字母 / 全角 / 空格拆开 / 缺斜杠的 ed2k 协议头。"""
     if not text:
         return ""
     out = text.translate(_FULLWIDTH_TRANS)
+    out = _ENTITY_PIPE_RE.sub("|", out)
     out = _TRUNCATED_ED2K_SCHEME_RE.sub("ed2k://|file|", out)
     out = _SPACED_ED2K_SCHEME_RE.sub("ed2k://|file|", out)
+    out = _ED2K_SLASH_FIX_RE.sub("ed2k://|file|", out)
+    out = _ED2K_SPACED_PIPES_RE.sub(
+        lambda m: f"ed2k://|file|{m.group(1).strip()}|{m.group(2)}|{m.group(3).upper()}|/",
+        out,
+    )
     return out
 
 

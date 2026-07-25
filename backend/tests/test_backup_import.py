@@ -177,25 +177,10 @@ async def test_run_backup_import_uses_shared_lock(monkeypatch):
         bk._LOCK.release()
     bk._BUSY = False
 
-    monkeypatch.setattr(bi, "extract_sql_text", lambda raw, filename="": _python_fallback_sql())
     monkeypatch.setattr(
         bi,
-        "parse_backup_tables",
-        lambda sql: {
-            "ed2k_resources": [
-                {
-                    "hash": "AAAABBBBCCCCDDDDEEEEFFFF00001111",
-                    "filename": "demo.mp4",
-                    "size": 1,
-                    "ed2k_link": "ed2k://|file|demo.mp4|1|AAAABBBBCCCCDDDDEEEEFFFF00001111|/",
-                }
-            ]
-        },
-    )
-    monkeypatch.setattr(
-        bi,
-        "apply_backup_tables",
-        lambda conn, tables: {
+        "_sync_merge_backup",
+        lambda **_kw: {
             "resources_inserted": 1,
             "resources_updated": 0,
             "resources_skipped": 0,
@@ -204,7 +189,6 @@ async def test_run_backup_import_uses_shared_lock(monkeypatch):
             "tables_seen": ["ed2k_resources"],
         },
     )
-    monkeypatch.setattr(bi, "connect", lambda: MagicMock(close=lambda: None))
     monkeypatch.setattr(bk, "_crawler_snapshot", lambda: {"was_enabled": False})
     monkeypatch.setattr(bk, "_pause_crawler", AsyncMock())
     monkeypatch.setattr(bk, "_resume_crawler", AsyncMock())
@@ -214,3 +198,15 @@ async def test_run_backup_import_uses_shared_lock(monkeypatch):
     assert result["resources_inserted"] == 1
     assert bk._BUSY is False
     assert not bk._LOCK.locked()
+
+
+def test_spill_streaming_roundtrip(tmp_path, monkeypatch):
+    """gzip 流式解析进 spill，不全量 decode 整份 SQL。"""
+    raw = gzip.compress(_copy_sql().encode("utf-8"))
+    up = tmp_path / "ed2k-resources.sql.gz"
+    up.write_bytes(raw)
+    spill = tmp_path / "spill.sqlite"
+    counts = bi.spill_backup_to_sqlite(up, filename=up.name, spill_path=spill)
+    assert counts["ed2k_resources"] == 1
+    assert counts["tags"] == 2
+    assert counts["resource_sources"] == 1

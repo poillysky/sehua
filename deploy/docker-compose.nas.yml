@@ -50,7 +50,7 @@ services:
           memory: 512M
 
   app:
-    image: poillysky/sehuatang-app:1.1.24
+    image: poillysky/sehuatang-app:1.2.0
     container_name: sehuatang-app
     restart: always
     ports:
@@ -75,6 +75,13 @@ services:
       # 日志：INFO 默认；排障改为 DEBUG / debug
       LOG_LEVEL: INFO
       UVICORN_LOG_LEVEL: info
+      # 主库 collector_settings 损坏时，可用环境变量强制独立资源库（跳过读设置表）:
+      # RESOURCE_DB_ENABLED: "true"
+      # RESOURCE_POSTGRES_HOST: "192.168.2.38"
+      # RESOURCE_POSTGRES_PORT: "5435"
+      # RESOURCE_POSTGRES_USER: postgres
+      # RESOURCE_POSTGRES_PASSWORD: postgres
+      # RESOURCE_POSTGRES_DB: ed2k
     volumes:
       - /vol1/1000/Docker/sehuatang/data/backend:/app/data
       - /vol1/1000/Docker/sehuatang/data/backups:/app/data/backups

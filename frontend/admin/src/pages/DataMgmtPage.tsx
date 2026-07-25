@@ -1,6 +1,7 @@
-import { useCallback, useEffect, useState, type FormEvent } from 'react'
+import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react'
 import { api } from '../api/client'
 import {
+  fetchBackupImportStatus,
   fetchBackupStatus,
   fetchResourceDbConfig,
   importBackupFile,
@@ -8,6 +9,7 @@ import {
   saveBackupConfig,
   saveResourceDbConfig,
   testResourceDbConfig,
+  type BackupImportJob,
   type BackupStatus,
   type ResourceDbConfig,
 } from '../api/system'
@@ -107,6 +109,10 @@ export function DataMgmtPage() {
   const [backupRunning, setBackupRunning] = useState(false)
   const [backupImporting, setBackupImporting] = useState(false)
   const [importFile, setImportFile] = useState<File | null>(null)
+  const [importJob, setImportJob] = useState<BackupImportJob | null>(null)
+  const [uploadPercent, setUploadPercent] = useState(0)
+  const importPollRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  const importToastDoneRef = useRef(false)
 
   const [rdb, setRdb] = useState<ResourceDbConfig | null>(null)
   const [rdbEnabled, setRdbEnabled] = useState(false)
@@ -168,6 +174,7 @@ export function DataMgmtPage() {
       setBackupEnabled(Boolean(data.enabled))
       setBackupHour(Number(data.hour ?? 3))
       setBackupMinute(Number(data.minute ?? 0))
+      if (data.import_job) setImportJob(data.import_job)
     } catch (err) {
       toast.error(err instanceof Error ? err.message : '读取备份配置失败')
       setBackup(null)
@@ -176,11 +183,78 @@ export function DataMgmtPage() {
     }
   }, [])
 
+  const stopImportPoll = useCallback(() => {
+    if (importPollRef.current) {
+      clearInterval(importPollRef.current)
+      importPollRef.current = null
+    }
+  }, [])
+
+  const applyImportJob = useCallback(
+    (job: BackupImportJob) => {
+      setImportJob(job)
+      const active = Boolean(job.active)
+      setBackupImporting(active)
+      if (!active && job.phase === 'done' && job.ok && !importToastDoneRef.current) {
+        importToastDoneRef.current = true
+        const s = job.stats
+        toast.success(
+          s
+            ? `导入完成 · 新增 ${s.resources_inserted ?? 0} · 更新 ${s.resources_updated ?? 0}` +
+                (s.resources_skipped ? ` · 跳过 ${s.resources_skipped}` : '')
+            : job.message || '导入完成',
+        )
+        setImportFile(null)
+        void load()
+        void loadBackup()
+      } else if (!active && job.phase === 'error' && !importToastDoneRef.current) {
+        importToastDoneRef.current = true
+        toast.error(job.error || job.message || '导入失败')
+        void loadBackup().catch(() => {})
+      }
+      if (!active) stopImportPoll()
+    },
+    [load, loadBackup, stopImportPoll],
+  )
+
+  const startImportPoll = useCallback(() => {
+    if (importPollRef.current) return
+    importPollRef.current = setInterval(() => {
+      void fetchBackupImportStatus()
+        .then((res) => {
+          if (res.import_job) applyImportJob(res.import_job)
+        })
+        .catch(() => {
+          /* 轮询失败不打断其他页面；下次再试 */
+        })
+    }, 800)
+  }, [applyImportJob])
+
   useEffect(() => {
     void load()
     void loadBackup()
     void loadResourceDb()
   }, [load, loadBackup, loadResourceDb])
+
+  // 进入数据管理页时若后台仍有导入任务，继续显示进度（不影响其他页面）
+  useEffect(() => {
+    let cancelled = false
+    void fetchBackupImportStatus()
+      .then((res) => {
+        if (cancelled || !res.import_job) return
+        setImportJob(res.import_job)
+        if (res.import_job.active) {
+          importToastDoneRef.current = false
+          setBackupImporting(true)
+          startImportPoll()
+        }
+      })
+      .catch(() => {})
+    return () => {
+      cancelled = true
+      stopImportPoll()
+    }
+  }, [startImportPoll, stopImportPoll])
 
   function resourceDbBody() {
     const password = rdbPassword.trim()
@@ -351,6 +425,10 @@ export function DataMgmtPage() {
       toast.warn('请先选择备份文件')
       return
     }
+    if (backupImporting || importJob?.active || backup?.busy) {
+      toast.warn('导入或备份正在进行中，请稍候')
+      return
+    }
     const ok = await confirmDialog({
       title: '导入备份到资源库',
       message:
@@ -358,25 +436,61 @@ export function DataMgmtPage() {
       confirmText: '开始导入',
     })
     if (!ok) return
+    importToastDoneRef.current = false
     setBackupImporting(true)
+    setUploadPercent(1)
+    setImportJob({
+      active: true,
+      phase: 'upload',
+      percent: 1,
+      message: '正在上传备份…',
+      filename: importFile.name,
+    })
+    const sizeMb = (importFile.size / (1024 * 1024)).toFixed(1)
+    toast.info(`正在上传备份（约 ${sizeMb} MB）…`)
     try {
-      const res = await importBackupFile(importFile)
-      await load()
-      await loadBackup()
-      if (res.ok) {
-        toast.success(
-          `导入完成 · 新增 ${res.resources_inserted} · 更新 ${res.resources_updated}` +
-            (res.resources_skipped ? ` · 跳过 ${res.resources_skipped}` : ''),
-        )
-        setImportFile(null)
+      const res = await importBackupFile(importFile, {
+        onProgress: (pct) => {
+          setUploadPercent(pct)
+          setImportJob((prev) =>
+            prev
+              ? { ...prev, phase: 'upload', percent: pct, message: `上传中 ${pct}%` }
+              : prev,
+          )
+        },
+      })
+      if (res.import_job) {
+        applyImportJob(res.import_job)
+        if (!res.import_job.active) {
+          return
+        }
       } else {
-        toast.error(res.error || '导入失败')
+        setImportJob((prev) =>
+          prev
+            ? { ...prev, phase: 'starting', percent: 15, message: '上传完成，后台合并中…' }
+            : prev,
+        )
       }
+      toast.info('上传完成，后台正在合并入库…')
+      startImportPoll()
     } catch (err) {
+      setBackupImporting(false)
+      setUploadPercent(0)
+      setImportJob((prev) =>
+        prev
+          ? {
+              ...prev,
+              active: false,
+              phase: 'error',
+              percent: 100,
+              ok: false,
+              error: err instanceof Error ? err.message : '导入失败',
+              message: err instanceof Error ? err.message : '导入失败',
+            }
+          : prev,
+      )
       toast.error(err instanceof Error ? err.message : '导入失败')
       await loadBackup().catch(() => {})
-    } finally {
-      setBackupImporting(false)
     }
   }
 
@@ -392,7 +506,55 @@ export function DataMgmtPage() {
   }
 
   const file = backup?.file
-  const busy = backupRunning || backupImporting || Boolean(backup?.busy)
+  const importActive = backupImporting || Boolean(importJob?.active)
+  const backupActive = backupRunning || (Boolean(backup?.busy) && !importActive)
+  const busy = backupRunning || importActive || Boolean(backup?.busy)
+  const progressPercent = importActive
+    ? Math.max(
+        0,
+        Math.min(
+          100,
+          Number(
+            importJob?.phase === 'upload'
+              ? uploadPercent
+              : (importJob?.percent ?? uploadPercent),
+          ) || 0,
+        ),
+      )
+    : 0
+  const progressLabel =
+    importJob?.message ||
+    (importActive ? '导入进行中…' : '')
+  const importStatusTone =
+    importJob?.phase === 'error'
+      ? 'error'
+      : importJob?.phase === 'done' && importJob.ok
+        ? 'ok'
+        : importActive
+          ? 'running'
+          : 'idle'
+  const importStatusText =
+    importStatusTone === 'error'
+      ? '导入失败'
+      : importStatusTone === 'ok'
+        ? '导入成功'
+        : importActive
+          ? '正在导入'
+          : ''
+  const backupStatusTone = backupActive
+    ? 'running'
+    : backup?.last_at
+      ? backup.last_ok
+        ? 'ok'
+        : 'error'
+      : 'idle'
+  const backupStatusText = backupActive
+    ? '正在备份'
+    : backup?.last_at
+      ? backup.last_ok
+        ? '上次备份正常'
+        : '上次备份异常'
+      : '尚未备份'
   const rdbBusy = rdbSaving || rdbTesting
   const primaryHint = rdb?.primary
     ? `${rdb.primary.host}:${rdb.primary.port}/${rdb.primary.dbname}`
@@ -417,9 +579,10 @@ export function DataMgmtPage() {
               <div>
                 <h3>资源数据库</h3>
                 <p className="hint">
-                  关闭时资源写入主库。开启后资源读写走下方库；不自动建表。跨 Docker / bridge
-                  网络请填对方<strong>宿主机或 NAS IP</strong> + <strong>映射端口</strong>
-                  （例如 192.168.x.x:5433），不要填本服务 compose 内的主机名 postgres。密码留空则沿用已保存或主库密码。
+                  主库只给本采集服务用（队列 / 配置 / 日志）。开启独立资源库后，资源供<strong>多终端共享</strong>
+                  （管理端、搜索等）；连不上时不会偷偷写回主库。跨 Docker / bridge
+                  请填对方<strong>宿主机或 NAS IP</strong> + <strong>映射端口</strong>
+                  ，不要填本服务内的主机名 postgres。密码留空则沿用已保存或主库密码。
                 </p>
               </div>
             </div>
@@ -587,6 +750,33 @@ export function DataMgmtPage() {
               </div>
             </div>
             <div className="data-mgmt-card-body">
+              <div
+                className={`data-job-banner data-job-banner--${backupStatusTone}`}
+                role="status"
+                aria-live="polite"
+              >
+                <span className="data-job-banner-badge">
+                  {backupActive ? '进行中' : backup?.last_at ? (backup.last_ok ? '正常' : '异常') : '待命'}
+                </span>
+                <div className="data-job-banner-body">
+                  <strong>{backupStatusText}</strong>
+                  <p>
+                    {backupActive
+                      ? '正在导出资源库，请勿重复点击；爬虫若在跑会先暂停。'
+                      : backup?.last_at
+                        ? `${backup.last_at}${
+                            backup.last_ok && backup.last_bytes
+                              ? ` · ${formatBytes(backup.last_bytes)}`
+                              : ''
+                          }${
+                            !backup.last_ok && backup.last_error
+                              ? ` · ${backup.last_error}`
+                              : ''
+                          }`
+                        : '点击「立即备份」或等待每日自动备份。'}
+                  </p>
+                </div>
+              </div>
               <form className="data-backup-form" onSubmit={(e) => void onSaveBackup(e)}>
                 <label className="data-backup-switch">
                   <input
@@ -633,7 +823,7 @@ export function DataMgmtPage() {
                     disabled={backupLoading || busy}
                     onClick={() => void onRunBackup()}
                   >
-                    {busy ? '备份中…' : '立即备份'}
+                    {backupActive ? '备份中…' : '立即备份'}
                   </button>
                 </div>
               </form>
@@ -641,25 +831,13 @@ export function DataMgmtPage() {
                 {backupLoading && !backup ? (
                   <p className="hint">读取备份状态…</p>
                 ) : (
-                  <>
-                    <p>
-                      当前文件：
-                      {file?.exists
-                        ? `${file.filename || 'ed2k-resources.sql.gz'} · ${formatBytes(file.bytes)}`
-                        : '尚未生成'}
-                      {file?.mtime ? ` · ${file.mtime}` : ''}
-                    </p>
-                    <p>
-                      上次结果：
-                      {backup?.last_at
-                        ? `${backup.last_ok ? '成功' : '失败'} · ${backup.last_at}`
-                        : '无'}
-                      {backup?.last_ok && backup.last_bytes
-                        ? ` · ${formatBytes(backup.last_bytes)}`
-                        : ''}
-                      {!backup?.last_ok && backup?.last_error ? ` · ${backup.last_error}` : ''}
-                    </p>
-                  </>
+                  <p>
+                    当前文件：
+                    {file?.exists
+                      ? `${file.filename || 'ed2k-resources.sql.gz'} · ${formatBytes(file.bytes)}`
+                      : '尚未生成'}
+                    {file?.mtime ? ` · ${file.mtime}` : ''}
+                  </p>
                 )}
               </div>
 
@@ -667,7 +845,7 @@ export function DataMgmtPage() {
                 <div className="data-backup-import-head">
                   <h4>导入备份</h4>
                   <p className="hint">
-                    支持 .sql.gz / .zip。合并进当前库，相同资源 hash 与标签名自动去重，不会整库覆盖。
+                    支持 .sql.gz / .zip。合并进当前库，相同资源 hash 与标签名自动去重，不会整库覆盖。导入在后台异步执行，可离开本页后再回来查看进度。
                   </p>
                 </div>
                 <div className="data-backup-import-row">
@@ -691,9 +869,73 @@ export function DataMgmtPage() {
                     disabled={backupLoading || busy || !importFile}
                     onClick={() => void onImportBackup()}
                   >
-                    {backupImporting ? '导入中…' : '导入到数据库'}
+                    {importActive ? '导入中…' : '导入到数据库'}
                   </button>
                 </div>
+                {(importActive ||
+                  (importJob && (importJob.phase === 'done' || importJob.phase === 'error'))) && (
+                  <div
+                    className={`data-import-progress data-job-banner--${importStatusTone}${
+                      importJob?.phase === 'error' ? ' is-error' : ''
+                    }${importJob?.phase === 'done' && importJob.ok ? ' is-done' : ''}`}
+                    role="status"
+                    aria-live="polite"
+                  >
+                    <div className="data-import-progress-meta">
+                      <span className={`data-job-banner-badge data-job-banner-badge--${importStatusTone}`}>
+                        {importStatusTone === 'error'
+                          ? '异常'
+                          : importStatusTone === 'ok'
+                            ? '正常'
+                            : '进行中'}
+                      </span>
+                      <span className="data-import-progress-msg">
+                        <strong>{importStatusText}</strong>
+                        {' · '}
+                        {progressLabel ||
+                          (importJob?.phase === 'done'
+                            ? '导入完成'
+                            : importJob?.phase === 'error'
+                              ? '导入失败'
+                              : '准备中…')}
+                      </span>
+                      <span className="data-import-progress-pct">
+                        {importJob?.phase === 'done' && importJob.ok
+                          ? '100%'
+                          : importJob?.phase === 'error'
+                            ? '—'
+                            : `${progressPercent}%`}
+                      </span>
+                    </div>
+                    <div className="data-import-progress-track">
+                      <div
+                        className={`data-import-progress-bar${
+                          importActive ? ' is-animated' : ''
+                        }`}
+                        style={{
+                          width: `${
+                            importJob?.phase === 'error' ? 100 : progressPercent
+                          }%`,
+                        }}
+                      />
+                    </div>
+                    {importActive &&
+                      typeof importJob?.processed === 'number' &&
+                      typeof importJob?.total === 'number' &&
+                      importJob.total > 0 &&
+                      importJob.phase === 'resources' && (
+                        <p className="data-import-progress-detail hint">
+                          资源 {importJob.processed.toLocaleString()} /{' '}
+                          {importJob.total.toLocaleString()}
+                        </p>
+                      )}
+                    {importJob?.phase === 'error' && (importJob.error || importJob.message) ? (
+                      <p className="data-import-progress-detail data-import-progress-detail--error">
+                        {importJob.error || importJob.message}
+                      </p>
+                    ) : null}
+                  </div>
+                )}
               </div>
             </div>
           </div>

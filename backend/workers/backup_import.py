@@ -1,12 +1,24 @@
-"""将资源库备份（.sql.gz / .zip）合并导入现有库，按 hash / 标签名去重。"""
+"""将资源库备份（.sql.gz / .zip）合并导入现有库，按 hash / 标签名去重。
+
+大备份走磁盘流式：上传落盘 → gzip 按行解压 → SQLite 中转 → 再写入资源库，
+避免整份 SQL / 全表字典同时进内存（NAS 上否则容易 OOM）。
+"""
 
 from __future__ import annotations
 
+import asyncio
 import gzip
-import io
+import json
 import logging
+import os
 import re
+import sqlite3
+import tempfile
+import threading
+import time
 import zipfile
+from collections.abc import Iterator
+from pathlib import Path
 from typing import Any
 
 from db.resource_db import connect_resource
@@ -30,48 +42,166 @@ _COPY_RE = re.compile(
     re.IGNORECASE,
 )
 
-_MAX_UPLOAD_BYTES = 512 * 1024 * 1024  # 512 MiB
+_MAX_UPLOAD_BYTES = 512 * 1024 * 1024  # 512 MiB 压缩包上限
+_UPLOAD_CHUNK = 1024 * 1024  # 1 MiB
+
+# 导入进度（供管理端轮询）；与 backup._BUSY 共用锁语义
+_PROGRESS_LOCK = threading.Lock()
+_IMPORT_PROGRESS: dict[str, Any] = {
+    "active": False,
+    "phase": "idle",
+    "percent": 0,
+    "message": "",
+    "filename": "",
+    "processed": 0,
+    "total": 0,
+    "ok": None,
+    "error": None,
+    "stats": None,
+    "started_at": None,
+    "finished_at": None,
+}
 
 
-def extract_sql_text(raw: bytes, filename: str = "") -> str:
-    """从上传字节中解出 SQL 文本，支持 .sql / .gz / .sql.gz / .zip。"""
-    if not raw:
-        raise ValueError("上传文件为空")
-    if len(raw) > _MAX_UPLOAD_BYTES:
-        raise ValueError(f"文件过大（上限 {_MAX_UPLOAD_BYTES // (1024 * 1024)} MB）")
-
-    name = (filename or "").strip().lower()
-    data = raw
-
-    if name.endswith(".zip") or (len(data) >= 4 and data[:2] == b"PK"):
-        data = _extract_from_zip(data)
-        name = bk.BACKUP_FILENAME
-
-    if name.endswith(".gz") or (len(data) >= 2 and data[:2] == b"\x1f\x8b"):
-        try:
-            data = gzip.decompress(data)
-        except OSError as exc:
-            raise ValueError(f"无法解压 gzip：{exc}") from exc
-
-    for enc in ("utf-8-sig", "utf-8", "latin-1"):
-        try:
-            text = data.decode(enc)
-            break
-        except UnicodeDecodeError:
-            text = ""
-    else:
-        raise ValueError("无法解码备份 SQL")
-
-    if not text.strip():
-        raise ValueError("备份内容为空")
-    return text
+def get_import_progress() -> dict[str, Any]:
+    with _PROGRESS_LOCK:
+        return dict(_IMPORT_PROGRESS)
 
 
-def _extract_from_zip(raw: bytes) -> bytes:
+def _set_import_progress(**kwargs: Any) -> None:
+    with _PROGRESS_LOCK:
+        _IMPORT_PROGRESS.update(kwargs)
+
+
+def _reset_import_progress(*, filename: str = "") -> None:
+    _set_import_progress(
+        active=True,
+        phase="starting",
+        percent=1,
+        message="准备导入…",
+        filename=filename or "",
+        processed=0,
+        total=0,
+        ok=None,
+        error=None,
+        stats=None,
+        started_at=time.strftime("%Y-%m-%d %H:%M:%S"),
+        finished_at=None,
+    )
+
+
+def try_begin_import_job(filename: str = "") -> dict[str, Any] | None:
+    """抢锁并标记忙碌；失败返回 None（已有备份/导入在跑）。"""
+    if not bk._LOCK.acquire(blocking=False):
+        return None
+    bk._BUSY = True
+    _reset_import_progress(filename=filename)
+    return get_import_progress()
+
+
+def abort_import_job(*, message: str = "") -> None:
+    """上传落盘失败等：释放导入锁。"""
+    _set_import_progress(
+        active=False,
+        phase="error",
+        percent=100,
+        message=message or "导入已取消",
+        ok=False,
+        error=message or "cancelled",
+        finished_at=time.strftime("%Y-%m-%d %H:%M:%S"),
+    )
+    bk._BUSY = False
     try:
-        zf = zipfile.ZipFile(io.BytesIO(raw))
+        bk._LOCK.release()
+    except RuntimeError:
+        pass
+
+
+def _phase_percent(phase: str, processed: int, total: int) -> int:
+    """把阶段进度映射到整体 0–100。"""
+    total = max(0, int(total or 0))
+    processed = max(0, min(int(processed or 0), total if total else processed))
+    frac = (processed / total) if total > 0 else 0.0
+    ranges = {
+        "starting": (1, 3),
+        "pause": (3, 8),
+        "extract": (8, 12),
+        "parse": (12, 35),
+        "tags": (35, 40),
+        "resources": (40, 92),
+        "resource_tags": (92, 98),
+        "done": (100, 100),
+        "error": (100, 100),
+    }
+    lo, hi = ranges.get(phase, (30, 90))
+    if phase == "done":
+        return 100
+    return int(lo + (hi - lo) * frac)
+
+
+def _import_workdir() -> Path:
+    d = Path(bk.BACKUP_DIR) / "import-tmp"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def write_upload_to_temp(
+    *,
+    filename: str,
+    chunks: Iterator[bytes] | None = None,
+    raw: bytes | None = None,
+) -> Path:
+    """把上传写到磁盘临时文件（不在内存里叠一份）。"""
+    name = (filename or "upload.sql.gz").strip() or "upload.sql.gz"
+    suffix = Path(name).suffix.lower() or ".bin"
+    if name.lower().endswith(".sql.gz"):
+        suffix = ".sql.gz"
+    fd, path_s = tempfile.mkstemp(prefix="backup-up-", suffix=suffix, dir=str(_import_workdir()))
+    path = Path(path_s)
+    nbytes = 0
+    try:
+        with os.fdopen(fd, "wb") as out:
+            if raw is not None:
+                if len(raw) > _MAX_UPLOAD_BYTES:
+                    raise ValueError(f"文件过大（上限 {_MAX_UPLOAD_BYTES // (1024 * 1024)} MB）")
+                out.write(raw)
+                nbytes = len(raw)
+            else:
+                assert chunks is not None
+                for chunk in chunks:
+                    if not chunk:
+                        continue
+                    nbytes += len(chunk)
+                    if nbytes > _MAX_UPLOAD_BYTES:
+                        raise ValueError(
+                            f"文件过大（上限 {_MAX_UPLOAD_BYTES // (1024 * 1024)} MB）"
+                        )
+                    out.write(chunk)
+        if nbytes <= 0:
+            raise ValueError("上传文件为空")
+        return path
+    except Exception:
+        path.unlink(missing_ok=True)
+        raise
+
+
+def _prepare_sql_file(upload_path: Path, filename: str = "") -> tuple[Path, list[Path]]:
+    """若是 zip，抽出内部 .sql/.sql.gz 到临时文件；返回 (工作文件, 需清理的额外路径)。"""
+    owned: list[Path] = []
+    name = (filename or upload_path.name).strip().lower()
+    head = b""
+    with upload_path.open("rb") as f:
+        head = f.read(4)
+
+    is_zip = name.endswith(".zip") or head[:2] == b"PK"
+    if not is_zip:
+        return upload_path, owned
+
+    try:
+        zf = zipfile.ZipFile(upload_path)
     except zipfile.BadZipFile as exc:
         raise ValueError(f"无效的 zip：{exc}") from exc
+
     names = [n for n in zf.namelist() if not n.endswith("/")]
     if not names:
         raise ValueError("zip 内无文件")
@@ -93,61 +223,143 @@ def _extract_from_zip(raw: bytes) -> bytes:
     chosen = names[0]
     if rank(chosen)[0] >= 9:
         raise ValueError("zip 内未找到 .sql / .sql.gz 备份文件")
-    return zf.read(chosen)
+
+    base = Path(chosen).name
+    suffix = ".sql.gz" if base.lower().endswith(".gz") else ".sql"
+    fd, out_s = tempfile.mkstemp(prefix="backup-zip-", suffix=suffix, dir=str(_import_workdir()))
+    out_path = Path(out_s)
+    owned.append(out_path)
+    try:
+        with os.fdopen(fd, "wb") as out, zf.open(chosen) as src:
+            while True:
+                chunk = src.read(_UPLOAD_CHUNK)
+                if not chunk:
+                    break
+                out.write(chunk)
+    except Exception:
+        out_path.unlink(missing_ok=True)
+        raise
+    return out_path, owned
 
 
-def parse_backup_tables(sql: str) -> dict[str, list[dict[str, Any]]]:
-    """解析备份 SQL → {table: [row_dict, ...]}。忽略 DELETE / DDL。"""
-    tables: dict[str, list[dict[str, Any]]] = {}
-    lines = sql.splitlines()
-    i = 0
-    while i < len(lines):
-        line = lines[i].strip()
-        if not line or line.startswith("--"):
-            i += 1
+def iter_sql_lines(path: Path, filename: str = "") -> Iterator[str]:
+    """按行流式读备份 SQL（gzip 边解压边读，不全量进内存）。"""
+    _ = filename  # 兼容调用方；是否 gzip 看文件头
+    with path.open("rb") as probe:
+        head = probe.read(2)
+    # 以文件头魔数为准（勿仅凭 .gz 后缀，避免误当 gzip 炸内存/报错）
+    is_gz = head == b"\x1f\x8b"
+    if is_gz:
+        opener = gzip.open(path, mode="rt", encoding="utf-8", errors="replace")
+    else:
+        opener = path.open("rt", encoding="utf-8", errors="replace")
+    with opener as text:
+        for i, line in enumerate(text):
+            if i and i % 4000 == 0:
+                time.sleep(0)
+            yield line.rstrip("\n\r")
+
+
+def _emit_insert(buf: str) -> Iterator[tuple[str, dict[str, Any]]]:
+    ins = _INSERT_RE.match(buf.rstrip().rstrip(";").strip() + ";")
+    if not ins:
+        ins = _INSERT_RE.match(buf.strip())
+    if not ins:
+        return
+    table = ins.group(1).lower()
+    if table in _SKIP_TABLES:
+        return
+    cols = [c.strip().strip('"').lower() for c in ins.group(2).split(",")]
+    values = _parse_sql_values(ins.group(3))
+    yield table, _row_dict(cols, values)
+
+
+def iter_backup_rows_from_lines(lines: Iterator[str]) -> Iterator[tuple[str, dict[str, Any]]]:
+    """从行迭代器产出 (table, row)，不缓存全表。"""
+    pending: list[str] | None = None
+    copy_table: str | None = None
+    copy_cols: list[str] | None = None
+    n = 0
+    for line in lines:
+        n += 1
+        if pending is not None:
+            pending.append(line.strip())
+            buf = " ".join(pending)
+            if not buf.rstrip().endswith(";"):
+                continue
+            pending = None
+            yield from _emit_insert(buf)
             continue
 
-        copy_m = _COPY_RE.match(line)
+        if copy_table is not None:
+            raw_line = line
+            if raw_line == "\\." or raw_line.strip() == "\\.":
+                copy_table = None
+                copy_cols = None
+                continue
+            if raw_line.startswith("\\"):
+                continue
+            assert copy_cols is not None
+            if copy_table != "__skip__":
+                values = _parse_copy_row(raw_line, len(copy_cols))
+                yield copy_table, _row_dict(copy_cols, values)
+            if n % 2000 == 0:
+                time.sleep(0)
+            continue
+
+        stripped = line.strip()
+        if not stripped or stripped.startswith("--"):
+            continue
+
+        copy_m = _COPY_RE.match(stripped)
         if copy_m:
             table = copy_m.group(1).lower()
             cols = [c.strip().strip('"').lower() for c in copy_m.group(2).split(",")]
-            i += 1
-            rows: list[dict[str, Any]] = []
-            while i < len(lines):
-                raw_line = lines[i]
-                if raw_line == "\\." or raw_line.strip() == "\\.":
-                    i += 1
-                    break
-                if raw_line.startswith("\\"):
-                    i += 1
-                    continue
-                values = _parse_copy_row(raw_line, len(cols))
-                rows.append(_row_dict(cols, values))
-                i += 1
-            if table not in _SKIP_TABLES:
-                tables.setdefault(table, []).extend(rows)
+            if table in _SKIP_TABLES:
+                copy_table = "__skip__"
+                copy_cols = cols
+            else:
+                copy_table = table
+                copy_cols = cols
             continue
 
-        # 多行 INSERT 极少见；python dump 单行。兼容行末无分号的截断拼接。
-        if line.upper().startswith("INSERT INTO"):
-            buf = line
-            while not buf.rstrip().endswith(";") and i + 1 < len(lines):
-                i += 1
-                buf += " " + lines[i].strip()
-            ins = _INSERT_RE.match(buf.rstrip().rstrip(";").strip() + ";")
-            if not ins:
-                # 再试不带强制分号
-                ins = _INSERT_RE.match(buf.strip())
-            if ins:
-                table = ins.group(1).lower()
-                cols = [c.strip().strip('"').lower() for c in ins.group(2).split(",")]
-                values = _parse_sql_values(ins.group(3))
-                if table not in _SKIP_TABLES:
-                    tables.setdefault(table, []).append(_row_dict(cols, values))
-            i += 1
+        if stripped.upper().startswith("INSERT INTO"):
+            if not stripped.rstrip().endswith(";"):
+                pending = [stripped]
+                continue
+            yield from _emit_insert(stripped)
             continue
 
-        i += 1
+
+def extract_sql_text(raw: bytes, filename: str = "") -> str:
+    """小样/测试用：整段解出 SQL。大文件请用流式路径，勿调用本函数。"""
+    if not raw:
+        raise ValueError("上传文件为空")
+    if len(raw) > _MAX_UPLOAD_BYTES:
+        raise ValueError(f"文件过大（上限 {_MAX_UPLOAD_BYTES // (1024 * 1024)} MB）")
+
+    path = write_upload_to_temp(filename=filename or "t.sql.gz", raw=raw)
+    owned: list[Path] = [path]
+    try:
+        work, extra = _prepare_sql_file(path, filename)
+        owned.extend(extra)
+        parts: list[str] = []
+        for line in iter_sql_lines(work, filename):
+            parts.append(line)
+        text = "\n".join(parts)
+        if not text.strip():
+            raise ValueError("备份内容为空")
+        return text
+    finally:
+        for p in owned:
+            p.unlink(missing_ok=True)
+
+
+def parse_backup_tables(sql: str) -> dict[str, list[dict[str, Any]]]:
+    """解析备份 SQL → {table: [row_dict, ...]}（测试/小样；大备份勿用）。"""
+    tables: dict[str, list[dict[str, Any]]] = {}
+    for table, row in iter_backup_rows_from_lines(iter(sql.splitlines())):
+        tables.setdefault(table, []).append(row)
     return tables
 
 
@@ -200,7 +412,6 @@ def _parse_sql_values(payload: str) -> list[Any]:
             text = "".join(buf)
             out.append(_decode_pg_array_or_text(text))
             continue
-        # 数字 / 未加引号
         j = i
         while j < n and payload[j] not in ",":
             j += 1
@@ -216,7 +427,6 @@ def _parse_sql_values(payload: str) -> list[Any]:
 
 
 def _decode_pg_array_or_text(text: str) -> Any:
-    """若像 Postgres 文本数组字面量则解析为 list[str]，否则原样返回。"""
     s = text.strip()
     if len(s) >= 2 and s[0] == "{" and s[-1] == "}":
         try:
@@ -268,9 +478,7 @@ def _parse_pg_array(literal: str) -> list[str | None]:
 
 
 def _parse_copy_row(line: str, expected: int) -> list[Any]:
-    """Postgres COPY text 格式：tab 分隔，\\N 为 NULL。"""
     parts = line.split("\t")
-    # 允许列数略少（旧备份缺列）
     values: list[Any] = []
     for p in parts:
         if p == "\\N":
@@ -379,159 +587,496 @@ def _ensure_tag(conn: Any, name: str, cache: dict[str, int]) -> int:
     return tag_id
 
 
-def apply_backup_tables(conn: Any, tables: dict[str, list[dict[str, Any]]]) -> dict[str, Any]:
-    """将解析后的表数据合并入库（去重）。"""
-    stats = {
-        "resources_inserted": 0,
-        "resources_updated": 0,
-        "resources_skipped": 0,
-        "tags_upserted": 0,
-        "resource_tags_linked": 0,
-        "tables_seen": sorted(tables.keys()),
-    }
+def _json_dumps(row: dict[str, Any]) -> str:
+    return json.dumps(row, ensure_ascii=False, default=str)
 
-    default_source = ensure_source(conn, "web:crawler", "网站爬虫", "web")
-    source_cache: dict[int, int] = {}
-    tag_id_map: dict[int, int] = {}  # backup tag_id → local tag_id
-    tag_name_cache: dict[str, int] = {}
 
-    # 1) tags：按 name 去重，建立旧 id → 新 id
-    for row in tables.get("tags") or []:
-        name = str(row.get("name") or "").strip()
-        if not name:
-            continue
-        local_id = _ensure_tag(conn, name, tag_name_cache)
-        stats["tags_upserted"] += 1
-        old_id = row.get("id")
-        if old_id is not None:
-            try:
-                tag_id_map[int(old_id)] = local_id
-            except (TypeError, ValueError):
-                pass
-    conn.commit()
+def spill_backup_to_sqlite(
+    sql_path: Path,
+    *,
+    filename: str = "",
+    spill_path: Path,
+    on_progress: Any | None = None,
+) -> dict[str, int]:
+    """流式解析备份，行数据落到 SQLite，峰值内存约一行。"""
 
-    # 2) 资源：ed2k_resources + resource_sources 按 hash 配对
-    resources = {str(r.get("hash") or "").upper(): r for r in (tables.get("ed2k_resources") or []) if r.get("hash")}
-    sources_by_hash = {
-        str(r.get("hash") or "").upper(): r for r in (tables.get("resource_sources") or []) if r.get("hash")
-    }
-
-    for file_hash, res in resources.items():
-        meta = sources_by_hash.get(file_hash) or {}
-        filename = str(res.get("filename") or "").strip() or file_hash
+    def _prog(phase: str, processed: int, total: int, message: str) -> None:
+        if on_progress is None:
+            return
         try:
-            size = int(res.get("size") or 0)
-        except (TypeError, ValueError):
-            size = 0
-        link = str(res.get("ed2k_link") or "").strip()
-        if not link:
-            stats["resources_skipped"] += 1
-            continue
+            on_progress(phase, processed, total, message)
+        except Exception:
+            pass
 
-        existed_row = _existing_resource(conn, file_hash)
-        existed = existed_row is not None
-        if existed_row:
-            old_filename, old_size, old_link = existed_row
-            old_kind = infer_resource_link_kind(old_link)
-            new_kind = infer_resource_link_kind(link)
-            # 已有真实链接时，不让 stub 覆盖资源本体
-            if old_kind in {"ed2k", "magnet"} and new_kind == "stub":
-                filename, size, link = old_filename, old_size, old_link
-
-        ed2k = Ed2kLink(filename=filename, size=size, hash=file_hash, link=link)
-        source_id = _resolve_source_id(conn, meta.get("source_id"), source_cache, default_source)
-        upsert_resource(
-            conn,
-            ed2k,
-            source_id,
-            source_url=(str(meta["source_url"]) if meta.get("source_url") is not None else None),
-            title=(str(meta["title"]) if meta.get("title") is not None else None),
-            description=(str(meta["description"]) if meta.get("description") is not None else None),
-            preview_images=_as_str_list(meta.get("preview_images")),
-            ed2k_links=_as_str_list(meta.get("ed2k_links")),
-            extract_password=(
-                str(meta["extract_password"]) if meta.get("extract_password") is not None else None
-            ),
-            board_fid=(str(meta["board_fid"]) if meta.get("board_fid") is not None else None),
-            board_name=(str(meta["board_name"]) if meta.get("board_name") is not None else None),
-            forum_id=(str(meta["forum_id"]) if meta.get("forum_id") is not None else None),
-            import_outcome=(
-                str(meta["import_outcome"]) if meta.get("import_outcome") is not None else None
-            ),
-            commit=False,
+    if spill_path.exists():
+        spill_path.unlink()
+    spill = sqlite3.connect(str(spill_path))
+    try:
+        spill.execute("PRAGMA journal_mode=OFF")
+        spill.execute("PRAGMA synchronous=OFF")
+        spill.execute(
+            "CREATE TABLE tags (ord INTEGER PRIMARY KEY AUTOINCREMENT, payload TEXT NOT NULL)"
         )
-        if existed:
-            stats["resources_updated"] += 1
-        else:
-            stats["resources_inserted"] += 1
+        spill.execute(
+            "CREATE TABLE ed2k_resources (hash TEXT PRIMARY KEY, payload TEXT NOT NULL)"
+        )
+        spill.execute(
+            "CREATE TABLE resource_sources (hash TEXT PRIMARY KEY, payload TEXT NOT NULL)"
+        )
+        spill.execute(
+            "CREATE TABLE resource_tags (ord INTEGER PRIMARY KEY AUTOINCREMENT, payload TEXT NOT NULL)"
+        )
 
-        if (stats["resources_inserted"] + stats["resources_updated"]) % 200 == 0:
-            conn.commit()
-
-    # 仅有 resource_sources、无 ed2k_resources 行的异常备份：跳过（缺 FK）
-    conn.commit()
-
-    # 3) resource_tags：映射 tag_id 后 ON CONFLICT DO NOTHING
-    for row in tables.get("resource_tags") or []:
-        file_hash = str(row.get("hash") or "").upper()
-        if not file_hash:
-            continue
-        old_tag = row.get("tag_id")
-        local_tag: int | None = None
-        if old_tag is not None:
-            try:
-                local_tag = tag_id_map.get(int(old_tag))
-            except (TypeError, ValueError):
-                local_tag = None
-        if local_tag is None:
-            # 若备份未带 tags 表，无法映射则跳过
-            continue
-        with conn.cursor() as cur:
-            cur.execute(
-                """
-                INSERT INTO resource_tags (hash, tag_id)
-                VALUES (%s, %s)
-                ON CONFLICT DO NOTHING
-                """,
-                (file_hash, local_tag),
-            )
-            if cur.rowcount:
-                stats["resource_tags_linked"] += 1
-    conn.commit()
-    return stats
-
-
-async def run_backup_import(*, raw: bytes, filename: str = "") -> dict[str, Any]:
-    """暂停爬虫 → 解析备份 → 合并导入 → 恢复爬虫。与备份共用锁。"""
-    if not bk._LOCK.acquire(blocking=False):
-        return {
-            "ok": False,
-            "skipped": True,
-            "reason": "busy",
-            "error": "备份或导入正在进行中，请稍候",
+        counts = {
+            "tags": 0,
+            "ed2k_resources": 0,
+            "resource_sources": 0,
+            "resource_tags": 0,
         }
-    bk._BUSY = True
+        seen = 0
+        _prog("parse", 0, 1, "流式解析备份到磁盘…")
+
+        for table, row in iter_backup_rows_from_lines(iter_sql_lines(sql_path, filename)):
+            if table == "tags":
+                spill.execute("INSERT INTO tags(payload) VALUES (?)", (_json_dumps(row),))
+                counts["tags"] += 1
+            elif table == "ed2k_resources":
+                h = str(row.get("hash") or "").upper()
+                if not h:
+                    continue
+                row["hash"] = h
+                spill.execute(
+                    "INSERT OR REPLACE INTO ed2k_resources(hash, payload) VALUES (?, ?)",
+                    (h, _json_dumps(row)),
+                )
+                counts["ed2k_resources"] += 1
+            elif table == "resource_sources":
+                h = str(row.get("hash") or "").upper()
+                if not h:
+                    continue
+                row["hash"] = h
+                spill.execute(
+                    "INSERT OR REPLACE INTO resource_sources(hash, payload) VALUES (?, ?)",
+                    (h, _json_dumps(row)),
+                )
+                counts["resource_sources"] += 1
+            elif table == "resource_tags":
+                spill.execute(
+                    "INSERT INTO resource_tags(payload) VALUES (?)", (_json_dumps(row),)
+                )
+                counts["resource_tags"] += 1
+            else:
+                continue
+
+            seen += 1
+            if seen % 500 == 0:
+                spill.commit()
+                time.sleep(0)
+                _prog(
+                    "parse",
+                    seen,
+                    max(seen, 1),
+                    f"已解析 {seen} 行 · 资源 {counts['ed2k_resources']}",
+                )
+
+        spill.commit()
+        _prog(
+            "parse",
+            seen,
+            max(seen, 1),
+            f"解析完成 · 资源 {counts['ed2k_resources']} · 来源 {counts['resource_sources']}",
+        )
+        return counts
+    finally:
+        spill.close()
+
+
+def _upsert_one_resource(
+    conn: Any,
+    *,
+    res: dict[str, Any],
+    meta: dict[str, Any],
+    default_source: int,
+    source_cache: dict[int, int],
+    stats: dict[str, Any],
+) -> None:
+    file_hash = str(res.get("hash") or "").upper()
+    filename = str(res.get("filename") or "").strip() or file_hash
+    try:
+        size = int(res.get("size") or 0)
+    except (TypeError, ValueError):
+        size = 0
+    link = str(res.get("ed2k_link") or "").strip()
+    if not link:
+        stats["resources_skipped"] += 1
+        return
+
+    existed_row = _existing_resource(conn, file_hash)
+    existed = existed_row is not None
+    if existed_row:
+        old_filename, old_size, old_link = existed_row
+        old_kind = infer_resource_link_kind(old_link)
+        new_kind = infer_resource_link_kind(link)
+        if old_kind in {"ed2k", "magnet"} and new_kind == "stub":
+            filename, size, link = old_filename, old_size, old_link
+
+    ed2k = Ed2kLink(filename=filename, size=size, hash=file_hash, link=link)
+    source_id = _resolve_source_id(conn, meta.get("source_id"), source_cache, default_source)
+    upsert_resource(
+        conn,
+        ed2k,
+        source_id,
+        source_url=(str(meta["source_url"]) if meta.get("source_url") is not None else None),
+        title=(str(meta["title"]) if meta.get("title") is not None else None),
+        description=(str(meta["description"]) if meta.get("description") is not None else None),
+        preview_images=_as_str_list(meta.get("preview_images")),
+        ed2k_links=_as_str_list(meta.get("ed2k_links")),
+        extract_password=(
+            str(meta["extract_password"]) if meta.get("extract_password") is not None else None
+        ),
+        board_fid=(str(meta["board_fid"]) if meta.get("board_fid") is not None else None),
+        board_name=(str(meta["board_name"]) if meta.get("board_name") is not None else None),
+        forum_id=(str(meta["forum_id"]) if meta.get("forum_id") is not None else None),
+        import_outcome=(
+            str(meta["import_outcome"]) if meta.get("import_outcome") is not None else None
+        ),
+        commit=False,
+    )
+    if existed:
+        stats["resources_updated"] += 1
+    else:
+        stats["resources_inserted"] += 1
+
+
+def apply_from_spill(
+    conn: Any,
+    spill_path: Path,
+    *,
+    on_progress: Any | None = None,
+) -> dict[str, Any]:
+    """从磁盘中转库合并进资源库。"""
+
+    def _prog(phase: str, processed: int, total: int, message: str) -> None:
+        if on_progress is None:
+            return
+        try:
+            on_progress(phase, processed, total, message)
+        except Exception:
+            pass
+
+    spill = sqlite3.connect(str(spill_path))
+    spill.row_factory = sqlite3.Row
+    try:
+        stats = {
+            "resources_inserted": 0,
+            "resources_updated": 0,
+            "resources_skipped": 0,
+            "tags_upserted": 0,
+            "resource_tags_linked": 0,
+            "tables_seen": [],
+        }
+        for t in ("tags", "ed2k_resources", "resource_sources", "resource_tags"):
+            n = spill.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0]
+            if n:
+                stats["tables_seen"].append(t)
+
+        default_source = ensure_source(conn, "web:crawler", "网站爬虫", "web")
+        source_cache: dict[int, int] = {}
+        tag_id_map: dict[int, int] = {}
+        tag_name_cache: dict[str, int] = {}
+
+        tag_total = int(spill.execute("SELECT COUNT(*) FROM tags").fetchone()[0])
+        _prog("tags", 0, max(tag_total, 1), "写入标签…")
+        for i, row in enumerate(spill.execute("SELECT payload FROM tags ORDER BY ord"), 1):
+            data = json.loads(row[0])
+            name = str(data.get("name") or "").strip()
+            if not name:
+                continue
+            local_id = _ensure_tag(conn, name, tag_name_cache)
+            stats["tags_upserted"] += 1
+            old_id = data.get("id")
+            if old_id is not None:
+                try:
+                    tag_id_map[int(old_id)] = local_id
+                except (TypeError, ValueError):
+                    pass
+            if i == tag_total or i % 50 == 0:
+                _prog("tags", i, tag_total, f"标签 {i}/{tag_total}")
+        conn.commit()
+
+        total_res = int(spill.execute("SELECT COUNT(*) FROM ed2k_resources").fetchone()[0])
+        _prog("resources", 0, max(total_res, 1), f"合并资源 0/{total_res}")
+        done_res = 0
+        for row in spill.execute("SELECT hash, payload FROM ed2k_resources"):
+            file_hash = str(row[0] or "").upper()
+            res = json.loads(row[1])
+            src_row = spill.execute(
+                "SELECT payload FROM resource_sources WHERE hash = ?",
+                (file_hash,),
+            ).fetchone()
+            meta = json.loads(src_row[0]) if src_row else {}
+            _upsert_one_resource(
+                conn,
+                res=res,
+                meta=meta,
+                default_source=default_source,
+                source_cache=source_cache,
+                stats=stats,
+            )
+            done_res += 1
+            if (stats["resources_inserted"] + stats["resources_updated"]) % 200 == 0:
+                conn.commit()
+                time.sleep(0)
+            if done_res == total_res or done_res % 200 == 0:
+                _prog("resources", done_res, total_res, f"合并资源 {done_res}/{total_res}")
+        conn.commit()
+
+        tag_link_total = int(spill.execute("SELECT COUNT(*) FROM resource_tags").fetchone()[0])
+        _prog("resource_tags", 0, max(tag_link_total, 1), "关联标签…")
+        for i, row in enumerate(spill.execute("SELECT payload FROM resource_tags ORDER BY ord"), 1):
+            data = json.loads(row[0])
+            file_hash = str(data.get("hash") or "").upper()
+            if not file_hash:
+                continue
+            old_tag = data.get("tag_id")
+            local_tag: int | None = None
+            if old_tag is not None:
+                try:
+                    local_tag = tag_id_map.get(int(old_tag))
+                except (TypeError, ValueError):
+                    local_tag = None
+            if local_tag is None:
+                continue
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO resource_tags (hash, tag_id)
+                    VALUES (%s, %s)
+                    ON CONFLICT DO NOTHING
+                    """,
+                    (file_hash, local_tag),
+                )
+                if cur.rowcount:
+                    stats["resource_tags_linked"] += 1
+            if i == tag_link_total or i % 500 == 0:
+                _prog("resource_tags", i, tag_link_total, f"关联标签 {i}/{tag_link_total}")
+        conn.commit()
+        _prog("done", total_res, total_res, "合并完成")
+        return stats
+    finally:
+        spill.close()
+
+
+def apply_backup_tables(
+    conn: Any,
+    tables: dict[str, list[dict[str, Any]]],
+    *,
+    on_progress: Any | None = None,
+) -> dict[str, Any]:
+    """兼容测试：内存表 → 临时 spill → apply_from_spill。"""
+    fd, spill_s = tempfile.mkstemp(prefix="backup-mem-", suffix=".sqlite", dir=str(_import_workdir()))
+    os.close(fd)
+    spill_path = Path(spill_s)
+    try:
+        spill = sqlite3.connect(str(spill_path))
+        try:
+            spill.execute(
+                "CREATE TABLE tags (ord INTEGER PRIMARY KEY AUTOINCREMENT, payload TEXT NOT NULL)"
+            )
+            spill.execute(
+                "CREATE TABLE ed2k_resources (hash TEXT PRIMARY KEY, payload TEXT NOT NULL)"
+            )
+            spill.execute(
+                "CREATE TABLE resource_sources (hash TEXT PRIMARY KEY, payload TEXT NOT NULL)"
+            )
+            spill.execute(
+                "CREATE TABLE resource_tags (ord INTEGER PRIMARY KEY AUTOINCREMENT, payload TEXT NOT NULL)"
+            )
+            for row in tables.get("tags") or []:
+                spill.execute("INSERT INTO tags(payload) VALUES (?)", (_json_dumps(row),))
+            for row in tables.get("ed2k_resources") or []:
+                h = str(row.get("hash") or "").upper()
+                if not h:
+                    continue
+                row = dict(row)
+                row["hash"] = h
+                spill.execute(
+                    "INSERT OR REPLACE INTO ed2k_resources(hash, payload) VALUES (?, ?)",
+                    (h, _json_dumps(row)),
+                )
+            for row in tables.get("resource_sources") or []:
+                h = str(row.get("hash") or "").upper()
+                if not h:
+                    continue
+                row = dict(row)
+                row["hash"] = h
+                spill.execute(
+                    "INSERT OR REPLACE INTO resource_sources(hash, payload) VALUES (?, ?)",
+                    (h, _json_dumps(row)),
+                )
+            for row in tables.get("resource_tags") or []:
+                spill.execute(
+                    "INSERT INTO resource_tags(payload) VALUES (?)", (_json_dumps(row),)
+                )
+            spill.commit()
+        finally:
+            spill.close()
+        return apply_from_spill(conn, spill_path, on_progress=on_progress)
+    finally:
+        spill_path.unlink(missing_ok=True)
+
+
+def _sync_merge_backup(
+    *,
+    path: str | Path | None = None,
+    raw: bytes | None = None,
+    filename: str = "",
+    on_progress: Any | None = None,
+    cleanup_upload: bool = False,
+) -> dict[str, Any]:
+    """磁盘流式：解压解析中转 → 写库（须在线程里跑）。"""
+
+    def _on(phase: str, processed: int, total: int, message: str) -> None:
+        if on_progress is None:
+            return
+        try:
+            on_progress(phase, processed, total, message)
+        except Exception:
+            pass
+
+    owned: list[Path] = []
+    upload: Path | None = None
+    try:
+        if path is not None:
+            upload = Path(path)
+        else:
+            if not raw:
+                raise ValueError("上传文件为空")
+            upload = write_upload_to_temp(filename=filename or "upload.sql.gz", raw=raw)
+            owned.append(upload)
+            raw = None  # noqa: F841 — 尽快丢掉大字节引用
+
+        _on("extract", 0, 1, "准备备份文件…")
+        work, extra = _prepare_sql_file(upload, filename)
+        owned.extend(extra)
+
+        fd, spill_s = tempfile.mkstemp(
+            prefix="backup-spill-", suffix=".sqlite", dir=str(_import_workdir())
+        )
+        os.close(fd)
+        spill_path = Path(spill_s)
+        owned.append(spill_path)
+
+        counts = spill_backup_to_sqlite(
+            work, filename=filename, spill_path=spill_path, on_progress=on_progress
+        )
+        if counts["ed2k_resources"] <= 0 and counts["resource_sources"] <= 0:
+            raise ValueError("备份中未找到资源表数据（ed2k_resources / resource_sources）")
+
+        # 解析完成后即可删压缩包，腾出磁盘与页缓存压力
+        if cleanup_upload and upload is not None:
+            try:
+                upload.unlink(missing_ok=True)
+                if upload in owned:
+                    owned.remove(upload)
+            except Exception:
+                pass
+        for p in list(extra):
+            if p != work:
+                p.unlink(missing_ok=True)
+
+        n_res = counts["ed2k_resources"]
+        _on("resources", 0, max(n_res, 1), f"开始合并 {n_res} 条资源…")
+
+        conn = connect_resource()
+        try:
+            return apply_from_spill(conn, spill_path, on_progress=on_progress)
+        finally:
+            conn.close()
+    finally:
+        for p in owned:
+            try:
+                p.unlink(missing_ok=True)
+            except Exception:
+                pass
+        if cleanup_upload and path is not None:
+            try:
+                Path(path).unlink(missing_ok=True)
+            except Exception:
+                pass
+
+
+async def run_backup_import(
+    *,
+    raw: bytes | None = None,
+    path: str | Path | None = None,
+    filename: str = "",
+    hold_lock: bool = False,
+    cleanup_upload: bool = False,
+) -> dict[str, Any]:
+    """暂停爬虫 → 流式解析合并 → 恢复爬虫。与备份共用锁。"""
+    if not hold_lock:
+        if not bk._LOCK.acquire(blocking=False):
+            return {
+                "ok": False,
+                "skipped": True,
+                "reason": "busy",
+                "error": "备份或导入正在进行中，请稍候",
+            }
+        bk._BUSY = True
+        _reset_import_progress(filename=filename)
+
     snap: dict[str, Any] = {"was_enabled": False, "was_looping": False, "loop_kind": None}
     import_ok = False
+    stats: dict[str, Any] = {}
+
+    def _on_apply(phase: str, processed: int, total: int, message: str) -> None:
+        _set_import_progress(
+            phase=phase,
+            processed=processed,
+            total=total,
+            message=message,
+            percent=_phase_percent(phase, processed, total),
+            active=True,
+        )
+
     try:
         from workers.runner import _log_activity
 
         _log_activity(f"资源库备份导入开始 · {filename or 'upload'}")
+        _set_import_progress(
+            phase="pause",
+            percent=_phase_percent("pause", 0, 1),
+            message="暂停爬虫…",
+            active=True,
+        )
         snap = bk._crawler_snapshot()
         await bk._pause_crawler(snap)
 
-        sql = extract_sql_text(raw, filename)
-        tables = parse_backup_tables(sql)
-        if not tables.get("ed2k_resources") and not tables.get("resource_sources"):
-            raise ValueError("备份中未找到资源表数据（ed2k_resources / resource_sources）")
-
-        conn = connect_resource()
-        try:
-            stats = apply_backup_tables(conn, tables)
-        finally:
-            conn.close()
+        stats = await asyncio.to_thread(
+            lambda: _sync_merge_backup(
+                path=path,
+                raw=raw,
+                filename=filename,
+                on_progress=_on_apply,
+                cleanup_upload=cleanup_upload,
+            )
+        )
 
         import_ok = True
+        _set_import_progress(
+            active=False,
+            phase="done",
+            percent=100,
+            message=(
+                f"导入完成 · 新增 {stats['resources_inserted']} · "
+                f"更新 {stats['resources_updated']} · 跳过 {stats['resources_skipped']}"
+            ),
+            ok=True,
+            error=None,
+            stats=stats,
+            finished_at=time.strftime("%Y-%m-%d %H:%M:%S"),
+        )
         _log_activity(
             "资源库备份导入成功 · "
             f"新增 {stats['resources_inserted']} · 更新 {stats['resources_updated']} · "
@@ -540,6 +1085,15 @@ async def run_backup_import(*, raw: bytes, filename: str = "") -> dict[str, Any]
         return {"ok": True, "filename": filename or bk.BACKUP_FILENAME, **stats}
     except Exception as exc:
         log.exception("backup import failed")
+        _set_import_progress(
+            active=False,
+            phase="error",
+            percent=100,
+            message=f"导入失败：{exc}",
+            ok=False,
+            error=str(exc),
+            finished_at=time.strftime("%Y-%m-%d %H:%M:%S"),
+        )
         try:
             from workers.runner import _log_activity
 
@@ -563,4 +1117,24 @@ async def run_backup_import(*, raw: bytes, filename: str = "") -> dict[str, Any]
             except Exception:
                 pass
         bk._BUSY = False
-        bk._LOCK.release()
+        try:
+            bk._LOCK.release()
+        except RuntimeError:
+            pass
+
+
+async def run_backup_import_background(
+    *,
+    path: str | Path | None = None,
+    raw: bytes | None = None,
+    filename: str = "",
+    cleanup_upload: bool = False,
+) -> None:
+    """供 API 在已抢锁后投递的后台任务。"""
+    await run_backup_import(
+        path=path,
+        raw=raw,
+        filename=filename,
+        hold_lock=True,
+        cleanup_upload=cleanup_upload,
+    )

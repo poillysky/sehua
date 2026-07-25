@@ -29,14 +29,31 @@ _FILM_SIZE_RE = re.compile(
     re.I,
 )
 
-# 中文编辑粘贴常见：全角冒号/问号/与号/等号
+# 中文编辑粘贴常见：全角标点 + 零宽/软连字符（防复制检测）
 _FULLWIDTH_TRANS = str.maketrans(
     {
         "：": ":",
         "？": "?",
         "＆": "&",
         "＝": "=",
+        "／": "/",
+        "．": ".",
+        "\u200b": "",
+        "\u200c": "",
+        "\u200d": "",
+        "\ufeff": "",
+        "\u00ad": "",
     }
+)
+
+# HTML 实体冒号（blockcode 偶发）
+_ENTITY_COLON_RE = re.compile(r"&colon;|&#0*58;|&#x0*3a;", re.I)
+
+# m a g n e t : ? xt = urn : btih : HASH（协议头被空格拆开；字母间至少一处空格，避免误伤正常 magnet）
+_SPACED_MAGNET_SCHEME_RE = re.compile(
+    rf"(?<![A-Za-z0-9])m\s+a\s+g\s+n\s+e\s+t\s*:\s*\??\s*xt\s*=\s*urn\s*:\s*btih\s*:\s*"
+    rf"({_INFOHASH})",
+    re.I,
 )
 
 # magnet : ? xt = urn : btih : HASH（半角被空格打断）
@@ -46,17 +63,30 @@ _SPACED_MAGNET_CORE_RE = re.compile(
     re.I,
 )
 
-# 发帖/附件防和谐：去掉冒号 → magnetxt=urnbtih:HASH 或 magnet?xt=urnbtih:HASH
+# 发帖/附件防和谐：去掉冒号；亦覆盖 urn/btih/hash 间缺冒号
 _COLONLESS_MAGNET_RE = re.compile(
-    rf"magnet\s*\??\s*xt\s*=\s*urn\s*btih\s*:\s*"
+    rf"magnet\s*\??\s*xt\s*=\s*urn\s*:?\s*btih\s*:?\s*"
     rf"({_INFOHASH})",
     re.I,
 )
 
-# 防和谐砍首字母：agnet:?xt=urn:btih:HASH（tid 2506349）
-_CLIPPED_MAGNET_HEAD_RE = re.compile(
-    rf"(?<![A-Za-z0-9])agnet\s*:\s*\?\s*xt\s*=\s*urn\s*:\s*btih\s*:\s*"
+# 缺 ?：magnet:xt=… / magnet:/?xt= / magnet://?xt=
+_MAGNET_NO_QMARK_RE = re.compile(
+    rf"magnet\s*:\s*(?:/+)?\s*xt\s*=\s*urn\s*:\s*btih\s*:\s*"
     rf"({_INFOHASH})",
+    re.I,
+)
+
+# 防和谐砍字母：agnet / magne / magent / mgnet
+_CLIPPED_MAGNET_HEAD_RE = re.compile(
+    rf"(?<![A-Za-z0-9])(?:agnet|magne|magent|mgnet)\s*:\s*\??\s*xt\s*=\s*urn\s*:\s*btih\s*:\s*"
+    rf"({_INFOHASH})",
+    re.I,
+)
+
+# btih 与 hash 之间用空格代替冒号
+_BTIH_SPACE_HASH_RE = re.compile(
+    rf"(magnet:\?xt=urn:btih)\s+({_INFOHASH})",
     re.I,
 )
 
@@ -86,16 +116,13 @@ _BARE_INFOHASH_CUED_RE = re.compile(
     r"|哈希值"
     r"|雜湊校[验驗]"
     r"|哈希校[验驗]"
-    r"|磁力(?:链接|连接|鍊接)"
+    r"|磁力(?:链接|连接|鍊接|連結)"
     r"|BT\s*(?:哈希|hash)"
     r"|info\s*hash"
-    r"|种子(?:哈希|hash)"
-    r"|種子(?:哈希|hash)"
-    # 特征*：编码/编号、短写「特征码」，或 2048 常见「特征全码」
+    r"|种子(?:哈希|hash|[编編][号码碼號]|特[码碼])"
+    r"|種子(?:哈希|hash|[编編][号码碼號]|特[码碼])"
     r"|特[征徵](?:[编編][号码碼號]|全[码碼]|[码碼])"
-    # 验证*：验证编码/编号，或 2048「验证全码」；禁止单独「验证码」
     r"|[验驗][证證証](?:[编編][号码碼號]|全[码碼])"
-    # 种子特码 / 種子特碼
     r"|[种種]子特[码碼]"
     r")"
     r"(?:[\s:：\|\[\]【】=\-_]|<[^>\n]{0,120}>){0,60}"
@@ -104,7 +131,7 @@ _BARE_INFOHASH_CUED_RE = re.compile(
     re.I,
 )
 
-# blockcode 里把 hash 包进转义/真实标签：magnet:?xt=urn:btih:&lt;span…&gt;HASH&lt;/span&gt;
+# blockcode 里把 hash 包进转义/真实标签
 _MAGNET_BTIH_TAG_JUNK_RE = re.compile(
     rf"(magnet:\?xt=urn:btih:)"
     rf"(?:(?:<[^>\n]{{0,200}}>)|(?:&lt;(?:(?!&gt;).){{0,200}}&gt;)|\s)*"
@@ -113,7 +140,7 @@ _MAGNET_BTIH_TAG_JUNK_RE = re.compile(
     re.I,
 )
 
-# 磁力 URI 在 btih 与 hash 间插入日期目录：magnet:?xt=urn:btih:202601/HASH（tid 3286293）
+# magnet:?xt=urn:btih:202601/HASH（tid 3286293）
 _MAGNET_BTIH_DATE_PREFIX_RE = re.compile(
     rf"(magnet:\?xt=urn:btih:)(?:[0-9]{{4,8}}/)+({_INFOHASH})",
     re.I,
@@ -124,7 +151,6 @@ def _expand_bare_infohashes(text: str) -> str:
     """把带提示语的裸 infohash 原地换成 magnet:?xt=urn:btih:…，便于后续统一解析。"""
     if not text:
         return ""
-    # 一次扫出文中已有 btih，避免每个线索都 re.search 全篇
     known = {m.group(1).lower() for m in BTIH_RE.finditer(text)}
 
     def repl(m: re.Match[str]) -> str:
@@ -138,7 +164,6 @@ def _expand_bare_infohashes(text: str) -> str:
         known.add(key)
         head = m.group(0)[: m.start(1) - m.start()]
         tail = m.group(0)[m.end(1) - m.start() :]
-        # 与后文【标签】隔开，避免 magnet URI 吞进中文
         return f"{head}magnet:?xt=urn:btih:{h} {tail}"
 
     return _BARE_INFOHASH_CUED_RE.sub(repl, text)
@@ -149,6 +174,7 @@ def normalize_magnet_corpus(text: str) -> str:
     if not text:
         return ""
     out = text.translate(_FULLWIDTH_TRANS)
+    out = _ENTITY_COLON_RE.sub(":", out)
     out = _MAGNET_BTIH_TAG_JUNK_RE.sub(
         lambda m: f"{m.group(1)}{m.group(2)}",
         out,
@@ -157,7 +183,15 @@ def normalize_magnet_corpus(text: str) -> str:
         lambda m: f"{m.group(1)}{m.group(2)}",
         out,
     )
+    out = _SPACED_MAGNET_SCHEME_RE.sub(
+        lambda m: f"magnet:?xt=urn:btih:{m.group(1)}",
+        out,
+    )
     out = _SPACED_MAGNET_CORE_RE.sub(
+        lambda m: f"magnet:?xt=urn:btih:{m.group(1)}",
+        out,
+    )
+    out = _MAGNET_NO_QMARK_RE.sub(
         lambda m: f"magnet:?xt=urn:btih:{m.group(1)}",
         out,
     )
@@ -167,6 +201,10 @@ def normalize_magnet_corpus(text: str) -> str:
     )
     out = _CLIPPED_MAGNET_HEAD_RE.sub(
         lambda m: f"magnet:?xt=urn:btih:{m.group(1)}",
+        out,
+    )
+    out = _BTIH_SPACE_HASH_RE.sub(
+        lambda m: f"{m.group(1)}:{m.group(2)}",
         out,
     )
     out = _expand_bare_infohashes(out)

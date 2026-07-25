@@ -5,21 +5,36 @@ const USER_KEY = 'collector_user'
 const CJK_RE = /[\u4e00-\u9fff]/
 
 const ERROR_MAP: Array<[RegExp | string, string]> = [
-  [/notimplemented/i, '浏览器引擎无法启动（当前事件循环不支持启动子进程）。请重启后端后再试'],
-  [/browser bootstrap failed/i, '论坛进站失败：所有入口均未能完成浏览器初始化'],
-  [/r18\/safe shell/i, '仍卡在十八禁/安全浏览壳，无法进入论坛'],
+  [/notimplemented/i, '浏览器引擎无法启动（当前环境不支持）。请重启后端后再试'],
+  [/browser bootstrap failed/i, '论坛进站失败：所有入口都没能打开'],
+  [/r18\/safe shell/i, '仍卡在十八禁/安全浏览提示页，无法进入论坛'],
   [/r18 block/i, '十八禁门拦截未解除，无法读取帖子'],
-  [/cf challenge|cf persists|cloudflare/i, 'Cloudflare 人机验证未通过，请稍后重试或更换代理'],
+  [/cf challenge|cf persists|cloudflare/i, '遇到网站人机验证，请稍后重试或更换代理'],
   [/empty page/i, '页面内容为空，可能被拦截或站点异常'],
   [/target closed|browser has been closed/i, '浏览器会话已关闭，请重试'],
-  [/executable doesn't exist/i, '未找到浏览器内核，请执行：playwright install chromium'],
+  [/executable doesn't exist/i, '未找到浏览器内核，请联系管理员安装 Playwright Chromium'],
   [/timed?\s*out|timeout/i, '请求超时，请检查网络或代理后重试'],
   [/connection refused|connecterror|getaddrinfo|name or service not known/i, '网络连接失败，请检查网络、入口域名或代理'],
-  [/ssl|certificate/i, 'SSL/证书校验失败，请检查代理或站点证书'],
+  [/ssl|certificate/i, '安全证书校验失败，请检查代理或站点证书'],
   [/request failed/i, '请求失败，请检查网络或代理后重试'],
-  [/^HTTP\s+\d+/i, '服务请求失败'],
-  [/field required|value error/i, '请求参数无效'],
+  [/conflict|http\s*409/i, '当前有其他任务在进行，请稍后再试'],
+  [/http\s*403/i, '没有权限执行此操作'],
+  [/http\s*404/i, '未找到对应内容'],
+  [/http\s*5\d\d/i, '服务出错了，请稍后重试'],
+  [/^HTTP\s+\d+/i, '服务请求失败，请稍后重试'],
+  [/field required|value error/i, '填写内容有误，请检查后再试'],
+  [/runtimeerror|oserror|operationalerror/i, '操作失败，请稍后重试'],
 ]
+
+function friendlyHttpFallback(status: number): string {
+  if (status === 409) return '当前有其他任务在进行，请稍后再试'
+  if (status === 400) return '请求无效，请检查填写内容'
+  if (status === 401) return '未登录或登录已过期'
+  if (status === 403) return '没有权限执行此操作'
+  if (status === 404) return '未找到对应内容'
+  if (status >= 500) return '服务出错了，请稍后重试'
+  return '操作失败，请稍后重试'
+}
 
 function looksChinese(text: string) {
   return CJK_RE.test(text)
@@ -165,14 +180,14 @@ export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
         return (await retry.json()) as T
       }
       if (retry.status !== 401) {
-        let detail: unknown = `HTTP ${retry.status}`
+        let detail: unknown = friendlyHttpFallback(retry.status)
         try {
           const data = await retry.json()
           detail = data.detail ?? data.message ?? detail
         } catch {
           /* ignore */
         }
-        throw new Error(formatApiDetail(detail, `请求失败（${retry.status}）`))
+        throw new Error(formatApiDetail(detail, friendlyHttpFallback(retry.status)))
       }
     }
     // 保留本地 token，由 RequireAuth / 登出决定是否清会话
@@ -180,14 +195,14 @@ export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
   }
 
   if (!res.ok) {
-    let detail: unknown = `HTTP ${res.status}`
+    let detail: unknown = friendlyHttpFallback(res.status)
     try {
       const data = await res.json()
       detail = data.detail ?? data.message ?? detail
     } catch {
       /* ignore */
     }
-    throw new Error(formatApiDetail(detail, `请求失败（${res.status}）`))
+    throw new Error(formatApiDetail(detail, friendlyHttpFallback(res.status)))
   }
 
   if (res.status === 204) return undefined as T

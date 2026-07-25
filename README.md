@@ -2,12 +2,12 @@
 
 家庭 NAS 上的 **论坛资源采集与检索全栈**：爬虫入库 · 管理运维 · 全文搜索，一套 Compose 跑通。
 
-[![Version](https://img.shields.io/badge/version-1.1.23-0ea5e9?style=flat-square)](./VERSION)
+[![Version](https://img.shields.io/badge/version-1.2.0-0ea5e9?style=flat-square)](./VERSION)
 [![Stack](https://img.shields.io/badge/stack-FastAPI%20%7C%20React%20%7C%20Next.js%20%7C%20Postgres-64748b?style=flat-square)](#技术栈)
 [![Deploy](https://img.shields.io/badge/deploy-Docker%20Hub%20pull%20only-22c55e?style=flat-square)](#nas-部署)
 [![License](https://img.shields.io/badge/use-personal%20%2F%20LAN-f59e0b?style=flat-square)](#声明)
 
-镜像由 GitHub Actions 构建并推送 **Docker Hub**（及 GHCR）；NAS **只 pull，不本地 build**。发版递增叠加（`1.0.1` … `1.1.23`），历史标签保留，`latest` 始终指向当前版。
+镜像由 GitHub Actions 构建并推送 **Docker Hub**（及 GHCR）；NAS **只 pull，不本地 build**。发版递增叠加（`1.0.1` … `1.2.0`），历史标签保留，`latest` 始终指向当前版。主栈 **sehua** 与 **search** 分开构建、分开推送。
 
 ---
 
@@ -73,25 +73,25 @@ flowchart LR
 
 ## Docker 镜像
 
-### Docker Hub（推荐）
+主栈（sehua）与搜索端**分开构建、分开推送**：
 
-| 服务 | 镜像 |
-|------|------|
-| 后端 | [`poillysky/sehuatang-backend:1.1.23`](https://hub.docker.com/r/poillysky/sehuatang-backend) |
-| 管理 | [`poillysky/sehuatang-admin:1.1.23`](https://hub.docker.com/r/poillysky/sehuatang-admin) |
-| 搜索 | [`poillysky/sehuatang-search:1.1.23`](https://hub.docker.com/r/poillysky/sehuatang-search) |
+| 产品 | 镜像 | CI |
+|------|------|-----|
+| **sehua**（API+管理合一） | [`poillysky/sehuatang-app:1.2.0`](https://hub.docker.com/r/poillysky/sehuatang-app) | [docker-app.yml](./.github/workflows/docker-app.yml) |
+| **search**（搜索站） | [`poillysky/sehuatang-search:1.2.0`](https://hub.docker.com/r/poillysky/sehuatang-search) | [docker-search.yml](./.github/workflows/docker-search.yml) |
 
-Hub：[poillysky](https://hub.docker.com/u/poillysky) · 每次发版同时推送版本号与 `latest`。NAS Compose 请钉死版本号，勿盲追未验证的 `latest` 行为变更。
+- 改 `backend/` / `frontend/admin/` / `deploy/app/` → 只打 **app**
+- 改 `next-web/` → 只打 **search**
+- 也可在 Actions 里对对应 workflow 点 **Run workflow** 手动推送
+
+Hub：[poillysky](https://hub.docker.com/u/poillysky) · 版本号与 `latest` 一并推送。NAS Compose 请钉死版本号。
 
 ### GHCR（可选）
 
 ```text
-ghcr.io/poillysky/sehuatang-backend:1.1.23
-ghcr.io/poillysky/sehuatang-admin:1.1.23
-ghcr.io/poillysky/sehuatang-search:1.1.23
+ghcr.io/poillysky/sehuatang-app:1.2.0
+ghcr.io/poillysky/sehuatang-search:1.2.0
 ```
-
-CI：[`.github/workflows/docker.yml`](./.github/workflows/docker.yml)
 
 ---
 
@@ -113,20 +113,28 @@ CI：[`.github/workflows/docker.yml`](./.github/workflows/docker.yml)
 
 ### 启动
 
+主栈（postgres + sehua-app）与搜索**分开**：
+
 ```bash
 cd /vol1/1000/Docker/sehuatang
+# 主栈 sehua
 docker compose -f docker-compose.nas.yml pull
 docker compose -f docker-compose.nas.yml up -d
 # 或: sh update.sh
+
+# 搜索（可选，另开）
+docker compose -f docker-compose.search.yml pull
+docker compose -f docker-compose.search.yml up -d
+# 或: sh update-search.sh
 ```
 
 ### 访问
 
 | URL | 用途 |
 |-----|------|
-| `http://NAS_IP:3010` | 搜索前端 |
-| `http://NAS_IP:8082` | 管理后台（`/api` → backend） |
-| `NAS_IP:5433` | PostgreSQL（工具直连） |
+| `http://NAS_IP:8082` | sehua 管理+API |
+| `http://NAS_IP:3010` | 搜索前端（独立 compose） |
+| `NAS_IP:5433` | PostgreSQL（工具直连，以本机映射为准） |
 
 默认凭据（**上线后立刻修改**）：
 
@@ -165,32 +173,38 @@ docker compose -f docker-compose.nas.yml up -d
 ## 仓库结构
 
 ```text
-sehuatang/
+sehua/
 ├── backend/              # FastAPI：爬虫 · 入库 · 管理 API
-├── frontend/admin/       # 管理端（Vite + React → Nginx）
-├── next-web/             # 搜索端（Next.js）
+├── frontend/admin/       # 管理端（Vite + React → 与 backend 打成 app 镜像）
+├── next-web/             # 搜索端（Next.js，独立镜像）
 ├── database/migrations/  # PostgreSQL 迁移
-├── deploy/               # NAS Compose（只 pull）
+├── deploy/               # NAS Compose（主栈 / 搜索分开）
 ├── docs/                 # 架构 · 设计 · 部署
 ├── VERSION               # 当前发版号
-└── start.bat             # Windows 本地三窗启动
+├── start.bat             # Windows：只启 sehua（API+管理）
+└── start-search.bat      # Windows：只启搜索
 ```
 
 ---
 
 ## 本地开发
 
-Windows 可双击根目录 `start.bat`，或分别启动：
+Windows：
+
+- `start.bat` → **sehua**（API `:8080` + 管理 `:8081`）
+- `start-search.bat` → **search**（`:3010`，不跟主栈捆绑）
+
+或分别启动：
 
 ```bash
-# 后端 → :8080
+# sehua 后端 → :8080
 cd backend && pip install -r requirements.txt
 uvicorn api.main:app --reload --port 8080
 
-# 管理 → :8081（开发）
+# sehua 管理 → :8081（开发）
 cd frontend/admin && npm install && npm run dev
 
-# 搜索 → :3010
+# 搜索（可选）→ :3010
 cd next-web && npm install && npm run dev
 ```
 
@@ -231,8 +245,9 @@ Backend 启动时自动执行待跑 SQL 迁移。
 
 仓库：https://github.com/poillysky/sehua
 
-下一版 **1.1.23**：同步改 `VERSION`、`deploy/docker-compose.nas.yml` 镜像标签、workflow `RELEASE_TAG`，提交并打 `v1.1.23`。
-Hub / GHCR 保留全部历史版本号；`latest` = 最近一次发版。
+发 **sehua 主栈**：改 `VERSION`、`deploy/docker-compose.nas.yml` 标签、`docker-app.yml` 的 `RELEASE_TAG`，提交；打 `v*` 或等 path 触发 app workflow。  
+发 **search**：改 `docker-compose.search.yml` / `docker-search.yml` 的 `RELEASE_TAG`，提交 `next-web/`；打 `v*-search` 或手动 Run workflow。  
+Hub / GHCR 保留历史版本号；`latest` = 对应产品最近一次推送。
 
 ---
 

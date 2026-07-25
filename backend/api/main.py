@@ -28,6 +28,7 @@ from db.migrate import ensure_ed2k_schema
 from db.persist import persist_from_html
 from db.repository import (
     clear_forum_crawl_progress,
+    clear_forum_head_catchup,
     delete_resource_by_hash,
     get_data_overview,
     list_recent_resources,
@@ -101,21 +102,14 @@ async def lifespan(_app: FastAPI):
 
     try:
         if using_separate_resource_db():
-            # 独立资源库：只跑加性索引迁移（IF NOT EXISTS），不跑 001 建表
-            from db.migrate import run_migrations
+            # 独立资源库：空库补齐资源表；已有库只跑未应用的加性迁移
+            from db.migrate import ensure_resource_db_schema
             from db.resource_db import connect_resource, resource_dsn_kwargs
 
             dsn = resource_dsn_kwargs()
             rconn = connect_resource()
             try:
-                applied = run_migrations(
-                    only={
-                        "019_resource_sources_source_url_index.sql",
-                        "020_ed2k_resources_stub_index.sql",
-                    },
-                    conn=rconn,
-                    skip_crawl_conflicts=False,
-                )
+                applied = ensure_resource_db_schema(rconn)
             finally:
                 rconn.close()
             logger.info(
@@ -123,11 +117,18 @@ async def lifespan(_app: FastAPI):
                 dsn.get("host"),
                 dsn.get("port"),
                 dsn.get("dbname"),
-                f" · applied {', '.join(applied)}" if applied else " · indexes up to date",
+                f" · applied {', '.join(applied)}" if applied else " · schema up to date",
+            )
+        else:
+            logger.info(
+                "resource DB: using primary（未启用独立库；资源与元数据同机，仅建议单机）"
             )
     except Exception:
-        logger.exception("resource DB config/migrate failed — check 数据管理 → 资源数据库")
-        raise
+        # 独立库 migrate 失败：不拖垮启动，但健康检查会标 degraded；禁止假装写主库成功
+        logger.exception(
+            "resource DB config/migrate failed — 服务继续启动但资源写入可能不可用；"
+            "请检查资源库或设置 RESOURCE_DB_* 环境变量"
+        )
 
     from workers.backup import start_backup_scheduler, stop_backup_scheduler
 
@@ -141,7 +142,35 @@ async def lifespan(_app: FastAPI):
         port = start_emergency_stop_server(emergency_stop_sync, port=18080)
         if port:
             logger.info("emergency stop ready on http://127.0.0.1:%s/stop", port)
-        _log_activity("后端就绪 · 活动日志已落库，操作后可在此查看")
+        # 进程启动：爬虫开关默认关闭（不自动恢复上次开启状态）
+        try:
+            from db.forum_configs import (
+                FULL_CRAWLER_FORUM_IDS,
+                load_forum_configs_map,
+                save_forum_config,
+            )
+
+            conn = connect()
+            try:
+                configs = load_forum_configs_map(conn)
+                cleared: list[str] = []
+                for fid in FULL_CRAWLER_FORUM_IDS:
+                    cfg = dict(configs.get(fid) or {})
+                    if cfg.get("web_crawler_enabled"):
+                        cfg["web_crawler_enabled"] = False
+                        save_forum_config(conn, fid, cfg)
+                        cleared.append(fid)
+            finally:
+                conn.close()
+            if cleared:
+                _log_activity(
+                    f"后端启动 · 爬虫开关已重置为关闭（{', '.join(cleared)}）"
+                )
+            else:
+                _log_activity("后端就绪 · 活动日志已落库，操作后可在此查看")
+        except Exception:
+            logger.debug("startup crawler disable skipped", exc_info=True)
+            _log_activity("后端就绪 · 活动日志已落库，操作后可在此查看")
     except Exception:
         logger.debug("startup activity / emergency stop skipped", exc_info=True)
     try:
@@ -204,6 +233,12 @@ class ParseHtmlRequest(BaseModel):
 @app.get("/health")
 def health() -> dict:
     from db.connection import postgres_dsn_kwargs
+    from db.resource_db import (
+        open_resource_connection,
+        resource_db_config,
+        settings_unavailable,
+        using_separate_resource_db,
+    )
 
     dsn = postgres_dsn_kwargs()
     db_ok = False
@@ -218,18 +253,78 @@ def health() -> dict:
     except Exception as exc:
         db_error = str(exc).split("\n")[0][:160]
 
+    cfg = resource_db_config(mask_password=True)
+    resource: dict = {
+        "role": cfg.get("role") or "colocated_primary",
+        "separate": False,
+        "ok": True,
+        "writable": True,
+        "multi_terminal": False,
+        "error": None,
+        "architecture": cfg.get("architecture"),
+    }
+    try:
+        if settings_unavailable():
+            resource = {
+                "role": "config_unavailable",
+                "separate": True,
+                "ok": False,
+                "writable": False,
+                "multi_terminal": True,
+                "error": cfg.get("settings_error")
+                or "无法读取资源库配置，已禁止写入以免写错库",
+                "architecture": cfg.get("architecture"),
+            }
+        elif using_separate_resource_db():
+            rconn, rerr = open_resource_connection()
+            resource = {
+                "role": "multi_terminal",
+                "separate": True,
+                "ok": rconn is not None,
+                "writable": rconn is not None,
+                "multi_terminal": True,
+                "error": rerr,
+                "config": cfg.get("effective"),
+                "architecture": cfg.get("architecture"),
+            }
+            if rconn is not None:
+                try:
+                    rconn.close()
+                except Exception:
+                    pass
+        else:
+            resource["architecture"] = cfg.get("architecture")
+    except Exception as exc:
+        resource = {
+            "role": "multi_terminal",
+            "separate": True,
+            "ok": False,
+            "writable": False,
+            "multi_terminal": True,
+            "error": str(exc).split("\n")[0][:160],
+        }
+
+    status = "ok"
+    if not db_ok:
+        status = "degraded"
+    elif not resource.get("ok") or not resource.get("writable", True):
+        status = "degraded"
+
     return {
-        "status": "ok" if db_ok else "degraded",
+        "status": status,
         "db": {
             "ok": db_ok,
+            "role": "metadata_self",
             "host": dsn["host"],
             "port": dsn["port"],
             "name": dsn["dbname"],
             "backend": connection_mode(),
             "error": db_error or None,
         },
+        "resource_db": resource,
         "schema": "ed2k",
     }
+
 
 
 @app.get("/api/system/data-overview")
@@ -243,10 +338,20 @@ def data_overview(_user: dict = Depends(require_permission("settings.write"))) -
         separate = using_separate_resource_db()
         if separate:
             rconn, resource_db_error = open_resource_connection()
-            if rconn is None:
-                # 独立库暂不可达：页面仍可打开，资源计数回落主库并带回错误提示
-                separate = False
-        overview = get_data_overview(conn, rconn if separate else None)
+            if rconn is not None:
+                overview = get_data_overview(conn, rconn)
+            else:
+                # 独立库启用但不可达：爬虫表仍可读主库；资源计数不回落主库
+                overview = get_data_overview(conn, conn)
+                overview["resources"] = None
+                overview["resource_sources"] = None
+                overview["import_jobs"] = None
+                overview["sources"] = None
+                overview["resource_db_separate"] = True
+                overview["resource_db_unavailable"] = True
+        else:
+            overview = get_data_overview(conn, None)
+
         configs = load_forum_configs_map(conn)
         from db.forum_configs import get_active_forum_id
 
@@ -258,6 +363,7 @@ def data_overview(_user: dict = Depends(require_permission("settings.write"))) -
             "overview": overview,
             "crawler_running": bool(st.get("running") or st.get("looping")),
             "crawler_enabled": bool(cfg.get("web_crawler_enabled")),
+            "focus_forum_id": active,
             "resource_db": resource_db_config(mask_password=True),
             "resource_db_error": resource_db_error,
         }
@@ -445,6 +551,40 @@ def system_reset_crawl(
         conn.close()
 
 
+@app.post("/api/system/reset-crawl-dates")
+def system_reset_crawl_dates(
+    body: SystemResetBody,
+    _user: dict = Depends(require_permission("settings.write")),
+) -> dict:
+    """只清捕新日期闸门（board_head_catchup_on）与当日捕新进度，不动队列/深扫游标/资源。"""
+    if body.confirm.strip() != "清理日期":
+        raise HTTPException(status_code=400, detail='请在确认框输入「清理日期」以继续')
+
+    _require_crawler_idle_or_409(disable_switch=False)
+
+    conn = connect()
+    try:
+        cleared = clear_forum_head_catchup(conn)
+        try:
+            from workers.runner import _log_activity
+
+            _log_activity(
+                "已清理捕新日期闸门 · "
+                f"论坛 {cleared.get('forums', 0)} · "
+                f"日期项 {cleared.get('date_entries', 0)} · "
+                f"进度项 {cleared.get('progress_entries', 0)}"
+            )
+        except Exception:
+            pass
+        return {
+            "message": "success",
+            "scope": "crawl_dates",
+            "cleared": cleared,
+        }
+    finally:
+        conn.close()
+
+
 @app.post("/api/system/reset-resources")
 def system_reset_resources(
     body: SystemResetBody,
@@ -530,6 +670,15 @@ def resources_recent(
             "boards": boards,
             "facets": facets,
         }
+    except Exception as exc:
+        logger.exception("resources/recent failed")
+        raise HTTPException(
+            status_code=500,
+            detail=(
+                f"资源列表失败：{exc}。"
+                "若启用了独立资源库，请确认目标库已建表（或先关闭独立资源库改回主库）。"
+            ),
+        ) from exc
     finally:
         conn.close()
 
@@ -652,10 +801,14 @@ async def resources_recrawl(
         name="imported-recrawl-one",
     )
     if result.get("reason") in {"busy", "loop_running"} or result.get("skipped"):
-        raise HTTPException(
-            status_code=409,
-            detail=str(result.get("error") or "爬虫忙，请稍后再试"),
-        )
+        reason = str(result.get("reason") or "")
+        if reason == "loop_running":
+            detail = "正在自动爬取中，请先到「爬虫」页点停止后再重爬"
+        elif reason == "busy":
+            detail = "爬虫正在处理其他任务，请稍等几秒再重爬"
+        else:
+            detail = str(result.get("error") or "系统正忙，请稍后再试")
+        raise HTTPException(status_code=409, detail=detail)
     if not result.get("ok") and not result.get("imported") and not result.get("removed"):
         detail = str(result.get("error") or result.get("verdict_label") or "重爬失败")
         raise HTTPException(status_code=400, detail=detail)
@@ -688,10 +841,14 @@ async def resources_recrawl_batch(
             name="imported-recrawl-queue",
         )
         if result.get("reason") in {"busy", "loop_running"} or result.get("skipped"):
-            raise HTTPException(
-                status_code=409,
-                detail=str(result.get("error") or "爬虫忙，请稍后再试"),
-            )
+            reason = str(result.get("reason") or "")
+            if reason == "loop_running":
+                detail = "正在自动爬取中，请先到「爬虫」页点停止后再重爬"
+            elif reason == "busy":
+                detail = "爬虫正在处理其他任务，请稍等几秒再重爬"
+            else:
+                detail = str(result.get("error") or "系统正忙，请稍后再试")
+            raise HTTPException(status_code=409, detail=detail)
         if (
             not result.get("ok")
             and int(result.get("imported") or 0) == 0
@@ -700,14 +857,17 @@ async def resources_recrawl_batch(
         ):
             raise HTTPException(
                 status_code=400,
-                detail=str(result.get("error") or "批量重爬失败"),
+                detail=str(result.get("error") or "批量重爬失败，请稍后重试"),
             )
         return {"message": "ok", "result": result}
 
     recover_stuck_after_stop(activity="已入库批量重爬")
     st = crawl_status()
     if st.get("running"):
-        raise HTTPException(status_code=409, detail="爬虫正在执行，请稍后再重爬")
+        raise HTTPException(
+            status_code=409,
+            detail="爬虫正在处理其他任务，请稍等几秒再重爬",
+        )
 
     cleaned: list[str] = []
     seen: set[str] = set()

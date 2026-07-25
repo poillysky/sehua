@@ -111,3 +111,28 @@ def list_recent_activity(limit: int = 120) -> list[dict[str, Any]]:
             t = time.strftime("%H:%M:%S")
         out.append({"t": t, "msg": msg})
     return out
+
+
+def clear_activity_log() -> int:
+    """清空活动日志表；返回删除行数。"""
+    conn = connect()
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT to_regclass(%s)", ("public.crawl_activity_log",))
+        if cur.fetchone()[0] is None:
+            return 0
+        cur.execute("SELECT COUNT(*) FROM crawl_activity_log")
+        n = int(cur.fetchone()[0] or 0)
+        if n:
+            cur.execute("DELETE FROM crawl_activity_log")
+        conn.commit()
+        return n
+    except Exception as exc:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        log.exception("clear_activity_log failed: %s", exc)
+        raise
+    finally:
+        conn.close()

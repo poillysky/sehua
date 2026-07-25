@@ -55,6 +55,7 @@ _STATE: dict[str, Any] = {
     "running": False,
     "looping": False,
     "loop_kind": None,
+    "forum_id": None,
     "phase": "idle",
     "last_result": None,
     "last_started_at": None,
@@ -105,13 +106,23 @@ def recover_stuck_after_stop(*, activity: str | None = None) -> bool:
     return True
 
 
-def try_begin_exclusive(phase: str = "recrawl") -> dict[str, Any]:
-    """占用 running，供已入库重爬等手工任务。连续调度或正在抓取时拒绝。"""
+def try_begin_exclusive(phase: str = "recrawl", *, busy_hint: str | None = None) -> dict[str, Any]:
+    """占用 running，供已入库重爬、按链接导入等手工任务。连续调度或正在抓取时拒绝。"""
     if _STATE.get("looping"):
-        return {"ok": False, "reason": "loop_running", "error": "连续调度进行中，请先关闭后再立即重爬"}
+        return {
+            "ok": False,
+            "reason": "loop_running",
+            "error": busy_hint
+            or "正在自动爬取中，请先到「爬虫」页点停止后再试",
+        }
     recover_stuck_after_stop()
     if _STATE.get("running"):
-        return {"ok": False, "reason": "busy", "error": "爬虫正在执行，请稍后再重爬"}
+        return {
+            "ok": False,
+            "reason": "busy",
+            "error": busy_hint
+            or "爬虫正在处理其他任务，请稍等几秒再试",
+        }
     _STATE["running"] = True
     _STATE["phase"] = phase
     _STATE["last_started_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
@@ -124,6 +135,7 @@ def end_exclusive() -> None:
         return
     _STATE["running"] = False
     _STATE["loop_inner"] = False
+    _STATE["forum_id"] = None
     _STATE["phase"] = "idle"
     _STATE["last_finished_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
 
@@ -292,12 +304,18 @@ async def run_crawl_once(
                 "ok": False,
                 "skipped": True,
                 "reason": "loop_running",
-                "error": "连续调度进行中，请先关闭后再操作",
+                "error": "正在自动爬取中，请先点停止后再操作",
             }
         if not from_loop:
             recover_stuck_after_stop()
         if _STATE.get("running") and not _STATE.get("looping"):
-            return {"ok": False, "skipped": True, "reason": "already_running", **crawl_status()}
+            return {
+                "ok": False,
+                "skipped": True,
+                "reason": "already_running",
+                "error": "爬虫正在处理其他任务，请稍候",
+                **crawl_status(),
+            }
         if _STATE.get("running") and _STATE.get("loop_inner"):
             return {"ok": False, "skipped": True, "reason": "already_running"}
 
@@ -356,16 +374,18 @@ async def run_crawl_once(
         enabled = bool(cfg.get("web_crawler_enabled"))
         result["enabled"] = enabled
         if require_enabled and not enabled:
-            _log_activity("爬虫开关关闭 · 不调度")
+            _log_activity(f"爬虫开关关闭 · 不调度（{forum_id}）")
             result["skipped"] = True
             result["reason"] = "disabled"
             return result
-        if active != forum_id:
-            _log_activity(f"当前启用论坛={active} · 跳过 {forum_id}")
+        # 连续调度只跑焦点论坛；手动 once/扫帖可指定任意已接入论坛
+        if from_loop and active != forum_id:
+            _log_activity(f"调度焦点={active} · 跳过 {forum_id}")
             result["skipped"] = True
-            result["reason"] = "not_active_forum"
+            result["reason"] = "not_focus_forum"
             return result
 
+        _STATE["forum_id"] = forum_id
         _STATE["phase"] = "scheduler"
         delay = float(cfg.get("web_crawler_request_delay") or 2.0)
         fail_threshold = int(cfg.get("web_crawler_fetch_failure_threshold") or 5)
@@ -1047,7 +1067,7 @@ async def run_scan_head_once(
             "ok": False,
             "skipped": True,
             "reason": "loop_running",
-            "error": "连续调度进行中，请先关闭后再扫新帖",
+            "error": "正在自动爬取中，请先点停止后再扫新帖",
         }
     recover_stuck_after_stop()
     if _STATE.get("running"):
@@ -1058,11 +1078,12 @@ async def run_scan_head_once(
     _STATE["running"] = True
     _STATE["loop_inner"] = True
     _STATE["phase"] = "scan_head"
+    _STATE["forum_id"] = forum_id
     _STATE["last_started_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
     _round_task = asyncio.current_task()
 
     _log_activity(
-        f"手动扫新帖 · 启用 {len(enabled)} 板 · 顺序 {' → '.join(enabled)} · "
+        f"手动扫新帖 · {forum_id} · 启用 {len(enabled)} 板 · 顺序 {' → '.join(enabled)} · "
         f"每板强制读列表 · 收尾消化至空"
     )
     agg: dict[str, Any] = {
@@ -1250,17 +1271,18 @@ async def run_scan_head_once(
             _round_task = None
         _STATE["loop_inner"] = False
         _STATE["running"] = False
+        _STATE["forum_id"] = None
         _STATE["phase"] = "idle"
         _STATE["last_finished_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
         _STATE["throttle"] = THROTTLE.status()
 
 
 async def _continuous_loop() -> None:
-    """拓扑：一轮结束立即再开，无轮间间隔。按当前启用论坛调度。"""
+    """拓扑：一轮结束立即再开。单进程只调度「焦点论坛」（active_forum_id）。"""
     _STATE["looping"] = True
     _STATE["running"] = True
     _STATE["loop_kind"] = "deep"
-    _log_activity("连续调度已启动 · 无轮间间隔")
+    _log_activity("连续调度已启动 · 无轮间间隔 · 仅焦点论坛")
     try:
         while _STATE.get("looping") and not THROTTLE.should_stop():
             # reload enabled each round
@@ -1271,8 +1293,9 @@ async def _continuous_loop() -> None:
                 cfg = configs.get(active) or {}
             finally:
                 conn.close()
+            _STATE["forum_id"] = active
             if not cfg.get("web_crawler_enabled"):
-                _log_activity(f"开关已关 · 连续调度待命（{active}）")
+                _log_activity(f"焦点论坛开关已关 · 连续调度待命（{active}）")
                 await THROTTLE.sleep_for(5)
                 continue
             await run_crawl_once(
@@ -1295,6 +1318,7 @@ async def _continuous_loop() -> None:
         _STATE["looping"] = False
         _STATE["running"] = False
         _STATE["loop_kind"] = None
+        _STATE["forum_id"] = None
         _STATE["phase"] = "idle"
         _log_activity("连续调度已停止")
 
@@ -1341,6 +1365,7 @@ def _force_idle_state() -> None:
     _STATE["running"] = False
     _STATE["loop_inner"] = False
     _STATE["loop_kind"] = None
+    _STATE["forum_id"] = None
     _STATE["phase"] = "idle"
     _round_task = None
 

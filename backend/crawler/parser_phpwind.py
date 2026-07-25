@@ -25,7 +25,7 @@ def is_valid_phpwind_list(html: str) -> bool:
 
 def parse_forum_list_phpwind(
     html: str,
-    base_url: str = "https://ut2gw5.xc6ym5.com/",
+    base_url: str = "https://fby.tfzqs88.com",
     skip_sticky: bool = False,
 ) -> list[ThreadBrief]:
     """从 PHPWind 板块列表抽取帖子。"""

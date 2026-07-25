@@ -14,7 +14,7 @@ from parsers.boards_2048 import (
 )
 
 COOKIE_FILE_2048 = Path(__file__).resolve().parent.parent.parent / "data" / "cookies_2048.json"
-DEFAULT_ENTRY = "https://ut2gw5.xc6ym5.com/"
+DEFAULT_ENTRY = "https://fby.tfzqs88.com"
 
 
 class Forum2048Adapter:
