@@ -13,6 +13,7 @@ on:
       - "deploy/app/**"
       - "database/**"
       - "VERSION"
+      - ".dockerignore"
       - ".github/workflows/docker-app.yml"
     tags:
       - "v[0-9]*"
