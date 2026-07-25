@@ -22,6 +22,7 @@ from parsers.thread_gates import (
     has_baidu_share_link,
     has_115_share_link,
     has_pikpak_share_link,
+    has_quark_share_link,
     has_target_link,
     has_xunlei_share_link,
     is_genuine_non_resource,
@@ -43,6 +44,7 @@ from parsers.thread_gates import (
     title_is_115sha_without_ed2k_magnet,
     title_is_baidu_pan_without_ed2k_magnet,
     title_is_pikpak_without_ed2k_magnet,
+    title_is_quark_without_ed2k_magnet,
     title_is_xunlei_cloud_without_ed2k_magnet,
     title_recognizable,
     coalesce_thread_title,
@@ -90,6 +92,7 @@ def judge_thread_html(
     soft_browser_retried: bool = False,
     preferred_link: str | None = None,
     forum_id: str = "sehuatang",
+    tid: int | None = None,
 ) -> ThreadOutcome:
     """Pure judgment from HTML (+ optional attachment attempt flags).
 
@@ -118,6 +121,19 @@ def judge_thread_html(
     title = page_tit
     if not title_recognizable(title) and title_recognizable(list_title):
         title = list_title
+
+    # 2048 白名单各板：回家指南 / 来访者必看 / 地址发布器等版务帖
+    if forum_id == "2048":
+        from parsers.boards_2048 import is_2048_meta_guide_thread
+
+        if (
+            is_2048_meta_guide_thread(title or "", tid)
+            or is_2048_meta_guide_thread(list_title or "", tid)
+        ):
+            return ThreadOutcome(
+                "skipped", "版务/广告帖（跳过）", link_kind, title or list_title
+            )
+
     # 与 parse_thread_dual 对齐：目标链/网盘/跳过一律只认主贴语料，忽略回帖
     try:
         from parsers.content import extract_link_corpus_html
@@ -220,7 +236,7 @@ def judge_thread_html(
     # 115 网盘分享页：有分享链则走正文解析入库（见 parse_thread_dual），不再跳过。
     # 仍跳过：仅标题写 115 分享、正文无实际链接（见下方 title 分支已移除分享标题硬跳）。
 
-    # 迅雷 / PikPak / 百度：只看楼主语料（勿扫回帖广告链）；无目标链且无附件可试时才跳过
+    # 迅雷 / PikPak / 百度 / 夸克：只看楼主语料（勿扫回帖广告链）；无目标链且无附件可试时才跳过
     if has_xunlei_share_link(link_corpus) and not has_lz_target:
         if not attachments_already_tried and looks_like_attachment_zone(html):
             pass
@@ -239,7 +255,13 @@ def judge_thread_html(
         else:
             return ThreadOutcome("skipped", "百度网盘（跳过）", link_kind, title)
 
-    # 标题仅 115sha / 迅雷 / PikPak / 百度、且正文无目标链：
+    if has_quark_share_link(link_corpus) and not has_lz_target:
+        if not attachments_already_tried and looks_like_attachment_zone(html):
+            pass
+        else:
+            return ThreadOutcome("skipped", "夸克网盘（跳过）", link_kind, title)
+
+    # 标题仅 115sha / 迅雷 / PikPak / 百度 / 夸克、且正文无目标链：
     # 115sha 标题若带附件区，先下附件（常见：标题写 115sha1，rar 内实为 ed2k）
     # （正文已有 115cdn 分享 / ed2k / 磁力时不因标题里的「百度」等字样硬跳）
     if title_is_115sha_without_ed2k_magnet(title) or title_is_115sha_without_ed2k_magnet(
@@ -279,6 +301,14 @@ def judge_thread_html(
             pass
         else:
             return ThreadOutcome("skipped", "百度网盘标题（无 ed2k/磁力，跳过）", link_kind, title)
+    if not _has_body_target and (
+        title_is_quark_without_ed2k_magnet(title)
+        or title_is_quark_without_ed2k_magnet(list_title)
+    ):
+        if not attachments_already_tried and looks_like_attachment_zone(html):
+            pass
+        else:
+            return ThreadOutcome("skipped", "夸克网盘标题（无 ed2k/磁力，跳过）", link_kind, title)
 
     # 需回复：满龄（或非龄期板）→ 占位显示；未满龄已在上一步跳过
     if is_reply_required_post(html):
@@ -339,6 +369,7 @@ def judge_thread_html(
                 has_baidu_share_link(link_corpus)
                 or has_xunlei_share_link(link_corpus)
                 or has_pikpak_share_link(link_corpus)
+                or has_quark_share_link(link_corpus)
             ):
                 tip = (
                     "百度网盘（跳过）"
@@ -346,7 +377,11 @@ def judge_thread_html(
                     else (
                         "迅雷云盘（跳过）"
                         if has_xunlei_share_link(link_corpus)
-                        else "PikPak网盘（跳过）"
+                        else (
+                            "PikPak网盘（跳过）"
+                            if has_pikpak_share_link(link_corpus)
+                            else "夸克网盘（跳过）"
+                        )
                     )
                 )
                 return ThreadOutcome("skipped", tip, link_kind, title)

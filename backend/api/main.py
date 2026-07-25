@@ -624,6 +624,7 @@ def resources_recent(
     source: str = "",
     board: str = "",
     result: str = "",
+    forum: str = "",
     q: str = "",
 ) -> dict:
     """Paginated resources. Prefer page/page_size; legacy `limit` still accepted."""
@@ -633,9 +634,11 @@ def resources_recent(
     source_raw = source.strip()
     board_raw = board.strip()
     result_raw = result.strip()
+    forum_raw = forum.strip()
     source_type = source_raw if source_raw and source_raw != "all" else None
     board_name = board_raw if board_raw and board_raw != "all" else None
     link_kind = result_raw if result_raw and result_raw != "all" else None
+    forum_id = forum_raw if forum_raw and forum_raw != "all" else None
     query = q.strip() or None
 
     conn = connect_resource()
@@ -648,6 +651,7 @@ def resources_recent(
             board_name=board_name,
             link_kind=link_kind,
             q=query,
+            forum_id=forum_id,
         )
         facets = list_resource_facets(
             conn,
@@ -655,6 +659,7 @@ def resources_recent(
             source_type=source_type,
             board_name=board_name,
             link_kind=link_kind,
+            forum_id=forum_id,
         )
         # 兼容旧前端：boards 为名称列表；优先用按帖 facet，避免再扫 DISTINCT
         facet_board_names = [b["name"] for b in facets.get("boards") or [] if b.get("name")]
@@ -688,6 +693,7 @@ def resources_ids(
     source: str = "",
     board: str = "",
     result: str = "",
+    forum: str = "",
     q: str = "",
     limit: int = 2000,
 ) -> dict:
@@ -695,9 +701,11 @@ def resources_ids(
     source_raw = source.strip()
     board_raw = board.strip()
     result_raw = result.strip()
+    forum_raw = forum.strip()
     source_type = source_raw if source_raw and source_raw != "all" else None
     board_name = board_raw if board_raw and board_raw != "all" else None
     link_kind = result_raw if result_raw and result_raw != "all" else None
+    forum_id = forum_raw if forum_raw and forum_raw != "all" else None
     query = q.strip() or None
     lim = max(1, min(int(limit or 2000), 5000))
 
@@ -709,6 +717,7 @@ def resources_ids(
             board_name=board_name,
             link_kind=link_kind,
             q=query,
+            forum_id=forum_id,
             limit=lim,
         )
         return {

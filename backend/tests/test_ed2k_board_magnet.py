@@ -185,6 +185,37 @@ def test_parse_bare_infohash_feature_full_code_2048():
     assert has_target_link(raw, "magnet")
 
 
+def test_parse_bare_infohash_typo_shizheng_same_line_as_size():
+    """2048 错别字【试证全码】与资源大小同行（tid 27431995）。"""
+    h = "6C92A52EF6175D85563AD87644B297CB16C26E86"
+    raw = f"""
+    【资源名称】：▲tj1221▲FC2新片素人合集[07.25] | 最新合集
+    【资源类型】：MP4
+    【资源大小】：0.95GB 【试证全码】：{h}
+    """
+    links = parse_magnet_text(raw)
+    assert len(links) == 1
+    assert links[0].infohash == h.upper()
+    assert has_target_link(raw, "magnet")
+
+
+def test_parse_seed_feature_code_hash_check_semicolon_2048():
+    """2048【种子特码】：哈希校验; HASH; ;（tid 27433099）。"""
+    h = "98f092a5ab5bbb846785250ac4137a123fe8cdb2"
+    raw = f"""
+    【影片名称】：新FC2PPV 4713971
+    【影片大小】：2.04G
+    【种子期限】：高速做种三日
+    【种子特码】：哈希校验; {h}; ;
+    【下载说明】：qBittorrent
+    https://www.rmdown.com/link.php?hash=26{h}
+    """
+    links = parse_magnet_text(raw)
+    assert len(links) == 1
+    assert links[0].infohash == h.upper()
+    assert has_target_link(raw, "magnet")
+
+
 def test_parse_bare_infohash_verify_full_code_2048():
     """2048【驗證全码】裸 infohash。"""
     h = "0c5ae2d3436fcd2bd4359bafdde3bd65ec835deb"
@@ -268,43 +299,25 @@ def test_parse_verify_code_label():
 
 
 def test_parse_feature_verify_all_recorded_combos():
-    """实录标签简繁组合：特征*可短写码；验证*禁止「验证码」以免误伤。"""
-    from parsers.magnet import (
-        _BARE_HASH_BACK1_FEATURE,
-        _BARE_HASH_BACK2,
-        _BARE_HASH_FRONT_FEATURE,
-        _BARE_HASH_FRONT_VERIFY,
-    )
+    """实录标签简繁组合：特征/试证*可短写码；验证*禁止「验证码」以免误伤。"""
+    from parsers.magnet import bare_infohash_structure_cue_labels
 
     h = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
-    labels: list[str] = []
-    for front in _BARE_HASH_FRONT_FEATURE:
-        for back in _BARE_HASH_BACK2:
-            labels.append(front + back)
-        for back in _BARE_HASH_BACK1_FEATURE:
-            labels.append(front + back)
-    for front in _BARE_HASH_FRONT_VERIFY:
-        for back in _BARE_HASH_BACK2:
-            labels.append(front + back)
-    for seed in ("种", "種"):
-        for code in ("码", "碼"):
-            labels.append(f"{seed}子特{code}")
+    labels = list(bare_infohash_structure_cue_labels())
 
     assert "特征编码" in labels
+    assert "特征全码" in labels
     assert "特徵碼" in labels
     assert "特征码" in labels
+    assert "试证全码" in labels
+    assert "試證編碼" in labels
     assert "驗證編號" in labels
     assert "验证编码" in labels
+    assert "验证全码" in labels
     assert "种子特码" in labels
+    assert "种子编码" in labels
     assert "验证码" not in labels
     assert "驗證碼" not in labels
-
-    expected = (
-        len(_BARE_HASH_FRONT_FEATURE) * (len(_BARE_HASH_BACK2) + len(_BARE_HASH_BACK1_FEATURE))
-        + len(_BARE_HASH_FRONT_VERIFY) * len(_BARE_HASH_BACK2)
-        + 4
-    )
-    assert len(labels) == expected
 
     for lab in labels:
         got = parse_magnet_text(f"【{lab}】：{h}")

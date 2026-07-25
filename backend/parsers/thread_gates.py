@@ -127,6 +127,11 @@ RE_BAIDU_SHARE = re.compile(
     r"(?:https?://)?(?:pan|yun)\.baidu\.com/s/[A-Za-z0-9_-]+",
     re.I,
 )
+# 夸克网盘分享：pan.quark.cn/s/...
+RE_QUARK_SHARE = re.compile(
+    r"(?:https?://)?(?:pan\.)?quark\.cn/s/[A-Za-z0-9_-]+",
+    re.I,
+)
 SOFT_AD_TITLE_HINTS = ("名人名言", "佛教谚语", "请稍候", "Just a moment")
 GENERIC_TITLES = frozenset({"提示信息", "提示", "手机版", "请稍候", "佛教谚语"})
 MOBILE_SHELL_TITLES = frozenset({"手机版", "请稍候…", "请稍候"})
@@ -299,6 +304,11 @@ def has_baidu_share_link(text: str) -> bool:
     return bool(RE_BAIDU_SHARE.search(text or ""))
 
 
+def has_quark_share_link(text: str) -> bool:
+    """识别夸克网盘分享：pan.quark.cn/s/..."""
+    return bool(RE_QUARK_SHARE.search(text or ""))
+
+
 def title_is_xunlei_cloud_without_ed2k_magnet(title: str) -> bool:
     """标题标明迅雷云盘，且未写 ed2k / magnet / 磁力 / 电驴 → 直接跳过。"""
     t = (title or "").strip()
@@ -331,6 +341,19 @@ def title_is_baidu_pan_without_ed2k_magnet(title: str) -> bool:
     if not t:
         return False
     if "百度网盘" not in t and "百度云" not in t and not re.search(r"百度\s*网盘", t):
+        return False
+    lower = t.lower()
+    if any(x in lower for x in ("ed2k", "magnet", "磁力", "电驴", "种子", "torrent")):
+        return False
+    return True
+
+
+def title_is_quark_without_ed2k_magnet(title: str) -> bool:
+    """标题标明夸克网盘，且未写 ed2k / magnet / 磁力 / 电驴 → 直接跳过。"""
+    t = (title or "").strip()
+    if not t:
+        return False
+    if "夸克" not in t and "quark" not in t.lower():
         return False
     lower = t.lower()
     if any(x in lower for x in ("ed2k", "magnet", "磁力", "电驴", "种子", "torrent")):

@@ -52,7 +52,7 @@ from workers.runner import (
 )
 from workers.session_factory import (
     bootstrap_probe_for_forum,
-    entry_urls_from_config,
+    resolve_forum_entry_urls,
     fetcher_from_config,
     session_from_config,
 )
@@ -282,7 +282,7 @@ async def _open_forum_session(
         account_jar=account_jar,
         forum_id=forum_id,
     )
-    entries = entry_urls_from_config(forum_cfg)
+    entries = resolve_forum_entry_urls(forum_cfg, forum_id)
     probe = bootstrap_probe_for_forum(forum_cfg, forum_id)
     await session.bootstrap(entry_urls=entries or None, probe_url=probe)
     fetcher = fetcher_from_config(session, forum_cfg)
@@ -621,7 +621,7 @@ async def recrawl_imported_resources(hashes: list[str]) -> dict[str, Any]:
 
         from workers.session_factory import (
             bootstrap_probe_for_forum,
-            entry_urls_from_config,
+            resolve_forum_entry_urls,
             fetcher_from_config,
             session_from_config,
         )
@@ -644,7 +644,7 @@ async def recrawl_imported_resources(hashes: list[str]) -> dict[str, Any]:
             finally:
                 conn_cfg.close()
             session = session_from_config(forum_cfg, forum_id=forum_id)
-            entries = entry_urls_from_config(forum_cfg)
+            entries = resolve_forum_entry_urls(forum_cfg, forum_id)
             probe = bootstrap_probe_for_forum(forum_cfg, forum_id)
             await session.bootstrap(entry_urls=entries or None, probe_url=probe)
             fetcher = fetcher_from_config(session, forum_cfg)

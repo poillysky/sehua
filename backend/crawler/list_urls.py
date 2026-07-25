@@ -10,10 +10,10 @@ def site_root(entry_url: str = "") -> str:
     raw = (entry_url or BASE_URL).strip() or BASE_URL
     if "://" not in raw:
         raw = "https://" + raw
-    if "forum.php" in raw or raw.rstrip("/").endswith(".html"):
-        from urllib.parse import urlparse
+    from urllib.parse import urlparse
 
-        p = urlparse(raw)
+    p = urlparse(raw)
+    if p.netloc:
         return f"{p.scheme}://{p.netloc}/"
     if not raw.endswith("/"):
         raw += "/"

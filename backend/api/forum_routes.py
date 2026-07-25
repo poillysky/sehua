@@ -210,19 +210,65 @@ def forum_link_test(
         conn.close()
 
     entry_urls = [item.strip() for item in str(fc.get("web_crawl_urls") or "").split(",") if item.strip()]
-    test_url = entry_urls[0] if entry_urls else FORUM_DEFAULT_ENTRY_URLS.get(fid, "")
-    if not test_url:
+    candidates: list[str] = []
+    if fid == FORUM_2048_ID:
+        # 与爬虫进站一致：上次成功 BBS 优先，再发布页展开候选
+        from workers.session_factory import resolve_forum_entry_urls
+
+        candidates = resolve_forum_entry_urls(fc, fid, proxy=str(proxy or ""))
+    if not candidates:
+        fallback = entry_urls[0] if entry_urls else FORUM_DEFAULT_ENTRY_URLS.get(fid, "")
+        if fallback:
+            candidates = [fallback]
+    if not candidates:
         raise HTTPException(status_code=400, detail="未配置论坛入口 URL")
 
-    result = test_http_link(
-        test_url,
-        proxy=proxy,
-        cookie=str(fc.get("web_crawler_cookie") or ""),
-        user_agent=str(fc.get("web_crawler_ua") or ""),
-        ok_message="论坛链接联通正常",
-        fail_prefix="论坛链接访问失败",
-    )
-    return {"forum_id": fid, **result}
+    max_try = min(5, len(candidates)) if fid == FORUM_2048_ID else 1
+    cookie = str(fc.get("web_crawler_cookie") or "")
+    ua = str(fc.get("web_crawler_ua") or "")
+    last: dict = {}
+    tried: list[str] = []
+    for url in candidates[:max_try]:
+        tried.append(url)
+        last = test_http_link(
+            url,
+            proxy=proxy,
+            cookie=cookie,
+            user_agent=ua,
+            ok_message="论坛链接联通正常",
+            fail_prefix="论坛链接访问失败",
+        )
+        if last.get("ok"):
+            if fid == FORUM_2048_ID:
+                try:
+                    from workers.session_factory import persist_preferred_entry_url
+
+                    landed = str(last.get("final_url") or last.get("test_url") or url)
+                    persist_preferred_entry_url(fid, landed)
+                except Exception:
+                    pass
+            return {
+                "forum_id": fid,
+                **last,
+                "tried": tried,
+                "preferred_used": bool(str(fc.get("preferred_entry_url") or "").strip()),
+            }
+
+    return {
+        "forum_id": fid,
+        **(last or {
+            "ok": False,
+            "message": "论坛链接访问失败：候选入口均不可达",
+            "status_code": None,
+            "elapsed_ms": None,
+            "test_url": candidates[0],
+            "proxy": proxy,
+            "proxy_used": bool(str(proxy or "").strip()),
+            "final_url": None,
+        }),
+        "tried": tried,
+        "preferred_used": bool(str(fc.get("preferred_entry_url") or "").strip()),
+    }
 
 
 @router.post("/{forum_id}/parse-thread")

@@ -13,7 +13,7 @@ from parsers.links import DualParseResult, parse_thread_dual
 from parsers.thread_gates import looks_like_attachment_zone, should_skip_as_115sha_only
 from workers.session_factory import (
     bootstrap_probe_for_forum,
-    entry_urls_from_config,
+    resolve_forum_entry_urls,
     fetcher_from_config,
     session_from_config,
 )
@@ -49,11 +49,13 @@ async def fetch_and_parse_thread(
     retries = int(cfg.get("web_crawler_fetch_retries") or 3)
 
     try:
+        entries = resolve_forum_entry_urls(cfg, forum_id) if cfg else []
         if not session._ready:
-            entries = entry_urls_from_config(cfg)
             probe = bootstrap_probe_for_forum(cfg, forum_id)
             await session.bootstrap(entry_urls=entries or None, probe_url=probe)
-        root = site_root(str(cfg.get("web_crawl_urls") or "").split(",")[0] if cfg else BASE_URL)
+        root = site_root(
+            session.active_entry_url or (entries[0] if entries else BASE_URL)
+        )
         list_url = adapter.build_list_url(root, board_fid, 1)
         thread_url = adapter.build_thread_url(root, tid)
         fetcher.set_referer(list_url)
@@ -137,14 +139,15 @@ async def process_thread(
     fetcher = fetcher or (fetcher_from_config(session, cfg) if cfg else Fetcher(session))
     retries = int(cfg.get("web_crawler_fetch_retries") or 3)
 
-    root = site_root(str(cfg.get("web_crawl_urls") or "").split(",")[0] if cfg else BASE_URL)
-    thread_url = adapter.build_thread_url(root, tid)
-
     try:
+        entries = resolve_forum_entry_urls(cfg, forum_id) if cfg else []
         if not session._ready:
-            entries = entry_urls_from_config(cfg)
             probe = bootstrap_probe_for_forum(cfg, forum_id)
             await session.bootstrap(entry_urls=entries or None, probe_url=probe)
+        root = site_root(
+            session.active_entry_url or (entries[0] if entries else BASE_URL)
+        )
+        thread_url = adapter.build_thread_url(root, tid)
         list_url = adapter.build_list_url(root, board_fid, 1)
         # 批量重爬共用 Fetcher 时也要随板块更新 Referer
         fetcher.set_referer(list_url)
@@ -174,6 +177,7 @@ async def process_thread(
             soft_browser_retried=soft_browser_retried,
             preferred_link=link_pref,
             forum_id=forum_id,
+            tid=tid,
         )
         # 兜底：判定仍要求浏览器重试且尚未做过
         if outcome.need_browser_retry and not soft_browser_retried:
@@ -195,6 +199,7 @@ async def process_thread(
                 soft_browser_retried=True,
                 preferred_link=link_pref,
                 forum_id=forum_id,
+                tid=tid,
             )
 
         attachment_kind = outcome.attachment_kind
@@ -243,6 +248,7 @@ async def process_thread(
                     had_attachments=attach_res.downloaded or bool(attachment_text),
                     preferred_link=link_pref,
                     forum_id=forum_id,
+                    tid=tid,
                 )
                 # 电驴板：txt/zip/excel 无果再试种子；磁力/双链：种子无果再试 txt/excel
                 # stub/无权不再二轮（已能判定）；仅 retry/failed 等才回退
@@ -294,6 +300,7 @@ async def process_thread(
                             had_attachments=True,
                             preferred_link=link_pref,
                             forum_id=forum_id,
+                            tid=tid,
                         )
                     attachment_kind = f"{attachment_kind}+{next_kind}"
                 # 附件语料可能已含链但 judge 走了非 import：再双解析一次补全

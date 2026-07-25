@@ -177,18 +177,37 @@ class SessionManager:
                 await self._ensure_browser()
                 assert self._page
                 page = self._page
-                await page.goto(home, wait_until="domcontentloaded", timeout=60000)
-                await page.wait_for_timeout(2000)
+                await page.goto(home, wait_until="domcontentloaded", timeout=25000)
+                await page.wait_for_timeout(1200)
                 if await self._click_age_gate(page):
                     log.info("Age gate clicked (%s)", home)
                     await page.wait_for_timeout(3000)
 
-                root = site_root(home)
-                if probe_url:
+                # 跳转后以实际落地页为站点根（发布页 /lt1.php → 当日 BBS）
+                landed = ""
+                try:
+                    landed = (page.url or "").strip()
+                except Exception:
+                    landed = ""
+                root = site_root(landed or home)
+                from urllib.parse import urlparse
+
+                def _host(u: str) -> str:
+                    try:
+                        return (urlparse(u).netloc or "").lower()
+                    except Exception:
+                        return ""
+
+                probe = ""
+                if probe_url and _host(probe_url) and _host(probe_url) == _host(root):
                     probe = probe_url.strip()
-                elif "thread.php" in home.lower() or any(
-                    x in root.lower() for x in ("xc6ym5", "2048", "hjd2048", "a22e7")
+                elif "thread.php" in (home or "").lower() or any(
+                    x in root.lower()
+                    for x in ("xc6ym5", "2048", "hjd2048", "a22e7", "bbs.", ":2048", ":5680")
                 ):
+                    probe = f"{root}thread.php?fid=2"
+                elif probe_url and "thread.php" in probe_url.lower():
+                    # 调用方指定 PHPWind 探测，但入口已换域 → 按当前根重建
                     probe = f"{root}thread.php?fid=2"
                 else:
                     probe = f"{root}forum-2-1.html"
@@ -197,7 +216,7 @@ class SessionManager:
                 try:
                     from crawler.sites.base import domains_from_entry
 
-                    derived = list(domains_from_entry(home))
+                    derived = list(domains_from_entry(landed or home))
                 except Exception:
                     derived = []
                 if derived:
@@ -209,9 +228,10 @@ class SessionManager:
 
                 await self._sync_cookies_from_context()
                 self._ready = True
-                self.active_entry_url = home
+                self.active_entry_url = root
                 log.info(
-                    "Browser session ready via %s cookies=%s",
+                    "Browser session ready via %s (from %s) cookies=%s",
+                    root,
                     home,
                     ",".join(sorted(self.cookies.keys())),
                 )
@@ -219,6 +239,12 @@ class SessionManager:
             except Exception as exc:
                 last_err = exc
                 log.warning("Entry failover: %s failed: %s", home, _fmt_exc(exc))
+                try:
+                    from workers.runner import _log_activity
+
+                    _log_activity(f"进站失败 · {_fmt_exc(exc)[:80]} · 换下一条")
+                except Exception:
+                    pass
                 continue
 
         await self._close_on_loop()

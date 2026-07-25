@@ -34,6 +34,33 @@ def test_resource_list_where_rejects_multi_filter():
     assert "GROUP BY" not in where_sql2
 
 
+def test_resource_list_where_q_title_only():
+    """资源列表关键字只匹配帖子标题（无标题时回落 filename），不扫 search_string。"""
+    sql, params = _resource_list_where(q="提示")
+    assert "rs.title" in sql
+    assert "search_string" not in sql
+    assert params == ["%提示%"]
+
+
+def test_resource_list_where_forum_id():
+    """论坛筛选：空 forum_id 视为色花堂；all 不追加条件。"""
+    sql_sht, params_sht = _resource_list_where(forum_id="sehuatang")
+    assert "forum_id" in sql_sht
+    assert "sehuatang" in params_sht
+
+    sql_2048, params_2048 = _resource_list_where(forum_id="2048")
+    assert "forum_id" in sql_2048
+    assert params_2048 == ["2048"]
+
+    sql_all, params_all = _resource_list_where(forum_id="all")
+    assert "forum_id" not in sql_all
+    assert params_all == []
+
+    sql_empty, params_empty = _resource_list_where(forum_id="")
+    assert "forum_id" not in sql_empty
+    assert params_empty == []
+
+
 def test_assemble_thread_merges_assets():
     row = _assemble_thread_resource_row(
         group_id=99,

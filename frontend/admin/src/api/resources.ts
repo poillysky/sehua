@@ -71,6 +71,7 @@ export type ResourceRow = {
 export type ResourceFacets = {
   sources: Record<string, number>
   boards: Array<{ name: string; count: number }>
+  forums?: Array<{ id: string; name: string; count: number }>
   results?: Record<string, number>
 }
 
@@ -247,6 +248,7 @@ export function fetchRecentResources(params: {
   source?: string
   board?: string
   result?: string
+  forum?: string
   q?: string
 }) {
   const page = params.page ?? 1
@@ -258,6 +260,7 @@ export function fetchRecentResources(params: {
   if (params.source && params.source !== 'all') sp.set('source', params.source)
   if (params.board && params.board !== 'all') sp.set('board', params.board)
   if (params.result && params.result !== 'all') sp.set('result', params.result)
+  if (params.forum && params.forum !== 'all') sp.set('forum', params.forum)
   if (params.q?.trim()) sp.set('q', params.q.trim())
   return api<ResourcesPageResult>(`/api/resources/recent?${sp}`)
 }
@@ -287,6 +290,7 @@ export function fetchResourceIds(params: {
   source?: string
   board?: string
   result?: string
+  forum?: string
   q?: string
   limit?: number
 }) {
@@ -294,6 +298,7 @@ export function fetchResourceIds(params: {
   if (params.source && params.source !== 'all') sp.set('source', params.source)
   if (params.board && params.board !== 'all') sp.set('board', params.board)
   if (params.result && params.result !== 'all') sp.set('result', params.result)
+  if (params.forum && params.forum !== 'all') sp.set('forum', params.forum)
   if (params.q?.trim()) sp.set('q', params.q.trim())
   if (params.limit) sp.set('limit', String(params.limit))
   const qs = sp.toString()

@@ -28,6 +28,7 @@ const RESULT_LABEL: Record<ResourceRow['result'], string> = {
 const EMPTY_FACETS: ResourceFacets = {
   sources: { all: 0, web: 0, upload: 0, telegram: 0 },
   boards: [],
+  forums: [],
   results: { all: 0, magnet: 0, ed2k: 0, '115share': 0, stub: 0, failed: 0, multi: 0 },
 }
 
@@ -61,8 +62,9 @@ export function ResourcesPage() {
   const [selectAllBusy, setSelectAllBusy] = useState(false)
   const [filterOpen, setFilterOpen] = useState(false)
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
-  const [openDims, setOpenDims] = useState({ source: true, board: true, result: true })
+  const [openDims, setOpenDims] = useState({ forum: true, source: true, board: true, result: true })
   const [expandedBoardParents, setExpandedBoardParents] = useState<Set<string>>(() => new Set())
+  const [forum, setForum] = useState('all')
   const [source, setSource] = useState<'all' | 'web' | 'upload'>('all')
   const [board, setBoard] = useState('all')
   const [result, setResult] = useState<ResultFilter>('all')
@@ -93,12 +95,13 @@ export function ResourcesPage() {
           source,
           board,
           result,
+          forum,
           q,
         })
         if (seq !== reqSeq.current) return
 
         const rows = data.items.map(mapApiResource)
-        const filterKey = `${source}|${board}|${result}|${q}`
+        const filterKey = `${forum}|${source}|${board}|${result}|${q}`
         let totalCount = Number(data.total ?? data.count ?? rows.length) || 0
         const pinned = pinnedTotalRef.current
         if (!silent && pageNo === 1) {
@@ -113,6 +116,7 @@ export function ResourcesPage() {
           ? {
               sources: { ...EMPTY_FACETS.sources, ...(data.facets.sources || {}) },
               boards: data.facets.boards || [],
+              forums: data.facets.forums || [],
               results: { ...EMPTY_FACETS.results, ...(data.facets.results || {}) },
             }
           : {
@@ -176,7 +180,7 @@ export function ResourcesPage() {
         }
       }
     },
-    [page, source, board, result, q],
+    [page, forum, source, board, result, q],
   )
 
   // 打开页面 / 参数变化时自动刷新
@@ -189,7 +193,7 @@ export function ResourcesPage() {
     setCheckedIds([])
     setCheckedMeta({})
     pinnedTotalRef.current = null
-  }, [source, board, result, q])
+  }, [forum, source, board, result, q])
 
   // 搜索防抖，避免输入卡顿
   useEffect(() => {
@@ -354,6 +358,7 @@ export function ResourcesPage() {
         source,
         board,
         result,
+        forum,
         q: q || undefined,
         limit: 2000,
       })
@@ -397,9 +402,21 @@ export function ResourcesPage() {
     }
   }
 
+  function changeForum(next: string) {
+    setForum(next)
+    if (next !== 'all') {
+      setSource('all')
+      setBoard('all')
+      setResult('all')
+    }
+    setPage(1)
+    closeFilterIfMobile()
+  }
+
   function changeSource(next: 'all' | 'web' | 'upload') {
     setSource(next)
     if (next !== 'all') {
+      setForum('all')
       setBoard('all')
       setResult('all')
     }
@@ -410,6 +427,7 @@ export function ResourcesPage() {
   function changeBoard(next: string) {
     setBoard(next)
     if (next !== 'all') {
+      setForum('all')
       setSource('all')
       setResult('all')
     }
@@ -420,6 +438,7 @@ export function ResourcesPage() {
   function changeResult(next: ResultFilter) {
     setResult(next)
     if (next !== 'all') {
+      setForum('all')
       setSource('all')
       setBoard('all')
     }
@@ -603,6 +622,12 @@ export function ResourcesPage() {
     }
   }
 
+  const forumFacets = facets.forums || []
+  const forumTotal = forumFacets.reduce((sum, f) => sum + f.count, 0)
+  const forumCount =
+    forum === 'all'
+      ? forumTotal || facets.sources.all || 0
+      : forumFacets.find((f) => f.id === forum)?.count ?? total
   const sourceCount = facets.sources[source] ?? facets.sources.all ?? 0
   const boardCount =
     board === 'all'
@@ -623,6 +648,44 @@ export function ResourcesPage() {
         </div>
 
         <div className="filter-panel">
+          <div className={`dim-card ${openDims.forum ? '' : 'collapsed'}`}>
+            <button
+              type="button"
+              className="dim-head"
+              aria-expanded={openDims.forum}
+              onClick={() => toggleDim('forum')}
+            >
+              <span className="dim-head-label">
+                <span className="dim-caret" aria-hidden />
+                <span>论坛</span>
+              </span>
+              <span className="dim-count">{forumCount}</span>
+            </button>
+            {openDims.forum ? (
+              <div className="dim-body">
+                <button
+                  type="button"
+                  className={forum === 'all' ? 'dim-item active' : 'dim-item'}
+                  onClick={() => changeForum('all')}
+                >
+                  <span className="dim-item-label">全部论坛</span>
+                  <span className="dim-item-count">{forumTotal || facets.sources.all || 0}</span>
+                </button>
+                {forumFacets.map((f) => (
+                  <button
+                    key={f.id}
+                    type="button"
+                    className={forum === f.id ? 'dim-item active' : 'dim-item'}
+                    onClick={() => changeForum(f.id)}
+                  >
+                    <span className="dim-item-label">{f.name}</span>
+                    <span className="dim-item-count">{f.count}</span>
+                  </button>
+                ))}
+              </div>
+            ) : null}
+          </div>
+
           <div className={`dim-card ${openDims.source ? '' : 'collapsed'}`}>
             <button
               type="button"
@@ -863,7 +926,7 @@ export function ResourcesPage() {
               title={
                 allFilteredSelected
                   ? '取消当前筛选下的全选'
-                  : `按当前筛选（来源/板块/结果/搜索）全选全部页，共约 ${total} 条`
+                  : `按当前筛选（论坛/来源/板块/结果/搜索）全选全部页，共约 ${total} 条`
               }
               onClick={() => void onSelectAllFiltered()}
             >

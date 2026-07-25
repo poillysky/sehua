@@ -134,7 +134,7 @@ export function BasicForumConfigModal({
               <h3>{forum.name}</h3>
               {forum.base_url ? <p className="forum-card-url">{forum.base_url}</p> : null}
             </div>
-            {enabled ? <span className="tag tag-active">调度焦点</span> : <span className="tag tag-done">配置已接入</span>}
+            {enabled ? <span className="tag tag-active">调度焦点</span> : <span className="tag tag-done">已接入</span>}
           </div>
           <button type="button" className="btn ghost" onClick={onClose}>
             关闭
@@ -269,7 +269,11 @@ export function BasicForumConfigModal({
                       </div>
                     </div>
                     <div className="settings-grid-2 forum-config-grid">
-                      <Field label="入口 URL" hint="多个地址用英文逗号隔开" full>
+                      <Field
+                        label="入口 URL"
+                        hint="填发布页即可（如 fby.tfzqs88.com）；进站时自动解析「论坛今日地址 / 免翻域名」。多个发布页用英文逗号隔开"
+                        full
+                      >
                         <textarea
                           rows={3}
                           className="forum-entry-urls-field"
@@ -343,6 +347,45 @@ const FALLBACK_STRUCTURE_LABELS = [
   '出演女优',
   '解压密码',
 ]
+
+/** 与后端 parsers.boards_2048.STRUCTURE_LABELS_2048 对齐 */
+const FALLBACK_STRUCTURE_LABELS_2048 = [
+  '影片名称',
+  '中文片名',
+  '资源名称',
+  '影片格式',
+  '影片大小',
+  '是否有码',
+  '影片时间',
+  '影片时长',
+  '发布时间',
+  '分辨率',
+  '特征全码',
+  '特征编码',
+  '特征编号',
+  '试证全码',
+  '验证全码',
+  '验证编码',
+  '验证编号',
+  '种子特码',
+  '种子编码',
+  '哈希校验',
+  '作种期限',
+  '种子期限',
+  '图片预览',
+  '影片预览',
+  '影片截图',
+  '有无水印',
+  '资源类型',
+  '资源数量',
+  '下载方式',
+]
+
+function structureLabelsForForum(forum: ForumItem): string[] {
+  if (forum.structure_labels?.length) return forum.structure_labels
+  if (forum.id === '2048') return FALLBACK_STRUCTURE_LABELS_2048
+  return FALLBACK_STRUCTURE_LABELS
+}
 
 function boardLinkLabel(kind: string) {
   if (kind === 'magnet') return '磁力'
@@ -534,6 +577,12 @@ function OverviewTab({
                 {!cfg.web_crawl_urls?.trim() ? '—' : null}
               </span>
             </div>
+            {cfg.preferred_entry_url?.trim() ? (
+              <div className="forum-config-summary-item full">
+                <span className="lbl">上次成功进站</span>
+                <span className="val mono">{cfg.preferred_entry_url.trim()}</span>
+              </div>
+            ) : null}
           </div>
         </section>
       </div>
@@ -1116,7 +1165,11 @@ function ConfigTab({
             </div>
           </div>
           <div className="settings-grid-2 forum-config-grid">
-            <Field label="入口 URL" hint="多个地址用英文逗号隔开；前面的挂了会试后面的" full>
+            <Field
+              label="入口 URL"
+              hint="可填发布页（如 fby.tfzqs88.com）；2048 进站会自动解析「论坛今日地址 / 免翻」。多个地址用英文逗号隔开，前面挂了会试后面的"
+              full
+            >
               <textarea
                 rows={3}
                 className="forum-entry-urls-field"
@@ -1570,9 +1623,9 @@ export function ForumConfigModal({
               <p className="forum-card-url">{forum.base_url}</p>
             </div>
             {isEnabled ? (
-              <span className="tag tag-active">本站专用 · 调度焦点</span>
+              <span className="tag tag-active">调度焦点</span>
             ) : (
-              <span className="tag tag-done">本站专用爬虫</span>
+              <span className="tag tag-done">已接入</span>
             )}
           </div>
           <button type="button" className="btn ghost" onClick={onClose}>
@@ -1619,7 +1672,7 @@ export function ForumConfigModal({
               {tab === 'structure' ? (
                 <StructureTab
                   guides={forum.format_guides || []}
-                  labels={forum.structure_labels?.length ? forum.structure_labels : FALLBACK_STRUCTURE_LABELS}
+                  labels={structureLabelsForForum(forum)}
                   boards={boards}
                 />
               ) : null}

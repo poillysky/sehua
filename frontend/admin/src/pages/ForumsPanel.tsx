@@ -65,20 +65,10 @@ function boardCounts(forum: ForumItem) {
 function boardMetaText(forum: ForumItem) {
   const counts = boardCounts(forum)
   if (counts.units <= 0) return '基本配置 · 爬虫模块待接入'
-  const linkBits: string[] = []
-  if (counts.magnet) linkBits.push(`磁力 ${counts.magnet}`)
-  if (counts.ed2k) linkBits.push(`ED2K ${counts.ed2k}`)
-  if (counts.both) linkBits.push(`双链 ${counts.both}`)
-  // 色花堂等：板块 ≠ 采集单位（大量 fid:typeid）
-  const scope =
-    counts.boards > 0 && counts.boards !== counts.units
-      ? `${counts.boards} 板块 · ${counts.units} 单位`
-      : `${counts.units} 板块`
-  const enabled =
-    counts.enabled > 0 && counts.enabled !== counts.units
-      ? ` · 启用 ${counts.enabled}`
-      : ''
-  return `${scope}${enabled}${linkBits.length ? ` · ${linkBits.join(' · ')}` : ''}`
+  const boards = counts.boards > 0 ? counts.boards : counts.units
+  const magnet = counts.magnet + counts.both
+  const ed2k = counts.ed2k + counts.both
+  return `${boards} 板块 · 磁力 ${magnet} · ED2K ${ed2k}`
 }
 
 function activeNote(forum: ForumItem) {
@@ -95,24 +85,16 @@ function activeNote(forum: ForumItem) {
 }
 
 function forumBadge(forum: ForumItem, focused: boolean) {
-  if (forum.site_dedicated || forum.id === 'sehuatang') {
-    return focused ? (
-      <span className="tag tag-active">本站专用 · 调度焦点</span>
-    ) : (
-      <span className="tag tag-done">本站专用爬虫</span>
-    )
+  const registered = !!(forum.crawler_registered || forum.capabilities?.registered)
+  if (!registered) {
+    return <span className="tag tag-pending">待接入</span>
   }
-  if (!forum.crawler_registered && !forum.capabilities?.registered) {
-    return <span className="tag tag-pending">待独立接入</span>
+  // 色花堂 / 2048 / 其它已接入论坛：同一套状态文案与样式
+  if (focused) {
+    return <span className="tag tag-active">调度焦点</span>
   }
-  if (!(forum.capabilities?.crawlable || hasFullCrawlerModule(forum))) {
-    return focused ? (
-      <span className="tag tag-active">配置已接入 · 调度焦点</span>
-    ) : (
-      <span className="tag tag-done">基本配置已接入</span>
-    )
-  }
-  return focused ? <span className="tag tag-active">调度焦点</span> : <span className="tag tag-done">已接入</span>
+  const full = !!(forum.capabilities?.crawlable || hasFullCrawlerModule(forum))
+  return <span className="tag tag-done">{full ? '已接入' : '配置已接入'}</span>
 }
 
 function linkStatusText(state: LinkState) {
@@ -128,7 +110,6 @@ export function ForumsPanel() {
   const basicModalTab = parseBasicForumTab(params.get('panel'))
   const [forums, setForums] = useState<ForumItem[]>([])
   const [activeForumId, setActiveForumId] = useState('sehuatang')
-  const [siteCrawlerId, setSiteCrawlerId] = useState('sehuatang')
   const [loading, setLoading] = useState(true)
   const [busy, setBusy] = useState(false)
   const [linkStatus, setLinkStatus] = useState<Record<string, LinkStatus>>({})
@@ -191,17 +172,25 @@ export function ForumsPanel() {
     try {
       const data = await testForumLink(forumId)
       if (probeGen.current[forumId] !== gen) return
+      const host =
+        (data.final_url || data.test_url || '')
+          .replace(/^https?:\/\//i, '')
+          .split('/')[0] || ''
       setLinkStatus((prev) => ({
         ...prev,
         [forumId]: {
           state: data.ok ? 'ok' : 'fail',
-          detail:
-            data.elapsed_ms != null
-              ? `${data.elapsed_ms}ms · HTTP ${data.status_code ?? '-'}`
-              : data.message || data.test_url || '',
+          detail: data.ok
+            ? [
+                data.elapsed_ms != null ? `${data.elapsed_ms}ms` : null,
+                data.status_code != null ? `HTTP ${data.status_code}` : null,
+                host || null,
+              ]
+                .filter(Boolean)
+                .join(' · ')
+            : data.message || data.test_url || '',
         },
-      }))
-    } catch (err) {
+      }))    } catch (err) {
       if (probeGen.current[forumId] !== gen) return
       setLinkStatus((prev) => ({
         ...prev,
@@ -220,7 +209,6 @@ export function ForumsPanel() {
       const list = data.forums || []
       setForums(list)
       setActiveForumId(data.focus_forum_id || data.active_forum_id || data.site_crawler_forum_id || 'sehuatang')
-      setSiteCrawlerId(data.site_crawler_forum_id || 'sehuatang')
       const active = list.filter(
         (f) => f.status === 'active' && (f.crawler_registered || f.capabilities?.crawlable),
       )
@@ -295,7 +283,7 @@ export function ForumsPanel() {
         <div>
           <h3>论坛管理</h3>
           <p className="settings-panel-desc">
-            色花堂为本站 Discuz 专用爬虫；2048 为独立 PHPWind 爬虫，入口/板块/Cookie 互不共用
+            各论坛独立爬虫与配置；入口、板块与 Cookie 互不共用。选中焦点后，连续调度只跑该论坛。
           </p>
         </div>
       </header>
@@ -322,7 +310,6 @@ export function ForumsPanel() {
             {!loading ? (
               <div className="forum-icon-grid">
                 {forums.map((forum) => {
-                  const dedicated = !!(forum.site_dedicated || forum.id === siteCrawlerId)
                   const available =
                     forum.status === 'active' &&
                     !!(forum.crawler_registered || forum.capabilities?.crawlable)
@@ -332,7 +319,7 @@ export function ForumsPanel() {
                   return (
                     <div
                       key={forum.id}
-                      className={`forum-icon-wrap${enabled ? ' forum-icon-wrap-enabled' : ''}${available ? '' : ' forum-icon-wrap-planned'}${dedicated ? ' forum-icon-wrap-site' : ''}`}
+                      className={`forum-icon-wrap${enabled ? ' forum-icon-wrap-enabled' : ''}${available ? '' : ' forum-icon-wrap-planned'}`}
                     >
                       <div className="forum-icon-toolbar">
                         <label
@@ -363,7 +350,7 @@ export function ForumsPanel() {
                       </div>
                       <button
                         type="button"
-                        className={`forum-icon-tile${dedicated ? ' forum-icon-tile-site' : ''}${available ? '' : ' forum-icon-tile-planned'}`}
+                        className={`forum-icon-tile${available ? '' : ' forum-icon-tile-planned'}`}
                         onClick={() => openForumConfig(forum)}
                         title={available ? `打开 ${forum.name} 配置` : `查看 ${forum.name}（待接入）`}
                       >
@@ -371,13 +358,13 @@ export function ForumsPanel() {
                           <ForumTileIcon forum={forum} />
                         </span>
                         <span className="forum-icon-tile-name">{forum.name}</span>
-                        {available ? (
-                          <span className="forum-icon-tile-meta">
-                            {fullModule ? boardMetaText(forum) : '基本配置 · 爬虫模块待接入'}
-                          </span>
-                        ) : (
-                          <span className="forum-icon-tile-meta">配置不通用 · 需独立模块</span>
-                        )}
+                        <span className="forum-icon-tile-meta">
+                          {available
+                            ? fullModule
+                              ? boardMetaText(forum)
+                              : '基本配置 · 爬虫模块待接入'
+                            : '配置不通用 · 需独立模块'}
+                        </span>
                         {forumBadge(forum, enabled)}
                       </button>
                     </div>

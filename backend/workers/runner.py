@@ -44,8 +44,9 @@ from workers.list_scan import scan_board_list
 from workers.pipeline import process_thread
 from workers.session_factory import (
     bootstrap_probe_for_forum,
-    entry_urls_from_config,
+    resolve_forum_entry_urls,
     fetcher_from_config,
+    persist_preferred_entry_url,
     session_from_config,
 )
 
@@ -447,13 +448,29 @@ async def run_crawl_once(
 
         _STATE["phase"] = "session"
         session = session_from_config(cfg, proxy=proxy, forum_id=forum_id)
-        entries = entry_urls_from_config(cfg)
-        probe = bootstrap_probe_for_forum(cfg, forum_id)
+        if forum_id == "2048":
+            _log_activity("2048 解析发布页 · 取当日论坛入口…")
+        preferred = str(cfg.get("preferred_entry_url") or "").strip()
+        entries = resolve_forum_entry_urls(cfg, forum_id, proxy=proxy)
+        probe = bootstrap_probe_for_forum(cfg, forum_id, proxy=proxy)
+        if forum_id == "2048" and entries:
+            tip = f"优先上次 {preferred}" if preferred else f"试 {entries[0]}"
+            _log_activity(
+                f"2048 发布页解析完成 · {len(entries)} 条入口 · {tip}"
+            )
+        _log_activity(f"进站中 · 候选 {len(entries or [])} 条…")
         await session.bootstrap(entry_urls=entries, probe_url=probe)
         start = session.active_entry_url or (entries[0] if entries else "")
         result["proxy_configured"] = bool((proxy or "").strip())
         result["entry_url"] = start
         _log_activity(f"进站就绪 · {start}" + (f" · 代理 {proxy}" if proxy else ""))
+        if forum_id == "2048" and start:
+            try:
+                saved = persist_preferred_entry_url(forum_id, start)
+                if saved and site_root(preferred) != site_root(saved):
+                    _log_activity(f"记住进站入口 · {saved}（下次优先）")
+            except Exception as rem_exc:
+                log.warning("remember preferred entry: %s", rem_exc)
 
         fetcher = fetcher_from_config(session, cfg, proxy=proxy)
         root = site_root(start)

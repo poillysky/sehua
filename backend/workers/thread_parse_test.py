@@ -27,7 +27,7 @@ from parsers.thread_gates import (
     post_text,
 )
 from workers.session_factory import (
-    entry_urls_from_config,
+    resolve_forum_entry_urls,
     fetcher_from_config,
     session_from_config,
 )
@@ -102,7 +102,7 @@ async def parse_thread_for_admin(
     adapter = get_site_adapter(forum_id)
     cfg = dict(crawler_config or {})
     proxy = (proxy_override or "").strip() or str(cfg.get("web_crawler_proxy") or "").strip()
-    entries = entry_urls_from_config(cfg)
+    entries = resolve_forum_entry_urls(cfg, forum_id, proxy=proxy)
     root = site_root(entries[0] if entries else BASE_URL)
     input_was_mobile = is_mobile_thread_url(original_url)
     desktop_url = canonical_thread_url(original_url, root=root)
@@ -120,8 +120,9 @@ async def parse_thread_for_admin(
     retries = int(cfg.get("web_crawler_fetch_retries") or 3)
 
     try:
-        probe = bootstrap_probe_for_forum(cfg, forum_id)
+        probe = bootstrap_probe_for_forum(cfg, forum_id, proxy=proxy)
         await session.bootstrap(entry_urls=entries or None, probe_url=probe)
+        root = site_root(session.active_entry_url or root)
         # 用户显式选了板块 → 按该板块主链判定；留空 → 双链自动识别（仍可展示推断出的板块）
         fid_forced = bool((board_fid or "").strip())
         fid_hint = _infer_fid(original_url, "", board_fid if fid_forced else "")

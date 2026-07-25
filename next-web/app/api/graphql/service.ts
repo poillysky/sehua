@@ -325,6 +325,9 @@ const extractKeywords = (
   return keywords;
 };
 
+const SEARCH_TITLE_EXPR =
+  "COALESCE(NULLIF(TRIM(rs.title), ''), r.filename)";
+
 const buildKeywordFilter = (
   keywords: { keyword: string; required: boolean }[],
   matchMode: MatchMode,
@@ -336,14 +339,14 @@ const buildKeywordFilter = (
 
   if (matchMode === "exact") {
     return keywords
-      .map((_, i) => `(filename ILIKE $${i + 1} OR search_string ILIKE $${i + 1})`)
+      .map((_, i) => `(${SEARCH_TITLE_EXPR} ILIKE $${i + 1})`)
       .join(" AND ");
   }
 
   if (matchMode === "fuzzy") {
     const matchParts = keywords.map(
       (_, i) =>
-        `(CASE WHEN filename ILIKE $${i + 1} OR search_string ILIKE $${i + 1} THEN 1 ELSE 0 END)`,
+        `(CASE WHEN ${SEARCH_TITLE_EXPR} ILIKE $${i + 1} THEN 1 ELSE 0 END)`,
     );
     const matchCountExpr = matchParts.join(" + ");
     const minMatches = Math.max(1, Math.ceil(keywords.length * 0.5));
@@ -352,11 +355,11 @@ const buildKeywordFilter = (
     if (fullKeywordParamIndex) {
       const fullKeywordRef = `$${fullKeywordParamIndex}`;
 
-      return `(${tokenMatch} OR word_similarity(${fullKeywordRef}, filename) > 0.25 OR similarity(filename, ${fullKeywordRef}) > 0.15)`;
+      return `(${tokenMatch} OR word_similarity(${fullKeywordRef}, ${SEARCH_TITLE_EXPR}) > 0.25 OR similarity(${SEARCH_TITLE_EXPR}, ${fullKeywordRef}) > 0.15)`;
     }
 
     if (keywords.length === 1) {
-      return "(filename ILIKE $1 OR search_string ILIKE $1)";
+      return `(${SEARCH_TITLE_EXPR} ILIKE $1)`;
     }
 
     return tokenMatch;
@@ -366,7 +369,7 @@ const buildKeywordFilter = (
   const optionalKeywords: string[] = [];
 
   keywords.forEach(({ required }, i) => {
-    const condition = `(filename ILIKE $${i + 1} OR search_string ILIKE $${i + 1})`;
+    const condition = `(${SEARCH_TITLE_EXPR} ILIKE $${i + 1})`;
 
     if (required) {
       requiredKeywords.push(condition);
@@ -392,16 +395,16 @@ const buildRelevanceOrderBy = (
   const scoreParts = keywords.map(({ required }, i) => {
     const weight = i === 0 ? 10 : required ? 3 : 1;
 
-    return `(CASE WHEN filename ILIKE $${i + 1} OR search_string ILIKE $${i + 1} THEN ${weight} ELSE 0 END)`;
+    return `(CASE WHEN ${SEARCH_TITLE_EXPR} ILIKE $${i + 1} THEN ${weight} ELSE 0 END)`;
   });
 
   const fullKeywordRef = `$${fullKeywordParamIndex}`;
 
   return `(${[
     ...scoreParts,
-    `(CASE WHEN lower(filename) = lower(${fullKeywordRef}) THEN 100 ELSE 0 END)`,
-    `(CASE WHEN lower(filename) LIKE lower(${fullKeywordRef}) || '%' THEN 40 ELSE 0 END)`,
-    `(COALESCE(word_similarity(${fullKeywordRef}, filename), 0) * 60 + COALESCE(similarity(filename, ${fullKeywordRef}), 0) * 40)`,
+    `(CASE WHEN lower(${SEARCH_TITLE_EXPR}) = lower(${fullKeywordRef}) THEN 100 ELSE 0 END)`,
+    `(CASE WHEN lower(${SEARCH_TITLE_EXPR}) LIKE lower(${fullKeywordRef}) || '%' THEN 40 ELSE 0 END)`,
+    `(COALESCE(word_similarity(${fullKeywordRef}, ${SEARCH_TITLE_EXPR}), 0) * 60 + COALESCE(similarity(${SEARCH_TITLE_EXPR}, ${fullKeywordRef}), 0) * 40)`,
   ].join(" + ")}) DESC, size DESC, created_at DESC`;
 };
 
@@ -518,11 +521,11 @@ SELECT
   ${RESOURCE_SELECT}
 FROM ed2k_resources r
 ${SOURCE_META_JOIN}
-WHERE (${keywordFilter.replace(/filename/g, "r.filename").replace(/search_string/g, "r.search_string")})
+WHERE (${keywordFilter})
 ${PUBLIC_RESOURCE_FILTER}
 ${timeFilter.replace(/created_at/g, "r.created_at").replace(/size/g, "r.size")}
 ${sizeFilter.replace(/size/g, "r.size")}
-ORDER BY ${orderBy.replace(/filename/g, "r.filename").replace(/search_string/g, "r.search_string").replace(/size/g, "r.size").replace(/created_at/g, "r.created_at")}
+ORDER BY ${orderBy.replace(/size/g, "r.size").replace(/created_at/g, "r.created_at")}
 LIMIT $${limitParamIndex}
 OFFSET $${offsetParamIndex}
 `;
@@ -540,7 +543,8 @@ OFFSET $${offsetParamIndex}
       const countSql = `
 SELECT COUNT(*) AS total
 FROM ed2k_resources r
-WHERE (${keywordFilter.replace(/filename/g, "r.filename").replace(/search_string/g, "r.search_string")})
+${SOURCE_META_JOIN}
+WHERE (${keywordFilter})
 ${PUBLIC_RESOURCE_FILTER}
 ${timeFilter.replace(/created_at/g, "r.created_at").replace(/size/g, "r.size")}
 ${sizeFilter.replace(/size/g, "r.size")}

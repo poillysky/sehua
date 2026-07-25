@@ -230,6 +230,11 @@ def _enqueue_batch(
                 seen.add(t.tid)
                 if t.tid in known:
                     continue
+                if forum_id == "2048":
+                    from parsers.boards_2048 import is_2048_meta_guide_thread
+
+                    if is_2048_meta_guide_thread(t.title or "", t.tid):
+                        continue
                 if min_thread_age_days > 0 and not is_thread_old_enough(
                     t.posted_at,  # type: ignore[arg-type]
                     min_age_days=min_thread_age_days,
@@ -264,6 +269,11 @@ def _enqueue_batch(
             if t.tid in seen:
                 continue
             seen.add(t.tid)
+            if forum_id == "2048":
+                from parsers.boards_2048 import is_2048_meta_guide_thread
+
+                if is_2048_meta_guide_thread(t.title or "", t.tid):
+                    continue
             if min_thread_age_days > 0 and not is_thread_old_enough(
                 t.posted_at,  # type: ignore[arg-type]
                 min_age_days=min_thread_age_days,

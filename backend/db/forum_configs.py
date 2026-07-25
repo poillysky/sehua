@@ -38,6 +38,8 @@ _LEGACY_WEB_CRAWL_URLS = {
 FORUM_CRAWLER_DEFAULTS: dict[str, Any] = {
     "web_crawler_enabled": False,
     "web_crawl_urls": DEFAULT_WEB_CRAWL_URLS,
+    # 2048：上次成功进站的 BBS 根（优先试；失效后再走发布页展开）
+    "preferred_entry_url": "",
     # 本站连续爬取：轮间无间隔（仅保留请求延迟 / 失败冷却）
     "web_crawler_interval_minutes": 0,
     "web_crawler_timeout": 30,
@@ -122,6 +124,7 @@ def default_2048_forum_crawler_config() -> dict[str, Any]:
     order = default_board_order_2048()
     cfg = default_forum_crawler_config()
     cfg["web_crawl_urls"] = DEFAULT_2048_WEB_CRAWL_URLS
+    cfg["preferred_entry_url"] = ""
     cfg["web_crawler_cookie"] = ""
     cfg["board_order"] = list(order)
     cfg["enabled_board_fids"] = list(order)
@@ -296,6 +299,18 @@ def _normalize_forum_config(
             base["web_crawl_urls"] = ",".join(crawl_urls)
     else:
         base["web_crawl_urls"] = ",".join(crawl_urls)
+
+    # 规范化上次成功进站 URL（仅 2048 有意义）
+    pref = str(base.get("preferred_entry_url") or "").strip()
+    if forum_id == FORUM_2048_ID and pref:
+        try:
+            from crawler.list_urls import site_root
+
+            base["preferred_entry_url"] = site_root(pref)
+        except Exception:
+            base["preferred_entry_url"] = pref if pref.endswith("/") else pref + "/"
+    else:
+        base["preferred_entry_url"] = ""
 
     raw_dict = raw or {}
     raw_order = adapter.expand_board_keys([str(x) for x in (base.get("board_order") or [])])
@@ -718,6 +733,41 @@ def save_forum_config(conn: Any, forum_id: str, config: dict) -> dict:
     configs[forum_id] = normalized
     save_settings(conn, {FORUM_CONFIG_KEY: json.dumps(configs, ensure_ascii=False)})
     return normalized
+
+
+def remember_preferred_entry_url(conn: Any, forum_id: str, entry_url: str) -> str:
+    """记住 2048 本次成功进站的 BBS 根，供下次优先试用。"""
+    fid = (forum_id or "").strip()
+    if fid != FORUM_2048_ID:
+        return ""
+    raw = (entry_url or "").strip()
+    if not raw:
+        return ""
+    try:
+        from crawler.list_urls import site_root
+
+        url = site_root(raw)
+    except Exception:
+        url = raw if raw.endswith("/") else raw + "/"
+    if not url or url.lower().startswith("https://2048.local"):
+        return ""
+    # 发布页本身不当作 preferred（应是落地 bbs）
+    try:
+        from crawler.publish_2048 import is_2048_publish_url
+
+        if is_2048_publish_url(url):
+            return ""
+    except Exception:
+        pass
+
+    configs = load_forum_configs_map(conn)
+    current = dict(configs.get(fid) or default_2048_forum_crawler_config())
+    prev = str(current.get("preferred_entry_url") or "").strip().rstrip("/").lower()
+    if prev == url.rstrip("/").lower():
+        return url
+    current["preferred_entry_url"] = url
+    save_forum_config(conn, fid, current)
+    return url
 
 
 def get_active_forum_id(conn: Any) -> str:

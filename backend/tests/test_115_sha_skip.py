@@ -371,6 +371,40 @@ def test_baidu_pan_share_skips():
     assert out.need_attachments is False
 
 
+def test_quark_pan_share_skips():
+    from parsers.thread_gates import has_quark_share_link, title_is_quark_without_ed2k_magnet
+
+    share = "https://pan.quark.cn/s/a1b2c3d4e5f6"
+    assert has_quark_share_link(share) is True
+    assert has_quark_share_link("pan.quark.cn/s/abc_123") is True
+    assert title_is_quark_without_ed2k_magnet("【夸克网盘】合集") is True
+    assert title_is_quark_without_ed2k_magnet("【夸克】【磁力】合集") is False
+
+    html = f"""
+    <html><head><title>【自转】【夸克网盘】合集 - 论坛</title></head>
+    <body>
+    <span id="thread_subject">【自转】【夸克网盘】合集</span>
+    <div id="postlist">
+      <div id="post_1">
+        <div class="authi"><em>1#</em><img src="ico_lz.png" alt="楼主"/></div>
+        <div id="postmessage_1">资源：{share}</div>
+      </div>
+    </div>
+    Powered by Discuz!
+    </body></html>
+    """
+    html = html + ("<!-- pad -->" * 900)
+    out = judge_thread_html(
+        html,
+        board_fid="95:716",
+        list_title="【自转】【夸克网盘】合集",
+        preferred_link="magnet",
+    )
+    assert out.verdict == "skipped"
+    assert "夸克" in out.outcome
+    assert out.need_attachments is False
+
+
 def test_reply_baidu_does_not_skip_lz_ed2k_attachment():
     """回帖贴百度封面链，楼主有 ed2k.zip 附件 → 应先下附件，勿百度跳过。"""
     html = """

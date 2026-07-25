@@ -18,6 +18,8 @@ export type ForumBoard = {
 export type ForumCrawlerConfig = {
   web_crawler_enabled: boolean
   web_crawl_urls: string
+  /** 2048：上次成功进站的 BBS 根，下次优先试用 */
+  preferred_entry_url?: string
   web_crawler_interval_minutes: number
   web_crawler_timeout: number
   web_crawler_ua: string
@@ -144,6 +146,8 @@ export type ForumLinkTestResult = {
   proxy?: string
   proxy_used?: boolean
   final_url?: string | null
+  tried?: string[]
+  preferred_used?: boolean
 }
 
 export function testForumLink(forumId: string) {

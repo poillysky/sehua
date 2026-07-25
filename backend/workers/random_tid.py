@@ -31,7 +31,7 @@ from workers.runner import (
 )
 from workers.session_factory import (
     bootstrap_probe_for_forum,
-    entry_urls_from_config,
+    resolve_forum_entry_urls,
     fetcher_from_config,
     session_from_config,
 )
@@ -311,9 +311,10 @@ async def run_random_tid_batch(
 
     try:
         if not session._ready:
-            entries = entry_urls_from_config(cfg)
+            entries = resolve_forum_entry_urls(cfg, forum_id)
             probe = bootstrap_probe_for_forum(cfg, forum_id)
             await session.bootstrap(entry_urls=entries or None, probe_url=probe)
+            root = site_root(session.active_entry_url or (entries[0] if entries else root))
 
         candidates = sample_tids(lo, hi, max_probe, exclude=used)
         for tid in candidates:

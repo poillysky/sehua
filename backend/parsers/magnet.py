@@ -93,9 +93,10 @@ _BTIH_SPACE_HASH_RE = re.compile(
 # Discuz「复制代码」旁裸 infohash（例：复制代码下载：f7809dc8…）
 # 转帖常见【哈希校验】：40位 hex（tid 3628517）
 #
-# 「特征/验证」×「编码/编号/全码」简繁组合（帖内实录）：
-#   特征*：可短写「特征码」；2048 常见「特征全码」（勿扩到「验证码」——会误伤站内验证码文案）
-#   验证*：必须「验证编号/验证编码/验证全码」，禁止「验证码」
+# 「特征/验证/试证」×「编码/编号/全码/码」简繁组合（帖内实录）：
+#   特征*：可短写「特征码」；2048 常见「特征全码」
+#   验证*：必须「验证编号/验证编码/验证全码」，禁止「验证码」（会误伤站内验证码文案）
+#   试证*：帖内错别字（特→试），与特征*同后缀；如「试证全码」与资源大小同行（tid 27431995）
 # 另：「种子特码」结构不同，单独匹配。
 #
 # 禁止用裸「磁力」「BT」作线索：标题【BT/磁力】在大 HTML 上会触发灾难性回溯卡死进程。
@@ -104,10 +105,47 @@ _BARE_HASH_FRONT_FEATURE = tuple(f"特{c}" for c in ("征", "徵"))
 _BARE_HASH_FRONT_VERIFY = tuple(
     a + b for a in ("验", "驗") for b in ("证", "證", "証")
 )
+_BARE_HASH_FRONT_SHIZHENG = tuple(
+    a + b for a in ("试", "試") for b in ("证", "證", "証")
+)
 _BARE_HASH_BACK2 = tuple(
     c + d for c in ("编", "編") for d in ("号", "號", "码", "碼")
 )
-_BARE_HASH_BACK1_FEATURE = ("码", "碼")  # 仅特征*短写；禁止验证码
+_BARE_HASH_BACK_FULL = ("全码", "全碼")
+_BARE_HASH_BACK1_FEATURE = ("码", "碼")  # 仅特征*/试证*短写；禁止验证码
+
+
+def bare_infohash_structure_cue_labels() -> tuple[str, ...]:
+    """结构标签芯片对应的裸 hash 线索（与 regex / 组合测试同源）。"""
+    labels: list[str] = []
+    for front in _BARE_HASH_FRONT_FEATURE:
+        for back in (*_BARE_HASH_BACK2, *_BARE_HASH_BACK_FULL, *_BARE_HASH_BACK1_FEATURE):
+            labels.append(front + back)
+    for front in _BARE_HASH_FRONT_VERIFY:
+        for back in (*_BARE_HASH_BACK2, *_BARE_HASH_BACK_FULL):
+            labels.append(front + back)
+    for front in _BARE_HASH_FRONT_SHIZHENG:
+        for back in (*_BARE_HASH_BACK2, *_BARE_HASH_BACK_FULL, *_BARE_HASH_BACK1_FEATURE):
+            labels.append(front + back)
+    for seed in ("种", "種"):
+        for code in ("码", "碼"):
+            labels.append(f"{seed}子特{code}")
+        for back in _BARE_HASH_BACK2:
+            labels.append(f"{seed}子{back}")
+    return tuple(dict.fromkeys(labels))
+
+
+_BARE_HASH_STRUCTURE_CUES = bare_infohash_structure_cue_labels()
+_BARE_HASH_STRUCTURE_ALT = "|".join(re.escape(x) for x in _BARE_HASH_STRUCTURE_CUES)
+
+# 线索与 hash 之间：空白/冒号/括号，以及 2048 实录「哈希校验; HASH; ;」（tid 27433099）
+_BARE_HASH_GAP = (
+    r"(?:"
+    r"[\s:：\|\[\]【】=\-_;；,，\.．]"
+    r"|哈希校验|哈希值|雜湊校[验驗]|哈希校[验驗]"
+    r"|<[^>\n]{0,120}>"
+    r"){0,80}"
+)
 
 _BARE_INFOHASH_CUED_RE = re.compile(
     r"(?:"
@@ -119,15 +157,20 @@ _BARE_INFOHASH_CUED_RE = re.compile(
     r"|磁力(?:链接|连接|鍊接|連結)"
     r"|BT\s*(?:哈希|hash)"
     r"|info\s*hash"
-    r"|种子(?:哈希|hash|[编編][号码碼號]|特[码碼])"
-    r"|種子(?:哈希|hash|[编編][号码碼號]|特[码碼])"
-    r"|特[征徵](?:[编編][号码碼號]|全[码碼]|[码碼])"
-    r"|[验驗][证證証](?:[编編][号码碼號]|全[码碼])"
-    r"|[种種]子特[码碼]"
+    r"|种子(?:哈希|hash)"
+    r"|種子(?:哈希|hash)"
+    rf"|{_BARE_HASH_STRUCTURE_ALT}"
     r")"
-    r"(?:[\s:：\|\[\]【】=\-_]|<[^>\n]{0,120}>){0,60}"
+    rf"{_BARE_HASH_GAP}"
     rf"({_INFOHASH})"
     r"(?![A-Fa-f0-9])",
+    re.I,
+)
+
+# rmdown.com/link.php?hash=26{40hex}（前缀常为 26；与种子特码同值）
+_RMDOWN_HASH_RE = re.compile(
+    r"(?:https?://)?(?:www\.)?rmdown\.com/link\.php\?hash="
+    r"(?:[0-9a-f]{1,4})?([A-Fa-f0-9]{40})",
     re.I,
 )
 
@@ -145,6 +188,24 @@ _MAGNET_BTIH_DATE_PREFIX_RE = re.compile(
     rf"(magnet:\?xt=urn:btih:)(?:[0-9]{{4,8}}/)+({_INFOHASH})",
     re.I,
 )
+
+
+def _expand_rmdown_hashes(text: str) -> str:
+    """rmdown 下载页 hash 参数 → magnet（与正文种子特码同值时去重由后续逻辑处理）。"""
+    if not text or "rmdown.com" not in text.lower():
+        return text or ""
+
+    known = {m.group(1).lower() for m in BTIH_RE.finditer(text)}
+
+    def repl(m: re.Match[str]) -> str:
+        h = m.group(1)
+        key = h.lower()
+        if key in known:
+            return m.group(0)
+        known.add(key)
+        return f"{m.group(0)} magnet:?xt=urn:btih:{h} "
+
+    return _RMDOWN_HASH_RE.sub(repl, text)
 
 
 def _expand_bare_infohashes(text: str) -> str:
@@ -207,6 +268,7 @@ def normalize_magnet_corpus(text: str) -> str:
         lambda m: f"{m.group(1)}:{m.group(2)}",
         out,
     )
+    out = _expand_rmdown_hashes(out)
     out = _expand_bare_infohashes(out)
     return out
 

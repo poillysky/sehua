@@ -997,6 +997,7 @@ def _resource_list_where(
     board_name: str | None = None,
     link_kind: str | None = None,
     q: str | None = None,
+    forum_id: str | None = None,
 ) -> tuple[str, list[Any]]:
     where: list[str] = []
     params: list[Any] = []
@@ -1010,6 +1011,11 @@ def _resource_list_where(
         else:
             where.append("COALESCE(rs.board_name, '') = %s")
             params.append(board_name)
+    forum = (forum_id or "").strip()
+    if forum and forum != "all":
+        # 历史空 forum_id 视为本站色花堂
+        where.append("COALESCE(NULLIF(BTRIM(rs.forum_id), ''), 'sehuatang') = %s")
+        params.append(forum)
     if link_kind in ("magnet", "ed2k", "stub", "failed", "115share"):
         where.append(f"({LINK_KIND_SQL}) = %s")
         params.append(link_kind)
@@ -1021,15 +1027,11 @@ def _resource_list_where(
             "not _resource_list_where"
         )
     if q:
-        # 走 filename / search_string 的 pg_trgm GIN（勿用 rs.title ILIKE，会逼全表扫）
+        # 仅搜展示标题（帖子标题；无标题时回落 filename），不扫描述/search_string
         where.append(
-            "("
-            "r.filename ILIKE %s OR "
-            "COALESCE(r.search_string, '') ILIKE %s"
-            ")"
+            "COALESCE(NULLIF(TRIM(rs.title), ''), r.filename) ILIKE %s"
         )
-        like = f"%{q}%"
-        params.extend([like, like])
+        params.append(f"%{q}%")
 
     where_sql = (" WHERE " + " AND ".join(where)) if where else ""
     return where_sql, params
@@ -1392,6 +1394,7 @@ def list_recent_resources(
     board_name: str | None = None,
     link_kind: str | None = None,
     q: str | None = None,
+    forum_id: str | None = None,
 ) -> tuple[list[dict], int]:
     """分页处理记录：有来源帖 URL 时按帖聚合（一帖一行），否则按 hash。
 
@@ -1405,6 +1408,7 @@ def list_recent_resources(
             source_type=source_type,
             board_name=board_name,
             q=q,
+            forum_id=forum_id,
         )
 
     where_sql, params = _resource_list_where(
@@ -1412,6 +1416,7 @@ def list_recent_resources(
         board_name=board_name,
         link_kind=link_kind,
         q=q,
+        forum_id=forum_id,
     )
     limit = max(1, int(limit or 30))
     offset = max(0, int(offset or 0))
@@ -1422,6 +1427,7 @@ def list_recent_resources(
         or source_type not in (None, "", "all")
         or board_name not in (None, "", "all")
         or link_kind not in (None, "", "all")
+        or forum_id not in (None, "", "all")
     )
     _ensure_resource_schema(conn)
 
@@ -1647,6 +1653,7 @@ def list_resource_ids_for_selection(
     board_name: str | None = None,
     link_kind: str | None = None,
     q: str | None = None,
+    forum_id: str | None = None,
     limit: int = 2000,
 ) -> tuple[list[dict], int]:
     """当前筛选下的处理记录 id/hash（按帖聚合；跨页全选）。返回 (items, total)。"""
@@ -1657,6 +1664,7 @@ def list_resource_ids_for_selection(
             source_type=source_type,
             board_name=board_name,
             q=q,
+            forum_id=forum_id,
             limit=lim,
         )
 
@@ -1665,6 +1673,7 @@ def list_resource_ids_for_selection(
         board_name=board_name,
         link_kind=link_kind,
         q=q,
+        forum_id=forum_id,
     )
     fetch_n = min(max(lim * 8, lim), 12000)
 
@@ -1731,6 +1740,7 @@ def _list_multi_asset_ids_for_selection(
     source_type: str | None = None,
     board_name: str | None = None,
     q: str | None = None,
+    forum_id: str | None = None,
     limit: int = 2000,
 ) -> tuple[list[dict], int]:
     """×N 合集跨页全选：轻量 GROUP BY，禁止 MULTI_ASSET_URL_SQL 相关子查询。"""
@@ -1740,6 +1750,7 @@ def _list_multi_asset_ids_for_selection(
         board_name=board_name,
         link_kind=None,
         q=q,
+        forum_id=forum_id,
     )
     _ensure_resource_schema(conn)
 
@@ -1875,6 +1886,7 @@ def _facet_where(
     source_type: str | None = None,
     board_name: str | None = None,
     link_kind: str | None = None,
+    forum_id: str | None = None,
 ) -> tuple[str, list[Any]]:
     # multi 禁止走 MULTI_ASSET_URL_SQL（相关子查询全表 GROUP BY 会卡死）
     kind = None if (link_kind or "").strip() == "multi" else link_kind
@@ -1883,6 +1895,7 @@ def _facet_where(
         source_type=source_type,
         board_name=board_name,
         link_kind=kind,
+        forum_id=forum_id,
     )
 
 
@@ -1894,6 +1907,7 @@ def _list_multi_asset_resources(
     source_type: str | None = None,
     board_name: str | None = None,
     q: str | None = None,
+    forum_id: str | None = None,
 ) -> tuple[list[dict], int]:
     """只列出会显示 ×N 的合集帖。"""
     base_where, params = _resource_list_where(
@@ -1901,6 +1915,7 @@ def _list_multi_asset_resources(
         board_name=board_name,
         link_kind=None,
         q=q,
+        forum_id=forum_id,
     )
     limit = max(1, int(limit or 30))
     offset = max(0, int(offset or 0))
@@ -1994,10 +2009,11 @@ def list_resource_facets(
     source_type: str | None = None,
     board_name: str | None = None,
     link_kind: str | None = None,
+    forum_id: str | None = None,
 ) -> dict[str, Any]:
     """筛选维度计数（按帖聚合，与处理记录列表口径一致）。
 
-    无筛选走全量按帖 GROUP BY（约 1–2s）+ 45s 缓存；有筛选用上限 COUNT / 近量样本，避免卡死。
+    无筛选走全量按帖 GROUP BY（约 1–2s）+ 缓存；有筛选用上限 COUNT / 近量样本，避免卡死。
     """
     cache_key = "|".join(
         [
@@ -2005,6 +2021,7 @@ def list_resource_facets(
             (source_type or "").strip(),
             (board_name or "").strip(),
             (link_kind or "").strip(),
+            (forum_id or "").strip(),
         ]
     )
     now = time.time()
@@ -2012,13 +2029,16 @@ def list_resource_facets(
     if cached and now - cached[0] < _FACET_CACHE_TTL_SEC:
         return cached[1]
 
-    result_where, result_params = _facet_where(q=q, source_type=source_type, board_name=board_name)
+    result_where, result_params = _facet_where(
+        q=q, source_type=source_type, board_name=board_name, forum_id=forum_id
+    )
     unfiltered = not any(
         [
             (q or "").strip(),
             source_type not in (None, "", "all"),
             board_name not in (None, "", "all"),
             link_kind not in (None, "", "all"),
+            forum_id not in (None, "", "all"),
         ]
     )
 
@@ -2033,11 +2053,15 @@ def list_resource_facets(
         "multi": 0,
     }
     boards: list[dict[str, Any]] = []
+    forums: list[dict[str, Any]] = []
     kind_expr = _facet_thread_kind_expr("r")
+    forum_key_sql = "COALESCE(NULLIF(BTRIM(rs.forum_id), ''), 'sehuatang')"
+    # 全局缓存键：五段全空（含 forum）
+    global_key = "||||"
 
     with conn.cursor() as cur:
         if unfiltered:
-            # 帖数快算 + 板块/结果并行查询，冷启动约 max(boards, kinds) 而非相加
+            # 帖数快算 + 板块/论坛/结果并行查询，冷启动约 max(...) 而非相加
             from concurrent.futures import ThreadPoolExecutor
 
             from db.resource_db import connect_resource
@@ -2081,6 +2105,37 @@ def list_resource_facets(
                         return [
                             {"name": str(name), "count": int(n)} for name, n in c.fetchall()
                         ]
+                finally:
+                    c2.close()
+
+            def _forums_query() -> list[dict[str, Any]]:
+                c2 = connect_resource()
+                try:
+                    with c2.cursor() as c:
+                        c.execute(
+                            f"""
+                            SELECT forum_key, COUNT(*) FROM (
+                              SELECT
+                                {RESOURCE_GROUP_KEY_RS_SQL} AS gk,
+                                MIN({forum_key_sql}) AS forum_key
+                              FROM resource_sources rs
+                              GROUP BY 1
+                            ) t
+                            GROUP BY forum_key
+                            ORDER BY COUNT(*) DESC, forum_key ASC
+                            """
+                        )
+                        out_f: list[dict[str, Any]] = []
+                        for fid, n in c.fetchall():
+                            key = str(fid or "sehuatang")
+                            out_f.append(
+                                {
+                                    "id": key,
+                                    "name": resolve_forum_display_name(key),
+                                    "count": int(n),
+                                }
+                            )
+                        return out_f
                 finally:
                     c2.close()
 
@@ -2138,11 +2193,13 @@ def list_resource_facets(
                 finally:
                     c2.close()
 
-            with ThreadPoolExecutor(max_workers=3) as pool:
+            with ThreadPoolExecutor(max_workers=4) as pool:
                 fut_boards = pool.submit(_boards_query)
+                fut_forums = pool.submit(_forums_query)
                 fut_kinds = pool.submit(_kinds_query)
                 fut_sources = pool.submit(_sources_query)
                 boards = fut_boards.result()
+                forums = fut_forums.result()
                 kind_map = fut_kinds.result()
                 src_map = fut_sources.result()
 
@@ -2169,6 +2226,7 @@ def list_resource_facets(
                 source_type=source_type if source_type not in (None, "", "all") else None,
                 board_name=board_name if board_name not in (None, "", "all") else None,
                 link_kind=link_kind if link_kind not in (None, "", "all") else None,
+                forum_id=forum_id if forum_id not in (None, "", "all") else None,
             )
             thread_all = _fast_thread_total(
                 cur, sample_where, sample_params, q=q, capped=True
@@ -2238,11 +2296,11 @@ def list_resource_facets(
             for k, n in kind_counts.items():
                 results[k] = int(round(n * scale))
 
-            # 板块列表：有筛选时仍展示全局按帖板块分布（与原先「全局 boards」行为一致）
-            global_key = "|||"
+            # 板块 / 论坛列表：有筛选时仍展示全局分布，便于切换维度
             global_hit = _FACET_CACHE.get(global_key)
             if global_hit and now - global_hit[0] < _FACET_CACHE_TTL_SEC:
                 boards = list(global_hit[1].get("boards") or [])
+                forums = list(global_hit[1].get("forums") or [])
             else:
                 cur.execute(
                     f"""
@@ -2263,16 +2321,39 @@ def list_resource_facets(
                     """
                 )
                 boards = [{"name": str(name), "count": int(n)} for name, n in cur.fetchall()]
+                cur.execute(
+                    f"""
+                    SELECT forum_key, COUNT(*) FROM (
+                      SELECT
+                        {RESOURCE_GROUP_KEY_RS_SQL} AS gk,
+                        MIN({forum_key_sql}) AS forum_key
+                      FROM resource_sources rs
+                      GROUP BY 1
+                    ) t
+                    GROUP BY forum_key
+                    ORDER BY COUNT(*) DESC, forum_key ASC
+                    """
+                )
+                forums = []
+                for fid, n in cur.fetchall():
+                    key = str(fid or "sehuatang")
+                    forums.append(
+                        {
+                            "id": key,
+                            "name": resolve_forum_display_name(key),
+                            "count": int(n),
+                        }
+                    )
 
         # ×N 合集：已是按帖轻量统计
         results["multi"] = _count_multi_asset_threads(
             cur, result_where, result_params, capped=True
         )
 
-    out = {"sources": sources, "boards": boards, "results": results}
+    out = {"sources": sources, "boards": boards, "results": results, "forums": forums}
     _FACET_CACHE[cache_key] = (now, out)
     if unfiltered:
-        _FACET_CACHE["|||"] = (now, out)
+        _FACET_CACHE[global_key] = (now, out)
     if len(_FACET_CACHE) > 64:
         oldest = sorted(_FACET_CACHE.items(), key=lambda kv: kv[1][0])[:16]
         for k, _ in oldest:
