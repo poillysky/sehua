@@ -1,4 +1,4 @@
-# 仅用于 backend 镜像构建（上下文=仓库根）时缩小上传体积
+# 仅用于 backend/app 镜像构建（上下文=仓库根）时缩小上传体积
 .git/
 .github/
 **/.venv/
@@ -6,7 +6,7 @@
 **/.next/
 **/dist/
 **/out/
-frontend/
+# frontend/admin 需打进 sehuatang-app，勿排除整个 frontend/
 next-web/
 ed2k/
 docs/
