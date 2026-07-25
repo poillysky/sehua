@@ -84,8 +84,14 @@ DESCRIPTION_LABEL_ALIASES = {
     "提取密码": "解压密码",
     "提取密碼": "解压密码",
     "解壓密碼": "解压密码",
+    "解压码": "解压密码",
+    "解壓碼": "解压密码",
+    "提取码": "解压密码",
+    "提取碼": "解压密码",
     "资源密码": "解压密码",
     "資源密碼": "解压密码",
+    "资源码": "解压密码",
+    "資源碼": "解压密码",
 }
 
 # profile: labels 顺序；exclusive 组内只保留靠前且有值的一项；aliases 写入展示键
@@ -274,16 +280,18 @@ _SHORT_ENUM_LABELS = frozenset(
 _SHORT_ENUM_VALUE_RE = re.compile(r"^([^\s，,。；;|/]+)")
 # 「解压密码是www.98T.la@」——「是/为」是系词不是密码；也兼容冒号/等号
 # 另有【资源密码】写法（】与冒号之间可无空格）
+# 帖内常见简写「解压码：」（无「密」字）；www.98T.la 与 @ 常被拆成链接+彩色字
 PASSWORD_RE = re.compile(
-    r"(?:解压|提取|资源)\s*密码\s*】?\s*(?:[:：=]|是|为)?\s*([^\s【】\n，,。；;]+)",
+    r"(?:解压|提取|资源)\s*密?\s*码\s*】?\s*(?:[:：=]|是|为)?\s*"
+    r"((?:www\.)?98[Tt]\.la\s*@?|[^\s【】\n，,。；;]+)",
     re.I,
 )
-# 帖内常见：单独「密码」后跟 www.98T.la@（无解压/提取前缀，常夹在 font 标签里）
+# 帖内常见：单独「密码/码」后跟 www.98T.la@（无解压/提取前缀，常夹在 font 标签里）
 PASSWORD_BARE_98T_RE = re.compile(
-    r"密码\s*(?:[:：=]|是|为)?\s*((?:www\.)?98[Tt]\.la@?)",
+    r"(?:密码|码)\s*(?:[:：=]|是|为)?\s*((?:www\.)?98[Tt]\.la\s*@?)",
     re.I,
 )
-_PASSWORD_META_KEYS = ("解压密码", "提取密码", "资源密码")
+_PASSWORD_META_KEYS = ("解压密码", "提取密码", "资源密码", "解压码", "提取码", "资源码")
 _PASSWORD_LABELS = frozenset(_PASSWORD_META_KEYS)
 # 优先 zoomfile / file（Discuz 高清）、data-original（PHPWind 懒加载），再 src
 IMG_TAG_RE = re.compile(r"<img\b([^>]*)>", re.I)
@@ -688,24 +696,45 @@ def _is_bogus_password(value: str) -> bool:
     return False
 
 
+def _normalize_password_value(value: str) -> str:
+    """粘回被 HTML 拆开的 www.98T.la @ → www.98T.la@。"""
+    v = (value or "").strip()
+    if not v:
+        return ""
+    v = re.sub(r"((?:www\.)?98[Tt]\.la)\s*@", r"\1@", v)
+    # 纯 98T 密码去掉中间空白
+    compact = re.sub(r"\s+", "", v)
+    if re.fullmatch(r"(?:www\.)?98[Tt]\.la@?", compact, flags=re.I):
+        return compact
+    return v
+
+
 def extract_password(text: str, metadata: dict[str, str] | None = None) -> str:
     meta = metadata or {}
     for key in _PASSWORD_META_KEYS:
-        val = _clip_field_value(meta.get(key) or "", password=True)
+        val = _normalize_password_value(
+            _clip_field_value(meta.get(key) or "", password=True)
+        )
         # 【解压密码】：是www.xxx → 剥掉行首系词
         if val.startswith(("是", "为")) and len(val) > 1:
-            val = _clip_field_value(val[1:], password=True)
+            val = _normalize_password_value(
+                _clip_field_value(val[1:], password=True)
+            )
         if val and not _is_bogus_password(val):
             return val
     blob = text or ""
     m = PASSWORD_RE.search(blob)
     if m:
-        val = _clip_field_value(m.group(1), password=True)
+        val = _normalize_password_value(
+            _clip_field_value(m.group(1), password=True)
+        )
         if val and not _is_bogus_password(val):
             return val
     m2 = PASSWORD_BARE_98T_RE.search(blob)
     if m2:
-        val = _clip_field_value(m2.group(1), password=True)
+        val = _normalize_password_value(
+            _clip_field_value(m2.group(1), password=True)
+        )
         if val and not _is_bogus_password(val):
             return val
     return ""

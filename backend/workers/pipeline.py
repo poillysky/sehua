@@ -66,8 +66,11 @@ async def fetch_and_parse_thread(
             detail = parse_thread_phpwind(html, tid=tid)
             if detail.title and not (result.title or "").strip():
                 result.title = detail.title
-        if list_title and not (result.title or "").strip():
-            result.title = list_title
+        from parsers.thread_gates import coalesce_thread_title
+
+        good_title = coalesce_thread_title(list_title, result.title)
+        if good_title:
+            result.title = good_title
         log.info(
             "parsed tid=%s magnets=%s ed2k=%s primary=%s",
             result.tid,
@@ -305,11 +308,18 @@ async def process_thread(
                         board_fid=board_fid,
                     )
                     if merged.primary_link_kind != "none" and merged.assets:
+                        from parsers.thread_gates import coalesce_thread_title
+
+                        display = coalesce_thread_title(
+                            list_title, outcome.title, merged.title
+                        ) or (outcome.title or list_title or merged.title or "")
+                        if display and not coalesce_thread_title(merged.title):
+                            merged.title = display
                         outcome = ThreadOutcome(
                             "import",
                             "成功：附件解析出目标链接",
                             outcome.link_kind,
-                            merged.title or outcome.title,
+                            display,
                             parsed=merged,
                         )
 
@@ -327,8 +337,14 @@ async def process_thread(
             detail = parse_thread_phpwind(html, tid=tid)
             if detail.title and not (parsed.title or "").strip():
                 parsed.title = detail.title
-        if not parsed.title and (outcome.title or list_title):
-            parsed.title = outcome.title or list_title
+        # 无权/登录页 extract_title 常为「提示信息」，列表标题优先；伪标题一律清空
+        from parsers.thread_gates import coalesce_thread_title, title_recognizable
+
+        good_title = coalesce_thread_title(list_title, outcome.title, parsed.title)
+        if good_title:
+            parsed.title = good_title
+        elif not title_recognizable(parsed.title):
+            parsed.title = ""
         # 确保描述按本板结构卡片重算（含 outcome.parsed 来自 judge 的路径）
         from parsers.content import build_structured_description
 
@@ -384,7 +400,8 @@ async def process_thread(
             "attachments_tried": attach_tried,
             "attachment_chars": attach_chars,
             "soft_browser_retried": soft_browser_retried or outcome.soft_browser_retried,
-            "title": parsed.title or outcome.title,
+            "title": coalesce_thread_title(list_title, outcome.title, parsed.title)
+            or (parsed.title or outcome.title or list_title),
             "magnets": len(parsed.magnets),
             "ed2k": len(parsed.ed2k_links),
             "asset_count": len(parsed.assets),
@@ -397,6 +414,7 @@ async def process_thread(
         if persist and outcome.verdict in {"import", "stub"}:
             from db.resource_db import connect_resource
             from db.persist import persist_dual_parse
+            from parsers.thread_gates import title_recognizable as _title_ok
 
             # For stub-only outcomes without assets, force stub path
             if outcome.verdict == "stub" and parsed.primary_link_kind != "none":
@@ -406,24 +424,34 @@ async def process_thread(
                 parsed.ed2k_links = []
                 parsed.primary_link_kind = "none"
 
-            def _persist_sync() -> dict[str, Any]:
-                conn = connect_resource()
-                try:
-                    return persist_dual_parse(
-                        conn,
-                        parsed,
-                        source_url=thread_url,
-                        board_fid=board_fid,
-                        board_name=persist_board_name,
-                        forum_id=forum_id,
-                        import_outcome=str(outcome.outcome or outcome.label or ""),
-                        replace_thread_assets=replace_thread_assets,
-                    )
-                finally:
-                    conn.close()
+            # 占位必须有可识别标题，禁止「提示信息」入库
+            if outcome.verdict == "stub" and not _title_ok(parsed.title):
+                result["persisted"] = {
+                    "count": 0,
+                    "stub": False,
+                    "link_kind": "skipped_tip_title",
+                    "import_outcome": "伪标题拒绝占位",
+                }
+            else:
 
-            # 同步写库放到线程，避免堵住 FastAPI 事件循环导致管理端假死
-            result["persisted"] = await asyncio.to_thread(_persist_sync)
+                def _persist_sync() -> dict[str, Any]:
+                    conn = connect_resource()
+                    try:
+                        return persist_dual_parse(
+                            conn,
+                            parsed,
+                            source_url=thread_url,
+                            board_fid=board_fid,
+                            board_name=persist_board_name,
+                            forum_id=forum_id,
+                            import_outcome=str(outcome.outcome or outcome.label or ""),
+                            replace_thread_assets=replace_thread_assets,
+                        )
+                    finally:
+                        conn.close()
+
+                # 同步写库放到线程，避免堵住 FastAPI 事件循环导致管理端假死
+                result["persisted"] = await asyncio.to_thread(_persist_sync)
         elif persist and outcome.verdict == "failed":
             result["persisted"] = {"count": 0, "stub": False, "link_kind": "failed"}
 

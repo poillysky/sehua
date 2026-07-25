@@ -306,8 +306,13 @@ async def parse_thread_for_admin(
             detail = parse_thread_phpwind(html, tid=tid)
             if detail.title and not (parsed.title or "").strip():
                 parsed.title = detail.title
-        if not parsed.title and outcome.title:
-            parsed.title = outcome.title
+        from parsers.thread_gates import coalesce_thread_title, title_recognizable
+
+        good_title = coalesce_thread_title(outcome.title, parsed.title)
+        if good_title:
+            parsed.title = good_title
+        elif not title_recognizable(parsed.title):
+            parsed.title = ""
         from parsers.content import build_structured_description
 
         parsed.description = build_structured_description(
@@ -344,23 +349,32 @@ async def parse_thread_for_admin(
                 parsed.ed2k_links = []
                 parsed.primary_link_kind = "none"
 
-            def _persist_sync() -> dict[str, Any]:
-                conn = connect_resource()
-                try:
-                    return persist_dual_parse(
-                        conn,
-                        parsed,
-                        source_url=thread_url,
-                        board_fid=policy.key if policy else board_fid_int,
-                        board_name=board_name,
-                        forum_id=forum_id,
-                        import_outcome=str(outcome.outcome or outcome.label or ""),
-                        replace_thread_assets=replace_thread_assets,
-                    )
-                finally:
-                    conn.close()
+            if outcome.verdict == "stub" and not title_recognizable(parsed.title):
+                persisted = {
+                    "count": 0,
+                    "stub": False,
+                    "link_kind": "skipped_tip_title",
+                    "import_outcome": "伪标题拒绝占位",
+                }
+            else:
 
-            persisted = await asyncio.to_thread(_persist_sync)
+                def _persist_sync() -> dict[str, Any]:
+                    conn = connect_resource()
+                    try:
+                        return persist_dual_parse(
+                            conn,
+                            parsed,
+                            source_url=thread_url,
+                            board_fid=policy.key if policy else board_fid_int,
+                            board_name=board_name,
+                            forum_id=forum_id,
+                            import_outcome=str(outcome.outcome or outcome.label or ""),
+                            replace_thread_assets=replace_thread_assets,
+                        )
+                    finally:
+                        conn.close()
+
+                persisted = await asyncio.to_thread(_persist_sync)
 
         return {
             "input_url": original_url,
@@ -370,7 +384,10 @@ async def parse_thread_for_admin(
             "mobile_input": input_was_mobile,
             "mobile_shell": mobile_shell,
             "interstitial": interstitial,
-            "title": parsed.title or page_title(html) or "",
+            "title": coalesce_thread_title(
+                parsed.title, outcome.title, page_title(html) or ""
+            )
+            or (parsed.title or outcome.title or ""),
             "page_title": page_title(html) or "",
             "resource_name": _field_from_metadata(
                 meta, "资源名称", "影片名称", "片名", "名称"

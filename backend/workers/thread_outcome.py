@@ -45,6 +45,7 @@ from parsers.thread_gates import (
     title_is_pikpak_without_ed2k_magnet,
     title_is_xunlei_cloud_without_ed2k_magnet,
     title_recognizable,
+    coalesce_thread_title,
 )
 
 Verdict = Literal["import", "stub", "skipped", "failed", "retry", "need_attachments"]
@@ -148,9 +149,16 @@ def judge_thread_html(
         )
 
     if is_thread_login_required(html):
+        if title_recognizable(list_title):
+            return ThreadOutcome("stub", "帖子需论坛登录", link_kind, list_title.strip())
         if title_recognizable(page_tit):
             return ThreadOutcome("stub", "帖子需论坛登录", link_kind, page_tit)
-        return ThreadOutcome("skipped", "帖子需论坛登录（无有效标题）", link_kind, page_tit or title)
+        return ThreadOutcome(
+            "skipped",
+            "帖子需论坛登录（无有效标题）",
+            link_kind,
+            list_title or page_tit or title,
+        )
 
     # 帖子已删 / tid 无效：明确跳过（勿落成「非资源帖」）
     if is_missing_thread(html, page_tit):
@@ -164,16 +172,18 @@ def judge_thread_html(
         return ThreadOutcome("skipped", "作者已禁止（跳过）", link_kind, title)
 
     if is_thread_access_denied(html):
-        # 页内真标题优先；伪标题（提示信息）时用列表/标题列登记占位，供账号爬
+        # 无权页标题几乎总是「提示信息」：优先用列表标题占位入库
+        if title_recognizable(list_title):
+            return ThreadOutcome(
+                "stub", "无阅读权限 · 占位入库", link_kind, list_title.strip()
+            )
         if title_recognizable(page_tit):
             return ThreadOutcome("stub", "无阅读权限 · 占位入库", link_kind, page_tit)
-        if title_recognizable(list_title):
-            return ThreadOutcome("stub", "无阅读权限 · 占位入库", link_kind, list_title.strip())
         return ThreadOutcome(
             "skipped",
             "无阅读权限（无有效标题，跳过）",
             link_kind,
-            page_tit or list_title or title,
+            list_title or page_tit or title,
         )
 
     # 龄期板（网友原创区等）：未满龄一律跳过，不占位、不抓附件
@@ -289,15 +299,33 @@ def judge_thread_html(
         if parsed.primary_link_kind != "none" and parsed.assets:
             # 报表用实际主链类型（含：磁力板仅有 115 分享码 → 115share）
             outcome_kind = parsed.primary_link_kind
+            # parsed.title 可能是「提示信息」：勿盖过已回落的列表标题
+            display_title = coalesce_thread_title(title, parsed.title) or title
+            if display_title and not title_recognizable(parsed.title):
+                parsed.title = display_title
+            # 附件注入后再判成功：文案标「附件」，避免误成「正文含目标链接」
+            from_attach = bool(
+                attachments_already_tried
+                or had_attachments
+                or "postmessage_attach" in (html or "")
+            )
+            if outcome_kind == "115share":
+                tip = (
+                    "成功：附件含115分享码"
+                    if from_attach
+                    else "成功：正文含115分享码"
+                )
+            else:
+                tip = (
+                    "成功：附件解析出目标链接"
+                    if from_attach
+                    else "成功：正文含目标链接"
+                )
             return ThreadOutcome(
                 "import",
-                (
-                    "成功：正文含115分享码"
-                    if outcome_kind == "115share"
-                    else "成功：正文含目标链接"
-                ),
+                tip,
                 outcome_kind,
-                parsed.title or title,
+                display_title,
                 parsed=parsed,
             )
         # 楼主语料检出目标链形态但解析无主资源：

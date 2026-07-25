@@ -275,6 +275,25 @@ def test_password_shi_copula_not_captured():
     assert content.extract_password == "www.98T.la@"
 
 
+def test_jieyama_label_and_split_at():
+    """「解压码」简写 + HTML 拆开的 www.98T.la @（tid=3322767）。"""
+    assert extract_password("解压码： www.98T.la @") == "www.98T.la@"
+    assert extract_password("解压码：www.98T.la@") == "www.98T.la@"
+    html = """
+    <html><body>
+      <div id="postmessage_1">
+        【资源名称】：腐败小镇<br/>
+        <font size="4">解压码：</font>
+        <a href="http://www.98t.la/">www.98T.la</a>
+        <font size="4">@</font><br/>
+        下载地址：见附件
+      </div>
+    </body></html>
+    """
+    content = parse_thread_content(html, tid=3322767)
+    assert content.extract_password == "www.98T.la@"
+
+
 def test_resource_password_label():
     """【资源密码】应识别为解压密码（如 tid=2254351）。"""
     assert extract_password("【资源密码】：sakurakun") == "sakurakun"

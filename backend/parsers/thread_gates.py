@@ -127,8 +127,8 @@ RE_BAIDU_SHARE = re.compile(
     r"(?:https?://)?(?:pan|yun)\.baidu\.com/s/[A-Za-z0-9_-]+",
     re.I,
 )
-SOFT_AD_TITLE_HINTS = ("名人名言", "请稍候", "Just a moment")
-GENERIC_TITLES = frozenset({"提示信息", "提示", "手机版", "请稍候"})
+SOFT_AD_TITLE_HINTS = ("名人名言", "佛教谚语", "请稍候", "Just a moment")
+GENERIC_TITLES = frozenset({"提示信息", "提示", "手机版", "请稍候", "佛教谚语"})
 MOBILE_SHELL_TITLES = frozenset({"手机版", "请稍候…", "请稍候"})
 
 # Discuz 主题已删 / tid 无效
@@ -383,6 +383,14 @@ def title_recognizable(title: str) -> bool:
     if any(h in raw or h in t for h in SOFT_AD_TITLE_HINTS):
         return False
     return True
+
+
+def coalesce_thread_title(*candidates: str) -> str:
+    """取第一个可识别标题；过滤「提示信息」等系统伪标题。"""
+    for c in candidates:
+        if title_recognizable(c):
+            return (c or "").strip()
+    return ""
 
 
 def is_safe_or_soft_shell(html: str) -> bool:

@@ -242,15 +242,23 @@ def parse_thread_dual(
                 ordered[0].is_primary = True
                 assets = ordered
                 primary_kind = ordered[0].link_kind  # type: ignore[assignment]
-    description = _build_description(content, board_fid=board_fid)
-
     extract_password = content.extract_password
     if not extract_password and link_html:
         extract_password = extract_post_password(link_html) or ""
+    if not extract_password and extra_text:
+        extract_password = extract_post_password(extra_text) or ""
     if primary_kind == "115share":
         primary = next((a for a in assets if a.is_primary), None)
         if primary and primary.access_code:
             extract_password = primary.access_code
+
+    # 描述在最终密码确定后再拼（附件语料里的解压密码也要进描述）
+    description = build_structured_description(
+        content.metadata,
+        extract_password=extract_password,
+        title=content.title,
+        board_fid=board_fid,
+    )
 
     return DualParseResult(
         tid=content.tid or tid,

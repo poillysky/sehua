@@ -732,3 +732,75 @@ def test_archive_depth_over_cap_returns_empty():
         data = buf.getvalue()
     text = _extract_txt_from_archive(data, "zip")
     assert "ed2k://" not in text
+
+
+def test_import_outcome_distinguishes_body_vs_attachment():
+    """正文有链 →「正文含」；仅附件注入有链 →「附件解析」。"""
+    from workers.thread_outcome import judge_thread_html
+
+    body_html = """
+    <html><head><title>【整理】【115ED2K】正文链 - 论坛</title></head>
+    <body>
+      <span id="thread_subject">【整理】【115ED2K】正文链</span>
+      <div id="postmessage_1">
+        ed2k://|file|a.rar|1|ABCDEF0123456789ABCDEF0123456789|/
+      </div>
+      Powered by Discuz!
+    </body></html>
+    """
+    body_html = body_html + ("<!-- pad -->" * 900)
+    body = judge_thread_html(
+        body_html,
+        board_fid="95:716",
+        list_title="【整理】【115ED2K】正文链",
+        preferred_link="ed2k",
+    )
+    assert body.verdict == "import"
+    assert body.outcome == "成功：正文含目标链接"
+
+    bare = """
+    <html><head><title>【整理】【115ED2K】附件链 - 论坛</title></head>
+    <body>
+      <span id="thread_subject">【整理】【115ED2K】附件链</span>
+      <div id="postmessage_1">资源见附件 https://pan.xunlei.com/s/abc</div>
+      <div class="tattl"><a href="forum.php?mod=attachment&aid=1">备用.txt</a></div>
+      Powered by Discuz!
+    </body></html>
+    """
+    bare = bare + ("<!-- pad -->" * 900)
+    attach_text = (
+        "解压密码：www.98T.la@\n"
+        "ed2k://|file|b.rar|2|ABCDEF0123456789ABCDEF0123456789|/\n"
+    )
+    merged = inject_attachment_text(bare, attach_text)
+    attached = judge_thread_html(
+        merged,
+        board_fid="95:716",
+        list_title="【整理】【115ED2K】附件链",
+        preferred_link="ed2k",
+        attachments_already_tried=True,
+        had_attachments=True,
+    )
+    assert attached.verdict == "import"
+    assert attached.outcome == "成功：附件解析出目标链接"
+
+
+def test_password_in_attachment_text_fills_field_and_description():
+    """解压密码只在附件语料：字段与描述都要带上。"""
+    html = """
+    <html><body>
+      <span id="thread_subject">【整理】【115ED2K】附件密码</span>
+      <div id="postmessage_1">见附件</div>
+    </body></html>
+    """
+    attach = (
+        "解压密码：www.98T.la@\n"
+        "ed2k://|file|c.rar|3|ABCDEF0123456789ABCDEF0123456789|/\n"
+    )
+    merged = inject_attachment_text(html, attach)
+    parsed = parse_thread_dual(
+        merged, tid=1, preferred_link="ed2k", board_fid="95:716"
+    )
+    assert parsed.extract_password == "www.98T.la@"
+    assert "【解压密码】：www.98T.la@" in (parsed.description or "")
+    assert parsed.primary_link_kind == "ed2k"

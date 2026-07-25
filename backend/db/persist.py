@@ -37,14 +37,28 @@ def persist_dual_parse(
     - 多磁力/多 ed2k：按 hash 各写一条
     - replace_thread_assets：重爬时删掉同帖 URL 下本次未保留的旧真链
     """
-    source_id = ensure_source(conn, source_key, source_name, "web")
-    fid = str(board_fid) if board_fid not in ("", None) else None
+    from parsers.thread_gates import coalesce_thread_title, title_recognizable
 
     primary = next((a for a in parsed.assets if a.is_primary), None)
     if primary is None and parsed.assets:
         primary = parsed.assets[0]
 
-    post_title = (parsed.title or "").strip()
+    # 过滤「提示信息」等系统伪标题，避免占位/主资源名脏数据
+    post_title = coalesce_thread_title(parsed.title) or ""
+    if post_title and parsed.title != post_title:
+        parsed.title = post_title
+
+    if primary is None and not title_recognizable(post_title):
+        return {
+            "count": 0,
+            "stub": False,
+            "hash": None,
+            "link_kind": "skipped_tip_title",
+            "import_outcome": "伪标题拒绝占位",
+        }
+
+    source_id = ensure_source(conn, source_key, source_name, "web")
+    fid = str(board_fid) if board_fid not in ("", None) else None
 
     if primary is None:
         count = import_thread_stub(
