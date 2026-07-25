@@ -18,6 +18,11 @@ POSTMESSAGE_RE = re.compile(
     r"""id=['"]postmessage_[^'"]*['"][^>]*>(.*?)</div>""",
     re.I | re.S,
 )
+# PHPWind 一楼正文：#read_tpc / .tpc_content
+PHPWIND_BODY_RE = re.compile(
+    r"""id=['"]read_tpc['"]|class=['"][^'"]*tpc_content""",
+    re.I,
+)
 _FID_RE = re.compile(
     r"(?:fid=|/forum-)(\d+)|forum\.php\?[^\"'\s<>]*fid=(\d+)",
     re.I,
@@ -208,11 +213,12 @@ def _lz_gate_blob(html: str) -> str:
 
 
 def has_thread_post_body(html: str) -> bool:
-    return bool(POSTMESSAGE_RE.search(html or ""))
+    h = html or ""
+    return bool(POSTMESSAGE_RE.search(h) or PHPWIND_BODY_RE.search(h))
 
 
 def is_mobile_thread_shell(html: str) -> bool:
-    """识别手机版空壳帖页（无 postmessage 正文）。"""
+    """识别手机版空壳帖页（无正文）。"""
     if not html:
         return False
     if has_thread_post_body(html):
@@ -223,8 +229,8 @@ def is_mobile_thread_shell(html: str) -> bool:
     lowered = html.lower()
     if "mobile=2" in lowered and len(html) < 25000:
         return True
-    if len(html) < 12000 and ("viewthread" in lowered or "thread-" in lowered):
-        return "forumdisplay" not in lowered
+    if len(html) < 12000 and ("viewthread" in lowered or "thread-" in lowered or "read.php" in lowered):
+        return "forumdisplay" not in lowered and "thread.php" not in lowered
     return False
 
 def has_target_link(text: str, link_kind: str) -> bool:
@@ -382,7 +388,7 @@ def title_recognizable(title: str) -> bool:
 def is_safe_or_soft_shell(html: str) -> bool:
     """站点软文 / R18 安全壳 / CF 中间页。
 
-    真帖（有一楼 postmessage）即使较短、页脚未抓全，也不得当成软文壳。
+    真帖（有一楼正文）即使较短、页脚未抓全，也不得当成软文壳。
     """
     if not html:
         return True
@@ -392,10 +398,18 @@ def is_safe_or_soft_shell(html: str) -> bool:
     title = page_title(html)
     if any(h in title for h in SOFT_AD_TITLE_HINTS):
         return True
-    # 无 Discuz 页脚的短页：仅当也无一楼正文时才视为中间页
+    # 无论坛页脚的短页：仅当也无一楼正文时才视为中间页
     # （旧逻辑只要 <5KB 且无 Powered by 就判软文，会误伤「需回复」等真帖片段）
+    lowered = html.lower()
+    has_engine_footer = (
+        "Powered by Discuz" in html
+        or "powered by phpwind" in lowered
+        or "powered by phpwind" in lowered.replace("&nbsp;", " ")
+        or "id=\"read_tpc\"" in lowered
+        or "id='read_tpc'" in lowered
+    )
     if (
-        "Powered by Discuz" not in html
+        not has_engine_footer
         and len(html) < 5000
         and not has_thread_post_body(html)
     ):
@@ -430,11 +444,11 @@ def is_thread_access_denied(html: str) -> bool:
     title = normalize_title_core(page_title(html))
     if title in GENERIC_TITLES or title.startswith("提示"):
         return True
-    return "postmessage_" not in html
+    return not has_thread_post_body(html)
 
 
 def is_missing_thread(html: str, title: str = "") -> bool:
-    """识别 Discuz「没有找到帖子 / 主题不存在」等空洞页。"""
+    """识别「没有找到帖子 / 主题不存在」等空洞页。"""
     if not html and not title:
         return False
     tit = (title or page_title(html) or "").strip()
@@ -442,7 +456,7 @@ def is_missing_thread(html: str, title: str = "") -> bool:
     if any(m in blob for m in MISSING_THREAD_MARKERS):
         return True
     # 极短提示页且无正文
-    if len(html or "") < 12000 and "postmessage_" not in (html or "") and (
+    if len(html or "") < 12000 and not has_thread_post_body(html or "") and (
         "提示信息" in tit or normalize_title_core(tit) in GENERIC_TITLES
     ):
         # 避免把登录/权限提示页误当成不存在（那些有专门分支）

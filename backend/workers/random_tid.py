@@ -15,11 +15,11 @@ from typing import Any, Optional
 
 from crawler.list_urls import site_root
 from crawler.session import BASE_URL
+from crawler.sites import get_site_adapter
 from crawler.throttle import THROTTLE
 from db.connection import connect
 from db.forum_configs import SITE_CRAWLER_FORUM_ID, load_forum_configs_map
 from db.queue import canonical_thread_url, is_thread_known
-from parsers.boards import get_board_policy
 from parsers.thread_gates import extract_board_fid, page_title
 from workers.pipeline import process_thread
 from workers.runner import (
@@ -29,7 +29,12 @@ from workers.runner import (
     recover_stuck_after_stop,
     try_begin_exclusive,
 )
-from workers.session_factory import fetcher_from_config, session_from_config
+from workers.session_factory import (
+    bootstrap_probe_for_forum,
+    entry_urls_from_config,
+    fetcher_from_config,
+    session_from_config,
+)
 
 log = logging.getLogger(__name__)
 
@@ -155,38 +160,66 @@ def is_missing_thread(html: str, title: str = "") -> bool:
     return _gate_missing(html, title)
 
 
-def is_tid_known(conn: Any, tid: int, thread_url: str) -> bool:
+def is_tid_known(
+    conn: Any,
+    tid: int,
+    thread_url: str,
+    *,
+    forum_id: str = "",
+) -> bool:
     """已入库资源或已在 crawl_pages（其它入口写入）则跳过；随机模式自身不写队列。
 
     resource_sources 只用规范 URL 等值查询（勿 OR LIKE '%thread-tid%'，会 seq scan）。
     """
     from db.resource_db import connect_resource
 
-    url = canonical_thread_url(thread_url) or thread_url
+    url = canonical_thread_url(thread_url, forum_id=forum_id) or thread_url
     if is_thread_known(conn, url):
         return True
+    fid = (forum_id or "").strip()
     cur = conn.cursor()
-    cur.execute(
-        """
-        SELECT 1 FROM crawl_pages
-        WHERE page_type = 'thread' AND tid = %s
-        LIMIT 1
-        """,
-        (int(tid),),
-    )
+    if fid:
+        cur.execute(
+            """
+            SELECT 1 FROM crawl_pages
+            WHERE page_type = 'thread' AND tid = %s AND forum_id = %s
+            LIMIT 1
+            """,
+            (int(tid), fid),
+        )
+    else:
+        cur.execute(
+            """
+            SELECT 1 FROM crawl_pages
+            WHERE page_type = 'thread' AND tid = %s
+            LIMIT 1
+            """,
+            (int(tid),),
+        )
     if cur.fetchone():
         return True
     rconn = connect_resource()
     try:
         with rconn.cursor() as rcur:
-            rcur.execute(
-                """
-                SELECT 1 FROM resource_sources
-                WHERE source_url = %s
-                LIMIT 1
-                """,
-                (url,),
-            )
+            if fid:
+                rcur.execute(
+                    """
+                    SELECT 1 FROM resource_sources
+                    WHERE source_url = %s
+                      AND (forum_id = %s OR forum_id IS NULL OR forum_id = '')
+                    LIMIT 1
+                    """,
+                    (url, fid),
+                )
+            else:
+                rcur.execute(
+                    """
+                    SELECT 1 FROM resource_sources
+                    WHERE source_url = %s
+                    LIMIT 1
+                    """,
+                    (url,),
+                )
             return bool(rcur.fetchone())
     finally:
         if rconn is not conn:
@@ -263,21 +296,24 @@ async def run_random_tid_batch(
     }
 
     root = site_root(str(cfg.get("web_crawl_urls") or "").split(",")[0] if cfg else BASE_URL)
-    session = session_from_config(cfg)
+    adapter = get_site_adapter(forum_id)
+    session = session_from_config(cfg, forum_id=forum_id)
     fetcher = fetcher_from_config(session, cfg)
     # 本会话已抽过的 + 本批已抽的，避免同会话重复抽号（仍不写队列）
     used: set[int] = set(_session_probed)
 
     target_label = f"入库目标 {target}" if stop_on_persisted else "跑满本轮探测"
     _log_activity(
-        f"随机抓帖开始 · tid[{lo},{hi}] · 探测 {max_probe} · {target_label} · 不进队列 · both 链"
+        f"随机抓帖开始 · {forum_id} · tid[{lo},{hi}] · 探测 {max_probe} · {target_label} · 不进队列 · both 链"
     )
     _STATE["phase"] = "random_tid"
     _publish_random_progress(result, probe_budget=max_probe, active=True)
 
     try:
         if not session._ready:
-            await session.bootstrap()
+            entries = entry_urls_from_config(cfg)
+            probe = bootstrap_probe_for_forum(cfg, forum_id)
+            await session.bootstrap(entry_urls=entries or None, probe_url=probe)
 
         candidates = sample_tids(lo, hi, max_probe, exclude=used)
         for tid in candidates:
@@ -291,7 +327,7 @@ async def run_random_tid_batch(
 
             used.add(tid)
             _session_probed.add(tid)
-            thread_url = f"{root}thread-{tid}-1-1.html"
+            thread_url = adapter.build_thread_url(root, tid)
             result["probed"] += 1
 
             try:
@@ -299,7 +335,7 @@ async def run_random_tid_batch(
                 try:
                     conn = connect()
                     try:
-                        known = is_tid_known(conn, tid, thread_url)
+                        known = is_tid_known(conn, tid, thread_url, forum_id=forum_id)
                     finally:
                         conn.close()
                 except Exception:
@@ -333,7 +369,7 @@ async def run_random_tid_batch(
                     continue
 
                 fid = extract_board_fid(html) or 0
-                pol = get_board_policy(int(fid) if fid else 0)
+                pol = adapter.get_board_policy(int(fid) if fid else 0)
                 board_fid = int(pol.fid) if fid else 0
                 board_name = pol.name if fid else "未知板块"
 
@@ -349,6 +385,7 @@ async def run_random_tid_batch(
                         fetcher=fetcher,
                         preferred_link="both",
                         html=html,
+                        forum_id=forum_id,
                     )
                 except Exception as exc:
                     result["failed"] += 1

@@ -1,0 +1,57 @@
+# next-web 独立部署（与主栈 docker-compose.nas.yml 分开）
+#
+# 目录示例：/vol1/1000/Docker/sehuatang/
+#   docker-compose.search.yml
+#   data/search/
+#   data/search-cache/
+#
+# 前提：主栈已 up，postgres 在同一 Docker 网络里（默认 sehuatang-network）。
+#
+# 启动:
+#   docker compose -f docker-compose.search.yml pull
+#   docker compose -f docker-compose.search.yml up -d
+# 访问: http://NAS_IP:3010
+#
+# 若主栈网络名不是 sehuatang-network，改下方 networks.default.name。
+# 若 postgres 不在同网络，把 POSTGRES_* 改成宿主机可达地址（如 172.17.0.1:5433）。
+
+name: sehuatang-search
+
+services:
+  search:
+    image: poillysky/sehuatang-search:1.1.24
+    container_name: sehuatang-search
+    restart: always
+    ports:
+      - "3010:3000"
+    environment:
+      TZ: Asia/Shanghai
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: ed2k
+      # 服务名 postgres 须能在下方 external 网络里解析到主栈库
+      POSTGRES_DB_URL: postgres://postgres:postgres@postgres:5432/ed2k
+      TRANSLATE_API_URL: ""
+      TRANSLATE_FALLBACK: "1"
+      NODE_OPTIONS: "--dns-result-order=ipv4first"
+    dns:
+      - 223.5.5.5
+      - 8.8.8.8
+    volumes:
+      - /vol1/1000/Docker/sehuatang/data/search:/app/data
+      - /vol1/1000/Docker/sehuatang/data/search-cache:/app/.next/cache
+    deploy:
+      resources:
+        limits:
+          cpus: "2"
+          memory: 1G
+        reservations:
+          cpus: "0.25"
+          memory: 256M
+
+networks:
+  default:
+    name: sehuatang-network
+    external: true

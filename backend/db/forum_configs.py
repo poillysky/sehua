@@ -93,8 +93,65 @@ def default_forum_crawler_config() -> dict[str, Any]:
     return deepcopy(FORUM_CRAWLER_DEFAULTS)
 
 
-def _normalize_forum_config(raw: dict | None) -> dict[str, Any]:
-    base = default_forum_crawler_config()
+# 本站色花堂为专用爬虫；2048 先复制同款配置/弹窗结构，入口与模块独立。
+SITE_CRAWLER_FORUM_ID = "sehuatang"
+SITE_CRAWLER_MODULE = "crawler.sehuatang"
+FORUM_2048_ID = "2048"
+FORUM_2048_MODULE = "crawler.forum_2048"
+DEFAULT_2048_WEB_CRAWL_URLS = ",".join(
+    [
+        "https://fby.tfzqs88.com",
+        "https://fby.js-bovey.com",
+        "https://ut2gw5.xc6ym5.com/",
+        "https://bbs.xfca2022.com",
+        "https://bbs.sbnlfe.cn",
+    ]
+)
+# 可启用 + 可保存完整爬虫配置（板块拓扑 / 结构说明 / 限速等）
+CONFIGURABLE_FORUM_IDS = frozenset({SITE_CRAWLER_FORUM_ID, FORUM_2048_ID})
+# 具备完整弹窗与板块 API 的论坛（与 CONFIGURABLE 当前一致；后续可拆出仅基本配置站）
+FULL_CRAWLER_FORUM_IDS = frozenset({SITE_CRAWLER_FORUM_ID, FORUM_2048_ID})
+
+
+def default_2048_forum_crawler_config() -> dict[str, Any]:
+    """2048 / PHPWind 独立默认配置（板块白名单与色花堂分离）。"""
+    from parsers.boards_2048 import default_board_order_2048
+
+    order = default_board_order_2048()
+    cfg = default_forum_crawler_config()
+    cfg["web_crawl_urls"] = DEFAULT_2048_WEB_CRAWL_URLS
+    cfg["web_crawler_cookie"] = ""
+    cfg["board_order"] = list(order)
+    cfg["enabled_board_fids"] = list(order)
+    cfg["active_board_fid"] = order[0] if order else ""
+    cfg["board_list_cursors"] = {}
+    cfg["board_manual_head_pages"] = {}
+    cfg["board_head_catchup_on"] = {}
+    cfg["board_head_progress"] = {}
+    cfg["board_backfill_progress"] = {}
+    return cfg
+
+
+def default_basic_forum_crawler_config(*, forum_id: str = FORUM_2048_ID) -> dict[str, Any]:
+    """兼容旧调用：2048 已升为完整配置，其它站仍可返回空拓扑占位。"""
+    if forum_id == FORUM_2048_ID:
+        return default_2048_forum_crawler_config()
+    cfg = default_forum_crawler_config()
+    cfg["web_crawl_urls"] = ""
+    cfg["web_crawler_enabled"] = False
+    cfg["board_order"] = []
+    cfg["enabled_board_fids"] = []
+    cfg["active_board_fid"] = ""
+    cfg["board_list_cursors"] = {}
+    cfg["board_manual_head_pages"] = {}
+    cfg["board_head_catchup_on"] = {}
+    cfg["board_head_progress"] = {}
+    cfg["board_backfill_progress"] = {}
+    return cfg
+
+
+def _merge_crawler_scalar_fields(base: dict[str, Any], raw: dict | None) -> dict[str, Any]:
+    """合并用户提交的标量/映射字段到 base（不处理色花堂板块白名单）。"""
     if not raw:
         return base
     for key, default in list(base.items()):
@@ -176,47 +233,84 @@ def _normalize_forum_config(raw: dict | None) -> dict[str, Any]:
                 pass
         else:
             base[key] = str(val)
+    return base
+
+
+def _normalize_forum_config(
+    raw: dict | None,
+    *,
+    default_crawl_urls: str = DEFAULT_WEB_CRAWL_URLS,
+    upgrade_legacy_urls: bool = True,
+    forum_id: str = SITE_CRAWLER_FORUM_ID,
+) -> dict[str, Any]:
+    from crawler.sites import get_site_adapter
+
+    adapter = get_site_adapter(forum_id)
+    policies = adapter.board_policies()
+    allowed = set(policies.keys())
+    default_order = [k for k in adapter.default_board_order() if k in allowed]
+    if not default_order:
+        default_order = list(allowed)
+
+    if forum_id == FORUM_2048_ID:
+        base = default_2048_forum_crawler_config()
+    else:
+        base = default_forum_crawler_config()
+    base["web_crawl_urls"] = default_crawl_urls
+    if not raw:
+        return base
+    _merge_crawler_scalar_fields(base, raw)
     base["web_crawler_one_link_per_thread"] = True
     base["web_crawler_require_structured_desc"] = False
-    # 拓扑：仅白名单工作板，不做自动发现
     base["web_crawler_auto_discover"] = False
-    # 启用队列长度作提示；实际按板依次处理，不再限制「每轮多板并发」
     try:
         base["web_crawler_max_boards_per_run"] = max(
             1, int(base.get("web_crawler_max_boards_per_run") or 1)
         )
     except (TypeError, ValueError):
         base["web_crawler_max_boards_per_run"] = 1
-    # 本站连续爬取：关闭轮间间隔
     base["web_crawler_interval_minutes"] = 0
-    # 本批帖数上限：0 = 不另限（深扫入队多少抓多少，仍受目标入库约束）
     if int(base.get("web_crawler_max_threads_per_run") or 0) < 0:
         base["web_crawler_max_threads_per_run"] = 0
-    # 旧库仅一条主域时，升级为官方永久域名列表（用户自定义多地址则保留）
     crawl_urls = [u.strip() for u in str(base.get("web_crawl_urls") or "").split(",") if u.strip()]
-    if not crawl_urls or (len(crawl_urls) == 1 and crawl_urls[0].rstrip("/") in _LEGACY_WEB_CRAWL_URLS):
+    if not crawl_urls:
+        base["web_crawl_urls"] = default_crawl_urls
+    elif upgrade_legacy_urls and (
+        len(crawl_urls) == 1 and crawl_urls[0].rstrip("/") in _LEGACY_WEB_CRAWL_URLS
+    ):
         base["web_crawl_urls"] = DEFAULT_WEB_CRAWL_URLS
-    # 爬取单位 key（如 95:716）；旧纯 fid 自动展开为全部子版
-    allowed = set(BOARD_POLICIES.keys())
-    default_order = default_board_order()
-    raw_order = expand_legacy_board_keys(
-        [str(x) for x in (base.get("board_order") or [])]
-    )
+    else:
+        base["web_crawl_urls"] = ",".join(crawl_urls)
+
+    raw_dict = raw or {}
+    raw_order = adapter.expand_board_keys([str(x) for x in (base.get("board_order") or [])])
     order = [k for k in raw_order if k in allowed]
     for key in default_order:
         if key not in order:
             order.append(key)
     base["board_order"] = order
 
-    # 启用队列：保留 enabled_board_fids 勾选顺序（先勾先爬）；不再按 board_order 重排
-    if "enabled_board_fids" not in (raw or {}):
-        legacy_active = str(base.get("active_board_fid") or "").strip()
-        expanded = expand_legacy_board_keys([legacy_active] if legacy_active else [])
-        enabled = [k for k in order if k in set(expanded)]
-        if not enabled:
-            enabled = [order[0]] if order else [default_order[0]]
+    upgrade_from_basic = not list(raw_dict.get("board_order") or []) and not list(
+        raw_dict.get("enabled_board_fids") or []
+    )
+    if forum_id == FORUM_2048_ID:
+        raw_keys = [str(x) for x in (raw_dict.get("board_order") or [])] + [
+            str(x) for x in (raw_dict.get("enabled_board_fids") or [])
+        ]
+        if raw_keys and not any(k in allowed for k in adapter.expand_board_keys(raw_keys)):
+            upgrade_from_basic = True
+
+    if "enabled_board_fids" not in raw_dict or upgrade_from_basic:
+        if upgrade_from_basic:
+            enabled = list(order)
+        else:
+            legacy_active = str(base.get("active_board_fid") or "").strip()
+            expanded = adapter.expand_board_keys([legacy_active] if legacy_active else [])
+            enabled = [k for k in order if k in set(expanded)]
+            if not enabled:
+                enabled = [order[0]] if order else [default_order[0]]
     else:
-        raw_enabled = expand_legacy_board_keys(
+        raw_enabled = adapter.expand_board_keys(
             [str(x) for x in (base.get("enabled_board_fids") or [])]
         )
         seen: set[str] = set()
@@ -227,23 +321,21 @@ def _normalize_forum_config(raw: dict | None) -> dict[str, Any]:
                 seen.add(k)
         if not enabled:
             legacy_active = str(base.get("active_board_fid") or "").strip()
-            expanded = expand_legacy_board_keys([legacy_active] if legacy_active else [])
+            expanded = adapter.expand_board_keys([legacy_active] if legacy_active else [])
             enabled = [k for k in order if k in set(expanded)]
             if not enabled:
                 enabled = [order[0]] if order else [default_order[0]]
     base["enabled_board_fids"] = enabled
 
-    # active：纯 fid → 展开后的第一子版
     active = str(base.get("active_board_fid") or "").strip()
     if active not in enabled:
-        expanded_active = expand_legacy_board_keys([active] if active else [])
+        expanded_active = adapter.expand_board_keys([active] if active else [])
         pick = next((k for k in enabled if k in set(expanded_active)), None)
         base["active_board_fid"] = pick or enabled[0]
     else:
         base["active_board_fid"] = active
     base["web_crawler_max_boards_per_run"] = max(1, len(enabled))
 
-    # 游标：只保留二级单位 key；纯 fid 主板旧游标直接丢弃（页码与子版列表不可对应）
     cursors = dict(base.get("board_list_cursors") or {})
     migrated_cursors: dict[str, int] = {}
     for ck, pg in cursors.items():
@@ -253,7 +345,6 @@ def _normalize_forum_config(raw: dict | None) -> dict[str, Any]:
                 migrated_cursors[ck_s] = max(0, int(pg))
             except (TypeError, ValueError):
                 continue
-        # 纯数字 fid：丢弃，不迁到任一子版
     base["board_list_cursors"] = migrated_cursors
 
     for map_key in (
@@ -271,18 +362,16 @@ def _normalize_forum_config(raw: dict | None) -> dict[str, Any]:
             ck_s = str(ck)
             if ck_s in allowed:
                 migrated[ck_s] = val
-            # 纯 fid：丢弃，不迁移
         base[map_key] = migrated
-    if not isinstance(base.get("board_list_cursors"), dict):
-        base["board_list_cursors"] = {}
-    if not isinstance(base.get("board_manual_head_pages"), dict):
-        base["board_manual_head_pages"] = {}
-    if not isinstance(base.get("board_head_catchup_on"), dict):
-        base["board_head_catchup_on"] = {}
-    if not isinstance(base.get("board_head_progress"), dict):
-        base["board_head_progress"] = {}
-    if not isinstance(base.get("board_backfill_progress"), dict):
-        base["board_backfill_progress"] = {}
+    for mk in (
+        "board_list_cursors",
+        "board_manual_head_pages",
+        "board_head_catchup_on",
+        "board_head_progress",
+        "board_backfill_progress",
+    ):
+        if not isinstance(base.get(mk), dict):
+            base[mk] = {}
     try:
         base["web_crawler_manual_head_pages"] = max(
             1, int(base.get("web_crawler_manual_head_pages") or 20)
@@ -292,16 +381,35 @@ def _normalize_forum_config(raw: dict | None) -> dict[str, Any]:
     return base
 
 
-def resolve_enabled_board_fids(cfg: dict[str, Any] | None) -> list[str]:
+def normalize_forum_config(forum_id: str, raw: dict | None) -> dict[str, Any]:
+    fid = (forum_id or "").strip() or SITE_CRAWLER_FORUM_ID
+    if fid == SITE_CRAWLER_FORUM_ID:
+        return _normalize_forum_config(raw, forum_id=fid)
+    if fid == FORUM_2048_ID:
+        return _normalize_forum_config(
+            raw,
+            default_crawl_urls=DEFAULT_2048_WEB_CRAWL_URLS,
+            upgrade_legacy_urls=False,
+            forum_id=fid,
+        )
+    return default_basic_forum_crawler_config(forum_id=fid)
+
+
+def resolve_enabled_board_fids(
+    cfg: dict[str, Any] | None, *, forum_id: str = SITE_CRAWLER_FORUM_ID
+) -> list[str]:
     """启用爬取队列：按 enabled_board_fids 勾选顺序（先勾先爬）。"""
-    allowed = set(BOARD_POLICIES.keys())
-    order = expand_legacy_board_keys(
+    from crawler.sites import get_site_adapter
+
+    adapter = get_site_adapter(forum_id)
+    allowed = set(adapter.board_policies().keys())
+    order = adapter.expand_board_keys(
         [str(x) for x in ((cfg or {}).get("board_order") or [])]
     )
     order = [k for k in order if k in allowed]
     if not order:
-        order = [k for k in default_board_order() if k in allowed]
-    raw = expand_legacy_board_keys(
+        order = [k for k in adapter.default_board_order() if k in allowed]
+    raw = adapter.expand_board_keys(
         [str(x) for x in ((cfg or {}).get("enabled_board_fids") or [])]
     )
     seen: set[str] = set()
@@ -313,16 +421,21 @@ def resolve_enabled_board_fids(cfg: dict[str, Any] | None) -> list[str]:
     if enabled:
         return enabled
     active = str((cfg or {}).get("active_board_fid") or "").strip()
-    expanded = expand_legacy_board_keys([active] if active else [])
+    expanded = adapter.expand_board_keys([active] if active else [])
     pick = [k for k in order if k in set(expanded)]
     if pick:
         return pick
     return [order[0]] if order else []
 
 
-def next_enabled_board_fid(cfg: dict[str, Any] | None, current: str | int | None) -> str:
+def next_enabled_board_fid(
+    cfg: dict[str, Any] | None,
+    current: str | int | None,
+    *,
+    forum_id: str = SITE_CRAWLER_FORUM_ID,
+) -> str:
     """启用队列中下一板（到尾后回绕到首板）。"""
-    boards = resolve_enabled_board_fids(cfg)
+    boards = resolve_enabled_board_fids(cfg, forum_id=forum_id)
     if not boards:
         return str(current or "")
     cur = str(current or "").strip()
@@ -441,12 +554,13 @@ def clear_board_cursor(
     board_fid: str | int,
 ) -> dict:
     """清除某二级子版深扫游标，并清掉残留回填进度；下次深扫从列表头起。"""
-    from parsers.boards import BOARD_POLICIES, expand_legacy_board_keys
+    from crawler.sites import get_site_adapter
 
+    adapter = get_site_adapter(forum_id)
     configs = load_forum_configs_map(conn)
     current = dict(configs.get(forum_id) or default_forum_crawler_config())
-    allowed = set(BOARD_POLICIES.keys())
-    expanded = expand_legacy_board_keys([str(board_fid).strip()])
+    allowed = set(adapter.board_policies().keys())
+    expanded = adapter.expand_board_keys([str(board_fid).strip()])
     key = next((k for k in expanded if k in allowed), "")
     if not key:
         key = str(board_fid).strip()
@@ -494,19 +608,21 @@ def set_board_backfill_progress(
 
 
 def set_active_board_fid(conn: Any, forum_id: str, board_fid: str) -> dict:
+    from crawler.sites import get_site_adapter
+
+    adapter = get_site_adapter(forum_id)
     configs = load_forum_configs_map(conn)
     current = dict(configs.get(forum_id) or default_forum_crawler_config())
-    allowed = set(BOARD_POLICIES.keys())
-    expanded = expand_legacy_board_keys([str(board_fid).strip()])
+    allowed = set(adapter.board_policies().keys())
+    expanded = adapter.expand_board_keys([str(board_fid).strip()])
     fid = next((k for k in expanded if k in allowed), "")
     if not fid:
         fid = str(board_fid).strip()
     if fid not in allowed:
         raise ValueError(f"子版 {board_fid} 不在白名单")
-    enabled = list(resolve_enabled_board_fids(current))
+    enabled = list(resolve_enabled_board_fids(current, forum_id=forum_id))
     if fid not in enabled:
         enabled.append(fid)
-        # 保持勾选顺序，仅追加；勿按 board_order 重排
     current["enabled_board_fids"] = enabled
     current["active_board_fid"] = fid
     current["web_crawler_max_boards_per_run"] = max(1, len(enabled))
@@ -514,17 +630,19 @@ def set_active_board_fid(conn: Any, forum_id: str, board_fid: str) -> dict:
 
 
 def set_enabled_board_fids(conn: Any, forum_id: str, board_fids: list[str]) -> dict:
+    from crawler.sites import get_site_adapter
+
+    adapter = get_site_adapter(forum_id)
     configs = load_forum_configs_map(conn)
     current = dict(configs.get(forum_id) or default_forum_crawler_config())
-    allowed = set(BOARD_POLICIES.keys())
-    order = expand_legacy_board_keys(
-        [str(x) for x in (current.get("board_order") or default_board_order())]
+    allowed = set(adapter.board_policies().keys())
+    order = adapter.expand_board_keys(
+        [str(x) for x in (current.get("board_order") or adapter.default_board_order())]
     )
-    order = [k for k in order if k in allowed] or default_board_order()
-    # 保留传入顺序（勾选先后），勿按 board_order 重排
+    order = [k for k in order if k in allowed] or list(adapter.default_board_order())
     seen: set[str] = set()
     enabled: list[str] = []
-    for k in expand_legacy_board_keys([str(x) for x in (board_fids or [])]):
+    for k in adapter.expand_board_keys([str(x) for x in (board_fids or [])]):
         if k in allowed and k not in seen:
             enabled.append(k)
             seen.add(k)
@@ -544,7 +662,7 @@ def advance_active_board_fid(conn: Any, forum_id: str, *, from_fid: str | int | 
     configs = load_forum_configs_map(conn)
     current = dict(configs.get(forum_id) or default_forum_crawler_config())
     cur = str(from_fid or current.get("active_board_fid") or "").strip()
-    nxt = next_enabled_board_fid(current, cur)
+    nxt = next_enabled_board_fid(current, cur, forum_id=forum_id)
     current["active_board_fid"] = nxt
     return save_forum_config(conn, forum_id, current)
 
@@ -552,40 +670,49 @@ def advance_active_board_fid(conn: Any, forum_id: str, *, from_fid: str | int | 
 def load_forum_configs_map(conn: Any) -> dict[str, dict]:
     blob = get_setting(conn, FORUM_CONFIG_KEY, "").strip()
     if not blob:
-        return {"sehuatang": default_forum_crawler_config()}
+        return {
+            SITE_CRAWLER_FORUM_ID: default_forum_crawler_config(),
+            FORUM_2048_ID: default_2048_forum_crawler_config(),
+        }
     try:
         parsed = json.loads(blob)
     except json.JSONDecodeError:
-        return {"sehuatang": default_forum_crawler_config()}
+        return {
+            SITE_CRAWLER_FORUM_ID: default_forum_crawler_config(),
+            FORUM_2048_ID: default_2048_forum_crawler_config(),
+        }
     if not isinstance(parsed, dict):
-        return {"sehuatang": default_forum_crawler_config()}
-    out = {str(fid): _normalize_forum_config(cfg if isinstance(cfg, dict) else None) for fid, cfg in parsed.items()}
-    if "sehuatang" not in out:
-        out["sehuatang"] = default_forum_crawler_config()
+        return {
+            SITE_CRAWLER_FORUM_ID: default_forum_crawler_config(),
+            FORUM_2048_ID: default_2048_forum_crawler_config(),
+        }
+    out = {
+        str(fid): normalize_forum_config(str(fid), cfg if isinstance(cfg, dict) else None)
+        for fid, cfg in parsed.items()
+    }
+    if SITE_CRAWLER_FORUM_ID not in out:
+        out[SITE_CRAWLER_FORUM_ID] = default_forum_crawler_config()
+    if FORUM_2048_ID not in out:
+        out[FORUM_2048_ID] = default_2048_forum_crawler_config()
     return out
 
 
 def save_forum_config(conn: Any, forum_id: str, config: dict) -> dict:
     configs = load_forum_configs_map(conn)
-    normalized = _normalize_forum_config(config)
+    normalized = normalize_forum_config(forum_id, config)
     configs[forum_id] = normalized
     save_settings(conn, {FORUM_CONFIG_KEY: json.dumps(configs, ensure_ascii=False)})
     return normalized
 
 
 def get_active_forum_id(conn: Any) -> str:
-    return get_setting(conn, ACTIVE_FORUM_KEY, "sehuatang") or "sehuatang"
+    return get_setting(conn, ACTIVE_FORUM_KEY, SITE_CRAWLER_FORUM_ID) or SITE_CRAWLER_FORUM_ID
 
 
 def set_active_forum_id(conn: Any, forum_id: str) -> str:
-    fid = (forum_id or "sehuatang").strip() or "sehuatang"
+    fid = (forum_id or SITE_CRAWLER_FORUM_ID).strip() or SITE_CRAWLER_FORUM_ID
     save_settings(conn, {ACTIVE_FORUM_KEY: fid})
     return fid
-
-
-# 本站仅色花堂有专用爬虫；后续论坛注册时必须提供独立模块，配置不与 sehuatang 共用。
-SITE_CRAWLER_FORUM_ID = "sehuatang"
-SITE_CRAWLER_MODULE = "crawler.sehuatang"
 
 # 正文【标签】展示名（供管理端；入库别名见 parsers.content.LABEL_KEYS）
 # 前两项 = 真正资源名 / 子标题（与 parsers.resource_names.SUBRESOURCE_TITLE_LABELS 一致）
@@ -667,40 +794,52 @@ FORMAT_GUIDES: list[dict[str, Any]] = [
 
 
 def build_forums_payload(conn: Any) -> dict:
+    from parsers.boards_2048 import (
+        BOARD_POLICIES_2048,
+        FORMAT_GUIDES_2048,
+        STRUCTURE_LABELS_2048,
+    )
+
     configs = load_forum_configs_map(conn)
-    boards = [
-        {
-            "key": b.key,
-            "fid": str(b.fid),
-            "typeid": b.list_typeid or "",
-            "name": b.name,
-            "board_name": b.board_name or b.name,
-            "type_name": b.type_name or "",
-            "category": b.category,
-            "primary_link": b.primary_link,
-            "hot": b.hot,
-            "priority": b.priority,
-            "enabled": b.enabled,
-        }
-        for b in sorted(BOARD_POLICIES.values(), key=lambda x: x.priority)
-        if b.enabled
-    ]
+
+    def _boards_payload(policies: dict) -> list[dict]:
+        return [
+            {
+                "key": b.key,
+                "fid": str(b.fid),
+                "typeid": b.list_typeid or "",
+                "name": b.name,
+                "board_name": b.board_name or b.name,
+                "type_name": b.type_name or "",
+                "category": b.category,
+                "primary_link": b.primary_link,
+                "hot": b.hot,
+                "priority": b.priority,
+                "enabled": b.enabled,
+            }
+            for b in sorted(policies.values(), key=lambda x: x.priority)
+            if b.enabled
+        ]
+
+    boards_sht = _boards_payload(BOARD_POLICIES)
+    boards_2048 = _boards_payload(BOARD_POLICIES_2048)
     sehuatang_cfg = configs.get(SITE_CRAWLER_FORUM_ID, default_forum_crawler_config())
-    # 仅返回已登记论坛的独立配置；planned 论坛不预填色花堂通用字段
+    forum_2048_cfg = configs.get(FORUM_2048_ID, default_2048_forum_crawler_config())
     dedicated_configs = {
-        fid: cfg for fid, cfg in configs.items() if fid == SITE_CRAWLER_FORUM_ID
+        fid: cfg for fid, cfg in configs.items() if fid in CONFIGURABLE_FORUM_IDS
     }
     forums = [
         {
             "id": SITE_CRAWLER_FORUM_ID,
             "name": "色花堂",
             "base_url": "https://www.sehuatang.net/",
+            "icon_url": "/sehuatang-forum-icon.png",
             "status": "active",
             "site_dedicated": True,
             "crawler_registered": True,
             "crawler_module": SITE_CRAWLER_MODULE,
-            "board_count": len(boards),
-            "boards": boards,
+            "board_count": len(boards_sht),
+            "boards": boards_sht,
             "crawler_config": sehuatang_cfg,
             "structure_labels": list(STRUCTURE_LABELS),
             "format_guides": FORMAT_GUIDES,
@@ -714,20 +853,24 @@ def build_forums_payload(conn: Any) -> dict:
             ],
         },
         {
-            "id": "other",
-            "name": "其他论坛",
-            "base_url": "",
-            "status": "planned",
+            "id": FORUM_2048_ID,
+            "name": "2048",
+            "base_url": "https://ut2gw5.xc6ym5.com/",
+            "icon_url": "/h-forum-icon.png",
+            "status": "active",
             "site_dedicated": False,
-            "crawler_registered": False,
-            "crawler_module": None,
-            "board_count": 0,
-            "boards": [],
-            # 故意不返回色花堂默认配置，避免误用为「通用模板」
-            "crawler_config": None,
+            "crawler_registered": True,
+            "crawler_module": FORUM_2048_MODULE,
+            "board_count": len(boards_2048),
+            "boards": boards_2048,
+            "crawler_config": forum_2048_cfg,
+            "structure_labels": list(STRUCTURE_LABELS_2048),
+            "format_guides": FORMAT_GUIDES_2048,
             "policies": [
-                "待独立开发专用爬虫模块后接入",
-                "配置与色花堂互不共用，不可套用本站字段",
+                "独立爬虫：PHPWind「人人为我论坛」，配置与色花堂互不共用",
+                "白名单子版：3/4/5/13/15/16/18/67/343/195/318；主链优先磁力，无磁力再 ED2K",
+                "fid=5 日本騎兵、fid=13 歐美新片需登录后免费购买，请在配置里填论坛 Cookie",
+                "列表 thread.php?fid= · 帖子 read.php?tid=；Cookie 用独立 jar",
             ],
         },
     ]
@@ -736,5 +879,5 @@ def build_forums_payload(conn: Any) -> dict:
         "site_crawler_forum_id": SITE_CRAWLER_FORUM_ID,
         "forums": forums,
         "forum_configs": dedicated_configs,
-        "registered_crawler_forums": [SITE_CRAWLER_FORUM_ID],
+        "registered_crawler_forums": sorted(CONFIGURABLE_FORUM_IDS),
     }

@@ -67,6 +67,63 @@ def test_subtitle_from_description_prefers_film():
     )
 
 
+def test_pick_keeps_nested_decorative_brackets():
+    """片名里的【S级泄密】等装饰标签不得截断取值。"""
+    from parsers.content import _subresource_title_value, extract_metadata
+    from parsers.resource_names import pick_subresource_title
+
+    text = (
+        "【影片名称】：??【S级泄密】姿势很多的反差少妇露脸性爱，"
+        "床上各种高潮脸窒息吐舌阿黑颜，无套中出母狗呻吟享受，原档无水印(22V)\n"
+        "【影片格式】：MP4\n"
+        "【影片大小】：917MB\n"
+        "【影片时间】：34:25\n"
+        "【影片说明】：无码\n"
+        "【影片截图】："
+    )
+    want = (
+        "??【S级泄密】姿势很多的反差少妇露脸性爱，"
+        "床上各种高潮脸窒息吐舌阿黑颜，无套中出母狗呻吟享受，原档无水印(22V)"
+    )
+    assert pick_subresource_title(text, prefer_last=False) == want
+    assert extract_metadata(text).get("影片名称") == want
+    assert _subresource_title_value(text, 6, len(text)) == want
+
+
+def test_pick_keeps_various_decorative_prefixes_and_brackets():
+    """?? ※ ★ ！！ 全角？？ 以及异写括号字段，片名应完整保留。"""
+    from parsers.content import extract_metadata
+    from parsers.resource_names import pick_subresource_title
+
+    cases = [
+        (
+            "【影片名称】：※※【内部流出】样片名甲\n［影片格式］：MP4\n",
+            "※※【内部流出】样片名甲",
+        ),
+        (
+            "【影片名称】：！！【S级】样片名乙\n「影片大小」：1.2GB\n",
+            "！！【S级】样片名乙",
+        ),
+        (
+            "［影片名称］：？？『黑料』样片名丙\n【影片说明】：无码\n",
+            "？？『黑料』样片名丙",
+        ),
+        (
+            "『资源名称』：★★【自转】合集丁(12V)\n【资源类型】：视频\n",
+            "★★【自转】合集丁(12V)",
+        ),
+        (
+            "【影片名称】:◆◆【完结】尾声戊\n【影片预览】：\n",
+            "◆◆【完结】尾声戊",
+        ),
+    ]
+    for text, want in cases:
+        assert pick_subresource_title(text, prefer_last=False) == want, text
+        meta = extract_metadata(text)
+        got = meta.get("影片名称") or meta.get("资源名称")
+        assert got == want, text
+
+
 def test_resolve_falls_back_to_title():
     assert (
         resolve_sub_filename(

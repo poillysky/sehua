@@ -8,6 +8,7 @@ from db.repository import (
     _assemble_thread_resource_row,
     _dedupe_preserve,
     _merge_preview_lists,
+    _pick_thread_board_meta,
     _resource_list_where,
 )
 
@@ -82,3 +83,52 @@ def test_assemble_thread_merges_assets():
     assert row["preview_images"] == ["http://a/1.jpg", "http://a/2.jpg"]
     assert row["link_kind"] == "magnet"
     assert row["forum_name"] == "色花堂"
+
+
+def test_assemble_prefers_resolved_board_over_bench_junk():
+    row = _assemble_thread_resource_row(
+        group_id=1,
+        updated_at=None,
+        source_key="web:crawler",
+        source_type="web",
+        import_outcome="成功",
+        assets_raw=[
+            {
+                "hash": "OLD",
+                "filename": "旧",
+                "size": 1,
+                "ed2k_link": "ed2k://|file|old|1|AAAAAAAA|/",
+                "title": "主标题",
+                "description": "",
+                "source_url": "https://www.sehuatang.net/thread-2663222-1-1.html",
+                "board_fid": "103:480",
+                "board_name": "bench",
+                "ed2k_links": [],
+                "extract_password": None,
+                "forum_id": "sehuatang",
+            },
+            {
+                "hash": "NEW",
+                "filename": "新",
+                "size": 2,
+                "ed2k_link": "ed2k://|file|new|2|BBBBBBBB|/",
+                "title": "主标题",
+                "description": "",
+                "source_url": "https://www.sehuatang.net/thread-2663222-1-1.html",
+                "board_fid": "95:716",
+                "board_name": "综合讨论区 · 情色分享",
+                "ed2k_links": [],
+                "extract_password": None,
+                "forum_id": "sehuatang",
+            },
+        ],
+    )
+    assert row["board_fid"] == "95:716"
+    assert row["board_name"] == "综合讨论区 · 情色分享"
+    picked = _pick_thread_board_meta(
+        [
+            {"board_fid": "103:480", "board_name": "bench"},
+            {"board_fid": "95:716", "board_name": "综合讨论区 · 情色分享"},
+        ]
+    )
+    assert picked == ("95:716", "综合讨论区 · 情色分享")

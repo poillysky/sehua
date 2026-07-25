@@ -59,9 +59,9 @@ async def test_random_batch_stops_at_import_target(monkeypatch):
         '<a href="forum.php?fid=36">板</a>magnet:?xt=urn:btih:AABBCCDDEEFF00112233445566778899AABBCCDD'
         "</div></html>"
     )
-    monkeypatch.setattr(rt, "session_from_config", lambda cfg: session)
+    monkeypatch.setattr(rt, "session_from_config", lambda cfg, **k: session)
     monkeypatch.setattr(rt, "fetcher_from_config", lambda session, cfg: fetcher)
-    monkeypatch.setattr(rt, "is_tid_known", lambda conn, tid, url: False)
+    monkeypatch.setattr(rt, "is_tid_known", lambda conn, tid, url, **k: False)
     monkeypatch.setattr(rt, "is_missing_thread", lambda html, title="": False)
     monkeypatch.setattr(rt, "extract_board_fid", lambda html: 36)
 
@@ -130,9 +130,9 @@ async def test_random_batch_runs_full_probe_when_target_zero(monkeypatch):
         '<a href="forum.php?fid=36">板</a>magnet:?xt=urn:btih:AABBCCDDEEFF00112233445566778899AABBCCDD'
         "</div></html>"
     )
-    monkeypatch.setattr(rt, "session_from_config", lambda cfg: session)
+    monkeypatch.setattr(rt, "session_from_config", lambda cfg, **k: session)
     monkeypatch.setattr(rt, "fetcher_from_config", lambda session, cfg: fetcher)
-    monkeypatch.setattr(rt, "is_tid_known", lambda conn, tid, url: False)
+    monkeypatch.setattr(rt, "is_tid_known", lambda conn, tid, url, **k: False)
     monkeypatch.setattr(rt, "is_missing_thread", lambda html, title="": False)
     monkeypatch.setattr(rt, "extract_board_fid", lambda html: 36)
 
@@ -205,9 +205,9 @@ async def test_random_batch_counts_missing(monkeypatch):
     session.bootstrap = AsyncMock()
     fetcher = MagicMock()
     fetcher.get_thread_html = AsyncMock(return_value="<html>主题不存在</html>")
-    monkeypatch.setattr(rt, "session_from_config", lambda cfg: session)
+    monkeypatch.setattr(rt, "session_from_config", lambda cfg, **k: session)
     monkeypatch.setattr(rt, "fetcher_from_config", lambda session, cfg: fetcher)
-    monkeypatch.setattr(rt, "is_tid_known", lambda conn, tid, url: False)
+    monkeypatch.setattr(rt, "is_tid_known", lambda conn, tid, url, **k: False)
     monkeypatch.setattr(
         rt,
         "sample_tids",

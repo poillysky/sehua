@@ -664,3 +664,71 @@ def test_zip_stops_after_first_member_with_magnet():
         z.writestr("2.txt", "should not be required\n" + ("noise\n" * 200))
     text = _extract_txt_from_archive(buf.getvalue(), "zip")
     assert "magnet:?xt=urn:btih:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee" in text
+
+
+def test_oversized_attachment_bytes_skipped():
+    from crawler.attachments import _text_from_attachment_bytes
+    from parsers.attachments import MAX_ATTACHMENT_BYTES
+
+    att = DownloadAttachment(name="huge.txt", url="http://x/a", kind="txt")
+    data = b"ed2k://|file|x|1|ABCDEFABCDEFABCDEFABCDEFABCDEFAB|/\n" + (
+        b"x" * (MAX_ATTACHMENT_BYTES + 1)
+    )
+    assert _text_from_attachment_bytes(att, data) == ""
+
+
+def test_zip_member_declared_size_guard():
+    """声明 file_size 超限则不 read，防 zip bomb。"""
+    from crawler import attachments as mod
+
+    class _Info:
+        file_size = mod.MAX_ARCHIVE_MEMBER_BYTES + 1
+
+    class _Zip:
+        def getinfo(self, name: str) -> _Info:
+            return _Info()
+
+        def read(self, name: str, pwd: bytes | None = None) -> bytes:
+            raise AssertionError("oversized member must not be read")
+
+    assert mod._zip_member_bytes(_Zip(), "links.txt") is None
+
+
+def test_archive_depth_within_cap_keeps_link():
+    """深度上限内的嵌套 zip 仍应解出链接。"""
+    from crawler.attachments import _extract_txt_from_archive
+    from parsers.attachments import MAX_ARCHIVE_DEPTH
+
+    link = "ed2k://|file|demo.mp4|10|ABCDEFABCDEFABCDEFABCDEFABCDEFAB|/\n"
+    data = link.encode()
+    # MAX_ARCHIVE_DEPTH 层嵌套归档 + 最内层 txt（depth 0..MAX 均可读成员）
+    for i in range(MAX_ARCHIVE_DEPTH):
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w") as z:
+            if i == 0:
+                z.writestr("links.txt", link)
+            else:
+                z.writestr(f"inner{i}.zip", data)
+        data = buf.getvalue()
+    text = _extract_txt_from_archive(data, "zip")
+    assert "ed2k://" in text
+
+
+def test_archive_depth_over_cap_returns_empty():
+    """超过嵌套深度上限则放弃，避免 zip bomb 递归。"""
+    from crawler.attachments import _extract_txt_from_archive
+    from parsers.attachments import MAX_ARCHIVE_DEPTH
+
+    link = "ed2k://|file|demo.mp4|10|ABCDEFABCDEFABCDEFABCDEFABCDEFAB|/\n"
+    data = link.encode()
+    # 多套一层：最内层链接落在 depth=MAX+1，应解不出
+    for i in range(MAX_ARCHIVE_DEPTH + 2):
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w") as z:
+            if i == 0:
+                z.writestr("links.txt", link)
+            else:
+                z.writestr(f"inner{i}.zip", data)
+        data = buf.getvalue()
+    text = _extract_txt_from_archive(data, "zip")
+    assert "ed2k://" not in text

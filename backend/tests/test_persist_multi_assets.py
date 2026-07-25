@@ -21,10 +21,12 @@ def _parsed(*assets: ParsedAsset, title: str = "合集帖") -> DualParseResult:
     )
 
 
-def test_multi_magnet_upserts_each_as_single_resource(monkeypatch):
+def _patch_common(monkeypatch) -> list[dict]:
     calls: list[dict] = []
     monkeypatch.setattr(persist_mod, "ensure_source", lambda *a, **k: 1)
     monkeypatch.setattr(persist_mod, "delete_stub_by_source_url", lambda *a, **k: False)
+    monkeypatch.setattr(persist_mod, "sync_board_meta_by_source_url", lambda *a, **k: 0)
+    monkeypatch.setattr(persist_mod, "delete_other_resources_by_source_url", lambda *a, **k: 0)
 
     def fake_upsert(conn, link, source_id, **kwargs):
         calls.append(
@@ -39,6 +41,11 @@ def test_multi_magnet_upserts_each_as_single_resource(monkeypatch):
         return True
 
     monkeypatch.setattr(persist_mod, "upsert_resource", fake_upsert)
+    return calls
+
+
+def test_multi_magnet_upserts_each_as_single_resource(monkeypatch):
+    calls = _patch_common(monkeypatch)
 
     assets = [
         ParsedAsset(
@@ -80,15 +87,7 @@ def test_multi_magnet_upserts_each_as_single_resource(monkeypatch):
 
 
 def test_single_keeps_real_filename(monkeypatch):
-    calls: list[dict] = []
-    monkeypatch.setattr(persist_mod, "ensure_source", lambda *a, **k: 1)
-    monkeypatch.setattr(persist_mod, "delete_stub_by_source_url", lambda *a, **k: False)
-
-    def fake_upsert(conn, link, source_id, **kwargs):
-        calls.append({"filename": link.filename, "title": kwargs.get("title")})
-        return True
-
-    monkeypatch.setattr(persist_mod, "upsert_resource", fake_upsert)
+    calls = _patch_common(monkeypatch)
 
     asset = ParsedAsset(
         link_kind="magnet",
@@ -105,3 +104,58 @@ def test_single_keeps_real_filename(monkeypatch):
     )
     assert calls[0]["title"] == "【单资源】示例帖"
     assert calls[0]["filename"] == "专属片名.mp4"
+
+
+def test_replace_thread_assets_purges_old_hashes(monkeypatch):
+    _patch_common(monkeypatch)
+    purged: list[tuple] = []
+
+    def fake_purge(conn, source_url, keep_hashes, **kwargs):
+        purged.append((source_url, set(keep_hashes), kwargs.get("commit")))
+        return 2
+
+    monkeypatch.setattr(persist_mod, "delete_other_resources_by_source_url", fake_purge)
+
+    asset = ParsedAsset(
+        link_kind="ed2k",
+        hash="E70B408068F72D258C054F299E9FFA15",
+        filename="new.mp4",
+        size=10,
+        uri="ed2k://|file|new.mp4|10|E70B408068F72D258C054F299E9FFA15|/",
+        is_primary=True,
+    )
+    out = persist_mod.persist_dual_parse(
+        object(),
+        _parsed(asset, title="重爬帖"),
+        source_url="https://www.sehuatang.net/thread-2663222-1-1.html",
+        replace_thread_assets=True,
+    )
+    assert out["purged"] == 2
+    assert len(purged) == 1
+    assert purged[0][0].endswith("thread-2663222-1-1.html")
+    assert purged[0][1] == {"E70B408068F72D258C054F299E9FFA15"}
+
+
+def test_replace_thread_assets_off_by_default(monkeypatch):
+    _patch_common(monkeypatch)
+    calls = {"n": 0}
+
+    def fake_purge(*a, **k):
+        calls["n"] += 1
+        return 0
+
+    monkeypatch.setattr(persist_mod, "delete_other_resources_by_source_url", fake_purge)
+    asset = ParsedAsset(
+        link_kind="magnet",
+        hash="F" * 40,
+        filename="a.mp4",
+        size=1,
+        uri="magnet:?xt=urn:btih:" + "F" * 40,
+        is_primary=True,
+    )
+    persist_mod.persist_dual_parse(
+        object(),
+        _parsed(asset),
+        source_url="https://example.com/thread-3-1-1.html",
+    )
+    assert calls["n"] == 0

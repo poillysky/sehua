@@ -113,12 +113,22 @@ def _canonical_site_host(netloc: str) -> str:
     return host or _CANON_SITE_HOST
 
 
-def canonical_thread_url(url: str, *, root: str = "") -> str:
-    """统一为桌面帖 URL：去掉 mobile / 跨域镜像，输出 https://www.sehuatang.net/thread-{tid}-1-1.html。"""
+def canonical_thread_url(url: str, *, root: str = "", forum_id: str = "") -> str:
+    """统一桌面帖 URL。
+
+    - 色花堂 Discuz：https://www.sehuatang.net/thread-{tid}-1-1.html
+    - 2048 PHPWind：https://{host}/read.php?tid={tid}（保留来源主机，不改写成色花堂）
+    """
     u = (url or "").strip()
     tid = tid_from_url(u)
     if tid is None:
         return u
+
+    lowered = u.lower()
+    fid = (forum_id or "").strip().lower()
+    phpwind = fid == "2048" or "read.php" in lowered or (
+        "thread.php" in lowered and "tid=" in lowered
+    )
 
     host = _CANON_SITE_HOST
     if root:
@@ -132,6 +142,14 @@ def canonical_thread_url(url: str, *, root: str = "") -> str:
         parsed = urlparse(u if "://" in u else f"https://{u}")
         if parsed.netloc:
             host = _canonical_site_host(parsed.netloc)
+
+    if phpwind:
+        # 2048 镜像不并入色花堂主机
+        if "sehuatang." in host.lower() or host == _CANON_SITE_HOST:
+            parsed = urlparse(u if "://" in u else f"https://{u}")
+            if parsed.netloc and "sehuatang." not in parsed.netloc.lower():
+                host = _desktop_host(parsed.netloc)
+        return f"https://{host}/read.php?tid={tid}"
 
     return f"https://{host}/thread-{tid}-1-1.html"
 
@@ -219,7 +237,7 @@ def enqueue_thread(
 
     retry_after：龄期未满等场景先占位入队，到期后再被取队列抓取。
     """
-    url = canonical_thread_url(url)
+    url = canonical_thread_url(url, forum_id=forum_id)
     tid = tid_from_url(url)
     cur = conn.cursor()
     cur.execute(
@@ -1055,7 +1073,7 @@ def requeue_for_recrawl(
     forum_id: str = "sehuatang",
 ) -> dict[str, Any]:
     """将已处理帖重新置为 pending，供已入库重爬。"""
-    url = canonical_thread_url(url)
+    url = canonical_thread_url(url, forum_id=forum_id)
     tid = tid_from_url(url)
     cur = conn.cursor()
     cur.execute(

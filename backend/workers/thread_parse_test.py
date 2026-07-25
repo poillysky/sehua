@@ -7,11 +7,10 @@ import re
 from typing import Any, Optional
 from urllib.parse import urlparse
 
-from crawler.list_urls import list_url_for_board, site_root
+from crawler.list_urls import site_root
 from crawler.session import BASE_URL
 from db.queue import canonical_thread_url, is_mobile_thread_url, tid_from_url
 from parsers.attachments import extract_download_attachments
-from parsers.boards import get_board_policy
 from parsers.links import parse_thread_dual
 from parsers.magnet import parse_magnet_text
 from parsers.ed2k import parse_ed2k_text
@@ -84,12 +83,17 @@ async def parse_thread_for_admin(
     board_fid: str = "",
     proxy_override: str = "",
     crawler_config: Optional[dict[str, Any]] = None,
+    forum_id: str = "sehuatang",
 ) -> dict[str, Any]:
     """使用本站混合抓取：浏览器过 18+ / 软文壳，HTTP 拉正文。默认不入库。"""
+    from crawler.sites import get_site_adapter
+    from workers.session_factory import bootstrap_probe_for_forum
+
     original_url = (url or "").strip()
     if not original_url:
         raise ValueError("帖子 URL 不能为空")
 
+    adapter = get_site_adapter(forum_id)
     cfg = dict(crawler_config or {})
     proxy = (proxy_override or "").strip() or str(cfg.get("web_crawler_proxy") or "").strip()
     entries = entry_urls_from_config(cfg)
@@ -98,27 +102,36 @@ async def parse_thread_for_admin(
     desktop_url = canonical_thread_url(original_url, root=root)
     tid = tid_from_url(desktop_url) or tid_from_url(original_url) or 0
     if not tid:
+        # PHPWind: read.php?tid=
+        m = re.search(r"[?&]tid=(\d+)", original_url, re.I)
+        if m:
+            tid = int(m.group(1))
+    if not tid:
         raise ValueError("无法从 URL 解析 tid（请粘贴含 tid= 或 thread-数字 的桌面/手机链接）")
 
-    session = session_from_config(cfg, proxy=proxy)
+    session = session_from_config(cfg, proxy=proxy, forum_id=forum_id)
     fetcher = fetcher_from_config(session, cfg, proxy=proxy)
     retries = int(cfg.get("web_crawler_fetch_retries") or 3)
 
     try:
-        await session.bootstrap(entry_urls=entries or None)
+        probe = bootstrap_probe_for_forum(cfg, forum_id)
+        await session.bootstrap(entry_urls=entries or None, probe_url=probe)
         # 用户显式选了板块 → 按该板块主链判定；留空 → 双链自动识别（仍可展示推断出的板块）
         fid_forced = bool((board_fid or "").strip())
         fid_hint = _infer_fid(original_url, "", board_fid if fid_forced else "")
         if not fid_hint and not fid_forced:
             fid_hint = str(cfg.get("active_board_fid") or "")
-        board_fid_int = int(fid_hint) if str(fid_hint).isdigit() else 103
-        policy = get_board_policy(board_fid_int)
+        # 支持 95:716 或纯 fid
+        policy = adapter.get_board_policy(fid_hint or board_fid or "2")
+        board_fid_int = int(policy.fid)
         preferred_link = policy.primary_link if fid_forced else "both"
-        list_url = list_url_for_board(board_fid_int, 1, root=root, policy=policy)
+        list_url = adapter.build_list_url(root, policy.key, 1)
         # 始终打桌面帖；手机链接在规范化阶段已去掉 mobile / m.
         thread_url = canonical_thread_url(desktop_url or original_url, root=root)
-        if not tid_from_url(thread_url):
-            thread_url = f"{root}thread-{tid}-1-1.html"
+        if not tid_from_url(thread_url) and "read.php" not in thread_url and "tid=" not in thread_url:
+            thread_url = adapter.build_thread_url(root, tid)
+        if "tid=" not in thread_url and "thread-" not in thread_url:
+            thread_url = adapter.build_thread_url(root, tid)
         fetcher.set_referer(list_url)
 
         # HTTP 读帖；遇到 18+/软文壳时 Fetcher 内会浏览器整页重读
@@ -138,15 +151,16 @@ async def parse_thread_for_admin(
 
         board_fid_str = _infer_fid(
             thread_url, html, board_fid if fid_forced else ""
-        ) or str(board_fid_int)
-        board_fid_int = int(board_fid_str) if board_fid_str.isdigit() else board_fid_int
-        policy = get_board_policy(board_fid_int)
+        ) or str(policy.key)
+        if board_fid_str.isdigit() or ":" in board_fid_str:
+            policy = adapter.get_board_policy(board_fid_str)
+            board_fid_int = int(policy.fid)
         if fid_forced:
             preferred_link = policy.primary_link
 
         outcome = judge_thread_html(
             html,
-            board_fid=board_fid_int,
+            board_fid=policy.key,
             soft_browser_retried=soft_browser_retried,
             preferred_link=preferred_link,
         )
@@ -156,7 +170,7 @@ async def parse_thread_for_admin(
             soft_browser_retried = True
             outcome = judge_thread_html(
                 html,
-                board_fid=board_fid_int,
+                board_fid=policy.key,
                 soft_browser_retried=True,
                 preferred_link=preferred_link,
             )

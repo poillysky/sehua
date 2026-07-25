@@ -19,6 +19,7 @@ _schema_ready = False
 # forum_id → 展示名（人工导入可能直接把中文名写入 forum_id）
 FORUM_DISPLAY_NAMES: dict[str, str] = {
     "sehuatang": "色花堂",
+    "2048": "2048",
     "other": "其他论坛",
 }
 
@@ -497,6 +498,51 @@ def delete_resource_by_hash(conn: Any, resource_hash: str) -> bool:
     return n > 0
 
 
+def delete_other_resources_by_source_url(
+    conn: Any,
+    source_url: str,
+    keep_hashes: list[str] | set[str] | tuple[str, ...],
+    *,
+    commit: bool = True,
+) -> int:
+    """删除同帖 URL 下不在 keep 集合内的资源行（重爬替换旧真链）。
+
+    keep 为空时不删，避免误清空。
+    """
+    url = (source_url or "").strip()
+    keep = {
+        str(h).strip().upper()
+        for h in (keep_hashes or [])
+        if str(h or "").strip()
+    }
+    if not url or not keep:
+        return 0
+    _ensure_resource_schema(conn)
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT hash FROM resource_sources
+            WHERE source_url = %s
+            """,
+            (url,),
+        )
+        victims = [
+            str(row[0]).strip().upper()
+            for row in cur.fetchall()
+            if row and str(row[0] or "").strip().upper() not in keep
+        ]
+        if not victims:
+            return 0
+        cur.execute("SELECT to_regclass(%s)", ("public.resource_tags",))
+        if cur.fetchone()[0] is not None:
+            cur.execute("DELETE FROM resource_tags WHERE hash = ANY(%s)", (victims,))
+        cur.execute("DELETE FROM resource_sources WHERE hash = ANY(%s)", (victims,))
+        cur.execute("DELETE FROM ed2k_resources WHERE hash = ANY(%s)", (victims,))
+    if commit:
+        conn.commit()
+    return len(victims)
+
+
 def delete_stub_by_source_url(conn: Any, source_url: str) -> bool:
     """删除某帖对应的占位资源（unavailable://），真磁力/ED2K 不动。
 
@@ -541,31 +587,66 @@ def delete_stub_by_source_url(conn: Any, source_url: str) -> bool:
     return ok
 
 
-def known_resource_tids(conn: Any, tids: list[int]) -> set[int]:
+def known_resource_tids(
+    conn: Any,
+    tids: list[int],
+    *,
+    forum_id: str = "",
+    entry_url: str = "",
+) -> set[int]:
     """批量查询 resource_sources 中已有的帖 tid（按规范 source_url 等值匹配）。
 
     禁止 ``LIKE '%thread-{tid}-%'``：前导通配无法走 source_url 索引，
     每页列表扫 ~30 万行可达数秒，NAS CPU 易报警。
     """
+    from crawler.list_urls import site_root
+    from crawler.sites import get_site_adapter, is_phpwind
     from db.queue import canonical_thread_url, tid_from_url
 
     clean = sorted({int(t) for t in tids if t is not None and int(t) > 0})
     if not clean:
         return set()
     _ensure_resource_schema(conn)
-    urls = [
-        canonical_thread_url(f"https://www.sehuatang.net/thread-{tid}-1-1.html")
-        for tid in clean
-    ]
+    fid = (forum_id or "").strip() or "sehuatang"
+    root = site_root(entry_url) if entry_url else ""
+    urls: list[str] = []
+    if is_phpwind(fid):
+        adapter = get_site_adapter(fid)
+        base = root or "https://ut2gw5.xc6ym5.com/"
+        for tid in clean:
+            urls.append(
+                canonical_thread_url(adapter.build_thread_url(base, tid), forum_id=fid)
+            )
+    else:
+        for tid in clean:
+            urls.append(
+                canonical_thread_url(f"https://www.sehuatang.net/thread-{tid}-1-1.html")
+            )
+            if root and "sehuatang." not in root.lower():
+                urls.append(canonical_thread_url(f"{root}thread-{tid}-1-1.html"))
+    urls = list(dict.fromkeys(u for u in urls if u))
+    if not urls:
+        return set()
     with conn.cursor() as cur:
-        cur.execute(
-            """
-            SELECT source_url
-            FROM resource_sources
-            WHERE source_url = ANY(%s)
-            """,
-            (urls,),
-        )
+        if fid and fid != "sehuatang":
+            cur.execute(
+                """
+                SELECT source_url
+                FROM resource_sources
+                WHERE source_url = ANY(%s)
+                  AND (forum_id = %s OR forum_id IS NULL OR forum_id = '')
+                """,
+                (urls, fid),
+            )
+        else:
+            cur.execute(
+                """
+                SELECT source_url
+                FROM resource_sources
+                WHERE source_url = ANY(%s)
+                """,
+                (urls,),
+            )
         out: set[int] = set()
         for row in cur.fetchall():
             tid = tid_from_url(str(row[0] or ""))
@@ -580,30 +661,62 @@ def update_board_meta_by_tids(
     *,
     board_fid: str,
     board_name: str,
+    forum_id: str = "",
+    entry_url: str = "",
 ) -> int:
     """按 tid 批量更新资源板块字段；返回更新行数。"""
+    from crawler.list_urls import site_root
+    from crawler.sites import get_site_adapter, is_phpwind
     from db.queue import canonical_thread_url
 
     clean = sorted({int(t) for t in tids if t is not None and int(t) > 0})
     if not clean:
         return 0
     _ensure_resource_schema(conn)
-    fid = str(board_fid or "").strip() or None
+    fid_col = str(board_fid or "").strip() or None
     name = (board_name or "").strip() or None
-    urls = [
-        canonical_thread_url(f"https://www.sehuatang.net/thread-{tid}-1-1.html")
-        for tid in clean
-    ]
+    forum = (forum_id or "").strip() or "sehuatang"
+    root = site_root(entry_url) if entry_url else ""
+    urls: list[str] = []
+    if is_phpwind(forum):
+        adapter = get_site_adapter(forum)
+        base = root or "https://ut2gw5.xc6ym5.com/"
+        for tid in clean:
+            urls.append(
+                canonical_thread_url(adapter.build_thread_url(base, tid), forum_id=forum)
+            )
+    else:
+        for tid in clean:
+            urls.append(
+                canonical_thread_url(f"https://www.sehuatang.net/thread-{tid}-1-1.html")
+            )
+            if root and "sehuatang." not in root.lower():
+                urls.append(canonical_thread_url(f"{root}thread-{tid}-1-1.html"))
+    urls = list(dict.fromkeys(u for u in urls if u))
+    if not urls:
+        return 0
     with conn.cursor() as cur:
-        cur.execute(
-            """
-            UPDATE resource_sources
-            SET board_fid = COALESCE(%s, board_fid),
-                board_name = COALESCE(NULLIF(%s, ''), board_name)
-            WHERE source_url = ANY(%s)
-            """,
-            (fid, name or "", urls),
-        )
+        if forum and forum != "sehuatang":
+            cur.execute(
+                """
+                UPDATE resource_sources
+                SET board_fid = COALESCE(%s, board_fid),
+                    board_name = COALESCE(NULLIF(%s, ''), board_name)
+                WHERE source_url = ANY(%s)
+                  AND (forum_id = %s OR forum_id IS NULL OR forum_id = '')
+                """,
+                (fid_col, name or "", urls, forum),
+            )
+        else:
+            cur.execute(
+                """
+                UPDATE resource_sources
+                SET board_fid = COALESCE(%s, board_fid),
+                    board_name = COALESCE(NULLIF(%s, ''), board_name)
+                WHERE source_url = ANY(%s)
+                """,
+                (fid_col, name or "", urls),
+            )
         n = int(cur.rowcount or 0)
     conn.commit()
     return n
@@ -710,6 +823,7 @@ def list_priority_account_stubs(
               rs.import_outcome,
               rs.board_fid,
               rs.board_name,
+              rs.forum_id,
               COALESCE(rs.title, r.filename, '') AS title,
               COALESCE(r.updated_at, rs.created_at) AS updated_at
             FROM ed2k_resources r
@@ -884,6 +998,98 @@ def _resource_list_where(
     return where_sql, params
 
 
+def _board_meta_score(board_name: str | None, board_fid: str | None) -> int:
+    """同帖多 hash 选展示板块：有中文名/子版优先，拒绝 fid-N / 测试脏名。"""
+    name = (board_name or "").strip()
+    fid = (board_fid or "").strip()
+    if not name and not fid:
+        return 0
+    low = name.lower()
+    if low in {"bench", "test", "tmp", "temp", "debug"}:
+        return 0
+    if name.lower().startswith("fid-") or name.lower().startswith("fid "):
+        return 1 if fid else 0
+    score = 10
+    if " · " in name or "-" in name:
+        score += 20
+    if ":" in fid:
+        score += 10
+    if name:
+        score += 5
+    if fid:
+        score += 2
+    return score
+
+
+def _pick_thread_board_meta(assets_raw: list[dict]) -> tuple[str | None, str | None]:
+    """从同帖子资源里挑最可信的 board_fid / board_name（新且分高优先）。"""
+    best: tuple[int, int, str | None, str | None] | None = None
+    for idx, raw in enumerate(assets_raw or []):
+        if not isinstance(raw, dict):
+            continue
+        fid_raw = raw.get("board_fid")
+        name_raw = raw.get("board_name")
+        fid = str(fid_raw).strip() if fid_raw not in (None, "") else None
+        name = str(name_raw).strip() if name_raw not in (None, "") else None
+        score = _board_meta_score(name, fid)
+        if score <= 0:
+            continue
+        # idx 越大通常越新（补全查询 created_at ASC 时靠后；其它路径也宁可要后出现的高分）
+        key = (score, idx, fid, name)
+        if best is None or key[:2] >= best[:2]:
+            best = key
+    if not best:
+        return None, None
+    return best[2], best[3]
+
+
+def sync_board_meta_by_source_url(
+    conn: Any,
+    source_url: str,
+    *,
+    board_fid: str | int | None,
+    board_name: str | None,
+    forum_id: str | None = None,
+    commit: bool = True,
+) -> int:
+    """同帖所有 hash 行回写板块（重拉新 hash 时盖掉旧脏名）。"""
+    url = (source_url or "").strip()
+    if not url:
+        return 0
+    fid_col = str(board_fid).strip() if board_fid not in ("", None) else None
+    name = (board_name or "").strip() or None
+    if not fid_col and not name:
+        return 0
+    forum = (forum_id or "").strip() or None
+    _ensure_resource_schema(conn)
+    with conn.cursor() as cur:
+        if forum:
+            cur.execute(
+                """
+                UPDATE resource_sources
+                SET board_fid = COALESCE(%s, board_fid),
+                    board_name = COALESCE(NULLIF(%s, ''), board_name),
+                    forum_id = COALESCE(%s, forum_id)
+                WHERE source_url = %s
+                """,
+                (fid_col, name or "", forum, url),
+            )
+        else:
+            cur.execute(
+                """
+                UPDATE resource_sources
+                SET board_fid = COALESCE(%s, board_fid),
+                    board_name = COALESCE(NULLIF(%s, ''), board_name)
+                WHERE source_url = %s
+                """,
+                (fid_col, name or "", url),
+            )
+        n = int(cur.rowcount or 0)
+    if commit:
+        conn.commit()
+    return n
+
+
 def _assemble_thread_resource_row(
     *,
     group_id: int,
@@ -939,10 +1145,22 @@ def _assemble_thread_resource_row(
         }
 
     primary = assets[0]
-    # 元数据取最新一条（json_agg 已按 updated_at DESC）
+    # 标题等取首条；板块在同帖多 hash 间另选（避免旧脏名如 bench 盖住重拉结果）
     meta_src = assets_raw[0] if assets_raw and isinstance(assets_raw[0], dict) else {}
     description = meta_src.get("description")
     forum_id = meta_src.get("forum_id")
+    board_fid, board_name = _pick_thread_board_meta(
+        [a for a in (assets_raw or []) if isinstance(a, dict)]
+    )
+    if not board_fid and not board_name:
+        board_fid = meta_src.get("board_fid")
+        board_name = meta_src.get("board_name")
+    # forum_id：优先非空
+    for raw in reversed([a for a in (assets_raw or []) if isinstance(a, dict)]):
+        fid = (raw.get("forum_id") or "").strip()
+        if fid:
+            forum_id = fid
+            break
     hashes = _dedupe_preserve([a["hash"] for a in assets if a.get("hash")])
     links = _dedupe_preserve(
         [a["ed2k_link"] for a in assets if a.get("ed2k_link")]
@@ -960,8 +1178,8 @@ def _assemble_thread_resource_row(
         "title": meta_src.get("title"),
         "description": description,
         "source_url": meta_src.get("source_url"),
-        "board_fid": meta_src.get("board_fid"),
-        "board_name": meta_src.get("board_name"),
+        "board_fid": board_fid,
+        "board_name": board_name,
         "ed2k_links": links,
         "extract_password": meta_src.get("extract_password"),
         "source_key": source_key,

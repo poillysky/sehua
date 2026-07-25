@@ -82,7 +82,7 @@ async def test_head_stops_when_page_all_known(monkeypatch):
 
     pages_fetched: list[int] = []
 
-    async def fake_fetch(fetcher, *, board_fid, page, root, pol):
+    async def fake_fetch(fetcher, *, board_fid, page, root, pol, forum_id="sehuatang"):
         pages_fetched.append(page)
         if page == 1:
             batch = [
@@ -144,7 +144,7 @@ async def test_head_stops_after_one_known_when_configured(monkeypatch):
     from crawler.parser import ThreadBrief
     from workers import list_scan as ls
 
-    async def fake_fetch(fetcher, *, board_fid, page, root, pol):
+    async def fake_fetch(fetcher, *, board_fid, page, root, pol, forum_id="sehuatang"):
         if page == 1:
             batch = [
                 ThreadBrief(tid=1, title="a", url="https://www.sehuatang.net/thread-1-1-1.html"),
@@ -204,7 +204,7 @@ async def test_skip_head_continues_deep_until_repeat(monkeypatch):
 
     pages_fetched: list[int] = []
 
-    async def fake_fetch(fetcher, *, board_fid, page, root, pol):
+    async def fake_fetch(fetcher, *, board_fid, page, root, pol, forum_id="sehuatang"):
         pages_fetched.append(page)
         # P30..P33 各页不同；P34 起与上一页相同 → 到底
         tid = 1000 + min(page, 33)
@@ -255,7 +255,7 @@ async def test_deep_respects_configured_page_cap(monkeypatch):
     from crawler.parser import ThreadBrief
     from workers import list_scan as ls
 
-    async def fake_fetch(fetcher, *, board_fid, page, root, pol):
+    async def fake_fetch(fetcher, *, board_fid, page, root, pol, forum_id="sehuatang"):
         return ls._PageFetch(
             ok=True,
             batch=[
@@ -301,7 +301,7 @@ async def test_deep_stops_when_clamped_to_page1(monkeypatch):
     from crawler.parser import ThreadBrief
     from workers import list_scan as ls
 
-    async def fake_fetch(fetcher, *, board_fid, page, root, pol):
+    async def fake_fetch(fetcher, *, board_fid, page, root, pol, forum_id="sehuatang"):
         if page == 1:
             batch = [
                 ThreadBrief(tid=9, title="home", url="https://www.sehuatang.net/thread-9-1-1.html"),
@@ -359,7 +359,7 @@ async def test_head_only_deep_scan_false(monkeypatch):
 
     pages_fetched: list[int] = []
 
-    async def fake_fetch(fetcher, *, board_fid, page, root, pol):
+    async def fake_fetch(fetcher, *, board_fid, page, root, pol, forum_id="sehuatang"):
         pages_fetched.append(page)
         return ls._PageFetch(
             ok=True,
@@ -418,7 +418,7 @@ async def test_deep_only_scan_head_false(monkeypatch):
 
     pages_fetched: list[int] = []
 
-    async def fake_fetch(fetcher, *, board_fid, page, root, pol):
+    async def fake_fetch(fetcher, *, board_fid, page, root, pol, forum_id="sehuatang"):
         pages_fetched.append(page)
         return ls._PageFetch(
             ok=True,
@@ -522,7 +522,9 @@ def test_board_141_skips_young_posts(monkeypatch):
 
     enqueued_urls: list[str] = []
 
-    def fake_enqueue_thread(conn, *, url, board_fid, board_name, title, retry_after=None):
+    def fake_enqueue_thread(
+        conn, *, url, board_fid, board_name, title, retry_after=None, forum_id="sehuatang"
+    ):
         enqueued_urls.append(url)
         assert retry_after is None
         return True
@@ -530,7 +532,7 @@ def test_board_141_skips_young_posts(monkeypatch):
     monkeypatch.setattr(ls, "connect", lambda: _C())
     monkeypatch.setattr(ls, "connect_resource", lambda: _C())
     monkeypatch.setattr(ls, "enqueue_thread", fake_enqueue_thread)
-    monkeypatch.setattr(ls, "known_resource_tids", lambda conn, tids: set())
+    monkeypatch.setattr(ls, "known_resource_tids", lambda conn, tids, **k: set())
     monkeypatch.setattr(ls, "update_board_meta_by_tids", lambda *a, **k: 0)
     monkeypatch.setattr(ls, "update_crawl_board_meta_by_tids", lambda *a, **k: 0)
     monkeypatch.setattr(

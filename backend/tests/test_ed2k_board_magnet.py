@@ -170,6 +170,36 @@ def test_parse_bare_infohash_feature_code_label():
     assert has_target_link(raw, "magnet")
 
 
+def test_parse_bare_infohash_feature_full_code_2048():
+    """2048【特征全码】裸 infohash。"""
+    h = "D83CC2E432A10E0519282017BB68DA4884E135C8"
+    raw = f"""
+    【影片名称】：测试片子
+    【影片大小】：1.62GB
+    【特征全码】：{h}
+    【作种期限】：做種7天
+    """
+    links = parse_magnet_text(raw)
+    assert len(links) == 1
+    assert links[0].infohash == h.upper()
+    assert has_target_link(raw, "magnet")
+
+
+def test_parse_bare_infohash_verify_full_code_2048():
+    """2048【驗證全码】裸 infohash。"""
+    h = "0c5ae2d3436fcd2bd4359bafdde3bd65ec835deb"
+    raw = f"""
+    【影片名稱】：测试片子
+    【影片大小】：3.71GB
+    【驗證全码】：{h}
+    【作種期限】：做種5天
+    """
+    links = parse_magnet_text(raw)
+    assert len(links) == 1
+    assert links[0].infohash == h.upper()
+    assert has_target_link(raw, "magnet")
+
+
 def test_parse_magnet_btih_wrapped_in_escaped_span():
     """blockcode 把 hash 包进 &lt;span&gt;（tid 3094851 磁力+特征编码同帖）。"""
     h = "bd0be9bbbf9775c1aaeacbf1c3f957371f51542a"

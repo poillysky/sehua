@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from pathlib import Path
 from typing import Any, Optional
 
@@ -21,6 +22,23 @@ DEFAULT_UA = (
 )
 COOKIE_FILE = Path(__file__).resolve().parent.parent / "data" / "cookies.json"
 COOKIE_DOMAINS = (".sehuatang.net", "www.sehuatang.net")
+
+# 长跑时 Chromium 堆/缓存会胀到 GB；每 N 次浏览器操作软回收一次（0=关闭）
+def _recycle_every() -> int:
+    try:
+        return max(0, int(os.getenv("PW_RECYCLE_EVERY", "60") or "60"))
+    except (TypeError, ValueError):
+        return 60
+
+
+_CHROMIUM_LAUNCH_ARGS = (
+    "--disable-dev-shm-usage",
+    "--disk-cache-size=1",
+    "--media-cache-size=1",
+    "--disable-extensions",
+    "--disable-background-networking",
+    "--disable-default-apps",
+)
 
 
 def _fmt_exc(exc: BaseException | None) -> str:
@@ -45,10 +63,14 @@ class SessionManager:
         cookie_file: Path = COOKIE_FILE,
         *,
         proxy: str = "",
+        cookie_domains: tuple[str, ...] | list[str] | None = None,
     ):
         self.user_agent = user_agent or DEFAULT_UA
         self.cookie_file = cookie_file
         self.proxy = (proxy or "").strip()
+        self.cookie_domains: tuple[str, ...] = tuple(
+            d for d in (cookie_domains or COOKIE_DOMAINS) if d
+        ) or COOKIE_DOMAINS
         self.cookies: dict[str, str] = {}
         self._pw: Optional[Playwright] = None
         self._browser: Optional[Browser] = None
@@ -56,6 +78,8 @@ class SessionManager:
         self._page: Optional[Page] = None
         self._ready = False
         self.active_entry_url: str = BASE_URL
+        self._browser_ops = 0
+        self._recycle_every = _recycle_every()
 
     def load(self) -> bool:
         if not self.cookie_file.exists():
@@ -136,6 +160,10 @@ class SessionManager:
             u = (u or "").strip()
             if u and u not in candidates:
                 candidates.append(u)
+        # force 重进站时优先沿用本会话已成功入口，避免误回色花堂默认域
+        active = (self.active_entry_url or "").strip()
+        if active and active not in candidates:
+            candidates.append(active)
         if not candidates:
             candidates = [BASE_URL]
 
@@ -156,7 +184,25 @@ class SessionManager:
                     await page.wait_for_timeout(3000)
 
                 root = site_root(home)
-                probe = (probe_url or f"{root}forum-2-1.html").strip()
+                if probe_url:
+                    probe = probe_url.strip()
+                elif "thread.php" in home.lower() or any(
+                    x in root.lower() for x in ("xc6ym5", "2048", "hjd2048", "a22e7")
+                ):
+                    probe = f"{root}thread.php?fid=2"
+                else:
+                    probe = f"{root}forum-2-1.html"
+                # 按实际入口刷新 cookie 域名（镜像 failover）
+                derived = []
+                try:
+                    from crawler.sites.base import domains_from_entry
+
+                    derived = list(domains_from_entry(home))
+                except Exception:
+                    derived = []
+                if derived:
+                    merged = list(dict.fromkeys([*self.cookie_domains, *derived]))
+                    self.cookie_domains = tuple(merged)
                 html = await self._fetch_html_on_loop(probe)
                 if self.is_safe_shell(html):
                     raise RuntimeError(f"仍卡在十八禁/安全浏览壳，无法进入论坛：{home}")
@@ -183,6 +229,7 @@ class SessionManager:
         return await run_on_pw_loop(self._fetch_html_on_loop(url, timeout_ms=timeout_ms))
 
     async def _fetch_html_on_loop(self, url: str, *, timeout_ms: int = 60000) -> str:
+        await self._maybe_recycle_on_loop()
         await self._ensure_browser()
         assert self._page
         page = self._page
@@ -246,23 +293,75 @@ class SessionManager:
         """在浏览器循环上执行依赖当前 page 的协程工厂 `async def fn(page)`。"""
 
         async def _body() -> Any:
+            await self._maybe_recycle_on_loop()
             await self._ensure_browser()
             assert self._page
             return await fn(self._page)
 
         return await run_on_pw_loop(_body())
 
+    async def _close_extra_pages_on_loop(self) -> None:
+        """关掉附件弹窗等非主 page，避免同 context 页面积压占内存。"""
+        if not self._context or not self._page:
+            return
+        for p in list(self._context.pages):
+            if p is self._page:
+                continue
+            try:
+                await p.close()
+            except Exception:
+                pass
+
+    async def _maybe_recycle_on_loop(self) -> None:
+        """长跑周期性软回收 Chromium，把 RSS 从 GB 级拉回基线附近。"""
+        await self._close_extra_pages_on_loop()
+        every = int(self._recycle_every or 0)
+        if every <= 0 or not self._ready:
+            return
+        self._browser_ops += 1
+        if self._browser_ops < every:
+            return
+        self._browser_ops = 0
+        log.info("Recycling Playwright browser after %s ops (RSS control)", every)
+        try:
+            await self._sync_cookies_from_context()
+        except Exception:
+            pass
+        home = (self.active_entry_url or BASE_URL).strip() or BASE_URL
+        await self._close_on_loop()
+        try:
+            await self._ensure_browser()
+            assert self._page
+            page = self._page
+            await page.goto(home, wait_until="domcontentloaded", timeout=60000)
+            await page.wait_for_timeout(1500)
+            if await self._click_age_gate(page):
+                await page.wait_for_timeout(2000)
+            await self._sync_cookies_from_context()
+            self._ready = True
+            log.info("Browser recycled via %s", home)
+        except Exception as exc:
+            log.warning(
+                "Browser recycle soft-enter failed: %s — next fetch will rebootstrap",
+                _fmt_exc(exc),
+            )
+            self._ready = False
+            await self._close_on_loop()
+
     async def _ensure_browser(self) -> None:
         if self._page and self._context and self._browser:
             return
 
         log.info(
-            "Launching Playwright chromium for sehuatang crawl%s...",
+            "Launching Playwright chromium for crawl%s...",
             f" proxy={self.proxy}" if self.proxy else "",
         )
         try:
             self._pw = await async_playwright().start()
-            launch_kwargs: dict[str, Any] = {"headless": True}
+            launch_kwargs: dict[str, Any] = {
+                "headless": True,
+                "args": list(_CHROMIUM_LAUNCH_ARGS),
+            }
             context_kwargs: dict[str, Any] = {
                 "user_agent": self.user_agent,
                 "locale": "zh-CN",
@@ -308,7 +407,7 @@ class SessionManager:
         for name, value in cookies.items():
             if not value:
                 continue
-            for domain in COOKIE_DOMAINS:
+            for domain in self.cookie_domains:
                 payload.append(
                     {
                         "name": name,

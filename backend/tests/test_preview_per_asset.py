@@ -352,3 +352,31 @@ def test_persist_uses_asset_preview_images(monkeypatch):
     )
     assert calls[0]["preview"] == ["https://cdn.example/a.jpg"]
     assert calls[1]["preview"] == ["https://cdn.example/b.jpg"]
+
+
+def test_phpwind_data_original_lazy_preview():
+    """2048/PHPWind：src 为 thumb-ing 占位，真图在 data-original。"""
+    from parsers.content import extract_preview_images, parse_thread_content
+
+    html = """
+    <img src="./images/close.gif" />
+    <img src="images/wind/level/342.gif" />
+    <div id="read_tpc">
+      【影片名称】：片子一
+      <img class="preview-img" src="./images/thumb-ing.gif"
+           data-original="https://qpic.ws/images/2026/07/22/a.jpg" />
+      【影片名称】：片子二
+      <img class="preview-img" src="./images/thumb-ing.gif"
+           data-original="https://qpic.ws/images/2026/07/22/b.jpg" />
+    </div>
+    """
+    base = "https://ut2gw5.xc6ym5.com/read.php?tid=1"
+    got = extract_preview_images(html, limit=5, base_url=base)
+    assert got == [
+        "https://qpic.ws/images/2026/07/22/a.jpg",
+        "https://qpic.ws/images/2026/07/22/b.jpg",
+    ]
+    content = parse_thread_content(html, tid=1, base_url=base)
+    assert content.preview_images == got
+    assert all("thumb-ing" not in u for u in content.preview_images)
+    assert all("close.gif" not in u for u in content.preview_images)

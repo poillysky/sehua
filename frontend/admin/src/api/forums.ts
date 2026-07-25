@@ -73,6 +73,8 @@ export type ForumItem = {
   id: string
   name: string
   base_url: string
+  /** 论坛图标（弹窗顶栏 / 磁贴），如 /sehuatang-forum-icon.png */
+  icon_url?: string | null
   status: 'active' | 'planned' | string
   /** 本站唯一专用爬虫（色花堂）；其它论坛不可复用其配置 */
   site_dedicated?: boolean

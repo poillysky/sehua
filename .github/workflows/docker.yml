@@ -13,11 +13,11 @@ permissions:
 env:
   GHCR: ghcr.io
   DOCKERHUB_USER: poillysky
-  # 当前发版号；下次发版改为 1.0.3 等，旧版本标签仍保留在 Hub
-  RELEASE_TAG: "1.1.23"
+  # 当前发版号；下次发版改为 1.1.25 等，旧版本标签仍保留在 Hub
+  RELEASE_TAG: "1.1.24"
 
 jobs:
-  backend:
+  app:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -41,8 +41,8 @@ jobs:
         uses: docker/metadata-action@v5
         with:
           images: |
-            ${{ env.GHCR }}/${{ github.repository_owner }}/sehuatang-backend
-            ${{ env.DOCKERHUB_USER }}/sehuatang-backend
+            ${{ env.GHCR }}/${{ github.repository_owner }}/sehuatang-app
+            ${{ env.DOCKERHUB_USER }}/sehuatang-app
           tags: |
             type=raw,value=${{ env.RELEASE_TAG }},enable={{is_default_branch}}
             type=raw,value=latest,enable={{is_default_branch}}
@@ -51,74 +51,12 @@ jobs:
       - uses: docker/build-push-action@v6
         with:
           context: .
-          file: backend/Dockerfile
+          file: deploy/app/Dockerfile
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha,scope=backend
-          cache-to: type=gha,mode=max,scope=backend
-          platforms: linux/amd64
-
-  admin:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: "22"
-          cache: npm
-          cache-dependency-path: frontend/admin/package-lock.json
-
-      - name: Install & build admin
-        working-directory: frontend/admin
-        run: |
-          npm install --no-audit --no-fund
-          npx vite build
-          test -d dist
-
-      - name: Stage runtime context
-        run: |
-          mkdir -p /tmp/admin-runtime/deploy
-          cp -a frontend/admin/dist /tmp/admin-runtime/dist
-          cp frontend/admin/deploy/nginx.conf /tmp/admin-runtime/deploy/nginx.conf
-          cp frontend/admin/Dockerfile.runtime /tmp/admin-runtime/Dockerfile
-
-      - uses: docker/setup-buildx-action@v3
-
-      - name: Login GHCR
-        uses: docker/login-action@v3
-        with:
-          registry: ${{ env.GHCR }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Login Docker Hub
-        uses: docker/login-action@v3
-        with:
-          username: ${{ env.DOCKERHUB_USER }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
-
-      - id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: |
-            ${{ env.GHCR }}/${{ github.repository_owner }}/sehuatang-admin
-            ${{ env.DOCKERHUB_USER }}/sehuatang-admin
-          tags: |
-            type=raw,value=${{ env.RELEASE_TAG }},enable={{is_default_branch}}
-            type=raw,value=latest,enable={{is_default_branch}}
-            type=semver,pattern={{version}}
-
-      - uses: docker/build-push-action@v6
-        with:
-          context: /tmp/admin-runtime
-          file: /tmp/admin-runtime/Dockerfile
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha,scope=admin
-          cache-to: type=gha,mode=max,scope=admin
+          cache-from: type=gha,scope=app
+          cache-to: type=gha,mode=max,scope=app
           platforms: linux/amd64
 
   search:

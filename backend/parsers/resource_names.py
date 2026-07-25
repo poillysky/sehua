@@ -95,24 +95,144 @@ TORRENT_FIELD_FORMS: tuple[str, ...] = (
     "種子名称",
 )
 
+# 结构字段括号（帖内常见全角/半角异写）
+STRUCTURE_FIELD_OPEN = r"[【［〖「『\[]"
+STRUCTURE_FIELD_CLOSE = r"[】］〗」』\]]"
+# 标签与值之间的分隔符（半角/全角冒号、点号）
+_STRUCTURE_SEP = r"[:：﹒．.]?"
+
+# 片名取值截断边界：仅「已知结构字段」，勿在装饰性【S级泄密】【自转】等处切断
+EXTRA_STRUCTURE_BOUNDARY_FORMS: tuple[str, ...] = (
+    "出演女优",
+    "出演女優",
+    "有无水印",
+    "有無浮水印",
+    "有无第三方水印",
+    "有無第三方浮水印",
+    "第三方水印",
+    "第三方浮水印",
+    "解压密码",
+    "解壓密碼",
+    "提取密码",
+    "提取密碼",
+    "资源密码",
+    "資源密碼",
+    "种子期限",
+    "種子期限",
+    "作种期限",
+    "作種期限",
+    "下载方式",
+    "下載方式",
+    "下载工具",
+    "下載工具",
+    "时间长度",
+    "時間長度",
+    "影片时间",
+    "影片時間",
+    "影片时长",
+    "影片時長",
+    "影片有无声音",
+    "影片有無聲音",
+    "影片截图",
+    "影片截圖",
+    "影片预览",
+    "影片預覽",
+    "图片预览",
+    "圖片預覽",
+    "中文片名",
+    "特征全码",
+    "特徵全碼",
+    "验证全码",
+    "驗證全码",
+    "驗證全碼",
+    "种子特码",
+    "種子特碼",
+    "哈希校验",
+    "哈希校驗",
+    "剧情连拍截图/缩略图",
+    "劇情連拍截圖/縮略圖",
+    "剧情连拍截图",
+    "劇情連拍截圖",
+    "资源预览",
+    "資源預覽",
+    "查重证明图",
+    "查重證明圖",
+    "前缀证明图",
+    "前綴證明圖",
+    "资源数量",
+    "資源數量",
+    "发布时间",
+    "發布時間",
+    "分辨率",
+    "解析度",
+    "磁力链接",
+    "磁力連結",
+    "迅雷链接",
+    "迅雷連結",
+    "电驴链接",
+    "電驢連結",
+    "网盘链接",
+    "網盤連結",
+    "分享链接",
+    "分享連結",
+    "提取码",
+    "提取碼",
+    "访问码",
+    "訪問碼",
+    "有效期",
+    "码别",
+    "碼別",
+    "字幕",
+    "音轨",
+    "音軌",
+    "画质",
+    "畫質",
+    "来源",
+    "來源",
+)
+
+STRUCTURE_FIELD_BOUNDARY_FORMS: tuple[str, ...] = tuple(
+    dict.fromkeys(
+        (
+            *SUBRESOURCE_TITLE_MATCH_FORMS,
+            *SIZE_FIELD_FORMS,
+            *FORMAT_FIELD_FORMS,
+            *NOTE_FIELD_FORMS,
+            *TORRENT_FIELD_FORMS,
+            *EXTRA_STRUCTURE_BOUNDARY_FORMS,
+        )
+    )
+)
+
+_STRUCTURE_BOUNDARY_ALT = "|".join(
+    map(re.escape, STRUCTURE_FIELD_BOUNDARY_FORMS)
+)
+# 片名可含嵌套装饰括号 / ??※★ 等前缀；只裁到下一已知结构字段 / 磁力 / ed2k
+_TITLE_VALUE_TAIL = (
+    rf"(?=\s*{STRUCTURE_FIELD_OPEN}\s*(?:{_STRUCTURE_BOUNDARY_ALT})\s*{STRUCTURE_FIELD_CLOSE}"
+    rf"|\s*magnet:|\s*ed2k:|\s*$)"
+)
+
 _SUBRESOURCE_NAME_RES = tuple(
     re.compile(
-        rf"【\s*{re.escape(lab)}\s*】\s*[:：]?\s*(.+?)(?=\s*【|\s*magnet:|\s*ed2k:|\s*$)",
+        rf"{STRUCTURE_FIELD_OPEN}\s*{re.escape(lab)}\s*{STRUCTURE_FIELD_CLOSE}"
+        rf"\s*{_STRUCTURE_SEP}\s*(.+?){_TITLE_VALUE_TAIL}",
         re.I | re.S,
     )
     for lab in SUBRESOURCE_TITLE_MATCH_FORMS
 )
 
-# description 行式：【资源名称】value
+# description 行式：【资源名称】value（亦认异写括号）
 _DESC_LABEL_LINE_RE = re.compile(
-    r"^【\s*([^】]+)\s*】\s*[:：]?\s*(.+)$",
+    rf"^{STRUCTURE_FIELD_OPEN}\s*([^】］〗」』\]]+)\s*{STRUCTURE_FIELD_CLOSE}"
+    rf"\s*{_STRUCTURE_SEP}\s*(.+)$",
     re.M,
 )
 
 _TORRENT_NAME_RE = re.compile(
-    r"【\s*(?:"
+    rf"{STRUCTURE_FIELD_OPEN}\s*(?:"
     + "|".join(map(re.escape, TORRENT_FIELD_FORMS))
-    + r")\s*】\s*[:：]?\s*(.+?)(?=\s*【|\s*magnet:|\s*ed2k:|\s*$)",
+    + rf")\s*{STRUCTURE_FIELD_CLOSE}\s*{_STRUCTURE_SEP}\s*(.+?){_TITLE_VALUE_TAIL}",
     re.I | re.S,
 )
 
@@ -133,9 +253,13 @@ def is_missing_filename(filename: str | None, *, hash_value: str = "") -> bool:
 
 
 def _clean_label_value(raw: str) -> str:
+    """清洗标签值；保留片名常见装饰前缀（?? ※ ★ ！！ 等）。"""
     text = re.sub(r"<[^>]+>", " ", raw or "")
+    text = re.sub(r"&nbsp;", " ", text, flags=re.I)
     text = re.sub(r"\s+", " ", text).strip()
-    text = text.strip("：:|｜/\\")
+    # 只剥字段分隔符，勿动 ?？!！*＊ 等装饰
+    text = re.sub(r"^[:：﹒．.|｜/\\]+", "", text)
+    text = re.sub(r"[:：﹒．.|｜/\\]+$", "", text)
     return text.strip()
 
 

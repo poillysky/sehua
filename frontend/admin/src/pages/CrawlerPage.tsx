@@ -408,6 +408,7 @@ export function CrawlerPage() {
   const looping = !!status?.looping
   const loopKind = status?.loop_kind || (looping ? 'deep' : null)
   const stopping = !!status?.stopping
+  const crawlForumId = status?.forum_id || status?.active_forum_id || ''
   const metrics = status?.metrics
   const queue = status?.queue
   const throttle = status?.throttle
@@ -512,7 +513,7 @@ export function CrawlerPage() {
     setBusy(true)
     try {
       if (next) {
-        await setCrawlerEnabled(true)
+        await setCrawlerEnabled(true, crawlForumId || undefined)
         await startCrawlerLoop()
         toast.success('论坛爬虫已开启 · 连续执行')
       } else {
@@ -542,7 +543,7 @@ export function CrawlerPage() {
     setBusy(true)
     setRunHint('爬取中，请稍候...')
     try {
-      const res = await runCrawlerOnce()
+      const res = await runCrawlerOnce(crawlForumId ? { forum_id: crawlForumId } : undefined)
       const r = res.result || {}
       if (r.skipped) {
         setRunHint(`跳过：${String(r.reason || '本轮未执行')}`)
@@ -577,7 +578,7 @@ export function CrawlerPage() {
     setBusy(true)
     setRunHint('扫新帖中，请稍候...')
     try {
-      const res = await scanHeadOnce()
+      const res = await scanHeadOnce(crawlForumId ? { forum_id: crawlForumId } : undefined)
       const r = res.result || {}
       if (r.skipped) {
         setRunHint(`跳过：${String(r.reason || '本轮未执行')}`)
@@ -613,7 +614,10 @@ export function CrawlerPage() {
     setBusy(true)
     setRunHint('随机抓帖连续调度启动中…')
     try {
-      const res = await startRandomTidLoop({ count: 200 })
+      const res = await startRandomTidLoop({
+        count: 200,
+        ...(crawlForumId ? { forum_id: crawlForumId } : {}),
+      })
       const probe = res.probe ?? 200
       const line =
         res.message === 'already'

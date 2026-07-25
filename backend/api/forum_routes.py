@@ -8,10 +8,15 @@ from pydantic import BaseModel, Field
 from auth.deps import require_permission
 from db.connection import connect
 from db.forum_configs import (
+    CONFIGURABLE_FORUM_IDS,
+    FORUM_2048_ID,
     FORUM_CRAWLER_DEFAULTS,
+    FULL_CRAWLER_FORUM_IDS,
     SITE_CRAWLER_FORUM_ID,
     build_forums_payload,
     clear_board_cursor,
+    default_2048_forum_crawler_config,
+    default_forum_crawler_config,
     load_forum_configs_map,
     save_forum_config,
     set_active_board_fid,
@@ -27,6 +32,7 @@ router = APIRouter(prefix="/api/forum", tags=["forum"])
 
 FORUM_DEFAULT_ENTRY_URLS: dict[str, str] = {
     SITE_CRAWLER_FORUM_ID: DEFAULT_TEST_URL,
+    FORUM_2048_ID: "https://ut2gw5.xc6ym5.com/",
 }
 
 
@@ -67,7 +73,7 @@ def put_forum_config(
     body: ForumConfigBody,
     _user: dict = Depends(require_permission("settings.write")),
 ) -> dict:
-    if forum_id != SITE_CRAWLER_FORUM_ID:
+    if forum_id not in CONFIGURABLE_FORUM_IDS:
         raise HTTPException(status_code=400, detail="该论坛尚未接入配置")
     conn = connect()
     try:
@@ -82,7 +88,7 @@ def put_active_forum(
     body: ActiveForumBody,
     _user: dict = Depends(require_permission("settings.write")),
 ) -> dict:
-    if body.active_forum_id not in {SITE_CRAWLER_FORUM_ID}:
+    if body.active_forum_id not in CONFIGURABLE_FORUM_IDS:
         raise HTTPException(status_code=400, detail="只能启用已接入的论坛")
     conn = connect()
     try:
@@ -98,7 +104,7 @@ def put_active_board(
     body: ActiveBoardBody,
     _user: dict = Depends(require_permission("settings.write")),
 ) -> dict:
-    if forum_id != SITE_CRAWLER_FORUM_ID:
+    if forum_id not in FULL_CRAWLER_FORUM_IDS:
         raise HTTPException(status_code=400, detail="该论坛尚未接入配置")
     conn = connect()
     try:
@@ -122,7 +128,7 @@ def put_enabled_boards(
     body: EnabledBoardsBody,
     _user: dict = Depends(require_permission("settings.write")),
 ) -> dict:
-    if forum_id != SITE_CRAWLER_FORUM_ID:
+    if forum_id not in FULL_CRAWLER_FORUM_IDS:
         raise HTTPException(status_code=400, detail="该论坛尚未接入配置")
     conn = connect()
     try:
@@ -147,7 +153,7 @@ def post_clear_board_cursor(
     _user: dict = Depends(require_permission("settings.write")),
 ) -> dict:
     """清除某二级子版深扫游标；下次深扫从列表第 1 页起。"""
-    if forum_id != SITE_CRAWLER_FORUM_ID:
+    if forum_id not in FULL_CRAWLER_FORUM_IDS:
         raise HTTPException(status_code=400, detail="该论坛尚未接入配置")
     key = (board_key or "").strip()
     if not key:
@@ -182,13 +188,18 @@ def forum_link_test(
     _user: dict = Depends(require_permission("settings.read")),
 ) -> dict:
     fid = (forum_id or "").strip()
-    if fid != SITE_CRAWLER_FORUM_ID:
+    if fid not in CONFIGURABLE_FORUM_IDS:
         raise HTTPException(status_code=400, detail="该论坛尚未接入联通检测")
 
     conn = connect()
     try:
         configs = load_forum_configs_map(conn)
-        fc = configs.get(fid) or dict(FORUM_CRAWLER_DEFAULTS)
+        if fid == SITE_CRAWLER_FORUM_ID:
+            fc = configs.get(fid) or dict(FORUM_CRAWLER_DEFAULTS)
+        elif fid == FORUM_2048_ID:
+            fc = configs.get(fid) or default_2048_forum_crawler_config()
+        else:
+            fc = configs.get(fid) or dict(FORUM_CRAWLER_DEFAULTS)
         proxy = get_setting(conn, "web_crawler_proxy", "")
     finally:
         conn.close()
@@ -217,7 +228,7 @@ async def forum_parse_thread(
 ) -> dict:
     """解析测试：浏览器过 18+，HTTP 读正文；不入库。"""
     fid = (forum_id or "").strip()
-    if fid != SITE_CRAWLER_FORUM_ID:
+    if fid not in FULL_CRAWLER_FORUM_IDS:
         raise HTTPException(status_code=400, detail="该论坛尚未接入解析测试")
 
     url = body.url.strip()
@@ -227,7 +238,10 @@ async def forum_parse_thread(
     conn = connect()
     try:
         configs = load_forum_configs_map(conn)
-        fc = dict(configs.get(fid) or dict(FORUM_CRAWLER_DEFAULTS))
+        if fid == FORUM_2048_ID:
+            fc = dict(configs.get(fid) or default_2048_forum_crawler_config())
+        else:
+            fc = dict(configs.get(fid) or default_forum_crawler_config())
         site_proxy = get_setting(conn, "web_crawler_proxy", "")
     finally:
         conn.close()
@@ -241,6 +255,7 @@ async def forum_parse_thread(
             board_fid=body.fid.strip(),
             proxy_override=body.proxy.strip(),
             crawler_config=fc,
+            forum_id=fid,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=user_facing_error(exc, fallback="帖子 URL 无效")) from exc

@@ -10,6 +10,7 @@ from pydantic import BaseModel, Field
 from auth.deps import require_permission
 from db.connection import connect
 from db.forum_configs import (
+    FULL_CRAWLER_FORUM_IDS,
     SITE_CRAWLER_FORUM_ID,
     build_forums_payload,
     get_active_forum_id,
@@ -50,24 +51,25 @@ router = APIRouter(prefix="/api/crawler", tags=["crawler"])
 
 class EnabledBody(BaseModel):
     enabled: bool = True
-    forum_id: str = Field(default=SITE_CRAWLER_FORUM_ID)
+    # 空 = 跟随当前启用论坛（勿写死色花堂）
+    forum_id: str = ""
 
 
 class RunBody(BaseModel):
-    forum_id: str = Field(default=SITE_CRAWLER_FORUM_ID)
+    forum_id: str = ""
     persist: bool = True
     max_threads: int | None = Field(default=None, ge=1, le=500)
     scan_list: bool = True
 
 
 class ScanHeadBody(BaseModel):
-    forum_id: str = Field(default=SITE_CRAWLER_FORUM_ID)
+    forum_id: str = ""
     persist: bool = True
     max_pages: int | None = Field(default=None, ge=1, le=200)
 
 
 class RandomTidBody(BaseModel):
-    forum_id: str = Field(default=SITE_CRAWLER_FORUM_ID)
+    forum_id: str = ""
     persist: bool = True
     count: int | None = Field(default=None, ge=1, le=500, description="探测 tid 数上限")
     import_target: int | None = Field(
@@ -78,15 +80,31 @@ class RandomTidBody(BaseModel):
 
 
 class RandomTidLoopBody(BaseModel):
-    forum_id: str = Field(default=SITE_CRAWLER_FORUM_ID)
+    forum_id: str = ""
     count: int | None = Field(default=200, ge=1, le=500, description="每轮随机探测数")
     tid_min: int | None = Field(default=None, ge=1, le=50_000_000)
     tid_max: int | None = Field(default=None, ge=1, le=50_000_000)
 
 
+def _resolve_crawler_forum_id(raw: str | None = None) -> str:
+    """优先请求体 forum_id，否则当前启用论坛，最后回退色花堂。"""
+    fid = (raw or "").strip()
+    if fid in FULL_CRAWLER_FORUM_IDS:
+        return fid
+    conn = connect()
+    try:
+        active = (get_active_forum_id(conn) or "").strip()
+    finally:
+        conn.close()
+    if active in FULL_CRAWLER_FORUM_IDS:
+        return active
+    return SITE_CRAWLER_FORUM_ID
+
+
 @router.get("/status")
 def get_crawler_status(_user: dict = Depends(require_permission("crawler.view"))) -> dict:
-    from parsers.boards import BOARD_POLICIES, enabled_queue_board_keys, queue_board_keys
+    from crawler.sites import get_site_adapter
+    from parsers.boards import enabled_queue_board_keys, queue_board_keys
 
     # 紧急/手动停止后 running+stop 可能残留；轮询时幂等复位，避免 UI 一直忙碌
     recover_stuck_after_stop()
@@ -117,7 +135,7 @@ def get_crawler_status(_user: dict = Depends(require_permission("crawler.view"))
         cfg_forum_id = active if active in configs else SITE_CRAWLER_FORUM_ID
         cfg = dict(configs.get(cfg_forum_id) or configs.get(SITE_CRAWLER_FORUM_ID) or {})
         board_fid = str(cfg.get("active_board_fid") or "")
-        enabled_fids = resolve_enabled_board_fids(cfg)
+        enabled_fids = resolve_enabled_board_fids(cfg, forum_id=cfg_forum_id)
 
         # 正常队列 = 启用子板全部待抓合计（实时），避免切板瞬间显示 0 却仍在入库
         queue_keys = enabled_queue_board_keys(enabled_fids)
@@ -162,11 +180,13 @@ def get_crawler_status(_user: dict = Depends(require_permission("crawler.view"))
     except Exception:
         priority_stubs = 0
 
+    adapter = get_site_adapter(cfg_forum_id)
+    policies = adapter.board_policies()
     boards: list[dict] = []
     for efid in enabled_fids:
-        if efid not in BOARD_POLICIES:
+        if efid not in policies:
             continue
-        pol = BOARD_POLICIES[efid]
+        pol = policies[efid]
         boards.append(
             {
                 "key": pol.key,
@@ -286,8 +306,8 @@ async def put_crawler_enabled(
     body: EnabledBody,
     _user: dict = Depends(require_permission("crawl.run")),
 ) -> dict:
-    fid = (body.forum_id or SITE_CRAWLER_FORUM_ID).strip()
-    if fid != SITE_CRAWLER_FORUM_ID:
+    fid = _resolve_crawler_forum_id(body.forum_id)
+    if fid not in FULL_CRAWLER_FORUM_IDS:
         raise HTTPException(status_code=400, detail="该论坛尚未接入爬虫")
 
     # 关闭开关 = 与「手动停止」同路径：协作退出 → 超时取消任务 → 队列保留
@@ -310,7 +330,7 @@ async def put_crawler_enabled(
         cfg = dict(configs.get(fid) or {})
         cfg["web_crawler_enabled"] = True
         saved = save_forum_config(conn, fid, cfg)
-        _log_activity("论坛爬虫已开启")
+        _log_activity(f"论坛爬虫已开启 · {fid}")
         return {
             "message": "success",
             "forum_id": fid,
@@ -339,8 +359,8 @@ async def post_crawler_run(
 ) -> dict:
     """手动立即爬取：只跑一轮；连续调度启用时不可触发。"""
     body = body or RunBody()
-    fid = (body.forum_id or SITE_CRAWLER_FORUM_ID).strip()
-    if fid != SITE_CRAWLER_FORUM_ID:
+    fid = _resolve_crawler_forum_id(body.forum_id)
+    if fid not in FULL_CRAWLER_FORUM_IDS:
         raise HTTPException(status_code=400, detail="该论坛尚未接入爬虫")
     _require_manual_idle(action="立即爬取")
     result = await await_crawl(
@@ -368,8 +388,8 @@ async def post_crawler_scan_head(
 ) -> dict:
     """手动扫新帖：首页捕新入队，本轮不做深扫；连续调度启用时不可触发。"""
     body = body or ScanHeadBody()
-    fid = (body.forum_id or SITE_CRAWLER_FORUM_ID).strip()
-    if fid != SITE_CRAWLER_FORUM_ID:
+    fid = _resolve_crawler_forum_id(body.forum_id)
+    if fid not in FULL_CRAWLER_FORUM_IDS:
         raise HTTPException(status_code=400, detail="该论坛尚未接入爬虫")
     _require_manual_idle(action="扫新帖")
     result = await await_crawl(
@@ -394,8 +414,8 @@ async def post_crawler_random_tid(
 ) -> dict:
     """手动随机抓帖：tid 直链探测早期帖，magnet+ed2k 混合判定入库。"""
     body = body or RandomTidBody()
-    fid = (body.forum_id or SITE_CRAWLER_FORUM_ID).strip()
-    if fid != SITE_CRAWLER_FORUM_ID:
+    fid = _resolve_crawler_forum_id(body.forum_id)
+    if fid not in FULL_CRAWLER_FORUM_IDS:
         raise HTTPException(status_code=400, detail="该论坛尚未接入爬虫")
     _require_manual_idle(action="随机抓帖")
     result = await await_crawl(
@@ -432,8 +452,8 @@ async def post_crawler_random_tid_loop_start(
 ) -> dict:
     """启动随机抓帖连续循环：每轮 count 个随机 tid，跳过已入库，无间隔再开下一轮。"""
     body = body or RandomTidLoopBody()
-    fid = (body.forum_id or SITE_CRAWLER_FORUM_ID).strip()
-    if fid != SITE_CRAWLER_FORUM_ID:
+    fid = _resolve_crawler_forum_id(body.forum_id)
+    if fid not in FULL_CRAWLER_FORUM_IDS:
         raise HTTPException(status_code=400, detail="该论坛尚未接入爬虫")
     result = start_random_tid_loop(
         forum_id=fid,
@@ -613,8 +633,9 @@ def get_queue_browse(
     conn = connect()
     try:
         configs = load_forum_configs_map(conn)
-        cfg = dict(configs.get(SITE_CRAWLER_FORUM_ID) or {})
-        enabled_fids = resolve_enabled_board_fids(cfg)
+        active = get_active_forum_id(conn)
+        cfg = dict(configs.get(active) or configs.get(SITE_CRAWLER_FORUM_ID) or {})
+        enabled_fids = resolve_enabled_board_fids(cfg, forum_id=active)
         queue_keys = enabled_queue_board_keys(enabled_fids)
         if not queue_keys:
             board_fid = str(cfg.get("active_board_fid") or "")

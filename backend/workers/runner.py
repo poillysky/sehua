@@ -7,7 +7,8 @@ import logging
 import time
 from typing import Any, Optional
 
-from crawler.list_urls import list_url_for_board, site_root
+from crawler.list_urls import site_root
+from crawler.sites import get_site_adapter
 from crawler.throttle import THROTTLE
 from db.connection import connect
 from db.forum_configs import (
@@ -38,10 +39,11 @@ from db.queue import (
     tid_from_url,
 )
 from db.settings_store import get_setting
-from parsers.boards import BOARD_POLICIES, enabled_queue_board_keys, get_board_policy, queue_board_keys
+from parsers.boards import enabled_queue_board_keys, queue_board_keys
 from workers.list_scan import scan_board_list
 from workers.pipeline import process_thread
 from workers.session_factory import (
+    bootstrap_probe_for_forum,
     entry_urls_from_config,
     fetcher_from_config,
     session_from_config,
@@ -146,10 +148,11 @@ def emergency_stop_sync() -> dict[str, Any]:
         conn = connect()
         try:
             configs = load_forum_configs_map(conn)
-            cfg = dict(configs.get(SITE_CRAWLER_FORUM_ID) or {})
+            active = get_active_forum_id(conn)
+            cfg = dict(configs.get(active) or {})
             if cfg.get("web_crawler_enabled"):
                 cfg["web_crawler_enabled"] = False
-                save_forum_config(conn, SITE_CRAWLER_FORUM_ID, cfg)
+                save_forum_config(conn, active, cfg)
         finally:
             conn.close()
     except Exception as exc:
@@ -384,7 +387,9 @@ async def run_crawl_once(
         )
 
         _STATE["phase"] = "board_select"
-        enabled = resolve_enabled_board_fids(cfg)
+        adapter = get_site_adapter(forum_id)
+        policies = adapter.board_policies()
+        enabled = resolve_enabled_board_fids(cfg, forum_id=forum_id)
         result["enabled_board_fids"] = enabled
         if board_fid_override is not None:
             board_fid_s = str(board_fid_override).strip()
@@ -392,7 +397,7 @@ async def run_crawl_once(
             board_fid_s = str(cfg.get("active_board_fid") or "").strip()
             if board_fid_s not in enabled and enabled:
                 board_fid_s = enabled[0]
-        if board_fid_s not in BOARD_POLICIES:
+        if board_fid_s not in policies:
             result["ok"] = False
             result["error"] = f"工作子版 {board_fid_s} 不在白名单"
             _log_activity(result["error"])
@@ -403,7 +408,7 @@ async def run_crawl_once(
             _log_activity(result["error"])
             return result
         unit_key = board_fid_s
-        pol = get_board_policy(unit_key)
+        pol = adapter.get_board_policy(unit_key)
         board_fid = int(pol.fid)
         queue_keys = queue_board_keys(unit_key)
         result["board_key"] = unit_key
@@ -421,9 +426,10 @@ async def run_crawl_once(
         )
 
         _STATE["phase"] = "session"
-        session = session_from_config(cfg, proxy=proxy)
+        session = session_from_config(cfg, proxy=proxy, forum_id=forum_id)
         entries = entry_urls_from_config(cfg)
-        await session.bootstrap(entry_urls=entries)
+        probe = bootstrap_probe_for_forum(cfg, forum_id)
+        await session.bootstrap(entry_urls=entries, probe_url=probe)
         start = session.active_entry_url or (entries[0] if entries else "")
         result["proxy_configured"] = bool((proxy or "").strip())
         result["entry_url"] = start
@@ -509,6 +515,7 @@ async def run_crawl_once(
                     persist_enqueue=True,
                     on_log=_log_activity,
                     on_cursor=_on_list_cursor,
+                    forum_id=forum_id,
                 )
                 result["pages_scanned"] = scan.pages_scanned
                 result["pages_head"] = list(getattr(scan, "pages_head", None) or [])
@@ -630,7 +637,7 @@ async def run_crawl_once(
                     + (f" · 游标 P{scan.last_list_page}" if scan.last_list_page else "")
                 )
 
-        list_url = list_url_for_board(board_fid, 1, root=root, policy=pol)
+        list_url = adapter.build_list_url(root, unit_key, 1)
         fetcher.set_referer(list_url)
 
         _STATE["phase"] = "thread_crawl"
@@ -738,7 +745,7 @@ async def run_crawl_once(
             # 旧队列纯 fid：归到当前子版；新队列用子版 key
             if stored_key and ":" in stored_key:
                 thread_key = stored_key
-                thread_pol = get_board_policy(thread_key)
+                thread_pol = adapter.get_board_policy(thread_key)
                 thread_name = stored_name or thread_pol.name
             else:
                 thread_key = unit_key
@@ -758,6 +765,7 @@ async def run_crawl_once(
                     persist=persist,
                     crawler_config=cfg,
                     fetcher=fetcher,
+                    forum_id=forum_id,
                 )
                 result["crawled"] += 1
                 verdict = str(outcome.get("verdict") or "failed")
@@ -1030,7 +1038,7 @@ async def run_scan_head_once(
         cfg = dict(configs.get(forum_id) or {})
     finally:
         conn.close()
-    enabled = resolve_enabled_board_fids(cfg)
+    enabled = resolve_enabled_board_fids(cfg, forum_id=forum_id)
     if not enabled:
         return {"ok": False, "skipped": True, "reason": "no_enabled_boards", "error": "未选择工作板块"}
 
@@ -1248,7 +1256,7 @@ async def run_scan_head_once(
 
 
 async def _continuous_loop() -> None:
-    """拓扑：一轮结束立即再开，无轮间间隔。"""
+    """拓扑：一轮结束立即再开，无轮间间隔。按当前启用论坛调度。"""
     _STATE["looping"] = True
     _STATE["running"] = True
     _STATE["loop_kind"] = "deep"
@@ -1258,15 +1266,17 @@ async def _continuous_loop() -> None:
             # reload enabled each round
             conn = connect()
             try:
+                active = get_active_forum_id(conn)
                 configs = load_forum_configs_map(conn)
-                cfg = configs.get(SITE_CRAWLER_FORUM_ID) or {}
+                cfg = configs.get(active) or {}
             finally:
                 conn.close()
             if not cfg.get("web_crawler_enabled"):
-                _log_activity("开关已关 · 连续调度待命")
+                _log_activity(f"开关已关 · 连续调度待命（{active}）")
                 await THROTTLE.sleep_for(5)
                 continue
             await run_crawl_once(
+                forum_id=active,
                 persist=True,
                 scan_list=True,
                 scan_head=False,
@@ -1361,10 +1371,11 @@ async def stop_crawler(
             conn = connect()
             try:
                 configs = load_forum_configs_map(conn)
-                cfg = dict(configs.get(SITE_CRAWLER_FORUM_ID) or {})
+                active = get_active_forum_id(conn)
+                cfg = dict(configs.get(active) or {})
                 if cfg.get("web_crawler_enabled"):
                     cfg["web_crawler_enabled"] = False
-                    save_forum_config(conn, SITE_CRAWLER_FORUM_ID, cfg)
+                    save_forum_config(conn, active, cfg)
             finally:
                 conn.close()
         except Exception as exc:

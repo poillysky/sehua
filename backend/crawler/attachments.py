@@ -18,7 +18,11 @@ from crawler.session import SessionManager
 from parsers.attachments import (
     AttachmentFetchResult,
     DownloadAttachment,
+    MAX_ARCHIVE_DEPTH,
+    MAX_ARCHIVE_MEMBER_BYTES,
+    MAX_ATTACHMENT_BYTES,
     MAX_ATTACHMENTS_PER_THREAD,
+    MAX_BINARY_LINK_SCAN_BYTES,
     extract_download_attachments,
     filter_all_link_attachments,
     filter_tail_attachments,
@@ -28,6 +32,25 @@ from parsers.attachments import (
 from parsers.torrent import parse_torrent_bytes
 
 log = logging.getLogger(__name__)
+
+
+def _bytes_over_limit(n: int, limit: int = MAX_ATTACHMENT_BYTES) -> bool:
+    return int(n or 0) > int(limit)
+
+
+def _skip_oversized(label: str, size: int, *, limit: int = MAX_ATTACHMENT_BYTES) -> bool:
+    if not _bytes_over_limit(size, limit):
+        return False
+    log.info("Skip oversized %s (%s bytes > %s)", label, size, limit)
+    return True
+
+
+def _read_capped(data: bytes | None, *, label: str, limit: int) -> bytes | None:
+    if data is None:
+        return None
+    if _skip_oversized(label, len(data), limit=limit):
+        return None
+    return data
 
 
 def _decode_bytes(data: bytes) -> str:
@@ -227,7 +250,9 @@ def _extract_via_7z(
     depth: int = 0,
 ) -> str:
     """用 7z 解出压缩包内全部 txt/excel；内层 zip/rar 用帖内密码逐个再解。"""
-    if depth > 24:
+    if depth > MAX_ARCHIVE_DEPTH:
+        return ""
+    if _skip_oversized(f"7z archive depth={depth}", len(data or b"")):
         return ""
     seven = _which_7z()
     if not seven:
@@ -280,8 +305,21 @@ def _extract_via_7z(
                 }:
                     continue
                 try:
+                    if _skip_oversized(
+                        f"7z member {path.name}",
+                        path.stat().st_size,
+                        limit=MAX_ARCHIVE_MEMBER_BYTES,
+                    ):
+                        continue
                     raw_member = path.read_bytes()
                 except OSError:
+                    continue
+                raw_member = _read_capped(
+                    raw_member,
+                    label=f"7z member {path.name}",
+                    limit=MAX_ARCHIVE_MEMBER_BYTES,
+                )
+                if raw_member is None:
                     continue
                 text = _text_from_archive_member(path.name, raw_member)
                 early = _push_member_text(member_texts, text)
@@ -301,10 +339,21 @@ def _extract_via_7z(
                 if not kind:
                     continue
                 try:
+                    if _skip_oversized(
+                        f"7z nested {path.name}",
+                        path.stat().st_size,
+                        limit=MAX_ATTACHMENT_BYTES,
+                    ):
+                        continue
                     nested = path.read_bytes()
                 except OSError:
                     continue
                 if len(nested) < 32:
+                    continue
+                nested = _read_capped(
+                    nested, label=f"7z nested {path.name}", limit=MAX_ATTACHMENT_BYTES
+                )
+                if nested is None:
                     continue
                 text = _extract_txt_from_archive(
                     nested, kind, passwords=pwds, depth=depth + 1
@@ -318,11 +367,35 @@ def _extract_via_7z(
     return ""
 
 
+def _zip_member_bytes(
+    archive: Any,
+    name: str,
+    *,
+    pwd: bytes | None = None,
+    limit: int = MAX_ARCHIVE_MEMBER_BYTES,
+) -> bytes | None:
+    """读 zip 成员；按声明大小与解压后大小双重封顶，防 zip bomb。"""
+    try:
+        info = archive.getinfo(name)
+        declared = int(getattr(info, "file_size", 0) or 0)
+        if declared and _skip_oversized(f"zip member {name}", declared, limit=limit):
+            return None
+    except Exception:
+        pass
+    try:
+        raw = archive.read(name, pwd=pwd) if pwd else archive.read(name)
+    except Exception:
+        return None
+    return _read_capped(raw, label=f"zip member {name}", limit=limit)
+
+
 def _extract_zip_pyzipper(
     data: bytes, passwords: list[str] | None = None, *, depth: int = 0
 ) -> str:
     """AES zip（stdlib 不解）优先走 pyzipper；支持内层 zip/rar。"""
-    if depth > 24:
+    if depth > MAX_ARCHIVE_DEPTH:
+        return ""
+    if _skip_oversized(f"pyzipper archive depth={depth}", len(data or b"")):
         return ""
     try:
         import pyzipper
@@ -337,18 +410,18 @@ def _extract_zip_pyzipper(
                 names = archive.namelist()
                 member_texts: list[str] = []
                 for name in _link_member_names_in_archive(names):
-                    try:
-                        raw_member = archive.read(name)
-                    except Exception:
+                    raw_member = _zip_member_bytes(archive, name)
+                    if raw_member is None:
                         continue
                     text = _text_from_archive_member(name, raw_member)
                     early = _push_member_text(member_texts, text)
                     if early:
                         return early
                 for name, kind in _nested_archive_members(names):
-                    try:
-                        nested = archive.read(name)
-                    except Exception:
+                    nested = _zip_member_bytes(
+                        archive, name, limit=MAX_ATTACHMENT_BYTES
+                    )
+                    if nested is None:
                         continue
                     text = _extract_txt_from_archive(
                         nested, kind, passwords=pwds, depth=depth + 1
@@ -367,7 +440,9 @@ def _extract_zip_pyzipper(
 def _extract_rar_text(
     data: bytes, passwords: list[str] | None = None, *, depth: int = 0
 ) -> str:
-    if depth > 24:
+    if depth > MAX_ARCHIVE_DEPTH:
+        return ""
+    if _skip_oversized(f"rar archive depth={depth}", len(data or b"")):
         return ""
     pwds = [p for p in (passwords or []) if p]
     try:
@@ -391,8 +466,23 @@ def _extract_rar_text(
                             member_texts: list[str] = []
                             for name in _link_member_names_in_archive(names):
                                 try:
+                                    info = archive.getinfo(name)
+                                    declared = int(getattr(info, "file_size", 0) or 0)
+                                    if declared and _skip_oversized(
+                                        f"rar member {name}",
+                                        declared,
+                                        limit=MAX_ARCHIVE_MEMBER_BYTES,
+                                    ):
+                                        continue
                                     raw_member = archive.read(name)
                                 except Exception:
+                                    continue
+                                raw_member = _read_capped(
+                                    raw_member,
+                                    label=f"rar member {name}",
+                                    limit=MAX_ARCHIVE_MEMBER_BYTES,
+                                )
+                                if raw_member is None:
                                     continue
                                 text = _text_from_archive_member(name, raw_member)
                                 early = _push_member_text(member_texts, text)
@@ -402,6 +492,13 @@ def _extract_rar_text(
                                 try:
                                     nested = archive.read(name)
                                 except Exception:
+                                    continue
+                                nested = _read_capped(
+                                    nested,
+                                    label=f"rar nested {name}",
+                                    limit=MAX_ATTACHMENT_BYTES,
+                                )
+                                if nested is None:
                                     continue
                                 text = _extract_txt_from_archive(
                                     nested, kind, passwords=pwds, depth=depth + 1
@@ -431,7 +528,9 @@ def _extract_rar_text(
 def _extract_zip_txt(
     data: bytes, passwords: list[str] | None = None, *, depth: int = 0
 ) -> str:
-    if depth > 24:
+    if depth > MAX_ARCHIVE_DEPTH:
+        return ""
+    if _skip_oversized(f"zip archive depth={depth}", len(data or b"")):
         return ""
     pwds = [p for p in (passwords or []) if p]
     try:
@@ -455,9 +554,8 @@ def _extract_zip_txt(
         member_texts: list[str] = []
         for name in _link_member_names_in_archive(names):
             for pwd in pwd_attempts:
-                try:
-                    raw = archive.read(name, pwd=pwd) if pwd else archive.read(name)
-                except Exception:
+                raw = _zip_member_bytes(archive, name, pwd=pwd)
+                if raw is None:
                     continue
                 text = _text_from_archive_member(name, raw)
                 if text.strip():
@@ -467,9 +565,10 @@ def _extract_zip_txt(
                     break
         for name, kind in _nested_archive_members(names):
             for pwd in pwd_attempts:
-                try:
-                    nested = archive.read(name, pwd=pwd) if pwd else archive.read(name)
-                except Exception:
+                nested = _zip_member_bytes(
+                    archive, name, pwd=pwd, limit=MAX_ATTACHMENT_BYTES
+                )
+                if nested is None:
                     continue
                 text = _extract_txt_from_archive(
                     nested, kind, passwords=pwds, depth=depth + 1
@@ -497,6 +596,10 @@ def _extract_txt_from_archive(
     *,
     depth: int = 0,
 ) -> str:
+    if depth > MAX_ARCHIVE_DEPTH:
+        return ""
+    if _skip_oversized(f"{kind} archive depth={depth}", len(data or b"")):
+        return ""
     if kind == "zip":
         return _extract_zip_txt(data, passwords=passwords, depth=depth)
     if kind == "rar":
@@ -527,8 +630,21 @@ def _extract_text_from_xlsx_zip(data: bytes) -> str:
             if "xl/" not in lower:
                 continue
             try:
+                info = zf.getinfo(name)
+                declared = int(getattr(info, "file_size", 0) or 0)
+                if declared and _skip_oversized(
+                    f"xlsx xml {name}",
+                    declared,
+                    limit=MAX_ARCHIVE_MEMBER_BYTES,
+                ):
+                    continue
                 raw = zf.read(name)
             except Exception:
+                continue
+            raw = _read_capped(
+                raw, label=f"xlsx xml {name}", limit=MAX_ARCHIVE_MEMBER_BYTES
+            )
+            if raw is None:
                 continue
             text = _decode_bytes(raw)
             # 去掉标签，保留属性/文本里的 magnet、ed2k
@@ -597,6 +713,10 @@ def _extract_links_from_binary_blob(data: bytes) -> str:
 
     if not data:
         return ""
+    # 超大二进制只扫头尾，避免 latin-1/utf-16 三份整文件解码撑爆内存
+    scan = MAX_BINARY_LINK_SCAN_BYTES
+    if len(data) > scan * 2:
+        data = data[:scan] + data[-scan:]
     out: list[str] = []
     seen: set[str] = set()
     for blob in (
@@ -668,8 +788,21 @@ def _extract_text_from_docx(data: bytes) -> str:
         names.sort(key=lambda n: (0 if n.lower().endswith("document.xml") else 1, n))
         for name in names:
             try:
+                info = zf.getinfo(name)
+                declared = int(getattr(info, "file_size", 0) or 0)
+                if declared and _skip_oversized(
+                    f"docx xml {name}",
+                    declared,
+                    limit=MAX_ARCHIVE_MEMBER_BYTES,
+                ):
+                    continue
                 raw = zf.read(name)
             except Exception:
+                continue
+            raw = _read_capped(
+                raw, label=f"docx xml {name}", limit=MAX_ARCHIVE_MEMBER_BYTES
+            )
+            if raw is None:
                 continue
             plain = _xml_plain_text(_decode_bytes(raw))
             if plain.strip():
@@ -717,6 +850,10 @@ def _text_from_attachment_bytes(
     data: bytes,
     passwords: list[str] | None = None,
 ) -> str:
+    if not data:
+        return ""
+    if _skip_oversized(attachment.name or attachment.kind, len(data)):
+        return ""
     if attachment.kind == "torrent":
         magnet = parse_torrent_bytes(data, filename_hint=attachment.name)
         return magnet.link if magnet else ""
@@ -764,12 +901,35 @@ class AttachmentDownloader:
     async def _fetch_bytes_via_page(self, url: str) -> tuple[bytes | None, bool]:
         async def _on_page(page: Any) -> tuple[bytes | None, bool]:
             try:
+                # Content-Length / 实际体积超限则不 btoa，避免 2～3× 峰值
                 result = await page.evaluate(
                     """
-                    async (targetUrl) => {
+                    async ({ targetUrl, maxBytes }) => {
                         const resp = await fetch(targetUrl, { credentials: 'include' });
                         const contentType = resp.headers.get('content-type') || '';
+                        const cl = resp.headers.get('content-length');
+                        if (cl) {
+                            const n = parseInt(cl, 10);
+                            if (!Number.isNaN(n) && n > maxBytes) {
+                                return {
+                                    status: resp.status,
+                                    contentType,
+                                    body: '',
+                                    skipped: 'too_large',
+                                    size: n,
+                                };
+                            }
+                        }
                         const buf = await resp.arrayBuffer();
+                        if (buf.byteLength > maxBytes) {
+                            return {
+                                status: resp.status,
+                                contentType,
+                                body: '',
+                                skipped: 'too_large',
+                                size: buf.byteLength,
+                            };
+                        }
                         const bytes = new Uint8Array(buf);
                         let binary = '';
                         const chunk = 0x8000;
@@ -780,10 +940,11 @@ class AttachmentDownloader:
                             status: resp.status,
                             contentType,
                             body: btoa(binary),
+                            size: bytes.length,
                         };
                     }
                     """,
-                    url,
+                    {"targetUrl": url, "maxBytes": MAX_ATTACHMENT_BYTES},
                 )
             except Exception as exc:
                 log.debug("Attachment page fetch failed %s: %s", url, exc)
@@ -792,9 +953,19 @@ class AttachmentDownloader:
             if not result or result.get("status") != 200:
                 return None, False
 
+            if result.get("skipped") == "too_large":
+                log.info(
+                    "Attachment skipped (too large): %s (%s bytes)",
+                    url,
+                    result.get("size"),
+                )
+                return None, False
+
             content_type = (result.get("contentType") or "").lower()
             data = base64.b64decode(result.get("body") or "")
             if not data:
+                return None, False
+            if _skip_oversized(url, len(data)):
                 return None, False
 
             if "text/html" in content_type or data.startswith(b"<!DOCTYPE") or data.startswith(b"<html"):
@@ -842,13 +1013,19 @@ class AttachmentDownloader:
                 download = await download_info.value
                 temp_path = Path(tempfile.gettempdir()) / f"sht-attach-{int(time.time() * 1000)}{suffix}"
                 await download.save_as(temp_path)
-                data = temp_path.read_bytes()
-                temp_path.unlink(missing_ok=True)
+                try:
+                    size = temp_path.stat().st_size
+                    if _skip_oversized(attachment.name or attachment.url, size):
+                        return None, False
+                    data = temp_path.read_bytes()
+                finally:
+                    temp_path.unlink(missing_ok=True)
                 if data:
                     return data, False
             except Exception:
                 pass
 
+            popup = None
             try:
                 async with page.expect_popup(timeout=popup_ms) as popup_info:
                     await locator.click(timeout=5000)
@@ -857,10 +1034,8 @@ class AttachmentDownloader:
                 html = await popup.content()
                 if is_attachment_denied(html):
                     log.info("Attachment popup denied: %s", attachment.name)
-                    await popup.close()
                     return None, True
                 text = _decode_bytes(html.encode("utf-8", errors="ignore"))
-                await popup.close()
                 if suffix == ".torrent":
                     magnet = parse_torrent_bytes(
                         text.encode("utf-8", errors="ignore"),
@@ -875,6 +1050,19 @@ class AttachmentDownloader:
                     return payload.encode("utf-8", errors="ignore"), False
             except Exception as exc:
                 log.debug("Attachment popup failed %s: %s", attachment.name, exc)
+            finally:
+                if popup is not None:
+                    try:
+                        await popup.close()
+                    except Exception:
+                        pass
+                # 关掉同 context 残留页，避免长跑页面积压
+                try:
+                    for p in list(page.context.pages):
+                        if p is not page:
+                            await p.close()
+                except Exception:
+                    pass
 
             return None, False
 

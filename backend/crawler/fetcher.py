@@ -36,17 +36,38 @@ def detect_fetch_mode(url: str) -> Literal["browser", "http"]:
     """列表与帖子默认 HTTP；不明入口仍走浏览器。"""
     u = (url or "").lower()
     path = urlparse(url).path.lower() if url else ""
-    if "viewthread" in u or "thread-" in path or "mod=viewthread" in u:
+    if (
+        "viewthread" in u
+        or "thread-" in path
+        or "mod=viewthread" in u
+        or "read.php" in path
+        or "read.php" in u
+    ):
         return "http"
     if (
         "forumdisplay" in u
         or "forum-" in path
         or path.rstrip("/").endswith("forum.php")
         or "/forum.php" in u
+        or "thread.php" in path
+        or "thread.php" in u
     ):
         return "http"
     # 默认保守：不明 URL 用浏览器（进站探测等）
     return "browser"
+
+
+def is_valid_list_html(html: str, url: str = "") -> bool:
+    """Discuz / PHPWind 列表页均可。"""
+    from crawler.parser import is_valid_forum_list
+    from crawler.parser_phpwind import is_valid_phpwind_list
+
+    u = (url or "").lower()
+    if "thread.php" in u or "read.php" in u:
+        return is_valid_phpwind_list(html)
+    if is_valid_forum_list(html):
+        return True
+    return is_valid_phpwind_list(html)
 
 
 class Fetcher:
@@ -110,7 +131,6 @@ class Fetcher:
 
     async def get_list_html(self, url: str, retries: int = 3) -> str:
         """HTTP 读列表；遇安全壳 / 无效列表 / 失败时浏览器整页回退。"""
-        from crawler.parser import is_valid_forum_list
         from parsers.thread_gates import is_safe_or_soft_shell
 
         self.last_list_browser_fallback = False
@@ -136,7 +156,7 @@ class Fetcher:
                     need_browser = (
                         is_safe_or_soft_shell(html)
                         or SessionManager.is_safe_shell(html)
-                        or not is_valid_forum_list(html)
+                        or not is_valid_list_html(html, url)
                     )
                     if need_browser:
                         log.info(
@@ -151,7 +171,7 @@ class Fetcher:
                     self.last_list_browser_fallback = True
 
                 self._assert_usable_html(html, url, allow_soft=False)
-                if not is_valid_forum_list(html):
+                if not is_valid_list_html(html, url):
                     raise FetchError(f"列表页无效：{url}")
                 self.session.save()
                 return html
@@ -277,7 +297,15 @@ class Fetcher:
             return
         if SessionManager.is_safe_shell(html):
             raise FetchError(f"十八禁门拦截未解除：{url}")
-        if "Powered by Discuz" not in html and len(html) < 5000:
+        engine_ok = (
+            "Powered by Discuz" in html
+            or "Powered by PHPWind" in html
+            or "read.php?tid=" in html
+            or "thread.php?fid=" in html
+            or 'id="read_tpc"' in html
+            or "id='read_tpc'" in html
+        )
+        if not engine_ok and len(html) < 5000:
             title = self._extract_title(html)
             raise FetchError(f"页面内容异常（标题={title!r}）：{url}")
 

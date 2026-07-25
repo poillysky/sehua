@@ -5,9 +5,11 @@ from __future__ import annotations
 from typing import Any
 
 from db.repository import (
+    delete_other_resources_by_source_url,
     delete_stub_by_source_url,
     ensure_source,
     import_thread_stub,
+    sync_board_meta_by_source_url,
     upsert_resource,
 )
 from parsers.ed2k import Ed2kLink
@@ -26,12 +28,14 @@ def persist_dual_parse(
     source_key: str = "web:crawler",
     source_name: str = "网站爬虫",
     import_outcome: str | None = None,
+    replace_thread_assets: bool = False,
 ) -> dict[str, Any]:
     """Persist one thread parse. Returns {count, stub, hash, link_kind}.
 
     - 主资源名 title = 帖子标题
     - 子资源名 filename = 【影片名称】/【资源名称】；没有则用主标题（不用 ed2k/dn 链内名）
     - 多磁力/多 ed2k：按 hash 各写一条
+    - replace_thread_assets：重爬时删掉同帖 URL 下本次未保留的旧真链
     """
     source_id = ensure_source(conn, source_key, source_name, "web")
     fid = str(board_fid) if board_fid not in ("", None) else None
@@ -117,6 +121,25 @@ def persist_dual_parse(
         )
         last_hash = asset.hash
 
+    kept = [str(a.hash).strip().upper() for a in uniq if a.hash]
+    purged = 0
+    if replace_thread_assets and kept:
+        # 重爬：同帖只保留本次解析出的真链，清掉旧 hash（含历史脏板块行）
+        purged = delete_other_resources_by_source_url(
+            conn,
+            source_url,
+            kept,
+            commit=False,
+        )
+    # 同帖旧 hash 行也回写板块（未开启替换时仍修正脏名）
+    sync_board_meta_by_source_url(
+        conn,
+        source_url,
+        board_fid=fid,
+        board_name=board_name or None,
+        forum_id=forum_id,
+        commit=True,
+    )
     # 真链入库后清掉同帖占位，避免「ed2k + stub」被当成 ×2 合集
     delete_stub_by_source_url(conn, source_url)
 
@@ -126,6 +149,7 @@ def persist_dual_parse(
         "hash": last_hash,
         "link_kind": primary.link_kind,
         "import_outcome": outcome_msg,
+        "purged": purged,
     }
 
 

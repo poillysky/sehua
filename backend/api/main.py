@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import os
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -46,8 +47,28 @@ from db.resource_db import (
 )
 from parsers.links import parse_thread_dual
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+_LOG_LEVEL_NAME = (os.getenv("LOG_LEVEL") or "INFO").strip().upper()
+_LOG_LEVEL = getattr(logging, _LOG_LEVEL_NAME, logging.INFO)
+logging.basicConfig(
+    level=_LOG_LEVEL,
+    format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+    force=True,
+)
+# 爬虫/worker 与 uvicorn 访问日志跟 LOG_LEVEL 对齐（DEBUG 时更细）
+for _name in (
+    "api",
+    "crawler",
+    "workers",
+    "parsers",
+    "db",
+    "uvicorn",
+    "uvicorn.error",
+    "uvicorn.access",
+):
+    logging.getLogger(_name).setLevel(_LOG_LEVEL)
 logger = logging.getLogger("api")
+logger.info("logging ready level=%s", _LOG_LEVEL_NAME)
 
 
 @asynccontextmanager
@@ -227,7 +248,10 @@ def data_overview(_user: dict = Depends(require_permission("settings.write"))) -
                 separate = False
         overview = get_data_overview(conn, rconn if separate else None)
         configs = load_forum_configs_map(conn)
-        cfg = dict(configs.get(SITE_CRAWLER_FORUM_ID) or {})
+        from db.forum_configs import get_active_forum_id
+
+        active = get_active_forum_id(conn) or SITE_CRAWLER_FORUM_ID
+        cfg = dict(configs.get(active) or configs.get(SITE_CRAWLER_FORUM_ID) or {})
         st = crawl_status()
         return {
             "message": "success",
@@ -331,10 +355,7 @@ def _require_crawler_idle_or_409(*, disable_switch: bool = True) -> None:
         if disable_switch:
             conn = connect()
             try:
-                configs = load_forum_configs_map(conn)
-                cfg = dict(configs.get(SITE_CRAWLER_FORUM_ID) or {})
-                cfg["web_crawler_enabled"] = False
-                save_forum_config(conn, SITE_CRAWLER_FORUM_ID, cfg)
+                _disable_crawler_switch(conn)
             finally:
                 conn.close()
         raise HTTPException(
@@ -344,11 +365,16 @@ def _require_crawler_idle_or_409(*, disable_switch: bool = True) -> None:
 
 
 def _disable_crawler_switch(conn) -> None:
+    from db.forum_configs import get_active_forum_id
+
     configs = load_forum_configs_map(conn)
-    cfg = dict(configs.get(SITE_CRAWLER_FORUM_ID) or {})
-    if cfg.get("web_crawler_enabled"):
-        cfg["web_crawler_enabled"] = False
-        save_forum_config(conn, SITE_CRAWLER_FORUM_ID, cfg)
+    active = get_active_forum_id(conn) or SITE_CRAWLER_FORUM_ID
+    targets = {active, SITE_CRAWLER_FORUM_ID}
+    for fid in targets:
+        cfg = dict(configs.get(fid) or {})
+        if cfg.get("web_crawler_enabled"):
+            cfg["web_crawler_enabled"] = False
+            save_forum_config(conn, fid, cfg)
 
 
 @app.post("/api/system/reset")

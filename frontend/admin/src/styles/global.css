@@ -6269,7 +6269,82 @@ html:has(body.modal-open) {
   display: block;
 }
 
+.forum-card-icon-lg {
+  width: 52px;
+  height: 52px;
+  border-radius: 14px;
+}
+
 .forum-modal-title:has(.forum-card-icon-img) .forum-card-icon {
+  background: #f3f6fb;
+  border: 1px solid color-mix(in srgb, var(--border) 70%, transparent);
+}
+
+.forum-modal-planned .modal-body {
+  padding-top: 8px;
+}
+
+.forum-planned-body {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+.forum-planned-hero {
+  display: grid;
+  place-items: center;
+  padding: 28px 16px 12px;
+}
+
+.forum-planned-hero-icon {
+  width: 96px;
+  height: 96px;
+  border-radius: 24px;
+  overflow: hidden;
+  display: grid;
+  place-items: center;
+  background: #f3f6fb;
+  border: 1px solid color-mix(in srgb, var(--border) 65%, transparent);
+  box-shadow: 0 10px 28px color-mix(in srgb, #1e4fd8 12%, transparent);
+}
+
+.forum-planned-hero-icon .forum-card-icon-img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  padding: 14px;
+  box-sizing: border-box;
+  background: #fff;
+}
+
+.forum-planned-hero-icon svg {
+  width: 44px;
+  height: 44px;
+  color: var(--primary);
+}
+
+.forum-planned-policies {
+  margin: 0;
+  padding: 0 4px 8px 22px;
+  display: grid;
+  gap: 8px;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+.forum-icon-tile-planned .forum-icon-tile-icon {
+  background: #f3f6fb;
+}
+
+.forum-icon-tile-planned .forum-icon-tile-img {
+  object-fit: contain;
+  padding: 8px;
+  box-sizing: border-box;
+  background: #fff;
+}
+
+.forum-icon-wrap-site .forum-icon-tile-site .forum-icon-tile-icon {
   background: #f7f0e8;
 }
 

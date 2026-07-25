@@ -15,7 +15,7 @@ from datetime import datetime, timedelta
 from typing import Callable, Optional
 
 from crawler.fetcher import Fetcher
-from crawler.list_urls import list_url_for_board, resolve_page_cap, site_root
+from crawler.list_urls import resolve_page_cap, site_root
 from crawler.parser import ThreadBrief, is_valid_forum_list, parse_forum_list
 from crawler.session import SessionManager
 from crawler.throttle import THROTTLE
@@ -23,7 +23,6 @@ from db.connection import connect
 from db.queue import enqueue_thread, update_crawl_board_meta_by_tids
 from db.repository import known_resource_tids, update_board_meta_by_tids
 from db.resource_db import connect_resource
-from parsers.boards import get_board_policy
 from parsers.list_dates import is_thread_old_enough
 from parsers.thread_gates import is_thread_login_required
 
@@ -115,16 +114,24 @@ async def _fetch_list_page(
     page: int,
     root: str,
     pol,
+    forum_id: str = "sehuatang",
 ) -> _PageFetch:
     """拉取列表页；不在此做龄期过滤（留给入队侧拆分即时/延期）。"""
-    url = list_url_for_board(board_fid, page, root=root, policy=pol)
+    from crawler.sites import get_site_adapter, is_phpwind
+    from crawler.parser_phpwind import is_valid_phpwind_list, parse_forum_list_phpwind
+
+    adapter = get_site_adapter(forum_id)
+    url = adapter.build_list_url(root, board_fid, page)
     try:
         html = await fetcher.get_list_html(url)
         THROTTLE.record_success()
     except Exception as exc:
         THROTTLE.record_failure()
         try:
-            await fetcher.session.bootstrap(force=True, start_url=root)
+            probe = adapter.bootstrap_probe_url(root)
+            await fetcher.session.bootstrap(
+                force=True, start_url=root, probe_url=probe, entry_urls=[root]
+            )
             html = await fetcher.get_list_html(url)
             THROTTLE.record_success()
         except Exception as retry_exc:
@@ -134,24 +141,31 @@ async def _fetch_list_page(
     if SessionManager.is_safe_shell(html):
         THROTTLE.record_failure()
         try:
-            await fetcher.session.bootstrap(force=True, start_url=root)
+            probe = adapter.bootstrap_probe_url(root)
+            await fetcher.session.bootstrap(
+                force=True, start_url=root, probe_url=probe, entry_urls=[root]
+            )
         except Exception:
             pass
         return _PageFetch(ok=False, error=f"page={page}: safe-shell")
 
-    if is_thread_login_required(html) and not is_valid_forum_list(html):
+    valid = is_valid_phpwind_list(html) if is_phpwind(forum_id) else is_valid_forum_list(html)
+    if is_thread_login_required(html) and not valid:
         return _PageFetch(ok=False, login_required=True, error=f"page={page}: login-required")
 
-    if not is_valid_forum_list(html):
+    if not valid:
         THROTTLE.record_failure()
         return _PageFetch(ok=False, error=f"page={page}: invalid list html")
 
-    batch = parse_forum_list(
-        html,
-        base_url=root,
-        skip_sticky=True,
-        min_thread_age_days=0,
-    )
+    if is_phpwind(forum_id):
+        batch = parse_forum_list_phpwind(html, base_url=root, skip_sticky=True)
+    else:
+        batch = parse_forum_list(
+            html,
+            base_url=root,
+            skip_sticky=True,
+            min_thread_age_days=0,
+        )
     if not batch:
         return _PageFetch(ok=True, empty_list=True, batch=[])
     return _PageFetch(ok=True, batch=batch)
@@ -166,6 +180,8 @@ def _enqueue_batch(
     board_name: str,
     persist_enqueue: bool,
     min_thread_age_days: int = 0,
+    forum_id: str = "sehuatang",
+    entry_url: str = "",
 ) -> tuple[int, int]:
     """入队缺失帖；已有资源只改板块字段不读帖。
 
@@ -180,7 +196,13 @@ def _enqueue_batch(
         rconn = connect_resource()
         try:
             tids = [int(t.tid) for t in batch if getattr(t, "tid", None)]
-            known = known_resource_tids(rconn, tids) if tids else set()
+            known = (
+                known_resource_tids(
+                    rconn, tids, forum_id=forum_id, entry_url=entry_url
+                )
+                if tids
+                else set()
+            )
             to_update = [tid for tid in tids if tid in known and tid not in seen]
             # 去重后再更新，避免同页重复 tid
             to_update = list(dict.fromkeys(to_update))
@@ -190,6 +212,8 @@ def _enqueue_batch(
                     to_update,
                     board_fid=str(board_fid),
                     board_name=board_name,
+                    forum_id=forum_id,
+                    entry_url=entry_url,
                 )
                 update_crawl_board_meta_by_tids(
                     conn,
@@ -220,6 +244,7 @@ def _enqueue_batch(
                     board_fid=board_fid,
                     board_name=board_name,
                     title=t.title,
+                    forum_id=forum_id,
                     retry_after=None,
                 ):
                     out.enqueued += 1
@@ -267,6 +292,7 @@ async def scan_board_list(
     persist_enqueue: bool = True,
     on_log: Optional[LogFn] = None,
     on_cursor: Optional[CursorFn] = None,
+    forum_id: str = "sehuatang",
 ) -> ListScanResult:
     """扫列表并入队。
 
@@ -278,7 +304,10 @@ async def scan_board_list(
     5. 列表页失败不推进游标。
     6. 龄期板仅入队已满龄帖；未满龄跳过，不入队。
     """
-    pol = get_board_policy(board_fid)
+    from crawler.sites import get_site_adapter
+
+    adapter = get_site_adapter(forum_id)
+    pol = adapter.get_board_policy(board_fid)
     numeric_fid = int(pol.fid)
     root = site_root(entry_url)
     harvest_quota = resolve_page_cap(pages_per_board, max_list_pages)
@@ -355,6 +384,7 @@ async def scan_board_list(
                 page=page,
                 root=root,
                 pol=pol,
+                forum_id=forum_id,
             )
             if fetched.login_required:
                 out.login_required = True
@@ -400,6 +430,8 @@ async def scan_board_list(
                 board_name=name,
                 persist_enqueue=persist_enqueue,
                 min_thread_age_days=min_age,
+                forum_id=forum_id,
+                entry_url=entry_url,
             )
             page_upd = out.board_updated - upd_before
             # 未满龄跳过不算「全已知」，避免板 141 首页因年轻帖早停
@@ -466,6 +498,7 @@ async def scan_board_list(
             page=page,
             root=root,
             pol=pol,
+            forum_id=forum_id,
         )
         if fetched.login_required:
             out.login_required = True
@@ -521,6 +554,8 @@ async def scan_board_list(
             board_name=name,
             persist_enqueue=persist_enqueue,
             min_thread_age_days=min_age,
+            forum_id=forum_id,
+            entry_url=entry_url,
         )
         page_upd = out.board_updated - upd_before
         if enq == 0 and young_skip == 0:

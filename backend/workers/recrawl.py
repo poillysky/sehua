@@ -10,7 +10,13 @@ from typing import Any, Optional
 from crawler.fetcher import Fetcher
 from crawler.session import SessionManager
 from db.connection import connect
-from db.forum_configs import SITE_CRAWLER_FORUM_ID, load_forum_configs_map
+from db.forum_configs import (
+    FORUM_2048_ID,
+    FULL_CRAWLER_FORUM_IDS,
+    SITE_CRAWLER_FORUM_ID,
+    get_active_forum_id,
+    load_forum_configs_map,
+)
 from db.queue import (
     ACCOUNT_DISCARDED_KINDS,
     DISCARDED_REQUEUE_KINDS,
@@ -34,7 +40,6 @@ from db.repository import (
 from db.resource_db import connect_resource
 from parsers.thread_gates import title_recognizable
 from db.settings_store import get_setting
-from parsers.boards import get_board_fid, get_board_policy
 from workers.pipeline import process_thread
 from workers.runner import (
     THROTTLE,
@@ -45,7 +50,12 @@ from workers.runner import (
     recover_stuck_after_stop,
     try_begin_exclusive,
 )
-from workers.session_factory import fetcher_from_config, session_from_config
+from workers.session_factory import (
+    bootstrap_probe_for_forum,
+    entry_urls_from_config,
+    fetcher_from_config,
+    session_from_config,
+)
 
 log = logging.getLogger(__name__)
 
@@ -243,16 +253,58 @@ def start_account_stub_recrawl() -> dict[str, Any]:
     }
 
 
-def _load_crawler_cfg(conn: Any) -> dict[str, Any]:
+def _forum_id_of_resource(item: dict[str, Any]) -> str:
+    """资源/队列行所属论坛：库字段优先，再从来源 URL 推断。"""
+    fid = str(item.get("forum_id") or "").strip()
+    if fid in FULL_CRAWLER_FORUM_IDS:
+        return fid
+    url = str(item.get("source_url") or item.get("url") or "").lower()
+    if "read.php" in url or "thread.php" in url:
+        return FORUM_2048_ID
+    return SITE_CRAWLER_FORUM_ID
+
+
+async def _open_forum_session(
+    forum_id: str,
+    *,
+    cookie_override: str | None = None,
+    account_jar: bool = False,
+) -> tuple[dict[str, Any], SessionManager, Fetcher]:
+    """按论坛加载配置并 bootstrap 会话。"""
+    conn = connect()
+    try:
+        forum_cfg = _load_crawler_cfg(conn, forum_id)
+    finally:
+        conn.close()
+    session = session_from_config(
+        forum_cfg,
+        cookie_override=cookie_override,
+        account_jar=account_jar,
+        forum_id=forum_id,
+    )
+    entries = entry_urls_from_config(forum_cfg)
+    probe = bootstrap_probe_for_forum(forum_cfg, forum_id)
+    await session.bootstrap(entry_urls=entries or None, probe_url=probe)
+    fetcher = fetcher_from_config(session, forum_cfg)
+    return forum_cfg, session, fetcher
+
+
+def _load_crawler_cfg(conn: Any, forum_id: str = "") -> dict[str, Any]:
     configs = load_forum_configs_map(conn)
-    cfg = dict(configs.get(SITE_CRAWLER_FORUM_ID) or {})
+    fid = (forum_id or "").strip() or get_active_forum_id(conn) or SITE_CRAWLER_FORUM_ID
+    if fid not in FULL_CRAWLER_FORUM_IDS:
+        fid = SITE_CRAWLER_FORUM_ID
+    cfg = dict(configs.get(fid) or configs.get(SITE_CRAWLER_FORUM_ID) or {})
     proxy = get_setting(conn, "web_crawler_proxy", "")
     if proxy and not cfg.get("web_crawler_proxy"):
         cfg["web_crawler_proxy"] = proxy
+    cfg["_forum_id"] = fid
     return cfg
 
 
 def _resolve_item(resource_hash: str, cfg: dict[str, Any]) -> dict[str, Any]:
+    from crawler.sites import get_site_adapter
+
     rconn = connect_resource()
     try:
         item = get_resource_by_hash(rconn, resource_hash)
@@ -271,30 +323,44 @@ def _resolve_item(resource_hash: str, cfg: dict[str, Any]) -> dict[str, Any]:
             "error": f"无法从来源 URL 解析 tid：{source_url}",
         }
 
+    forum_id = _forum_id_of_resource(item)
+    adapter = get_site_adapter(forum_id)
     board_fid_s = str(item.get("board_fid") or "").strip()
     if not board_fid_s:
         board_fid_s = str(cfg.get("active_board_fid") or "")
-    from parsers.boards import get_board_fid, get_board_policy
+    # 若调用方 cfg 不是本论坛的，再按资源论坛加载一次策略默认板
+    if not board_fid_s and str(cfg.get("_forum_id") or "") != forum_id:
+        conn0 = connect()
+        try:
+            board_fid_s = str(_load_crawler_cfg(conn0, forum_id).get("active_board_fid") or "")
+        finally:
+            conn0.close()
 
-    pol = get_board_policy(board_fid_s)
-    board_fid = get_board_fid(board_fid_s)
+    pol = adapter.get_board_policy(board_fid_s or "0")
+    board_fid = int(pol.fid or 0)
+    if board_fid <= 0:
+        try:
+            board_fid = int(str(board_fid_s).split(":", 1)[0])
+        except ValueError:
+            board_fid = 0
     if board_fid <= 0:
         return {"ok": False, "hash": resource_hash, "error": "缺少有效板块 fid，无法重爬"}
     stored_name = str(item.get("board_name") or "").strip()
     if stored_name and (" · " in stored_name or "-" in stored_name):
         board_name = stored_name.replace("-", " · ", 1) if " · " not in stored_name else stored_name
     else:
-        board_name = pol.name
+        board_name = pol.name or stored_name or f"fid-{board_fid}"
     title = str(item.get("title") or item.get("filename") or "")
+    unit_key = pol.key if pol.key else str(board_fid)
     conn = connect()
     try:
         queued = requeue_for_recrawl(
             conn,
             url=source_url,
-            board_fid=pol.key,
+            board_fid=unit_key,
             board_name=board_name,
             title=title,
-            forum_id=SITE_CRAWLER_FORUM_ID,
+            forum_id=forum_id,
         )
     finally:
         conn.close()
@@ -302,10 +368,11 @@ def _resolve_item(resource_hash: str, cfg: dict[str, Any]) -> dict[str, Any]:
         "ok": True,
         "hash": resource_hash,
         "tid": tid,
-        "board_fid": pol.key,
+        "board_fid": unit_key,
         "board_name": board_name,
         "title": title,
         "url": str(queued["url"]),
+        "forum_id": forum_id,
         "link_kind": str(item.get("link_kind") or ""),
         "ed2k_link": str(item.get("ed2k_link") or ""),
     }
@@ -361,6 +428,7 @@ async def _run_one(
     resource_hash = str(prepared["hash"])
 
     _log_activity(f"已入库重爬 · tid={tid} · {title[:40]}")
+    forum_id = str(prepared.get("forum_id") or SITE_CRAWLER_FORUM_ID)
     try:
         outcome = await process_thread(
             tid,
@@ -371,6 +439,8 @@ async def _run_one(
             crawler_config=cfg,
             session=session,
             fetcher=fetcher,
+            forum_id=forum_id,
+            replace_thread_assets=True,
         )
     except Exception as exc:
         log.exception("recrawl failed")
@@ -430,13 +500,13 @@ async def _run_one(
         "verdict_label": label,
         "outcome": outcome.get("outcome"),
         "persisted": persisted,
-        "note": "跳过时会删除无效占位；正常入库则同 hash 覆盖",
+        "note": "跳过时会删除无效占位；正常入库则同帖旧真链删除、本次 hash 覆盖/写入",
         "error": None if (imported or removed) else str(outcome.get("verdict_label") or verdict),
     }
 
 
 async def recrawl_imported_resource(resource_hash: str) -> dict[str, Any]:
-    """按资源 hash 重爬来源帖：重置队列 → 抓帖入库（同 hash 覆盖，不新增）。"""
+    """按资源 hash 重爬来源帖：重置队列 → 抓帖入库（同帖旧真链删除，本次结果写入）。"""
     batch = await recrawl_imported_resources([resource_hash])
     items = list(batch.get("items") or [])
     if items:
@@ -547,26 +617,59 @@ async def recrawl_imported_resources(hashes: list[str]) -> dict[str, Any]:
     imported_n = 0
     removed_n = 0
     try:
+        from collections import defaultdict
+
+        from workers.session_factory import (
+            bootstrap_probe_for_forum,
+            entry_urls_from_config,
+            fetcher_from_config,
+            session_from_config,
+        )
+
         # 上次「停止」会留下 stop 文件；不清理则 process_thread 条条直接 stopped
         THROTTLE.clear_stop()
         _log_activity(f"已入库批量重爬 · 开始 {len(prepared_list)} 条")
-        session = session_from_config(cfg)
-        await session.bootstrap()
-        fetcher = fetcher_from_config(session, cfg)
 
-        for i, prepared in enumerate(prepared_list):
+        by_forum: dict[str, list[dict[str, Any]]] = defaultdict(list)
+        for prepared in prepared_list:
+            by_forum[str(prepared.get("forum_id") or SITE_CRAWLER_FORUM_ID)].append(prepared)
+
+        for forum_id, items in by_forum.items():
             if THROTTLE.should_stop():
                 _log_activity("已入库批量重爬 · 收到停止请求，中止后续")
                 break
-            one = await _run_one(prepared, cfg=cfg, session=session, fetcher=fetcher)
-            results.append(one)
-            if one.get("imported"):
-                imported_n += 1
-            if one.get("removed"):
-                removed_n += 1
-            # 给站点一点间隔，降低第二条起被拦的概率
-            if i + 1 < len(prepared_list):
-                await asyncio.sleep(0.8)
+            conn_cfg = connect()
+            try:
+                forum_cfg = _load_crawler_cfg(conn_cfg, forum_id)
+            finally:
+                conn_cfg.close()
+            session = session_from_config(forum_cfg, forum_id=forum_id)
+            entries = entry_urls_from_config(forum_cfg)
+            probe = bootstrap_probe_for_forum(forum_cfg, forum_id)
+            await session.bootstrap(entry_urls=entries or None, probe_url=probe)
+            fetcher = fetcher_from_config(session, forum_cfg)
+            try:
+                for i, prepared in enumerate(items):
+                    if THROTTLE.should_stop():
+                        _log_activity("已入库批量重爬 · 收到停止请求，中止后续")
+                        break
+                    one = await _run_one(
+                        prepared, cfg=forum_cfg, session=session, fetcher=fetcher
+                    )
+                    results.append(one)
+                    if one.get("imported"):
+                        imported_n += 1
+                    if one.get("removed"):
+                        removed_n += 1
+                    if i + 1 < len(items):
+                        await asyncio.sleep(0.8)
+            finally:
+                try:
+                    await session.close()
+                except Exception:
+                    pass
+                session = None
+                fetcher = None
     finally:
         if session is not None:
             try:
@@ -593,7 +696,7 @@ async def recrawl_imported_resources(hashes: list[str]) -> dict[str, Any]:
         "removed": removed_n,
         "queued": 0,
         "failed": failed_n,
-        "note": "跳过无效占位会删除；正常则同 hash 覆盖",
+        "note": "跳过无效占位会删除；正常则同帖旧真链删除、本次结果覆盖",
     }
 
 
@@ -676,6 +779,7 @@ async def recrawl_account_stubs() -> dict[str, Any]:
         }
 
     session: Optional[SessionManager] = None
+    fetcher: Optional[Fetcher] = None
     items: list[dict[str, Any]] = []
     upgraded = 0
     still_stub = 0
@@ -684,6 +788,7 @@ async def recrawl_account_stubs() -> dict[str, Any]:
     discarded_done = 0
     attempted: list[str] = []
     attempted_urls: list[str] = []
+    session_forum_id = ""
 
     def _push_progress(*, current_tid: int | None = None, current_title: str = "", active: bool = True) -> None:
         done = upgraded + still_stub + failed + skipped_prep
@@ -700,19 +805,34 @@ async def recrawl_account_stubs() -> dict[str, Any]:
             exclude_hashes=None,
         )
 
+    async def _switch_session(forum_id: str) -> dict[str, Any]:
+        nonlocal session, fetcher, session_forum_id, cfg
+        if session is not None and session_forum_id == forum_id and session._ready:
+            return cfg
+        if session is not None:
+            try:
+                await session.close()
+            except Exception:
+                pass
+            session = None
+            fetcher = None
+        forum_cfg, session, fetcher = await _open_forum_session(
+            forum_id,
+            cookie_override=account_cookie,
+            account_jar=True,
+        )
+        # 账号 Cookie 以当前论坛配置为准；调用方传入的覆盖优先
+        session_forum_id = forum_id
+        cfg = forum_cfg
+        return forum_cfg
+
     try:
         _log_activity(
             f"账号爬占位开始 · 占位 {stub_remaining0} · 未处理 {discarded_remaining0} · 登录 Cookie"
         )
         THROTTLE.clear_stop()
         _push_progress(active=True)
-        session = session_from_config(
-            cfg,
-            cookie_override=account_cookie,
-            account_jar=True,
-        )
-        await session.bootstrap()
-        fetcher = fetcher_from_config(session, cfg)
+        await _switch_session(str(cfg.get("_forum_id") or SITE_CRAWLER_FORUM_ID))
 
         # ① 先用账号 Cookie 处理未处理：失败全部 → 无阅读权限跳过
         for disc_kind in ACCOUNT_DISCARDED_KINDS:
@@ -759,7 +879,18 @@ async def recrawl_account_stubs() -> dict[str, Any]:
                 board_fid_s = str(row.get("board_fid") or "").strip() or str(
                     cfg.get("active_board_fid") or ""
                 )
-                board_fid = get_board_fid(board_fid_s)
+                forum_id = _forum_id_of_resource(row)
+                from crawler.sites import get_site_adapter
+
+                forum_cfg = await _switch_session(forum_id)
+                adapter = get_site_adapter(forum_id)
+                pol = adapter.get_board_policy(board_fid_s or "0")
+                board_fid = int(pol.fid or 0)
+                if board_fid <= 0:
+                    try:
+                        board_fid = int(str(board_fid_s).split(":", 1)[0])
+                    except ValueError:
+                        board_fid = 0
                 if board_fid <= 0:
                     skipped_prep += 1
                     discarded_done += 1
@@ -771,7 +902,6 @@ async def recrawl_account_stubs() -> dict[str, Any]:
                     _push_progress(current_tid=int(tid), current_title=title)
                     continue
 
-                pol = get_board_policy(board_fid_s)
                 stored_name = str(row.get("board_name") or "").strip()
                 if stored_name and (" · " in stored_name or "-" in stored_name):
                     board_name = (
@@ -795,10 +925,12 @@ async def recrawl_account_stubs() -> dict[str, Any]:
                         board_name=board_name,
                         list_title=title,
                         persist=True,
-                        crawler_config=cfg,
+                        crawler_config=forum_cfg,
                         session=session,
                         fetcher=fetcher,
                         account_stub_pass=True,
+                        forum_id=forum_id,
+                        replace_thread_assets=True,
                     )
                 except Exception as exc:
                     log.exception("account discarded recrawl tid=%s kind=%s", tid, disc_kind)
@@ -904,7 +1036,18 @@ async def recrawl_account_stubs() -> dict[str, Any]:
             board_fid_s = str(row.get("board_fid") or "").strip()
             if not board_fid_s:
                 board_fid_s = str(cfg.get("active_board_fid") or "")
-            board_fid = get_board_fid(board_fid_s)
+            forum_id = _forum_id_of_resource(row)
+            from crawler.sites import get_site_adapter
+
+            forum_cfg = await _switch_session(forum_id)
+            adapter = get_site_adapter(forum_id)
+            pol = adapter.get_board_policy(board_fid_s or "0")
+            board_fid = int(pol.fid or 0)
+            if board_fid <= 0:
+                try:
+                    board_fid = int(str(board_fid_s).split(":", 1)[0])
+                except ValueError:
+                    board_fid = 0
             if board_fid <= 0:
                 skipped_prep += 1
                 items.append(
@@ -919,7 +1062,6 @@ async def recrawl_account_stubs() -> dict[str, Any]:
                 _push_progress(current_tid=tid, current_title=title)
                 continue
 
-            pol = get_board_policy(board_fid_s)
             stored_name = str(row.get("board_name") or "").strip()
             if stored_name and (" · " in stored_name or "-" in stored_name):
                 board_name = (
@@ -940,10 +1082,12 @@ async def recrawl_account_stubs() -> dict[str, Any]:
                     board_name=board_name,
                     list_title=title,
                     persist=True,
-                    crawler_config=cfg,
+                    crawler_config=forum_cfg,
                     session=session,
                     fetcher=fetcher,
                     account_stub_pass=True,
+                    forum_id=forum_id,
+                    replace_thread_assets=True,
                 )
             except Exception as exc:
                 log.exception("account stub recrawl tid=%s", tid)
@@ -1233,165 +1377,191 @@ async def recrawl_discarded_tids(tids: list[int]) -> dict[str, Any]:
     crawled_n = 0
 
     try:
+        from collections import defaultdict
+
+        from crawler.sites import get_site_adapter
+
         _log_activity(f"未处理批量重爬开始 · {len(rows)} 条")
         THROTTLE.clear_stop()
-        session = session_from_config(cfg)
-        await session.bootstrap()
-        fetcher = fetcher_from_config(session, cfg)
 
-        for i, row in enumerate(rows):
+        by_forum: dict[str, list[dict[str, Any]]] = defaultdict(list)
+        for row in rows:
+            by_forum[_forum_id_of_resource(row)].append(row)
+
+        for forum_id, forum_rows in by_forum.items():
             if THROTTLE.should_stop():
                 _log_activity("未处理批量重爬 · 收到停止请求")
                 break
-
-            thread_url = str(row.get("url") or "").strip()
-            tid = int(row.get("tid") or tid_from_url(thread_url) or 0)
-            title = str(row.get("thread_title") or "")
-            board_key = str(row.get("board_fid") or "").strip() or str(
-                cfg.get("active_board_fid") or ""
-            )
-            stored_name = str(row.get("board_name") or "").strip()
-            pol = get_board_policy(board_key)
-            if stored_name and (" · " in stored_name or "-" in stored_name):
-                board_name = (
-                    stored_name.replace("-", " · ", 1)
-                    if " · " not in stored_name
-                    else stored_name
-                )
-            else:
-                board_name = pol.name
-
-            if not tid or not thread_url:
-                failed_n += 1
-                items.append(
-                    {
-                        "ok": False,
-                        "tid": tid or None,
-                        "url": thread_url,
-                        "error": "缺少 tid/url",
-                    }
-                )
-                _log_activity("未处理重爬跳过 · 缺少 tid/url")
-                continue
-
-            _log_activity(f"未处理重爬 · tid={tid} · {title[:40]}")
+            forum_cfg, session, fetcher = await _open_forum_session(forum_id)
+            adapter = get_site_adapter(forum_id)
             try:
-                await THROTTLE.sleep()
-                if THROTTLE.should_stop():
-                    _log_activity("未处理批量重爬 · 收到停止请求")
-                    break
-                # 单帖上限，避免附件/浏览器挂死拖死整次「未处理重爬」与管理端
-                try:
-                    per_tid = float(
-                        (cfg or {}).get("web_crawler_thread_timeout")
-                        or os.getenv("WEB_CRAWLER_THREAD_TIMEOUT", "180")
-                        or "180"
-                    )
-                except (TypeError, ValueError):
-                    per_tid = 180.0
-                per_tid = max(60.0, per_tid)
-                outcome = await asyncio.wait_for(
-                    process_thread(
-                        tid,
-                        board_fid=board_key,
-                        board_name=board_name,
-                        list_title=title,
-                        persist=True,
-                        crawler_config=cfg,
-                        session=session,
-                        fetcher=fetcher,
-                    ),
-                    timeout=per_tid,
-                )
-            except asyncio.TimeoutError:
-                log.warning("discarded recrawl timeout tid=%s", tid)
-                conn = connect()
-                try:
-                    mark_pending_retry(
-                        conn,
-                        thread_url,
-                        f"单帖处理超时（>{int(per_tid)}s）",
-                        backoff_seconds=600,
-                    )
-                finally:
-                    conn.close()
-                failed_n += 1
-                crawled_n += 1
-                items.append(
-                    {
-                        "ok": False,
-                        "tid": tid,
-                        "url": thread_url,
-                        "title": title,
-                        "error": f"单帖处理超时（>{int(per_tid)}s）",
-                    }
-                )
-                _log_activity(f"未处理重爬超时 · tid={tid} · >{int(per_tid)}s")
-                continue
-            except Exception as exc:
-                log.exception("discarded recrawl failed tid=%s", tid)
-                conn = connect()
-                try:
-                    mark_pending_retry(conn, thread_url, str(exc)[:200], backoff_seconds=600)
-                finally:
-                    conn.close()
-                failed_n += 1
-                crawled_n += 1
-                items.append(
-                    {
-                        "ok": False,
-                        "tid": tid,
-                        "url": thread_url,
-                        "title": title,
-                        "error": str(exc),
-                    }
-                )
-                _log_activity(f"未处理重爬失败 · tid={tid} · {exc}")
-                continue
+                for i, row in enumerate(forum_rows):
+                    if THROTTLE.should_stop():
+                        _log_activity("未处理批量重爬 · 收到停止请求")
+                        break
 
-            crawled_n += 1
-            verdict = str(outcome.get("verdict") or "failed")
-            label = str(outcome.get("verdict_label") or outcome.get("outcome") or verdict)
-            conn = connect()
-            try:
-                _apply_queue_outcome(conn, thread_url, outcome)
+                    thread_url = str(row.get("url") or "").strip()
+                    tid = int(row.get("tid") or tid_from_url(thread_url) or 0)
+                    title = str(row.get("thread_title") or "")
+                    board_key = str(row.get("board_fid") or "").strip() or str(
+                        forum_cfg.get("active_board_fid") or ""
+                    )
+                    stored_name = str(row.get("board_name") or "").strip()
+                    pol = adapter.get_board_policy(board_key or "0")
+                    if stored_name and (" · " in stored_name or "-" in stored_name):
+                        board_name = (
+                            stored_name.replace("-", " · ", 1)
+                            if " · " not in stored_name
+                            else stored_name
+                        )
+                    else:
+                        board_name = pol.name
+
+                    if not tid or not thread_url:
+                        failed_n += 1
+                        items.append(
+                            {
+                                "ok": False,
+                                "tid": tid or None,
+                                "url": thread_url,
+                                "error": "缺少 tid/url",
+                            }
+                        )
+                        _log_activity("未处理重爬跳过 · 缺少 tid/url")
+                        continue
+
+                    _log_activity(f"未处理重爬 · {forum_id} · tid={tid} · {title[:40]}")
+                    try:
+                        await THROTTLE.sleep()
+                        if THROTTLE.should_stop():
+                            _log_activity("未处理批量重爬 · 收到停止请求")
+                            break
+                        # 单帖上限，避免附件/浏览器挂死拖死整次「未处理重爬」与管理端
+                        try:
+                            per_tid = float(
+                                (forum_cfg or {}).get("web_crawler_thread_timeout")
+                                or os.getenv("WEB_CRAWLER_THREAD_TIMEOUT", "180")
+                                or "180"
+                            )
+                        except (TypeError, ValueError):
+                            per_tid = 180.0
+                        per_tid = max(60.0, per_tid)
+                        outcome = await asyncio.wait_for(
+                            process_thread(
+                                tid,
+                                board_fid=board_key or pol.key,
+                                board_name=board_name,
+                                list_title=title,
+                                persist=True,
+                                crawler_config=forum_cfg,
+                                session=session,
+                                fetcher=fetcher,
+                                forum_id=forum_id,
+                                replace_thread_assets=True,
+                            ),
+                            timeout=per_tid,
+                        )
+                    except asyncio.TimeoutError:
+                        log.warning("discarded recrawl timeout tid=%s", tid)
+                        conn = connect()
+                        try:
+                            mark_pending_retry(
+                                conn,
+                                thread_url,
+                                f"单帖处理超时（>{int(per_tid)}s）",
+                                backoff_seconds=600,
+                            )
+                        finally:
+                            conn.close()
+                        failed_n += 1
+                        crawled_n += 1
+                        items.append(
+                            {
+                                "ok": False,
+                                "tid": tid,
+                                "url": thread_url,
+                                "title": title,
+                                "error": f"单帖处理超时（>{int(per_tid)}s）",
+                            }
+                        )
+                        _log_activity(f"未处理重爬超时 · tid={tid} · >{int(per_tid)}s")
+                        continue
+                    except Exception as exc:
+                        log.exception("discarded recrawl failed tid=%s", tid)
+                        conn = connect()
+                        try:
+                            mark_pending_retry(
+                                conn, thread_url, str(exc)[:200], backoff_seconds=600
+                            )
+                        finally:
+                            conn.close()
+                        failed_n += 1
+                        crawled_n += 1
+                        items.append(
+                            {
+                                "ok": False,
+                                "tid": tid,
+                                "url": thread_url,
+                                "title": title,
+                                "error": str(exc),
+                            }
+                        )
+                        _log_activity(f"未处理重爬失败 · tid={tid} · {exc}")
+                        continue
+
+                    crawled_n += 1
+                    verdict = str(outcome.get("verdict") or "failed")
+                    label = str(
+                        outcome.get("verdict_label") or outcome.get("outcome") or verdict
+                    )
+                    conn = connect()
+                    try:
+                        _apply_queue_outcome(conn, thread_url, outcome)
+                    finally:
+                        conn.close()
+
+                    if verdict == "import":
+                        imports_n += 1
+                        from workers.import_rate import note_persisted
+
+                        note_persisted(kind="import")
+                    elif verdict == "stub":
+                        stubs_n += 1
+                        from workers.import_rate import note_persisted
+
+                        note_persisted(kind="stub")
+                    elif verdict == "skipped":
+                        skipped_n += 1
+                    elif verdict in {"retry", "need_attachments"} or "软文" in str(
+                        outcome.get("outcome") or ""
+                    ):
+                        # 已回异常/待抓队列
+                        pass
+                    else:
+                        failed_n += 1
+
+                    items.append(
+                        {
+                            "ok": verdict in _IMPORT_VERDICTS or verdict == "skipped",
+                            "tid": tid,
+                            "url": thread_url,
+                            "title": title,
+                            "verdict": verdict,
+                            "label": label,
+                            "forum_id": forum_id,
+                        }
+                    )
+                    _log_activity(f"未处理重爬 · tid={tid} · {label}")
+
+                    if i + 1 < len(forum_rows):
+                        await asyncio.sleep(0.6)
             finally:
-                conn.close()
-
-            if verdict == "import":
-                imports_n += 1
-                from workers.import_rate import note_persisted
-
-                note_persisted(kind="import")
-            elif verdict == "stub":
-                stubs_n += 1
-                from workers.import_rate import note_persisted
-
-                note_persisted(kind="stub")
-            elif verdict == "skipped":
-                skipped_n += 1
-            elif verdict in {"retry", "need_attachments"} or "软文" in str(
-                outcome.get("outcome") or ""
-            ):
-                # 已回异常/待抓队列
-                pass
-            else:
-                failed_n += 1
-
-            items.append(
-                {
-                    "ok": verdict in _IMPORT_VERDICTS or verdict == "skipped",
-                    "tid": tid,
-                    "url": thread_url,
-                    "title": title,
-                    "verdict": verdict,
-                    "label": label,
-                }
-            )
-            _log_activity(f"未处理重爬 · tid={tid} · {label}")
-
-            if i + 1 < len(rows):
-                await asyncio.sleep(0.6)
+                try:
+                    await session.close()
+                except Exception:
+                    pass
+                session = None
+                fetcher = None
     finally:
         if session is not None:
             try:

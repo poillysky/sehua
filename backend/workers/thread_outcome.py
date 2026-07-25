@@ -14,7 +14,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Literal
 
-from parsers.boards import DISCUZ_BOARD_FID, get_board_policy, parse_board_key
+from parsers.boards import DISCUZ_BOARD_FID, parse_board_key
 from parsers.links import DualParseResult, parse_thread_dual
 from parsers.list_dates import extract_thread_posted_at, is_thread_old_enough
 from parsers.thread_gates import (
@@ -88,21 +88,27 @@ def judge_thread_html(
     attachments_already_tried: bool = False,
     soft_browser_retried: bool = False,
     preferred_link: str | None = None,
+    forum_id: str = "sehuatang",
 ) -> ThreadOutcome:
     """Pure judgment from HTML (+ optional attachment attempt flags).
 
     preferred_link: 覆盖板块主链偏好；解析测试留空板块时传 \"both\"。
     """
+    from crawler.sites import get_site_adapter
+
     # 兼容子版 key「141:689」：龄期/主链偏好必须落到正确策略
-    pol = get_board_policy(board_fid)
+    adapter = get_site_adapter(forum_id)
+    pol = adapter.get_board_policy(board_fid)
     fid = int(pol.fid or 0) or parse_board_key(board_fid)[0]
     link_kind = (preferred_link or (pol.primary_link if pol else "magnet") or "magnet").strip().lower()
     if link_kind not in {"magnet", "ed2k", "both"}:
         link_kind = "magnet"
-    # 仅综合讨论区(fid=95)限制 typeid=716 情色分享；其它板块不做分类限制
+    # 仅色花堂综合讨论区(fid=95)限制 typeid=716 情色分享；其它板块/论坛不做分类限制
     # 解析测试「双链」模式不套用分类硬跳过，避免误判磁力帖
     required_typeid = (
-        pol.list_typeid if pol and fid == DISCUZ_BOARD_FID and link_kind != "both" else None
+        pol.list_typeid
+        if pol and forum_id == "sehuatang" and fid == DISCUZ_BOARD_FID and link_kind != "both"
+        else None
     )
     min_age = int(getattr(pol, "min_thread_age_days", 0) or 0)
 

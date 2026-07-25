@@ -25,6 +25,306 @@ type Props = {
   onActiveBoardChange: (config: ForumCrawlerConfig) => void
 }
 
+function ForumModalIcon({ forum }: { forum: ForumItem }) {
+  const src = forum.icon_url?.trim()
+  if (src) {
+    return <img src={src} alt="" className="forum-card-icon-img" />
+  }
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+      <circle cx="12" cy="12" r="9" />
+      <path d="M2 12h20M12 3a15 15 0 0 1 0 18M12 3a15 15 0 0 0 0 18" />
+    </svg>
+  )
+}
+
+/** 未接入论坛：顶部大图标 + 说明（不可改爬虫配置） */
+export function PlannedForumModal({ forum, onClose }: { forum: ForumItem; onClose: () => void }) {
+  return createPortal(
+    <div className="modal-backdrop forum-modal-backdrop" onClick={onClose}>
+      <div className="modal-card forum-modal-panel forum-modal-planned" onClick={(e) => e.stopPropagation()}>
+        <div className="modal-head">
+          <div className="forum-modal-title">
+            <span className="forum-card-icon forum-card-icon-lg" aria-hidden>
+              <ForumModalIcon forum={forum} />
+            </span>
+            <div>
+              <h3>{forum.name}</h3>
+              {forum.base_url ? <p className="forum-card-url">{forum.base_url}</p> : null}
+            </div>
+            <span className="tag tag-pending">待独立接入</span>
+          </div>
+          <button type="button" className="btn ghost" onClick={onClose}>
+            关闭
+          </button>
+        </div>
+        <div className="modal-body forum-planned-body">
+          <div className="forum-planned-hero" aria-hidden>
+            <span className="forum-planned-hero-icon">
+              <ForumModalIcon forum={forum} />
+            </span>
+          </div>
+          <ul className="forum-planned-policies">
+            {(forum.policies || ['该论坛尚未接入专用爬虫']).map((line) => (
+              <li key={line}>{line}</li>
+            ))}
+          </ul>
+        </div>
+      </div>
+    </div>,
+    document.body,
+  )
+}
+
+export type BasicForumTab = 'overview' | 'config'
+
+type BasicForumModalProps = {
+  forum: ForumItem & { crawler_config: ForumCrawlerConfig }
+  activeForumId: string
+  tab: BasicForumTab
+  onTabChange: (tab: BasicForumTab) => void
+  onClose: () => void
+  onSaveConfig: (config: ForumCrawlerConfig) => Promise<void>
+}
+
+/** 已可启用、尚无爬虫模块：概览 + 进站/限速基本配置 */
+export function BasicForumConfigModal({
+  forum,
+  activeForumId,
+  tab,
+  onTabChange,
+  onClose,
+  onSaveConfig,
+}: BasicForumModalProps) {
+  const [draft, setDraft] = useState<ForumCrawlerConfig>(() => ({ ...forum.crawler_config }))
+  const [saving, setSaving] = useState(false)
+  const enabled = activeForumId === forum.id
+
+  useEffect(() => {
+    setDraft({ ...forum.crawler_config })
+  }, [forum.id, forum.crawler_config])
+
+  const setNum = (key: keyof ForumCrawlerConfig, value: string) => {
+    const n = Number(value)
+    setDraft((prev) => ({ ...prev, [key]: Number.isFinite(n) ? n : prev[key] }))
+  }
+
+  const onSubmit = async (e: FormEvent) => {
+    e.preventDefault()
+    setSaving(true)
+    try {
+      await onSaveConfig(draft)
+      toast.success('已保存基本配置')
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : '保存失败')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return createPortal(
+    <div className="modal-backdrop forum-modal-backdrop" onClick={onClose}>
+      <div className="modal-card forum-modal-panel" onClick={(e) => e.stopPropagation()}>
+        <div className="modal-head">
+          <div className="forum-modal-title">
+            <span className="forum-card-icon forum-card-icon-lg" aria-hidden>
+              <ForumModalIcon forum={forum} />
+            </span>
+            <div>
+              <h3>{forum.name}</h3>
+              {forum.base_url ? <p className="forum-card-url">{forum.base_url}</p> : null}
+            </div>
+            {enabled ? <span className="tag tag-active">当前启用</span> : <span className="tag tag-done">配置已接入</span>}
+          </div>
+          <button type="button" className="btn ghost" onClick={onClose}>
+            关闭
+          </button>
+        </div>
+
+        <nav className="forum-tab-nav" role="tablist">
+          <button
+            type="button"
+            role="tab"
+            aria-selected={tab === 'overview'}
+            className={tab === 'overview' ? 'forum-tab active' : 'forum-tab'}
+            onClick={() => onTabChange('overview')}
+          >
+            概览
+          </button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={tab === 'config'}
+            className={tab === 'config' ? 'forum-tab active' : 'forum-tab'}
+            onClick={() => onTabChange('config')}
+          >
+            基本配置
+          </button>
+        </nav>
+
+        <div className="modal-body forum-tab-panels">
+          <div className={tab === 'overview' ? 'forum-tab-panel active' : 'forum-tab-panel'} role="tabpanel">
+            {tab === 'overview' ? (
+              <div className="forum-tab-content">
+                <section className="forum-modal-block">
+                  <h4>说明</h4>
+                  <ul className="forum-planned-policies">
+                    {(forum.policies || []).map((line) => (
+                      <li key={line}>{line}</li>
+                    ))}
+                  </ul>
+                </section>
+                <section className="forum-modal-block">
+                  <h4>入口</h4>
+                  <p className="forum-card-url">{forum.base_url || '—'}</p>
+                  <p className="hint" style={{ marginTop: 8 }}>
+                    板块列表与专用爬虫模块尚未接入；此处可保存 URL / Cookie / 限速，供后续模块使用。
+                  </p>
+                </section>
+              </div>
+            ) : null}
+          </div>
+
+          <div className={tab === 'config' ? 'forum-tab-panel active' : 'forum-tab-panel'} role="tabpanel">
+            {tab === 'config' ? (
+              <div className="forum-tab-content">
+                <form className="forum-config-form" onSubmit={onSubmit}>
+                  <p className="hint" style={{ marginBottom: 12 }}>
+                    基本配置与色花堂互不共用。保存后可在磁贴上检测链接；真正抓取需等待独立爬虫模块。
+                  </p>
+
+                  <section className="forum-modal-block forum-config-step">
+                    <div className="forum-config-step-head">
+                      <span className="forum-config-step-badge">①</span>
+                      <div>
+                        <h4>限速</h4>
+                        <p className="field-hint">请求间隔与失败冷却，避免过快访问。</p>
+                      </div>
+                    </div>
+                    <div className="settings-grid-3 forum-config-grid">
+                      <Field label="请求延迟（秒）" hint="每次请求前后等待，默认 2 秒">
+                        <input
+                          type="number"
+                          min={0.5}
+                          max={60}
+                          step={0.5}
+                          value={draft.web_crawler_request_delay}
+                          onChange={(e) => setNum('web_crawler_request_delay', e.target.value)}
+                        />
+                      </Field>
+                      <Field label="请求超时（秒）" hint="单次打开网页最多等多久">
+                        <input
+                          type="number"
+                          min={5}
+                          max={300}
+                          value={draft.web_crawler_timeout}
+                          onChange={(e) => setNum('web_crawler_timeout', e.target.value)}
+                        />
+                      </Field>
+                      <Field label="取页重试次数" hint="打开失败时再试几次">
+                        <input
+                          type="number"
+                          min={1}
+                          max={10}
+                          value={draft.web_crawler_fetch_retries}
+                          onChange={(e) => setNum('web_crawler_fetch_retries', e.target.value)}
+                        />
+                      </Field>
+                      <Field label="连续失败阈值" hint="连续失败这么多次就暂停">
+                        <input
+                          type="number"
+                          min={2}
+                          max={20}
+                          value={draft.web_crawler_fetch_failure_threshold}
+                          onChange={(e) => setNum('web_crawler_fetch_failure_threshold', e.target.value)}
+                        />
+                      </Field>
+                      <Field label="失败冷却（秒）" hint="暂停时歇多久">
+                        <input
+                          type="number"
+                          min={15}
+                          max={600}
+                          value={draft.web_crawler_fetch_cooldown_seconds}
+                          onChange={(e) => setNum('web_crawler_fetch_cooldown_seconds', e.target.value)}
+                        />
+                      </Field>
+                      <Field label="单帖超时（秒）" hint="抓一篇帖最多等多久；0 不限制">
+                        <input
+                          type="number"
+                          min={0}
+                          max={900}
+                          value={draft.web_crawler_thread_timeout}
+                          onChange={(e) => setNum('web_crawler_thread_timeout', e.target.value)}
+                        />
+                      </Field>
+                    </div>
+                  </section>
+
+                  <section className="forum-modal-block forum-config-step">
+                    <div className="forum-config-step-head">
+                      <span className="forum-config-step-badge">②</span>
+                      <div>
+                        <h4>进站</h4>
+                        <p className="field-hint">入口地址、Cookie、浏览器标识。代理在「系统设置 → 通用配置」。</p>
+                      </div>
+                    </div>
+                    <div className="settings-grid-2 forum-config-grid">
+                      <Field label="入口 URL" hint="多个地址用英文逗号隔开" full>
+                        <textarea
+                          rows={3}
+                          className="forum-entry-urls-field"
+                          spellCheck={false}
+                          value={draft.web_crawl_urls}
+                          placeholder="https://ut2gw5.xc6ym5.com/"
+                          onChange={(e) => setDraft({ ...draft, web_crawl_urls: e.target.value })}
+                        />
+                      </Field>
+                      <Field label="浏览器标识（UA）" hint="伪装成普通浏览器访问" full>
+                        <input
+                          type="text"
+                          value={draft.web_crawler_ua}
+                          onChange={(e) => setDraft({ ...draft, web_crawler_ua: e.target.value })}
+                        />
+                      </Field>
+                      <Field label="论坛 Cookie" hint="过年龄门 / 登录态时可填" full>
+                        <textarea
+                          rows={4}
+                          className="forum-cookie-field"
+                          spellCheck={false}
+                          placeholder="粘贴浏览器完整 Cookie"
+                          value={draft.web_crawler_cookie}
+                          onChange={(e) => setDraft({ ...draft, web_crawler_cookie: e.target.value })}
+                        />
+                      </Field>
+                      <Field label="账号 Cookie" hint="与上方普通 Cookie 分开保存" full>
+                        <textarea
+                          rows={4}
+                          className="forum-cookie-field"
+                          spellCheck={false}
+                          placeholder="登录态 Cookie"
+                          value={draft.web_crawler_account_cookie || ''}
+                          onChange={(e) => setDraft({ ...draft, web_crawler_account_cookie: e.target.value })}
+                        />
+                      </Field>
+                    </div>
+                  </section>
+
+                  <div className="forum-modal-foot">
+                    <button type="submit" className="btn primary forum-save-btn" disabled={saving}>
+                      {saving ? '保存中…' : '保存基本配置'}
+                    </button>
+                  </div>
+                </form>
+              </div>
+            ) : null}
+          </div>
+        </div>
+      </div>
+    </div>,
+    document.body,
+  )
+}
+
 const TABS: { id: ForumTab; label: string }[] = [
   { id: 'overview', label: '概览' },
   { id: 'boards', label: '板块列表' },
@@ -748,16 +1048,21 @@ function ConfigTab({
   setDraft,
   saving,
   onSubmit,
+  entryPlaceholder,
 }: {
   draft: ForumCrawlerConfig
   setDraft: (next: ForumCrawlerConfig) => void
   saving: boolean
   onSubmit: (e: FormEvent) => void
+  entryPlaceholder?: string
 }) {
   const setNum = (key: keyof ForumCrawlerConfig, value: string) => {
     const n = Number(value)
     setDraft({ ...draft, [key]: Number.isFinite(n) ? n : draft[key] })
   }
+
+  const urlPlaceholder =
+    entryPlaceholder?.trim() || 'https://example.com/, https://backup.example.com/, …'
 
   return (
     <div className="forum-tab-content">
@@ -817,7 +1122,7 @@ function ConfigTab({
                 className="forum-entry-urls-field"
                 spellCheck={false}
                 value={draft.web_crawl_urls}
-                placeholder="https://www.sehuatang.net/forum.php, https://www.sehuatang.org/forum.php, …"
+                placeholder={urlPlaceholder}
                 onChange={(e) => setDraft({ ...draft, web_crawl_urls: e.target.value })}
               />
             </Field>
@@ -1248,23 +1553,8 @@ export function ForumConfigModal({
     }
   }
 
-  if (forum.status !== 'active') {
-    return createPortal(
-      <div className="modal-backdrop forum-modal-backdrop" onClick={onClose}>
-        <div className="modal-card forum-modal-panel" onClick={(e) => e.stopPropagation()}>
-          <div className="modal-head">
-            <h3>{forum.name}</h3>
-            <button type="button" className="btn ghost" onClick={onClose}>
-              关闭
-            </button>
-          </div>
-          <div className="modal-body">
-            <p className="hint">{(forum.policies || [])[0] || '该论坛尚未接入'}</p>
-          </div>
-        </div>
-      </div>,
-      document.body,
-    )
+  if (forum.status !== 'active' || !forum.crawler_registered) {
+    return <PlannedForumModal forum={forum} onClose={onClose} />
   }
 
   return createPortal(
@@ -1273,14 +1563,7 @@ export function ForumConfigModal({
         <div className="modal-head">
           <div className="forum-modal-title">
             <span className="forum-card-icon" aria-hidden>
-              {forum.id === 'sehuatang' ? (
-                <img src="/sehuatang-forum-icon.png" alt="" className="forum-card-icon-img" />
-              ) : (
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                  <circle cx="12" cy="12" r="9" />
-                  <path d="M2 12h20M12 3a15 15 0 0 1 0 18M12 3a15 15 0 0 0 0 18" />
-                </svg>
-              )}
+              <ForumModalIcon forum={forum} />
             </span>
             <div>
               <h3>{forum.name}</h3>
@@ -1353,7 +1636,17 @@ export function ForumConfigModal({
             </div>
             <div className={tab === 'config' ? 'forum-tab-panel active' : 'forum-tab-panel'} role="tabpanel">
               {tab === 'config' ? (
-                <ConfigTab draft={draft} setDraft={setDraft} saving={saving} onSubmit={handleSubmit} />
+                <ConfigTab
+                  draft={draft}
+                  setDraft={setDraft}
+                  saving={saving}
+                  onSubmit={handleSubmit}
+                  entryPlaceholder={
+                    forum.base_url?.trim()
+                      ? `${forum.base_url.replace(/\/?$/, '/')}, …`
+                      : undefined
+                  }
+                />
               ) : null}
             </div>
           </div>

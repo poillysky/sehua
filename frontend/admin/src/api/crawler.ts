@@ -107,21 +107,29 @@ export function fetchCrawlerStatus() {
   return api<CrawlerStatus>('/api/crawler/status')
 }
 
-export function setCrawlerEnabled(enabled: boolean) {
-  return api<{ message: string; enabled: boolean }>('/api/crawler/enabled', {
+export function setCrawlerEnabled(enabled: boolean, forumId?: string) {
+  return api<{ message: string; enabled: boolean; forum_id?: string }>('/api/crawler/enabled', {
     method: 'PUT',
-    body: JSON.stringify({ enabled }),
+    body: JSON.stringify({
+      enabled,
+      ...(forumId ? { forum_id: forumId } : {}),
+    }),
   })
 }
 
-export function runCrawlerOnce(opts?: { max_threads?: number; persist?: boolean; scan_list?: boolean }) {
+export function runCrawlerOnce(opts?: {
+  forum_id?: string
+  max_threads?: number
+  persist?: boolean
+  scan_list?: boolean
+}) {
   return api<{ message: string; result: Record<string, unknown> }>('/api/crawler/run', {
     method: 'POST',
     body: JSON.stringify(opts || {}),
   })
 }
 
-export function scanHeadOnce(opts?: { max_pages?: number; persist?: boolean }) {
+export function scanHeadOnce(opts?: { forum_id?: string; max_pages?: number; persist?: boolean }) {
   return api<{ message: string; result: Record<string, unknown> }>('/api/crawler/scan-head', {
     method: 'POST',
     body: JSON.stringify(opts || {}),
@@ -129,6 +137,7 @@ export function scanHeadOnce(opts?: { max_pages?: number; persist?: boolean }) {
 }
 
 export function randomTidOnce(opts?: {
+  forum_id?: string
   count?: number
   import_target?: number
   tid_min?: number
@@ -150,6 +159,7 @@ export function randomTidOnce(opts?: {
 }
 
 export function startRandomTidLoop(opts?: {
+  forum_id?: string
   count?: number
   tid_min?: number
   tid_max?: number

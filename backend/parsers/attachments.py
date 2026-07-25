@@ -156,6 +156,13 @@ def extract_download_attachments(base_url: str, html: str) -> list[DownloadAttac
 # 单帖附件轮询上限（防异常帖挂几十个无关附件）
 MAX_ATTACHMENTS_PER_THREAD = 30
 
+# 内存 / zip bomb 防护：链文件包通常 ≪1MB；超大附件多为误挂视频包
+MAX_ATTACHMENT_BYTES = 12 * 1024 * 1024
+MAX_ARCHIVE_MEMBER_BYTES = 8 * 1024 * 1024
+MAX_ARCHIVE_DEPTH = 4
+# 二进制扫 magnet/ed2k：超大文件只扫头尾，避免整文件三份解码
+MAX_BINARY_LINK_SCAN_BYTES = 2 * 1024 * 1024
+
 
 def filter_tail_attachments(
     attachments: list[DownloadAttachment],

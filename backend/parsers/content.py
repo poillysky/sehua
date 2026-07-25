@@ -13,52 +13,16 @@ from parsers.resource_names import (
     NOTE_FIELD_FORMS,
     RESOURCE_TITLE_FORMS,
     SIZE_FIELD_FORMS,
+    STRUCTURE_FIELD_BOUNDARY_FORMS,
+    STRUCTURE_FIELD_CLOSE,
+    STRUCTURE_FIELD_OPEN,
     SUBRESOURCE_TITLE_LABELS,
     SUBRESOURCE_TITLE_MATCH_FORMS,
     TORRENT_FIELD_FORMS,
 )
 
-# BT + ED2K board label styles commonly used on sehuatang（2026-07 抽样核对）
-LABEL_KEYS = (
-    *SUBRESOURCE_TITLE_MATCH_FORMS,
-    "出演女优",
-    "出演女優",
-    *SIZE_FIELD_FORMS,
-    *FORMAT_FIELD_FORMS,
-    *NOTE_FIELD_FORMS,
-    "有无水印",
-    "有無浮水印",
-    "有无第三方水印",
-    "有無第三方浮水印",
-    "第三方水印",
-    "第三方浮水印",
-    "解压密码",
-    "解壓密碼",
-    "提取密码",
-    "提取密碼",
-    "资源密码",
-    "資源密碼",
-    "种子期限",
-    "種子期限",
-    "下载方式",
-    "下載方式",
-    "下载工具",
-    "下載工具",
-    "时间长度",
-    "時間長度",
-    "影片有无声音",
-    "影片有無聲音",
-    "剧情连拍截图/缩略图",
-    "劇情連拍截圖/縮略圖",
-    "剧情连拍截图",
-    "劇情連拍截圖",
-    "资源预览",
-    "資源預覽",
-    "查重证明图",
-    "查重證明圖",
-    "前缀证明图",
-    "前綴證明圖",
-)
+# BT + ED2K board label styles commonly used on sehuatang / 2048（抽样核对）
+LABEL_KEYS = tuple(STRUCTURE_FIELD_BOUNDARY_FORMS)
 
 # 详情描述按板块白名单（与论坛配置「结构卡片」字段对齐）
 # 不含：预览类、种子期限、下载工具、资源链接区等
@@ -228,22 +192,28 @@ def description_profile_for_board(board_fid: str | int | None) -> dict:
     }
 
 _LABEL_ALT = "|".join(map(re.escape, LABEL_KEYS))
+_STRUCTURE_SEP = r"[:：﹒．.]?"
 # 值截到下一个字段标签为止（同行/换行均可）。
 # 「文件大小」等若不在白名单，旧逻辑整页揉在一起会导致解压密码吞到帖尾。
 LABEL_RE = re.compile(
-    rf"【\s*({_LABEL_ALT})\s*】\s*[:：]?\s*"
+    rf"{STRUCTURE_FIELD_OPEN}\s*({_LABEL_ALT})\s*{STRUCTURE_FIELD_CLOSE}\s*{_STRUCTURE_SEP}\s*"
     rf"(.*?)(?="
-    rf"(?:\s*【\s*(?:{_LABEL_ALT})\s*】)"  # 已知字段
-    rf"|(?:\s*【[^】\n]{{1,40}}】\s*[:：])"  # 任意「【标签】：」
+    rf"(?:\s*{STRUCTURE_FIELD_OPEN}\s*(?:{_LABEL_ALT})\s*{STRUCTURE_FIELD_CLOSE})"  # 已知字段
+    rf"|(?:\s*{STRUCTURE_FIELD_OPEN}[^】］〗」』\]\n]{{1,40}}{STRUCTURE_FIELD_CLOSE}\s*[:：﹒．.])"  # 任意「【标签】：」
     rf"|$"
     rf")",
     re.I | re.S,
 )
 
 # 下一个字段边界（截密码/字段尾巴用）
-_NEXT_FIELD_RE = re.compile(r"\s*【[^】]{1,40}】")
+_NEXT_FIELD_RE = re.compile(
+    rf"\s*{STRUCTURE_FIELD_OPEN}[^】］〗」』\]]{{1,40}}{STRUCTURE_FIELD_CLOSE}"
+)
 # 名称类字段值里常嵌套【自转】【合集】等，只能裁到「已知结构字段」
-_KNOWN_NEXT_FIELD_RE = re.compile(rf"\s*【\s*(?:{_LABEL_ALT})\s*】", re.I)
+_KNOWN_NEXT_FIELD_RE = re.compile(
+    rf"\s*{STRUCTURE_FIELD_OPEN}\s*(?:{_LABEL_ALT})\s*{STRUCTURE_FIELD_CLOSE}",
+    re.I,
+)
 _TITLE_FIELD_LABELS = frozenset(SUBRESOURCE_TITLE_LABELS)
 _SIZE_FIELD_LABELS = frozenset({"资源大小", "文件大小", "影片大小", "影片容量"})
 # 82V+173P/6.7G/1配额 · 70.6G/1169V//7配额 · 807 M / 1V
@@ -315,10 +285,10 @@ PASSWORD_BARE_98T_RE = re.compile(
 )
 _PASSWORD_META_KEYS = ("解压密码", "提取密码", "资源密码")
 _PASSWORD_LABELS = frozenset(_PASSWORD_META_KEYS)
-# 优先 zoomfile / file（Discuz 高清），再 src
+# 优先 zoomfile / file（Discuz 高清）、data-original（PHPWind 懒加载），再 src
 IMG_TAG_RE = re.compile(r"<img\b([^>]*)>", re.I)
 IMG_ATTR_RE = re.compile(
-    r"""(?:zoomfile|file|src)\s*=\s*["']([^"']+)["']""",
+    r"""(?:zoomfile|file|data-original|data-src|data-lazy(?:-src)?|data-url|src)\s*=\s*["']([^"']+)["']""",
     re.I,
 )
 IMAGE_SKIP_MARKERS = (
@@ -340,6 +310,17 @@ IMAGE_SKIP_MARKERS = (
     "common_56_",
     "/icon/",
     "favicon",
+    # PHPWind / 2048 站内 UI、懒加载占位
+    "thumb-ing",
+    "images/wind/",
+    "images/face/",
+    "images/close",
+    "images/notice",
+    "images/level/",
+    "/file/zip.gif",
+    "/file/rar.gif",
+    "tip_bottom",
+    "tip/small",
 )
 BLOCKCODE_RE = re.compile(
     r'<(?:div|pre)[^>]*class="[^"]*blockcode[^"]*"[^>]*>(.*?)</(?:div|pre)>',
@@ -450,6 +431,16 @@ def extract_first_postmessage_html(html: str) -> str:
         body = src[start:end].strip()
         if body:
             return body
+    # PHPWind 一楼
+    if 'id="read_tpc"' in src or "id='read_tpc'" in src or "tpc_content" in src:
+        try:
+            from crawler.parser_phpwind import extract_phpwind_post_html
+
+            pw = extract_phpwind_post_html(src)
+            if pw and pw is not src and len(pw) < len(src):
+                return pw
+        except Exception:
+            pass
     return src
 
 
@@ -522,6 +513,20 @@ def extract_lz_scope_html(html: str, *, limit: int = 5) -> str:
 def extract_link_corpus_html(html: str, *, limit: int = 5) -> str:
     """链接/子资源语料：楼主各层（含二楼补链）+ 附件注入块。路人回帖不参与。"""
     parts: list[str] = list(extract_lz_posts_html(html, limit=limit))
+    if not parts:
+        # PHPWind：#read_tpc / .tpc_content（无 Discuz postmessage_*）
+        try:
+            from crawler.parser_phpwind import extract_phpwind_post_html
+
+            pw = extract_phpwind_post_html(html or "")
+            if pw and (
+                'id="read_tpc"' in (html or "")
+                or "id='read_tpc'" in (html or "")
+                or "tpc_content" in (html or "")
+            ):
+                parts.append(pw)
+        except Exception:
+            pass
     # 附件下载后 inject_attachment_text 写入的块（非纯数字楼 id）
     for m in re.finditer(
         r'id=["\']postmessage_attach\d+["\'][^>]*>(.*?)</div>',
@@ -582,6 +587,10 @@ def _clip_field_value(
             val = m4.group(1).strip().strip("/+-\u00d7xX \t")
         if len(val) > 48:
             val = val[:48].rstrip()
+    elif label in _TITLE_FIELD_LABELS:
+        # 片名常带装饰前缀/嵌套括号，放宽长度
+        if len(val) > 255:
+            val = val[:255].rstrip()
     elif len(val) > 200:
         # 非密码字段被整页吞入时硬顶，避免描述爆炸
         val = val[:200].rstrip()
@@ -732,7 +741,10 @@ def _normalize_preview_url(base_url: str, src: str) -> str | None:
 
 
 def extract_preview_images(html: str, limit: int = 5, *, base_url: str = "") -> list[str]:
-    """提取帖内预览图：有几张取几张，最多 limit（默认 5）；过滤表情/用户组等装饰图。"""
+    """提取帖内预览图：有几张取几张，最多 limit（默认 5）；过滤表情/用户组等装饰图。
+
+    属性优先级：Discuz zoomfile/file → PHPWind data-original 等懒加载 → src。
+    """
     urls: list[str] = []
     seen: set[str] = set()
     for tag in IMG_TAG_RE.finditer(html or ""):
@@ -741,8 +753,17 @@ def extract_preview_images(html: str, limit: int = 5, *, base_url: str = "") -> 
         for m in IMG_ATTR_RE.finditer(attrs):
             attr_name = m.group(0).split("=", 1)[0].strip().lower()
             by_name[attr_name] = m.group(1).strip()
-        # 优先 Discuz zoomfile/file（帖内大图）；纯 UI 小图通常只有 src
-        src = by_name.get("zoomfile") or by_name.get("file") or by_name.get("src") or ""
+        src = (
+            by_name.get("zoomfile")
+            or by_name.get("file")
+            or by_name.get("data-original")
+            or by_name.get("data-src")
+            or by_name.get("data-lazy-src")
+            or by_name.get("data-lazy")
+            or by_name.get("data-url")
+            or by_name.get("src")
+            or ""
+        )
         url = _normalize_preview_url(base_url, src)
         if not url or url in seen:
             continue
@@ -753,15 +774,19 @@ def extract_preview_images(html: str, limit: int = 5, *, base_url: str = "") -> 
     return urls
 
 
-# 子标题切分：认 SUBRESOURCE_TITLE_MATCH_FORMS（简繁 影片名称/资源名称）
+# 子标题切分：认 SUBRESOURCE_TITLE_MATCH_FORMS（简繁 影片名称/资源名称；异写括号）
 _SUBRESOURCE_TITLE_RE = re.compile(
-    r"【\s*(?:" + "|".join(map(re.escape, SUBRESOURCE_TITLE_MATCH_FORMS)) + r")\s*】",
+    STRUCTURE_FIELD_OPEN
+    + r"\s*(?:"
+    + "|".join(map(re.escape, SUBRESOURCE_TITLE_MATCH_FORMS))
+    + r")\s*"
+    + STRUCTURE_FIELD_CLOSE,
     re.I,
 )
 
-# 子标题标签后的取值（到下一结构键 / 磁力 / 结尾）
+# 子标题标签后的取值（到下一已知结构字段 / 磁力 / 结尾；保留片名里嵌套装饰）
 _SUBRESOURCE_TITLE_VALUE_RE = re.compile(
-    r"^\s*[:：]?\s*(.+?)(?=\s*【|\s*magnet:|\s*ed2k:|\s*$)",
+    rf"^\s*{_STRUCTURE_SEP}\s*(.+?)(?=\s*{STRUCTURE_FIELD_OPEN}\s*(?:{_LABEL_ALT})\s*{STRUCTURE_FIELD_CLOSE}|\s*magnet:|\s*ed2k:|\s*$)",
     re.I | re.S,
 )
 
@@ -850,7 +875,8 @@ def _block_field(chunk: str, *labels: str) -> str:
         return ""
     alts = "|".join(re.escape(x) for x in labels)
     m = re.search(
-        rf"【\s*(?:{alts})\s*】\s*[:：]?\s*(.+?)(?=\s*【|\s*magnet:|\s*ed2k:|\s*$)",
+        rf"{STRUCTURE_FIELD_OPEN}\s*(?:{alts})\s*{STRUCTURE_FIELD_CLOSE}\s*{_STRUCTURE_SEP}\s*"
+        rf"(.+?)(?=\s*{STRUCTURE_FIELD_OPEN}\s*(?:{_LABEL_ALT})\s*{STRUCTURE_FIELD_CLOSE}|\s*magnet:|\s*ed2k:|\s*$)",
         chunk,
         re.I | re.S,
     )
@@ -858,7 +884,9 @@ def _block_field(chunk: str, *labels: str) -> str:
         return ""
     val = re.sub(r"<[^>]+>", " ", m.group(1) or "")
     val = re.sub(r"&nbsp;", " ", val, flags=re.I)
-    val = re.sub(r"\s+", " ", val).strip().strip("：:|｜/\\")
+    val = re.sub(r"\s+", " ", val).strip()
+    val = re.sub(r"^[:：﹒．.|｜/\\]+", "", val)
+    val = re.sub(r"[:：﹒．.|｜/\\]+$", "", val)
     return val[:200]
 
 
@@ -1064,7 +1092,9 @@ def _subresource_title_value(scope: str, label_end: int, next_start: int) -> str
     m = _SUBRESOURCE_TITLE_VALUE_RE.match(chunk)
     if not m:
         return ""
-    name = (m.group(1) or "").strip().strip("：:|｜/\\")
+    name = (m.group(1) or "").strip()
+    name = re.sub(r"^[:：﹒．.|｜/\\]+", "", name)
+    name = re.sub(r"[:：﹒．.|｜/\\]+$", "", name)
     return name[:255]
 
 
@@ -1154,6 +1184,7 @@ def parse_thread_content(html: str, tid: int = 0, *, base_url: str = "") -> Thre
         plain_text=plain,
         blockcode_text=block,
         metadata=metadata,
-        preview_images=extract_preview_images(html, limit=5, base_url=base_url),
+        # 优先一楼/楼主正文，避免扫进页眉页脚 UI 图（PHPWind 尤其明显）
+        preview_images=extract_preview_images(op_html or html, limit=5, base_url=base_url),
         extract_password=extract_password(combined, metadata),
     )

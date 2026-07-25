@@ -7,12 +7,16 @@ import logging
 from typing import Any, Optional
 
 from crawler.fetcher import Fetcher
-from crawler.list_urls import list_url_for_board, site_root
+from crawler.list_urls import site_root
 from crawler.session import BASE_URL, SessionManager
-from parsers.boards import get_board_policy
 from parsers.links import DualParseResult, parse_thread_dual
 from parsers.thread_gates import looks_like_attachment_zone, should_skip_as_115sha_only
-from workers.session_factory import fetcher_from_config, session_from_config
+from workers.session_factory import (
+    bootstrap_probe_for_forum,
+    entry_urls_from_config,
+    fetcher_from_config,
+    session_from_config,
+)
 from workers.thread_outcome import ThreadOutcome, judge_thread_html
 
 log = logging.getLogger(__name__)
@@ -26,29 +30,42 @@ async def fetch_and_parse_thread(
     preferred_link: Optional[str] = None,
     list_title: str = "",
     crawler_config: Optional[dict[str, Any]] = None,
+    forum_id: str = "sehuatang",
 ) -> DualParseResult:
     """Session + dual parsers. Does not write DB — call persist_parsed / process_thread."""
-    policy = get_board_policy(board_fid)
+    from crawler.sites import get_site_adapter
+    from crawler.parser_phpwind import parse_thread_phpwind
+
+    adapter = get_site_adapter(forum_id)
+    policy = adapter.get_board_policy(board_fid)
     preferred = preferred_link or policy.primary_link
     cfg = crawler_config or {}
 
     own_session = session is None
-    session = session or (session_from_config(cfg) if cfg else SessionManager())
+    session = session or (
+        session_from_config(cfg, forum_id=forum_id) if cfg else SessionManager()
+    )
     fetcher = fetcher_from_config(session, cfg) if cfg else Fetcher(session)
     retries = int(cfg.get("web_crawler_fetch_retries") or 3)
 
     try:
         if not session._ready:
-            await session.bootstrap()
+            entries = entry_urls_from_config(cfg)
+            probe = bootstrap_probe_for_forum(cfg, forum_id)
+            await session.bootstrap(entry_urls=entries or None, probe_url=probe)
         root = site_root(str(cfg.get("web_crawl_urls") or "").split(",")[0] if cfg else BASE_URL)
-        list_url = list_url_for_board(board_fid, 1, root=root, policy=policy)
-        thread_url = f"{root}thread-{tid}-1-1.html"
+        list_url = adapter.build_list_url(root, board_fid, 1)
+        thread_url = adapter.build_thread_url(root, tid)
         fetcher.set_referer(list_url)
         html = await fetcher.get_thread_html(thread_url, retries=retries)
 
         result = parse_thread_dual(
             html, tid=tid, preferred_link=preferred, board_fid=board_fid
         )  # type: ignore[arg-type]
+        if adapter.engine == "phpwind":
+            detail = parse_thread_phpwind(html, tid=tid)
+            if detail.title and not (result.title or "").strip():
+                result.title = detail.title
         if list_title and not (result.title or "").strip():
             result.title = list_title
         log.info(
@@ -80,13 +97,17 @@ async def process_thread(
     preferred_link: Optional[str] = None,
     html: Optional[str] = None,
     account_stub_pass: bool = False,
+    forum_id: str = "sehuatang",
+    replace_thread_assets: bool = False,
 ) -> dict[str, Any]:
     """Full single-thread path: HTTP fetch → soft-browser retry → outcome → optional persist.
 
     preferred_link: 覆盖板块主链（如随机抓帖用 \"both\"）。
     html: 若已取到帖页 HTML 则复用，避免重复请求。
     account_stub_pass: 账号爬占位时，需回复/需购买改为跳过且不写占位。
+    replace_thread_assets: 重爬入库时删除同帖旧真链，只保留本次解析结果。
     """
+    from crawler.sites import get_site_adapter
     from crawler.throttle import THROTTLE
 
     if THROTTLE.should_stop():
@@ -98,25 +119,30 @@ async def process_thread(
             "link_kind": "none",
         }
 
-    policy = get_board_policy(board_fid)
+    adapter = get_site_adapter(forum_id)
+    policy = adapter.get_board_policy(board_fid)
     persist_board_name = (board_name or policy.name or "").strip()
     link_pref = (preferred_link or policy.primary_link or "magnet").strip().lower()
     if link_pref not in {"magnet", "ed2k", "both"}:
         link_pref = policy.primary_link
     cfg = crawler_config or {}
     own_session = session is None
-    session = session or (session_from_config(cfg) if cfg else SessionManager())
+    session = session or (
+        session_from_config(cfg, forum_id=forum_id) if cfg else SessionManager()
+    )
     own_fetcher = fetcher is None
     fetcher = fetcher or (fetcher_from_config(session, cfg) if cfg else Fetcher(session))
     retries = int(cfg.get("web_crawler_fetch_retries") or 3)
 
     root = site_root(str(cfg.get("web_crawl_urls") or "").split(",")[0] if cfg else BASE_URL)
-    thread_url = f"{root}thread-{tid}-1-1.html"
+    thread_url = adapter.build_thread_url(root, tid)
 
     try:
         if not session._ready:
-            await session.bootstrap()
-        list_url = list_url_for_board(board_fid, 1, root=root, policy=policy)
+            entries = entry_urls_from_config(cfg)
+            probe = bootstrap_probe_for_forum(cfg, forum_id)
+            await session.bootstrap(entry_urls=entries or None, probe_url=probe)
+        list_url = adapter.build_list_url(root, board_fid, 1)
         # 批量重爬共用 Fetcher 时也要随板块更新 Referer
         fetcher.set_referer(list_url)
         soft_browser_retried = False
@@ -125,15 +151,17 @@ async def process_thread(
             html = await fetcher.get_thread_html(thread_url, retries=retries)
             soft_browser_retried = fetcher.last_soft_browser_retried
 
-        # 按帖页回写二级板块（已入库重爬常带旧纯 fid / 空名）
+        # 按帖页回写二级板块（已入库重爬常带旧纯 fid / 空名）；PHPWind 跳过 Discuz 元数据推断
+        from crawler.sites import is_phpwind
         from parsers.thread_gates import resolve_thread_board_meta
 
-        board_fid, persist_board_name = resolve_thread_board_meta(
-            html,
-            fallback_key=board_fid,
-            fallback_name=persist_board_name,
-        )
-        policy = get_board_policy(board_fid)
+        if not is_phpwind(forum_id):
+            board_fid, persist_board_name = resolve_thread_board_meta(
+                html,
+                fallback_key=board_fid,
+                fallback_name=persist_board_name,
+            )
+            policy = adapter.get_board_policy(board_fid)
 
         outcome = judge_thread_html(
             html,
@@ -142,18 +170,20 @@ async def process_thread(
             base_url=thread_url,
             soft_browser_retried=soft_browser_retried,
             preferred_link=link_pref,
+            forum_id=forum_id,
         )
         # 兜底：判定仍要求浏览器重试且尚未做过
         if outcome.need_browser_retry and not soft_browser_retried:
             log.info("tid=%s soft-ad → force browser page read", tid)
             html = await fetcher.get_html(thread_url, mode="browser", retries=min(2, retries))
             soft_browser_retried = True
-            board_fid, persist_board_name = resolve_thread_board_meta(
-                html,
-                fallback_key=board_fid,
-                fallback_name=persist_board_name,
-            )
-            policy = get_board_policy(board_fid)
+            if not is_phpwind(forum_id):
+                board_fid, persist_board_name = resolve_thread_board_meta(
+                    html,
+                    fallback_key=board_fid,
+                    fallback_name=persist_board_name,
+                )
+                policy = adapter.get_board_policy(board_fid)
             outcome = judge_thread_html(
                 html,
                 board_fid=board_fid,
@@ -161,6 +191,7 @@ async def process_thread(
                 base_url=thread_url,
                 soft_browser_retried=True,
                 preferred_link=link_pref,
+                forum_id=forum_id,
             )
 
         attachment_kind = outcome.attachment_kind
@@ -208,6 +239,7 @@ async def process_thread(
                     attachment_failed=attach_res.failed and not attach_res.downloaded,
                     had_attachments=attach_res.downloaded or bool(attachment_text),
                     preferred_link=link_pref,
+                    forum_id=forum_id,
                 )
                 # 电驴板：txt/zip/excel 无果再试种子；磁力/双链：种子无果再试 txt/excel
                 # stub/无权不再二轮（已能判定）；仅 retry/failed 等才回退
@@ -258,6 +290,7 @@ async def process_thread(
                             ),
                             had_attachments=True,
                             preferred_link=link_pref,
+                            forum_id=forum_id,
                         )
                     attachment_kind = f"{attachment_kind}+{next_kind}"
                 # 附件语料可能已含链但 judge 走了非 import：再双解析一次补全
@@ -288,6 +321,12 @@ async def process_thread(
             base_url=thread_url,
             board_fid=board_fid,
         )
+        if adapter.engine == "phpwind":
+            from crawler.parser_phpwind import parse_thread_phpwind
+
+            detail = parse_thread_phpwind(html, tid=tid)
+            if detail.title and not (parsed.title or "").strip():
+                parsed.title = detail.title
         if not parsed.title and (outcome.title or list_title):
             parsed.title = outcome.title or list_title
         # 确保描述按本板结构卡片重算（含 outcome.parsed 来自 judge 的路径）
@@ -328,6 +367,11 @@ async def process_thread(
                 outcome.title or list_title,
             )
 
+        attach_chars = len(attachment_text or "")
+        # 解析已完成：尽快丢掉整页 HTML / 附件语料，写库前不必再占峰
+        html = ""
+        attachment_text = ""
+
         result: dict[str, Any] = {
             "tid": tid,
             "thread_url": thread_url,
@@ -338,7 +382,7 @@ async def process_thread(
             "need_attachments": outcome.need_attachments,
             "attachment_kind": attachment_kind,
             "attachments_tried": attach_tried,
-            "attachment_chars": len(attachment_text),
+            "attachment_chars": attach_chars,
             "soft_browser_retried": soft_browser_retried or outcome.soft_browser_retried,
             "title": parsed.title or outcome.title,
             "magnets": len(parsed.magnets),
@@ -371,8 +415,9 @@ async def process_thread(
                         source_url=thread_url,
                         board_fid=board_fid,
                         board_name=persist_board_name,
-                        forum_id="sehuatang",
+                        forum_id=forum_id,
                         import_outcome=str(outcome.outcome or outcome.label or ""),
+                        replace_thread_assets=replace_thread_assets,
                     )
                 finally:
                     conn.close()
