@@ -1,6 +1,8 @@
 name: Build sehua-app image
 
-# 主栈镜像：backend + admin（与 search 分开构建 / 推送）
+# 仅构建 / 推送主栈 sehua（API+管理），与 search 完全独立
+# 触发：改主栈相关路径，或打标签 v1.2.3（不要用 search-v*）
+# 手动：Actions → Build sehua-app image → Run workflow
 on:
   push:
     branches: [main]
@@ -11,7 +13,8 @@ on:
       - "database/**"
       - "VERSION"
       - ".github/workflows/docker-app.yml"
-    tags: ["v*"]
+    tags:
+      - "v[0-9]*"
   workflow_dispatch:
 
 permissions:
@@ -21,13 +24,21 @@ permissions:
 env:
   GHCR: ghcr.io
   DOCKERHUB_USER: poillysky
-  RELEASE_TAG: "1.2.0"
 
 jobs:
   app:
+    # 排除 search 专用标签，避免误跑
+    if: ${{ !startsWith(github.ref, 'refs/tags/search-v') && !contains(github.ref, '-search') }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
+      - name: Read sehua VERSION
+        id: ver
+        run: |
+          TAG=$(tr -d '[:space:]' < VERSION)
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "sehua VERSION=$TAG"
 
       - uses: docker/setup-buildx-action@v3
 
@@ -51,9 +62,8 @@ jobs:
             ${{ env.GHCR }}/${{ github.repository_owner }}/sehuatang-app
             ${{ env.DOCKERHUB_USER }}/sehuatang-app
           tags: |
-            type=raw,value=${{ env.RELEASE_TAG }},enable={{is_default_branch}}
-            type=raw,value=latest,enable={{is_default_branch}}
-            type=semver,pattern={{version}}
+            type=raw,value=${{ steps.ver.outputs.tag }}
+            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v') }}
 
       - uses: docker/build-push-action@v6
         with:

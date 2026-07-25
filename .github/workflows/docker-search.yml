@@ -1,14 +1,19 @@
 name: Build sehua-search image
 
-# 搜索端镜像：与主栈 sehua-app 分开构建 / 推送
+# 仅构建 / 推送搜索端，与主栈 sehua 完全独立
+# 触发：改 next-web / VERSION.search，或打标签 search-v1.2.3
+# 手动：Actions → Build sehua-search image → Run workflow
+# 注意：不会因 VERSION（主栈）或普通 v* 标签触发
 on:
   push:
     branches: [main]
     paths:
       - "next-web/**"
+      - "VERSION.search"
       - ".github/workflows/docker-search.yml"
-      - "VERSION"
-    tags: ["v*", "v*-search", "search-v*"]
+    tags:
+      - "search-v*"
+      - "v*-search"
   workflow_dispatch:
 
 permissions:
@@ -18,13 +23,19 @@ permissions:
 env:
   GHCR: ghcr.io
   DOCKERHUB_USER: poillysky
-  RELEASE_TAG: "1.2.0"
 
 jobs:
   search:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
+      - name: Read search VERSION
+        id: ver
+        run: |
+          TAG=$(tr -d '[:space:]' < VERSION.search)
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "search VERSION=$TAG"
 
       - uses: actions/setup-node@v4
         with:
@@ -80,9 +91,8 @@ jobs:
             ${{ env.GHCR }}/${{ github.repository_owner }}/sehuatang-search
             ${{ env.DOCKERHUB_USER }}/sehuatang-search
           tags: |
-            type=raw,value=${{ env.RELEASE_TAG }},enable={{is_default_branch}}
-            type=raw,value=latest,enable={{is_default_branch}}
-            type=semver,pattern={{version}}
+            type=raw,value=${{ steps.ver.outputs.tag }}
+            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/search-v') || contains(github.ref, '-search') }}
 
       - uses: docker/build-push-action@v6
         with:

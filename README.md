@@ -73,24 +73,29 @@ flowchart LR
 
 ## Docker 镜像
 
-主栈（sehua）与搜索端**分开构建、分开推送**：
+主栈（sehua）与搜索端**各自独立版本、独立 CI、独立推送**，互不绑定。
 
-| 产品 | 镜像 | CI |
-|------|------|-----|
-| **sehua**（API+管理合一） | [`poillysky/sehuatang-app:1.2.0`](https://hub.docker.com/r/poillysky/sehuatang-app) | [docker-app.yml](./.github/workflows/docker-app.yml) |
-| **search**（搜索站） | [`poillysky/sehuatang-search:1.2.0`](https://hub.docker.com/r/poillysky/sehuatang-search) | [docker-search.yml](./.github/workflows/docker-search.yml) |
+| 产品 | 版本文件 | 镜像 | 发版触发 |
+|------|----------|------|----------|
+| **sehua**（API+管理） | [`VERSION`](./VERSION) | [`poillysky/sehuatang-app`](https://hub.docker.com/r/poillysky/sehuatang-app) | 改主栈代码 / `VERSION`，或打标签 `v1.2.0`；或手动 Run [docker-app](./.github/workflows/docker-app.yml) |
+| **search**（搜索站） | [`VERSION.search`](./VERSION.search) | [`poillysky/sehuatang-search`](https://hub.docker.com/r/poillysky/sehuatang-search) | 改 `next-web` / `VERSION.search`，或打标签 `search-v1.2.0`；或手动 Run [docker-search](./.github/workflows/docker-search.yml) |
 
-- 改 `backend/` / `frontend/admin/` / `deploy/app/` → 只打 **app**
-- 改 `next-web/` → 只打 **search**
-- 也可在 Actions 里对对应 workflow 点 **Run workflow** 手动推送
+当前钉版：
 
-Hub：[poillysky](https://hub.docker.com/u/poillysky) · 版本号与 `latest` 一并推送。NAS Compose 请钉死版本号。
+| 产品 | 标签 |
+|------|------|
+| sehua | [`1.2.0`](https://hub.docker.com/r/poillysky/sehuatang-app/tags)（见 `deploy/docker-compose.nas.yml`） |
+| search | [`1.1.24`](https://hub.docker.com/r/poillysky/sehuatang-search/tags)（见 `deploy/docker-compose.search.yml`） |
+
+- 发 sehua **不会**自动打 search
+- 发 search **不会**自动打 sehua
+- Hub 上两个仓库的 `latest` 各自更新，版本号可不同
 
 ### GHCR（可选）
 
 ```text
 ghcr.io/poillysky/sehuatang-app:1.2.0
-ghcr.io/poillysky/sehuatang-search:1.2.0
+ghcr.io/poillysky/sehuatang-search:1.1.24
 ```
 
 ---
@@ -245,9 +250,9 @@ Backend 启动时自动执行待跑 SQL 迁移。
 
 仓库：https://github.com/poillysky/sehua
 
-发 **sehua 主栈**：改 `VERSION`、`deploy/docker-compose.nas.yml` 标签、`docker-app.yml` 的 `RELEASE_TAG`，提交；打 `v*` 或等 path 触发 app workflow。  
-发 **search**：改 `docker-compose.search.yml` / `docker-search.yml` 的 `RELEASE_TAG`，提交 `next-web/`；打 `v*-search` 或手动 Run workflow。  
-Hub / GHCR 保留历史版本号；`latest` = 对应产品最近一次推送。
+发 **sehua**：改 `VERSION` + `deploy/docker-compose.nas.yml` 镜像标签，提交；打 `v1.2.0` 或 path 触发 [docker-app](./.github/workflows/docker-app.yml)（也可手动 Run）。  
+发 **search**：改 `VERSION.search` + `deploy/docker-compose.search.yml` 镜像标签，提交；打 `search-v1.2.0`（或 `v1.2.0-search`）或 path 触发 [docker-search](./.github/workflows/docker-search.yml)。  
+两者版本号可不同；一次发版只动其中一个即可。Hub / GHCR 保留历史标签；各产品的 `latest` 各自更新。
 
 ---
 

@@ -19,7 +19,7 @@ name: sehuatang-search
 
 services:
   search:
-    image: poillysky/sehuatang-search:1.2.0
+    image: poillysky/sehuatang-search:1.1.24
     container_name: sehuatang-search
     restart: always
     ports:
