@@ -85,7 +85,7 @@ flowchart LR
 | 产品 | 标签 |
 |------|------|
 | sehua | [`1.2.0`](https://hub.docker.com/r/poillysky/sehuatang-app/tags)（见 `deploy/docker-compose.nas.yml`） |
-| search | [`1.1.24`](https://hub.docker.com/r/poillysky/sehuatang-search/tags)（见 `deploy/docker-compose.search.yml`） |
+| search | [`1.2.0`](https://hub.docker.com/r/poillysky/sehuatang-search/tags)（见 `deploy/docker-compose.search.yml`） |
 
 - 发 sehua **不会**自动打 search
 - 发 search **不会**自动打 sehua
@@ -95,7 +95,7 @@ flowchart LR
 
 ```text
 ghcr.io/poillysky/sehuatang-app:1.2.0
-ghcr.io/poillysky/sehuatang-search:1.1.24
+ghcr.io/poillysky/sehuatang-search:1.2.0
 ```
 
 ---
