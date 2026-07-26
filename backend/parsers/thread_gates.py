@@ -161,7 +161,13 @@ CLOUD_SHARE_RE = re.compile(
 )
 # 115 直链分享：115://文件名|字节数|hash|hash
 # 色花【sha1】帖附件常无协议头：文件名|size|sha1|pickcode（例 fc3046937.rar）
-_RE_115_SHA_BODY = r"[^\s<>\"'|]+\|\d+\|[A-Fa-f0-9]{32,64}\|[A-Fa-f0-9]{32,64}"
+# 文件名段必须有上限：无 | 的大磁链语料上 [^\s<>\"'|]+ 会灾难回溯，拖死判帖/健康检查。
+_RE_115_SHA_BODY = (
+    r"[^\s<>\"'|]{1,255}\|"
+    r"\d{1,18}\|"
+    r"[A-Fa-f0-9]{32,64}\|"
+    r"[A-Fa-f0-9]{32,64}"
+)
 RE_115_SHA = re.compile(rf"(?:115://)?{_RE_115_SHA_BODY}", re.I)
 # 115 网盘分享页：115.com/s/... 或 115cdn.com/s/...（含访问码参数亦可）
 RE_115_SHARE = re.compile(
@@ -578,10 +584,13 @@ def has_115_sha_link(text: str) -> bool:
 
     附件语料常把长链拆成多行，匹配前去掉空白再搜。
     """
-    if not text:
+    if not text or "|" not in text:
         return False
     if RE_115_SHA.search(text):
         return True
+    # 仅当存在换行空白拆链时才压空白再搜，避免整篇大语料无谓 compact
+    if "\n" not in text and "\r" not in text:
+        return False
     compact = re.sub(r"\s+", "", text)
     return compact != text and bool(RE_115_SHA.search(compact))
 
@@ -591,14 +600,16 @@ def should_skip_as_115sha_only(text: str) -> bool:
 
     同一压缩包内常同时有 Excel 磁力与 sha1.txt；有磁力则不应因 115sha 丢弃。
     """
-    if not has_115_sha_link(text):
+    raw = text or ""
+    if not raw:
         return False
-    low = (text or "").lower()
+    # 先快路径：已有可入库链则不必跑 115sha 正则（大合集附件上可达数十秒）
+    low = raw.lower()
     if "magnet:" in low or "ed2k://" in low:
         return False
-    if has_115_share_link(text):
+    if has_115_share_link(raw):
         return False
-    return True
+    return has_115_sha_link(raw)
 
 
 def has_115_share_link(text: str) -> bool:

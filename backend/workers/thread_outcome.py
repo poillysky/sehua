@@ -242,8 +242,8 @@ def judge_thread_html(
                 title,
             )
 
-    # 115sha 直链：只认楼主语料；已有 magnet/ed2k 不跳；有附件区则先下附件
-    if has_115_sha_link(link_corpus):
+    # 115sha 直链：只认楼主语料；已有 magnet/ed2k/目标链不跑重正则；有附件区则先下附件
+    if not has_lz_target and has_115_sha_link(link_corpus):
         if should_skip_as_115sha_only(link_corpus):
             has_attach_corpus = "postmessage_attach" in (html or "")
             if not attachments_already_tried and looks_like_attachment_zone(html):

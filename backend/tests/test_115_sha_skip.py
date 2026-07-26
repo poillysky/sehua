@@ -37,6 +37,33 @@ def test_has_115_sha_link_matches_sample():
     assert has_115_sha_link("115://incomplete") is False
 
 
+def test_has_115_sha_link_mega_magnet_dump_is_fast():
+    """大磁链附件语料不得拖死 has_115_sha_link（曾导致 /health 504）。"""
+    import time
+
+    text = "\n".join(
+        f"magnet:?xt=urn:btih:{i:040x}&dn=file{i}" for i in range(2000)
+    )
+    t0 = time.perf_counter()
+    assert has_115_sha_link(text) is False
+    assert time.perf_counter() - t0 < 0.5
+
+
+def test_should_skip_as_115sha_only_skips_regex_when_magnet_present():
+    from parsers.thread_gates import should_skip_as_115sha_only
+
+    # 磁链 + 伪 115 形态：有 magnet 应直接不跳过，且保持快
+    import time
+
+    blob = (
+        "magnet:?xt=urn:btih:ABCDEF0123456789ABCDEF0123456789ABCDEF01\n"
+        + ("x|" * 5000)
+    )
+    t0 = time.perf_counter()
+    assert should_skip_as_115sha_only(blob) is False
+    assert time.perf_counter() - t0 < 0.2
+
+
 def test_judge_skips_bare_sha1_attach_corpus():
     """附件解出无协议头 sha1 管线 → 115sha 跳过（勿落成「未解析到」）。"""
     html = """
