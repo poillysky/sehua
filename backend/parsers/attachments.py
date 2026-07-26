@@ -8,12 +8,46 @@ from urllib.parse import urljoin
 
 from parsers.content import decode_cf_email
 
+# 附件下载响应页 / 楼主区「真·附件无权」提示。
+# 勿用过宽词：全站脚本常有「请先登录再打赏」→ 会把无附件的磁链帖误标无权。
 ATTACHMENT_DENIED_MARKERS = (
     "只有特定用户可以下载",
-    "请先登录",
-    "没有权限",
+    "请先登录后下载",
+    "请先登录才能下载",
+    "请先登录后才能下载",
+    "没有权限下载",
     "无权下载",
     "积分不足",
+    "您所在的用户组无法下载或查看附件",
+    "用户组无法下载或查看附件",
+    "无法下载或查看附件",
+)
+
+# 附件直链落到 PHPWind「提示信息」：日限 / 次数用尽（与无权同占位）。
+ATTACHMENT_LIMIT_MARKERS = (
+    "今天下载",
+    "请明天再来",
+    "今日下载次数",
+    "下载次数已达",
+    "下载次数已用完",
+    "附件下载次数",
+)
+
+# 附件直链落到 PHPWind「提示信息」登录页（未登录），不是用户组无权。
+ATTACHMENT_LOGIN_MARKERS = (
+    "您没有登录或者没有权限访问此页面",
+    "您没有登录或没有权限访问此页面",
+)
+
+# 楼主正文里出现这些才算「帖内附件无权」（不含全页导航）
+THREAD_BODY_ATTACH_DENIED_MARKERS = (
+    "您所在的用户组无法下载或查看附件",
+    "用户组无法下载或查看附件",
+    "无法下载或查看附件",
+    "只有特定用户可以下载",
+    "无权下载此附件",
+    "无权下载该附件",
+    "没有权限下载附件",
 )
 
 DIRECTORY_ATTACHMENT_MARKERS = (
@@ -42,12 +76,72 @@ class DownloadAttachment:
 class AttachmentFetchResult:
     text: str = ""
     denied: bool = False
+    login_required: bool = False
     failed: bool = False
     downloaded: bool = False
 
 
+def is_attachment_login_required(html: str) -> bool:
+    """附件下载是否落到 PHPWind 未登录提示页。"""
+    text = html or ""
+    if not text:
+        return False
+    return any(marker in text for marker in ATTACHMENT_LOGIN_MARKERS)
+
+
+def is_attachment_download_limited(html: str) -> bool:
+    """附件下载是否落到日限/次数上限提示页。"""
+    text = html or ""
+    if not text:
+        return False
+    return any(marker in text for marker in ATTACHMENT_LIMIT_MARKERS)
+
+
 def is_attachment_denied(html: str) -> bool:
-    return any(marker in (html or "") for marker in ATTACHMENT_DENIED_MARKERS)
+    """附件下载响应或帖内是否出现无权/需登录/日限提示。
+
+    会剔除「请先登录再打赏」等非附件文案，避免 2048 全页脚本误伤。
+    未登录 / 日限提示页也算 denied → 占位「无权限下载附件」（勿跳过）。
+    """
+    text = html or ""
+    if not text:
+        return False
+    if is_attachment_login_required(text):
+        return True
+    if is_attachment_download_limited(text):
+        return True
+    # 打赏 / 导航：alert('请先登录再打赏') —— 不是附件无权
+    cleaned = text.replace("请先登录再打赏", "")
+    return any(marker in cleaned for marker in ATTACHMENT_DENIED_MARKERS)
+
+
+def thread_body_shows_attach_denied(html: str) -> bool:
+    """仅楼主区明示附件无权（有种子/txt 可下时不要只靠全页扫描）。"""
+    scope = ""
+    try:
+        from parsers.content import extract_lz_scope_html
+
+        scope = extract_lz_scope_html(html) or ""
+    except Exception:
+        scope = ""
+    blob = scope or ""
+    if not blob:
+        return False
+    return any(marker in blob for marker in THREAD_BODY_ATTACH_DENIED_MARKERS)
+
+
+def _is_attachment_href(href: str) -> bool:
+    """Discuz attachment=… / PHPWind job.php?action=download&aid=…"""
+    h = (href or "").lower()
+    if not h:
+        return False
+    if "attachment" in h:
+        return True
+    if "action=download" in h or "job=download" in h:
+        return True
+    if "aid=" in h and ("job.php" in h or "download" in h):
+        return True
+    return False
 
 
 def _attachment_kind(name: str) -> str | None:
@@ -109,21 +203,53 @@ def _anchor_attachment_name(a) -> str:
 
 
 def extract_download_attachments(base_url: str, html: str) -> list[DownloadAttachment]:
-    """提取帖子内可下载的 txt / zip / rar / torrent / excel / doc（DOM 顺序）。"""
+    """提取帖子内可下载的 txt / zip / rar / torrent / excel / doc（DOM 顺序）。
+
+    兼容 Discuz（forum.php?mod=attachment）与 PHPWind（job.php?action=download）。
+    """
     found: dict[str, DownloadAttachment] = {}
     try:
         from bs4 import BeautifulSoup
 
         soup = BeautifulSoup(html or "", "lxml")
-        for op in soup.select("ignore_js_op, div.pattl, div.tattl"):
-            for a in op.select("a[href]"):
+        # Discuz 附件区 + PHPWind attach-card
+        nodes = soup.select(
+            "ignore_js_op, div.pattl, div.tattl, div.attach-card, "
+            "a.attach-name-link, a[href*='attachment'], a[href*='action=download']"
+        )
+        for node in nodes:
+            anchors = (
+                [node]
+                if getattr(node, "name", None) == "a" and node.get("href")
+                else node.select("a[href]")
+            )
+            for a in anchors:
                 href = a.get("href") or ""
-                if "attachment" not in href.lower():
+                if not _is_attachment_href(href):
                     continue
                 name = _anchor_attachment_name(a)
                 if not name:
+                    # PHPWind 常把文件名放在邻近 span / img alt
+                    parent = a.find_parent("div", class_="attach-card") or a.parent
+                    if parent is not None:
+                        icon = parent.select_one("img[alt]")
+                        alt = (icon.get("alt") or "").strip() if icon else ""
+                        span = a.select_one("span") or (
+                            parent.select_one(".attach-name-link span")
+                        )
+                        span_txt = span.get_text(" ", strip=True) if span else ""
+                        name = span_txt or (f"file.{alt}" if alt else "")
+                if not name:
                     continue
                 kind = _attachment_kind(name)
+                if not kind:
+                    # 文件名无后缀时：用 torrent.gif / alt=torrent 推断
+                    parent = a.find_parent("div", class_="attach-card")
+                    if parent is not None:
+                        icon = parent.select_one("img[src*='torrent'], img[alt='torrent']")
+                        if icon is not None and not name.lower().endswith(".torrent"):
+                            name = f"{name}.torrent"
+                            kind = "torrent"
                 if not kind:
                     continue
                 full = urljoin(base_url, href)
@@ -136,11 +262,13 @@ def extract_download_attachments(base_url: str, html: str) -> list[DownloadAttac
 
     # 正则兜底（无 bs4 / 解析失败）；顺带解 CF 邮箱混淆文件名
     for m in re.finditer(
-        r'<a\b[^>]*href="([^"]*attachment[^"]*)"[^>]*>(.*?)</a>',
+        r'<a\b[^>]*href="([^"]*(?:attachment|action=download|job=download)[^"]*)"[^>]*>(.*?)</a>',
         html or "",
         re.I | re.S,
     ):
         href, inner = m.group(1), m.group(2)
+        if not _is_attachment_href(href):
+            continue
         cf = re.search(r'data-cfemail=["\']([0-9a-fA-F]+)["\']', inner, re.I)
         if cf:
             name = decode_cf_email(cf.group(1)).strip()

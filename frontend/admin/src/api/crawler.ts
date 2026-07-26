@@ -56,6 +56,10 @@ export type CrawlerStatus = {
   board_list_cursors?: Record<string, number>
   /** 论坛入口 URL（逗号分隔），用于活动日志 tid 跳转 */
   web_crawl_urls?: string
+  /** 当日可用入口（2048 优先 bbs. 根） */
+  preferred_entry_url?: string
+  /** 帖页根，如 https://bbs.xfca2022.com/；活动日志 tid 链优先用此 */
+  thread_root?: string
   activity: CrawlerActivity[]
   boards: { fid: string; name: string; pending: string | number; done: string | number }[]
   queue?: {
@@ -483,9 +487,9 @@ export type RecrawlStubsResult = {
   result?: Record<string, unknown>
 }
 
-export function recrawlAccountStubs() {
+export function recrawlAccountStubs(opts?: { forum_id?: string }) {
   return api<RecrawlStubsResult>('/api/crawler/recrawl-stubs', {
     method: 'POST',
-    body: '{}',
+    body: JSON.stringify(opts || {}),
   })
 }

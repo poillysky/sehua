@@ -122,7 +122,11 @@ async def parse_thread_for_admin(
     try:
         probe = bootstrap_probe_for_forum(cfg, forum_id, proxy=proxy)
         await session.bootstrap(entry_urls=entries or None, probe_url=probe)
-        root = site_root(session.active_entry_url or root)
+        preferred = str(cfg.get("preferred_entry_url") or "").strip()
+        if forum_id == "2048":
+            root = site_root(session.active_entry_url or preferred or root)
+        else:
+            root = site_root(session.active_entry_url or root)
         # 用户显式选了板块 → 按该板块主链判定；留空 → 双链自动识别（仍可展示推断出的板块）
         fid_forced = bool((board_fid or "").strip())
         fid_hint = _infer_fid(original_url, "", board_fid if fid_forced else "")
@@ -133,12 +137,16 @@ async def parse_thread_for_admin(
         board_fid_int = int(policy.fid)
         preferred_link = policy.primary_link if fid_forced else "both"
         list_url = adapter.build_list_url(root, policy.key, 1)
-        # 始终打桌面帖；手机链接在规范化阶段已去掉 mobile / m.
-        thread_url = canonical_thread_url(desktop_url or original_url, root=root)
-        if not tid_from_url(thread_url) and "read.php" not in thread_url and "tid=" not in thread_url:
+        # 2048：统一 https://bbs.../read.php?tid=N
+        if forum_id == "2048":
             thread_url = adapter.build_thread_url(root, tid)
-        if "tid=" not in thread_url and "thread-" not in thread_url:
-            thread_url = adapter.build_thread_url(root, tid)
+        else:
+            # 始终打桌面帖；手机链接在规范化阶段已去掉 mobile / m.
+            thread_url = canonical_thread_url(desktop_url or original_url, root=root)
+            if not tid_from_url(thread_url) and "read.php" not in thread_url and "tid=" not in thread_url:
+                thread_url = adapter.build_thread_url(root, tid)
+            if "tid=" not in thread_url and "thread-" not in thread_url:
+                thread_url = adapter.build_thread_url(root, tid)
         fetcher.set_referer(list_url)
 
         # HTTP 读帖；遇到 18+/软文壳时 Fetcher 内会浏览器整页重读
@@ -156,6 +164,13 @@ async def parse_thread_for_admin(
                 soft_browser_retried = True
                 mobile_shell = is_mobile_thread_shell(html)
 
+        # 0 元购买先解锁；付费购买在 judge 中跳过
+        from workers.purchase_unlock import unlock_free_purchase_html
+
+        html, free_buy_note = await unlock_free_purchase_html(
+            fetcher, html, thread_url, retries=retries
+        )
+
         board_fid_str = _infer_fid(
             thread_url, html, board_fid if fid_forced else ""
         ) or str(policy.key)
@@ -170,7 +185,20 @@ async def parse_thread_for_admin(
             board_fid=policy.key,
             soft_browser_retried=soft_browser_retried,
             preferred_link=preferred_link,
+            forum_id=forum_id,
+            tid=tid,
+            list_title="",
+            base_url=thread_url,
         )
+        if free_buy_note and outcome.verdict in {"skipped", "failed"}:
+            tip = str(outcome.outcome or "")
+            if (not tip) or ("未解析到" in tip) or ("非资源" in tip) or ("未发现" in tip):
+                outcome = ThreadOutcome(
+                    "stub",
+                    "0元购买贴",
+                    outcome.link_kind,
+                    outcome.title,
+                )
         if outcome.need_browser_retry and not soft_browser_retried:
             log.info("parse-test tid=%s soft-ad → browser page", tid)
             html = await fetcher.get_html(thread_url, mode="browser", retries=min(2, retries))
@@ -180,11 +208,15 @@ async def parse_thread_for_admin(
                 board_fid=policy.key,
                 soft_browser_retried=True,
                 preferred_link=preferred_link,
+                forum_id=forum_id,
+                tid=tid,
+                base_url=thread_url,
             )
 
         attachment_kind = outcome.attachment_kind
         attachment_text = ""
         attachment_denied = False
+        attachment_login_required = False
         attachment_failed = False
         attachment_downloaded = False
         attachment_source = ""
@@ -202,6 +234,9 @@ async def parse_thread_for_admin(
                 preferred_link=preferred_link,
             )
             attachment_denied = attach_res.denied
+            attachment_login_required = bool(
+                getattr(attach_res, "login_required", False)
+            )
             attachment_failed = attach_res.failed and not attach_res.downloaded
             attachment_downloaded = attach_res.downloaded
             attachment_text = attach_res.text or ""
@@ -223,13 +258,16 @@ async def parse_thread_for_admin(
                     soft_browser_retried=soft_browser_retried,
                     attachments_already_tried=True,
                     attachment_denied=attachment_denied,
+                    attachment_login_required=attachment_login_required,
                     attachment_failed=attachment_failed,
                     had_attachments=attachment_downloaded or bool(attachment_text),
                     preferred_link=preferred_link,
                 )
                 # 双链/磁力：种子失败再试 Excel/文本；电驴板：txt/zip/excel 无果再试种子
                 if (
-                    outcome.verdict not in {"import", "skipped"}
+                    outcome.verdict not in {"import", "skipped", "stub"}
+                    and not attachment_login_required
+                    and not attachment_denied
                     and looks_like_attachment_zone(html)
                     and (
                         (
@@ -249,6 +287,9 @@ async def parse_thread_for_admin(
                         preferred_link=preferred_link,
                     )
                     attachment_denied = attachment_denied or attach_res2.denied
+                    attachment_login_required = attachment_login_required or bool(
+                        getattr(attach_res2, "login_required", False)
+                    )
                     attachment_failed = attachment_failed or (attach_res2.failed and not attach_res2.downloaded)
                     attachment_downloaded = attachment_downloaded or attach_res2.downloaded
                     if attach_res2.text and should_skip_as_115sha_only(attach_res2.text):
@@ -271,8 +312,21 @@ async def parse_thread_for_admin(
                             soft_browser_retried=soft_browser_retried,
                             attachments_already_tried=True,
                             attachment_denied=attachment_denied,
+                            attachment_login_required=attachment_login_required,
                             attachment_failed=attachment_failed,
                             had_attachments=True,
+                            preferred_link=preferred_link,
+                        )
+                    elif attachment_login_required or attachment_denied:
+                        outcome = judge_thread_html(
+                            html,
+                            board_fid=board_fid_int,
+                            soft_browser_retried=soft_browser_retried,
+                            attachments_already_tried=True,
+                            attachment_denied=attachment_denied,
+                            attachment_login_required=attachment_login_required,
+                            attachment_failed=attachment_failed,
+                            had_attachments=attachment_downloaded or bool(attachment_text),
                             preferred_link=preferred_link,
                         )
                 if outcome.verdict not in {"import", "skipped"} and attachment_text:
@@ -410,6 +464,7 @@ async def parse_thread_for_admin(
             "reply_required": reply_required,
             "attachment_source": attachment_source,
             "attachment_denied": attachment_denied,
+            "attachment_login_required": attachment_login_required,
             "attachment_failed": attachment_failed,
             "attachment_downloaded": attachment_downloaded,
             "attachment_text_len": len(attachment_text),

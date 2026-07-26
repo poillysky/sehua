@@ -34,12 +34,13 @@ def test_resource_list_where_rejects_multi_filter():
     assert "GROUP BY" not in where_sql2
 
 
-def test_resource_list_where_q_title_only():
-    """资源列表关键字只匹配帖子标题（无标题时回落 filename），不扫 search_string。"""
+def test_resource_list_where_q_title_and_outcome():
+    """资源列表关键字匹配标题/判定，不扫 search_string。"""
     sql, params = _resource_list_where(q="提示")
     assert "rs.title" in sql
+    assert "import_outcome" in sql
     assert "search_string" not in sql
-    assert params == ["%提示%"]
+    assert params == ["%提示%", "%提示%"]
 
 
 def test_resource_list_where_forum_id():

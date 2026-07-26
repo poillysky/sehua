@@ -27,8 +27,9 @@ def test_sample_tids_respects_exclude_and_pool():
 def test_is_missing_thread():
     assert rt.is_missing_thread("<html>抱歉，指定的主题不存在</html>", "提示信息") is True
     assert rt.is_missing_thread("<html><div id='postmessage_1'>正文</div></html>", "正常标题") is False
+    # 空提示页不再当成永久不存在（限流常见）
     short = "<html><title>提示信息 - 论坛</title><body>ok</body></html>"
-    assert rt.is_missing_thread(short, "提示信息 - 论坛") is True
+    assert rt.is_missing_thread(short, "提示信息 - 论坛") is False
 
 
 def test_extract_board_fid():

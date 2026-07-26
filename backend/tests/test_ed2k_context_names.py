@@ -32,3 +32,19 @@ def test_ed2k_without_label_asset_filename_empty():
     assert links[0].display_name == ""
     assets, _ = build_assets([], links, preferred="ed2k")
     assert assets[0].filename == ""
+
+
+def test_glued_ed2k_missing_pipes_from_2048_txt():
+    """2048 附件 txt：扩展名、大小、hash 粘连无 |（tid=27424341）。"""
+    text = (
+        "ed2k://|file|www.98T.la@AMBI-039.mp4206253751428B6B31078561A2E8E749E819E957421\n"
+        "ed2k://|file|www.98T.la@ARM-344.mp41377073636F8D10C23B79C1F49E606D5B8B111F4C4\n"
+    )
+    links = parse_ed2k_text(text)
+    assert len(links) == 2
+    assert links[0].filename == "www.98T.la@AMBI-039.mp4"
+    assert links[0].size == 2062537514
+    assert links[0].hash == "28B6B31078561A2E8E749E819E957421"
+    assert "|2062537514|" in links[0].link
+    assert links[1].filename.endswith(".mp4")
+    assert links[1].size == 1377073636

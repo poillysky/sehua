@@ -17,6 +17,15 @@ COOKIE_FILE_2048 = Path(__file__).resolve().parent.parent.parent / "data" / "coo
 DEFAULT_ENTRY = "https://fby.tfzqs88.com"
 
 
+def normalize_2048_thread_url(tid: int | str, root: str = "") -> str:
+    """统一为 {当日BBS根}/read.php?tid=N。
+
+    域名不固定（发布页每日跳转）；必须传入当前 preferred / active_entry 根。
+    """
+    base = site_root_from_entry(root or DEFAULT_ENTRY, fallback=DEFAULT_ENTRY)
+    return f"{base}read.php?tid={int(tid)}"
+
+
 class Forum2048Adapter:
     forum_id = "2048"
     engine = "phpwind"
@@ -49,8 +58,8 @@ class Forum2048Adapter:
         return f"{base}thread.php?fid={pol.fid}&page={page}"
 
     def build_thread_url(self, root: str, tid: int | str) -> str:
-        base = site_root_from_entry(root or DEFAULT_ENTRY, fallback=DEFAULT_ENTRY)
-        return f"{base}read.php?tid={int(tid)}"
+        # root = 当日进站成功的 BBS 根（preferred / active_entry），勿写死域名
+        return normalize_2048_thread_url(tid, root)
 
     def bootstrap_probe_url(self, root: str) -> str:
         base = site_root_from_entry(root or DEFAULT_ENTRY, fallback=DEFAULT_ENTRY)

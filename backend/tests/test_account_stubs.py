@@ -14,15 +14,17 @@ def test_priority_outcomes_include_login_perm_attach_exclude_reply_purchase():
     assert "帖子需论坛登录" in ACCOUNT_STUB_OUTCOMES
     assert "无阅读权限 · 占位入库" in ACCOUNT_STUB_OUTCOMES
     assert "无权限下载附件" in ACCOUNT_STUB_OUTCOMES
+    assert "0元购买贴" in ACCOUNT_STUB_OUTCOMES
     assert "需回复贴" not in ACCOUNT_STUB_OUTCOMES
     assert "需购买贴" not in ACCOUNT_STUB_OUTCOMES
     assert ACCOUNT_STUB_OUTCOMES[0] == "帖子需论坛登录"
     assert ACCOUNT_STUB_OUTCOMES[1] == "无阅读权限 · 占位入库"
     assert ACCOUNT_STUB_OUTCOMES[2] == "无权限下载附件"
+    assert ACCOUNT_STUB_OUTCOMES[3] == "0元购买贴"
 
 
 def test_list_priority_sql_filters_outcomes_and_stub_prefix(monkeypatch):
-    """查询应限定 unavailable stub + 三类 outcome，并按优先级排序。"""
+    """查询应限定 unavailable stub + 优先 outcome，并按优先级排序。"""
     captured: dict = {}
 
     class _Cur:
@@ -57,15 +59,18 @@ def test_list_priority_sql_filters_outcomes_and_stub_prefix(monkeypatch):
     from db import repository as repo
 
     monkeypatch.setattr(repo, "_ensure_resource_schema", lambda conn: None)
-    repo.list_priority_account_stubs(_Conn(), limit=10)
+    repo.list_priority_account_stubs(_Conn(), limit=10, forum_id="2048")
     sql = captured["sql"]
     params = captured["params"]
     assert "import_outcome IN %s" in sql
     assert "LIKE %s" in sql
+    assert "COALESCE(NULLIF(BTRIM(rs.forum_id), ''), 'sehuatang') = %s" in sql
     assert params[0].startswith("unavailable://")
     assert params[1] == tuple(ACCOUNT_STUB_OUTCOMES)
-    assert params[2:5] == tuple(ACCOUNT_STUB_OUTCOMES)
-    assert params[5] == 10
+    assert params[2] == "2048"
+    n = len(ACCOUNT_STUB_OUTCOMES)
+    assert params[3 : 3 + n] == tuple(ACCOUNT_STUB_OUTCOMES)
+    assert params[3 + n] == 10
     assert "WHEN rs.import_outcome = %s THEN 0" in sql
 
 
@@ -77,10 +82,11 @@ async def test_recrawl_account_stubs_requires_cookie(monkeypatch):
 
     monkeypatch.setattr(rc, "crawl_status", lambda: {"looping": False, "running": False})
     monkeypatch.setattr(rc, "connect", lambda: _Conn())
+    monkeypatch.setattr(rc, "_resolve_focus_forum_id", lambda raw=None: "sehuatang")
     monkeypatch.setattr(
         rc,
         "_load_crawler_cfg",
-        lambda conn: {"web_crawler_account_cookie": ""},
+        lambda conn, forum_id="": {"web_crawler_account_cookie": ""},
     )
     monkeypatch.setattr(rc, "_publish_account_stub_progress", lambda **kw: None)
 
@@ -101,6 +107,7 @@ async def test_recrawl_account_stubs_upgrade_deletes_stub(monkeypatch):
 
     monkeypatch.setattr(rc, "crawl_status", lambda: {"looping": False, "running": False})
     monkeypatch.setattr(rc, "connect", lambda: _Conn())
+    monkeypatch.setattr(rc, "_resolve_focus_forum_id", lambda raw=None: "sehuatang")
     monkeypatch.setattr(rc, "try_begin_exclusive", lambda phase="account_stubs": {"ok": True})
     monkeypatch.setattr(rc, "end_exclusive", lambda: None)
     monkeypatch.setattr(rc, "_log_activity", lambda msg: None)
@@ -108,18 +115,28 @@ async def test_recrawl_account_stubs_upgrade_deletes_stub(monkeypatch):
     monkeypatch.setattr(rc.THROTTLE, "clear_stop", lambda: None)
     monkeypatch.setattr(rc.THROTTLE, "should_stop", lambda: False)
     monkeypatch.setattr(rc, "_publish_account_stub_progress", lambda **kw: None)
-    monkeypatch.setattr(rc, "_db_priority_remaining", lambda exclude_hashes=None: 0)
+    monkeypatch.setattr(
+        rc, "_db_priority_remaining", lambda exclude_hashes=None, forum_id=None: 0
+    )
+    monkeypatch.setattr(rc, "_count_account_discarded", lambda conn, forum_id=None: 0)
+    monkeypatch.setattr(rc, "list_discarded_kind", lambda *a, **k: [])
+    monkeypatch.setattr(rc, "connect_resource", lambda: _Conn())
     monkeypatch.setattr(
         rc,
         "_load_crawler_cfg",
-        lambda conn: {
+        lambda conn, forum_id="": {
             "web_crawler_account_cookie": "uid=1; auth=x",
             "active_board_fid": "36",
+            "_forum_id": "sehuatang",
         },
     )
-    monkeypatch.setattr(rc, "count_priority_account_stubs", lambda conn, exclude_hashes=None: 1)
+    monkeypatch.setattr(
+        rc,
+        "count_priority_account_stubs",
+        lambda conn, exclude_hashes=None, forum_id=None: 1,
+    )
 
-    def fake_list(conn, limit=1, exclude_hashes=None):
+    def fake_list(conn, limit=1, exclude_hashes=None, forum_id=None):
         calls["n"] += 1
         if calls["n"] > 1:
             return []
@@ -139,6 +156,7 @@ async def test_recrawl_account_stubs_upgrade_deletes_stub(monkeypatch):
     session = MagicMock()
     session.bootstrap = AsyncMock()
     session.close = AsyncMock()
+    session._ready = True
     session_calls: list[dict] = []
 
     def fake_session(cfg, **kwargs):
@@ -147,6 +165,8 @@ async def test_recrawl_account_stubs_upgrade_deletes_stub(monkeypatch):
 
     monkeypatch.setattr(rc, "session_from_config", fake_session)
     monkeypatch.setattr(rc, "fetcher_from_config", lambda session, cfg: MagicMock())
+    monkeypatch.setattr(rc, "resolve_forum_entry_urls", lambda *a, **k: [])
+    monkeypatch.setattr(rc, "bootstrap_probe_for_forum", lambda *a, **k: "")
 
     async def fake_process(*args, **kwargs):
         assert kwargs.get("account_stub_pass") is True
@@ -185,6 +205,7 @@ async def test_recrawl_account_stubs_keeps_stub_on_still_stub(monkeypatch):
 
     monkeypatch.setattr(rc, "crawl_status", lambda: {"looping": False, "running": False})
     monkeypatch.setattr(rc, "connect", lambda: _Conn())
+    monkeypatch.setattr(rc, "_resolve_focus_forum_id", lambda raw=None: "sehuatang")
     monkeypatch.setattr(rc, "try_begin_exclusive", lambda phase="account_stubs": {"ok": True})
     monkeypatch.setattr(rc, "end_exclusive", lambda: None)
     monkeypatch.setattr(rc, "_log_activity", lambda msg: None)
@@ -192,18 +213,28 @@ async def test_recrawl_account_stubs_keeps_stub_on_still_stub(monkeypatch):
     monkeypatch.setattr(rc.THROTTLE, "clear_stop", lambda: None)
     monkeypatch.setattr(rc.THROTTLE, "should_stop", lambda: False)
     monkeypatch.setattr(rc, "_publish_account_stub_progress", lambda **kw: None)
-    monkeypatch.setattr(rc, "_db_priority_remaining", lambda exclude_hashes=None: 1)
+    monkeypatch.setattr(
+        rc, "_db_priority_remaining", lambda exclude_hashes=None, forum_id=None: 1
+    )
+    monkeypatch.setattr(rc, "_count_account_discarded", lambda conn, forum_id=None: 0)
+    monkeypatch.setattr(rc, "list_discarded_kind", lambda *a, **k: [])
+    monkeypatch.setattr(rc, "connect_resource", lambda: _Conn())
     monkeypatch.setattr(
         rc,
         "_load_crawler_cfg",
-        lambda conn: {
+        lambda conn, forum_id="": {
             "web_crawler_account_cookie": "uid=1",
             "active_board_fid": "36",
+            "_forum_id": "sehuatang",
         },
     )
-    monkeypatch.setattr(rc, "count_priority_account_stubs", lambda conn, exclude_hashes=None: 1)
+    monkeypatch.setattr(
+        rc,
+        "count_priority_account_stubs",
+        lambda conn, exclude_hashes=None, forum_id=None: 1,
+    )
 
-    def fake_list(conn, limit=1, exclude_hashes=None):
+    def fake_list(conn, limit=1, exclude_hashes=None, forum_id=None):
         calls["n"] += 1
         if calls["n"] > 1:
             return []
@@ -222,8 +253,11 @@ async def test_recrawl_account_stubs_keeps_stub_on_still_stub(monkeypatch):
     session = MagicMock()
     session.bootstrap = AsyncMock()
     session.close = AsyncMock()
+    session._ready = True
     monkeypatch.setattr(rc, "session_from_config", lambda cfg, **kw: session)
     monkeypatch.setattr(rc, "fetcher_from_config", lambda session, cfg: MagicMock())
+    monkeypatch.setattr(rc, "resolve_forum_entry_urls", lambda *a, **k: [])
+    monkeypatch.setattr(rc, "bootstrap_probe_for_forum", lambda *a, **k: "")
     monkeypatch.setattr(
         rc,
         "process_thread",
@@ -253,6 +287,7 @@ async def test_recrawl_account_stubs_skips_reply_required(monkeypatch):
 
     monkeypatch.setattr(rc, "crawl_status", lambda: {"looping": False, "running": False})
     monkeypatch.setattr(rc, "connect", lambda: _Conn())
+    monkeypatch.setattr(rc, "_resolve_focus_forum_id", lambda raw=None: "sehuatang")
     monkeypatch.setattr(rc, "try_begin_exclusive", lambda phase="account_stubs": {"ok": True})
     monkeypatch.setattr(rc, "end_exclusive", lambda: None)
     monkeypatch.setattr(rc, "_log_activity", lambda msg: None)
@@ -260,18 +295,28 @@ async def test_recrawl_account_stubs_skips_reply_required(monkeypatch):
     monkeypatch.setattr(rc.THROTTLE, "clear_stop", lambda: None)
     monkeypatch.setattr(rc.THROTTLE, "should_stop", lambda: False)
     monkeypatch.setattr(rc, "_publish_account_stub_progress", lambda **kw: None)
-    monkeypatch.setattr(rc, "_db_priority_remaining", lambda exclude_hashes=None: 0)
+    monkeypatch.setattr(
+        rc, "_db_priority_remaining", lambda exclude_hashes=None, forum_id=None: 0
+    )
+    monkeypatch.setattr(rc, "_count_account_discarded", lambda conn, forum_id=None: 0)
+    monkeypatch.setattr(rc, "list_discarded_kind", lambda *a, **k: [])
+    monkeypatch.setattr(rc, "connect_resource", lambda: _Conn())
     monkeypatch.setattr(
         rc,
         "_load_crawler_cfg",
-        lambda conn: {
+        lambda conn, forum_id="": {
             "web_crawler_account_cookie": "uid=1",
             "active_board_fid": "36",
+            "_forum_id": "sehuatang",
         },
     )
-    monkeypatch.setattr(rc, "count_priority_account_stubs", lambda conn, exclude_hashes=None: 1)
+    monkeypatch.setattr(
+        rc,
+        "count_priority_account_stubs",
+        lambda conn, exclude_hashes=None, forum_id=None: 1,
+    )
 
-    def fake_list(conn, limit=1, exclude_hashes=None):
+    def fake_list(conn, limit=1, exclude_hashes=None, forum_id=None):
         calls["n"] += 1
         if calls["n"] > 1:
             return []
@@ -290,8 +335,11 @@ async def test_recrawl_account_stubs_skips_reply_required(monkeypatch):
     session = MagicMock()
     session.bootstrap = AsyncMock()
     session.close = AsyncMock()
+    session._ready = True
     monkeypatch.setattr(rc, "session_from_config", lambda cfg, **kw: session)
     monkeypatch.setattr(rc, "fetcher_from_config", lambda session, cfg: MagicMock())
+    monkeypatch.setattr(rc, "resolve_forum_entry_urls", lambda *a, **k: [])
+    monkeypatch.setattr(rc, "bootstrap_probe_for_forum", lambda *a, **k: "")
     monkeypatch.setattr(
         rc,
         "process_thread",

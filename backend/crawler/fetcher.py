@@ -21,8 +21,6 @@ log = logging.getLogger(__name__)
 
 SAFEID_RE = re.compile(r"safeid\s*=\s*['\"]([^'\"]+)['\"]")
 TITLE_RE = re.compile(r"<title[^>]*>(.*?)</title>", re.I | re.S)
-CF_KEYWORDS = ("just a moment", "attention required", "challenge-platform")
-CF_STATUS = {403, 429, 503}
 IMPERSONATE = os.environ.get("SHT_CURL_IMPERSONATE", "chrome").strip() or "chrome"
 
 FetchMode = Literal["auto", "browser", "http"]
@@ -84,11 +82,14 @@ class Fetcher:
         self.timeout = timeout
         self.proxy = (proxy or getattr(session, "proxy", "") or "").strip()
         self._referer = f"{BASE_URL}forum.php"
-        self._flaresolverr_url = (os.environ.get("SHT_FLARESOLVERR_URL") or "").strip() or None
+        from crawler.cf_bypass import resolve_flaresolverr_url
+
+        self._flaresolverr_url = resolve_flaresolverr_url()
         # 最近一次 get_thread_html 是否因软文/壳触发过浏览器整页重读
         self.last_soft_browser_retried: bool = False
         # 最近一次 get_list_html 是否因 HTTP 不合格回退浏览器
         self.last_list_browser_fallback: bool = False
+        self.last_cf_solved: bool = False
 
     def set_referer(self, referer: str) -> None:
         self._referer = referer
@@ -192,27 +193,43 @@ class Fetcher:
         raise FetchError(str(last_err) if last_err else f"请求失败：{url}")
 
     async def get_thread_html(self, url: str, retries: int = 3) -> str:
-        """HTTP 读帖；遇软文/安全壳自动浏览器整页重试一次。"""
-        from parsers.thread_gates import is_safe_or_soft_shell
+        """HTTP 读帖；遇软文/安全壳/空提示页自动浏览器整页重试一次。"""
+        from parsers.thread_gates import is_empty_tip_page, is_safe_or_soft_shell
 
         self.last_soft_browser_retried = False
         last_err: Exception | None = None
         for attempt in range(retries):
             try:
                 html = await self._get_http(url, raise_on_shell=False)
-                if is_safe_or_soft_shell(html) or SessionManager.is_safe_shell(html):
+                need_browser = (
+                    is_safe_or_soft_shell(html)
+                    or SessionManager.is_safe_shell(html)
+                    or is_empty_tip_page(html)
+                )
+                if need_browser:
+                    why = (
+                        "tip-page"
+                        if is_empty_tip_page(html)
+                        else "soft-ad/shell"
+                    )
                     log.info(
-                        "Soft-ad/shell after HTTP, browser page retry (%s/%s): %s",
+                        "%s after HTTP, browser page retry (%s/%s): %s",
+                        why,
                         attempt + 1,
                         retries,
                         url,
                     )
                     html = await self._get_browser(url, raise_on_shell=False)
                     self.last_soft_browser_retried = True
-                    if is_safe_or_soft_shell(html) or SessionManager.is_safe_shell(html):
-                        log.warning("Still soft-ad/shell after browser retry: %s", url)
+                    still_bad = (
+                        is_safe_or_soft_shell(html)
+                        or SessionManager.is_safe_shell(html)
+                        or is_empty_tip_page(html)
+                    )
+                    if still_bad:
+                        log.warning("Still %s after browser retry: %s", why, url)
                     else:
-                        log.info("Browser soft-retry recovered thread: %s", url)
+                        log.info("Browser retry recovered thread: %s", url)
                 self._assert_usable_html(html, url, allow_soft=True)
                 self.session.save()
                 return html
@@ -237,14 +254,29 @@ class Fetcher:
             await self.session.bootstrap()
 
         timeout_ms = int(max(self.timeout, 15) * 1000)
-        html = await self.session.fetch_html(url, timeout_ms=timeout_ms)
+        # 遇 CF 时给足等待（session.fetch_html 内会 wait_out_cf；交互式会自动缩短）
+        from crawler.cf_bypass import cf_browser_wait_ms
+
+        cf_budget = cf_browser_wait_ms()
+        html = await self.session.fetch_html(
+            url, timeout_ms=max(timeout_ms, cf_budget + 15000)
+        )
 
         if self._is_cf_challenge(html):
-            log.warning("Cloudflare in browser HTML, restarting session...")
-            await self.session.bootstrap(force=True)
-            html = await self.session.fetch_html(url, timeout_ms=timeout_ms)
+            log.warning("Cloudflare in browser HTML, restarting session + FlareSolverr…")
+            solved = await self._solve_cf(url)
+            if solved is not None:
+                html = solved
+            else:
+                await self.session.bootstrap(force=True)
+                html = await self.session.fetch_html(
+                    url, timeout_ms=max(timeout_ms, cf_budget + 15000)
+                )
             if self._is_cf_challenge(html):
-                raise FetchError(f"Cloudflare 人机验证未通过：{url}")
+                raise FetchError(
+                    f"Cloudflare 人机验证未通过：{url} "
+                    f"（请启动 FlareSolverr 并设置 SHT_FLARESOLVERR_URL=http://127.0.0.1:8191/v1）"
+                )
 
         if raise_on_shell and SessionManager.is_safe_shell(html):
             raise FetchError(f"十八禁门拦截未解除：{url}")
@@ -271,15 +303,10 @@ class Fetcher:
 
         if self._is_cf_challenge(html):
             log.warning("Cloudflare challenge on thread %s", url)
-            solved = await asyncio.to_thread(self._bypass_cf, url)
+            solved = await self._solve_cf(url)
             if solved is None:
-                try:
-                    await self.session.fetch_html(self._referer or f"{BASE_URL}forum.php")
-                    html = await self._browser_api_get(url)
-                except Exception as exc:
-                    raise FetchError(f"Cloudflare 验证持续存在：{url}") from exc
-            else:
-                html = solved
+                raise FetchError(f"Cloudflare 验证持续存在：{url}")
+            html = solved
 
         if raise_on_shell and SessionManager.is_safe_shell(html):
             raise FetchError(f"十八禁门拦截未解除（安全标识重试后仍失败）：{url}")
@@ -289,6 +316,76 @@ class Fetcher:
 
         self.session.save()
         return html
+
+    async def _solve_cf(self, url: str) -> Optional[str]:
+        """自动过 CF：FlareSolverr → 浏览器整页等待 → 失败返回 None。"""
+        from crawler.cf_bypass import cf_browser_wait_ms, is_interactive_cf
+
+        self.last_cf_solved = False
+        # 1) FlareSolverr（若已配置 / 可发现）——交互式 Turnstile 优先走这条
+        if not self._flaresolverr_url:
+            from crawler.cf_bypass import resolve_flaresolverr_url
+
+            self._flaresolverr_url = resolve_flaresolverr_url()
+        solved = await asyncio.to_thread(self._bypass_cf, url)
+        if solved and not self._is_cf_challenge(solved):
+            self.last_cf_solved = True
+            log.info("CF solved via FlareSolverr: %s", url)
+            try:
+                from crawler.pw_runtime import run_on_pw_loop
+
+                await run_on_pw_loop(
+                    self.session._set_context_cookies(dict(self.session.cookies))
+                )
+            except Exception:
+                pass
+            return solved
+
+        # 2) Playwright 整页导航 + 等待（交互式缩短，避免空等 45s）
+        try:
+            cf_budget = cf_browser_wait_ms("请稍候 cf-turnstile")
+            html = await self.session.fetch_html(
+                url, timeout_ms=max(45000, cf_budget + 20000)
+            )
+            try:
+                from crawler.pw_runtime import run_on_pw_loop
+
+                await run_on_pw_loop(self.session._sync_cookies_from_context())
+            except Exception:
+                pass
+            if not self._is_cf_challenge(html):
+                self.last_cf_solved = True
+                log.info("CF solved via Playwright wait: %s", url)
+                # 过关后用浏览器 API 再读一次，确保拿到完整帖页
+                try:
+                    refreshed = await self._browser_api_get(url)
+                    if refreshed and not self._is_cf_challenge(refreshed):
+                        return refreshed
+                except Exception:
+                    pass
+                return html
+            if is_interactive_cf(html) and not self._flaresolverr_url:
+                log.error(
+                    "Interactive Cloudflare Turnstile without FlareSolverr; "
+                    "set SHT_FLARESOLVERR_URL=http://127.0.0.1:8191/v1"
+                )
+        except Exception as e:
+            log.warning("Playwright CF solve failed: %s", e)
+
+        # 3) 强制重建会话后再等一轮（被动挑战偶发可过）
+        try:
+            await self.session.bootstrap(force=True)
+            cf_budget = cf_browser_wait_ms()
+            html = await self.session.fetch_html(
+                url, timeout_ms=max(45000, cf_budget + 20000)
+            )
+            if not self._is_cf_challenge(html):
+                self.last_cf_solved = True
+                log.info("CF solved after session rebuild: %s", url)
+                return html
+        except Exception as e:
+            log.warning("CF rebuild solve failed: %s", e)
+        return None
 
     def _assert_usable_html(self, html: str, url: str, *, allow_soft: bool) -> None:
         if allow_soft:
@@ -419,47 +516,34 @@ class Fetcher:
         return True
 
     def _bypass_cf(self, url: str, max_retry: int = 2) -> Optional[str]:
-        if not self._flaresolverr_url:
-            log.warning("SHT_FLARESOLVERR_URL unset; cannot auto-bypass CF")
-            return None
-        try:
-            from curl_cffi import requests as crequests
-        except ImportError:
-            return None
+        from crawler.cf_bypass import flaresolverr_get, resolve_flaresolverr_url
 
-        payload = {
-            "cmd": "request.get",
-            "url": url,
-            "maxTimeout": 60000,
-            "cookies": [{"name": k, "value": v} for k, v in self._cookie_dict().items()],
-        }
-        try:
-            r = crequests.post(
-                self._flaresolverr_url,
-                headers={"Content-Type": "application/json"},
-                json=payload,
-                timeout=90,
-            )
-            solution = (r.json() or {}).get("solution") or {}
-            if solution.get("status") != 200:
-                log.error("FlareSolverr bad status=%s", solution.get("status"))
-                return None
-            for c in solution.get("cookies") or []:
-                name = str(c.get("name") or "").strip()
-                value = c.get("value")
-                if name and value is not None:
-                    self.session.cookies[name] = str(value)
-            ua = solution.get("userAgent")
-            if ua:
-                self.session.user_agent = ua
-            html = solution.get("response") or ""
-            if self._is_r18_block(html) and max_retry > 0:
-                if self._update_safeid(html):
-                    return self._bypass_cf(url, max_retry - 1)
-            return html
-        except Exception as e:
-            log.error("FlareSolverr error: %s", e)
+        api = self._flaresolverr_url or resolve_flaresolverr_url()
+        if not api:
+            log.warning("FlareSolverr 未配置（SHT_FLARESOLVERR_URL）；改用浏览器等待过 CF")
             return None
+        self._flaresolverr_url = api
+        solution = flaresolverr_get(
+            api,
+            url,
+            cookies=self._cookie_dict(),
+            proxy=self.proxy,
+        )
+        if not solution:
+            return None
+        for c in solution.get("cookies") or []:
+            name = str(c.get("name") or "").strip()
+            value = c.get("value")
+            if name and value is not None:
+                self.session.cookies[name] = str(value)
+        ua = solution.get("userAgent")
+        if ua:
+            self.session.user_agent = ua
+        html = solution.get("response") or ""
+        if self._is_r18_block(html) and max_retry > 0:
+            if self._update_safeid(html):
+                return self._bypass_cf(url, max_retry - 1)
+        return html
 
     @classmethod
     def _is_r18_block(cls, html: str) -> bool:
@@ -467,20 +551,18 @@ class Fetcher:
             return False
         return "var safeid" in html
 
-    def _is_cf_challenge(self, html: str) -> bool:
-        return self._is_cf_challenge_status(html, 200)
+    @staticmethod
+    def _is_cf_challenge(html: str) -> bool:
+        return Fetcher._is_cf_challenge_status(html, 200)
 
     @staticmethod
     def _is_cf_challenge_status(html: str, status: int) -> bool:
-        if status in CF_STATUS:
-            return True
-        lower = (html or "")[:8000].lower()
-        title = Fetcher._extract_title(html).lower()
-        return any(k in lower or k in title for k in CF_KEYWORDS)
+        from crawler.cf_bypass import is_cf_challenge
+
+        return is_cf_challenge(html, status)
 
     @staticmethod
     def _extract_title(html: str) -> str:
-        m = TITLE_RE.search(html or "")
-        if not m:
-            return ""
-        return re.sub(r"\s+", " ", m.group(1)).strip()
+        from crawler.cf_bypass import extract_title
+
+        return extract_title(html)

@@ -153,6 +153,24 @@ def test_parse_bare_infohash_hash_check_label():
     assert has_target_link(raw, "magnet")
 
 
+def test_parse_bare_infohash_fullwidth_hash_label_2048():
+    """2048 国内原创：【ＨＡＳＨ】全角拉丁 + 裸 infohash（tid 27437738）。"""
+    h = "411575f9068635c8c80f2ce655ec75a789b645f2"
+    raw = f"""
+    【檔案名稱】:测试片子
+    【檔案大小】:1.98G
+    【ＨＡＳＨ】:{h}
+    【製作說明】:僅限於寬頻測驗
+    """
+    links = parse_magnet_text(raw)
+    assert len(links) == 1
+    assert links[0].infohash == h.upper()
+    assert has_target_link(raw, "magnet")
+    # 半角【HASH】同样可认
+    links2 = parse_magnet_text(f"【HASH】：{h}")
+    assert len(links2) == 1 and links2[0].infohash == h.upper()
+
+
 def test_parse_bare_infohash_feature_code_label():
     """【特征编码】后的裸 infohash（tid 2856358 类）。"""
     h = "40426ff87ad87231c4f12fcca32f512e80bc1f11"
@@ -536,3 +554,19 @@ def test_parse_ed2k_spaced_pipes_and_fullwidth():
     links2 = parse_ed2k_text(fw)
     assert len(links2) == 1
     assert links2[0].hash == h
+
+
+def test_parse_ed2k_filename_keeps_fullwidth_pipe():
+    """片名含全角｜时不得被 normalize 拆坏（色花堂转帖常见）。"""
+    from parsers.ed2k import normalize_ed2k_corpus, parse_ed2k_text
+
+    h = "B3353D2041F2C0411BEB90090E8A4CB2"
+    raw = (
+        "ed2k://|file|www.98T.la@FansOne 郑原创｜精华版｜梦幻剧情.mp4|"
+        f"340422447|{h}|/"
+    )
+    assert "｜精华版｜" in normalize_ed2k_corpus(raw)
+    links = parse_ed2k_text(raw)
+    assert len(links) == 1
+    assert links[0].hash == h
+    assert "｜精华版｜" in links[0].filename

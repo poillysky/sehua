@@ -38,6 +38,9 @@ _CHROMIUM_LAUNCH_ARGS = (
     "--disable-extensions",
     "--disable-background-networking",
     "--disable-default-apps",
+    "--disable-blink-features=AutomationControlled",
+    "--no-first-run",
+    "--no-default-browser-check",
 )
 
 
@@ -111,6 +114,21 @@ class SessionManager:
                 self.cookies[key] = value
         self.cookies.setdefault("safe", "1")
 
+    def apply_config_cookie_authority(self) -> None:
+        """进站前应用配置 Cookie 权威性。
+
+        - 已注入登录键：与 jar 合并（注入覆盖）
+        - 仅游客：不 load jar，避免磁盘旧登录态复活
+        """
+        injected = dict(self.cookies)
+        injected_auth = {k: v for k, v in injected.items() if k != "safe" and v}
+        if injected_auth:
+            self.load()
+            self.cookies.update({k: v for k, v in injected.items() if v})
+            self.cookies.setdefault("safe", "1")
+        else:
+            self.cookies = {"safe": str(injected.get("safe") or "1")}
+
     def apply_cookie_header(self, cookie_header: str) -> None:
         for part in (cookie_header or "").split(";"):
             part = part.strip()
@@ -167,7 +185,9 @@ class SessionManager:
         if not candidates:
             candidates = [BASE_URL]
 
-        self.load()
+        # 配置 Cookie 权威（游客不复活 jar 登录态）
+        injected = dict(self.cookies)
+        self.apply_config_cookie_authority()
         last_err: Exception | None = None
         from crawler.list_urls import site_root
 
@@ -222,11 +242,18 @@ class SessionManager:
                 if derived:
                     merged = list(dict.fromkeys([*self.cookie_domains, *derived]))
                     self.cookie_domains = tuple(merged)
+                    # 镜像换域后把登录 Cookie 种到新域名，否则 winduser 只挂在旧域
+                    await self._set_context_cookies(dict(self.cookies))
                 html = await self._fetch_html_on_loop(probe)
                 if self.is_safe_shell(html):
                     raise RuntimeError(f"仍卡在十八禁/安全浏览壳，无法进入论坛：{home}")
 
                 await self._sync_cookies_from_context()
+                # sync 只反映浏览器当前域；补回注入的登录键（若站点未回写）
+                for key, value in injected.items():
+                    if value and key not in self.cookies:
+                        self.cookies[key] = value
+                self.cookies.setdefault("safe", "1")
                 self._ready = True
                 self.active_entry_url = root
                 log.info(
@@ -269,6 +296,40 @@ class SessionManager:
             title = await page.title()
         except Exception:
             pass
+
+        # Cloudflare：被动 JS 挑战可等；交互 Turnstile 缩短等待，交给上层 FlareSolverr
+        try:
+            from crawler.cf_bypass import (
+                cf_browser_wait_ms,
+                is_cf_challenge,
+                is_interactive_cf,
+                wait_out_cf_challenge,
+            )
+
+            blob0 = f"{title}\n{html}"
+            if is_cf_challenge(blob0):
+                interactive = is_interactive_cf(blob0)
+                cf_wait = cf_browser_wait_ms(blob0)
+                log.info(
+                    "Cloudflare challenge on %s · waiting browser solve… "
+                    "(interactive=%s wait_ms=%s)",
+                    url,
+                    interactive,
+                    cf_wait,
+                )
+                html = await wait_out_cf_challenge(page, timeout_ms=cf_wait)
+                try:
+                    title = await page.title()
+                except Exception:
+                    title = ""
+                if is_cf_challenge(f"{title}\n{html}"):
+                    log.warning(
+                        "Cloudflare still present after wait: %s "
+                        "(will try FlareSolverr if available)",
+                        url,
+                    )
+        except Exception as cf_exc:
+            log.debug("CF wait skipped: %s", cf_exc)
 
         if self._looks_like_age_gate(title, html):
             log.info("Age gate page detected for %s, clicking enter", url)
@@ -384,21 +445,54 @@ class SessionManager:
         )
         try:
             self._pw = await async_playwright().start()
+            # 新 headless 指纹更接近真机；可用 SHT_PW_CHANNEL=chrome|msedge 指定系统浏览器
+            headless_mode: Any = True
+            if (os.getenv("SHT_PW_HEADLESS_SHELL") or "").strip().lower() in {
+                "0",
+                "false",
+                "no",
+                "off",
+            }:
+                headless_mode = False
+            elif (os.getenv("SHT_PW_HEADLESS_NEW") or "1").strip().lower() not in {
+                "0",
+                "false",
+                "no",
+                "off",
+            }:
+                headless_mode = True
             launch_kwargs: dict[str, Any] = {
-                "headless": True,
+                "headless": headless_mode,
                 "args": list(_CHROMIUM_LAUNCH_ARGS),
             }
+            channel = (os.getenv("SHT_PW_CHANNEL") or "").strip().lower()
+            if channel in {"chrome", "msedge", "chromium", "chrome-beta"}:
+                launch_kwargs["channel"] = channel
             context_kwargs: dict[str, Any] = {
                 "user_agent": self.user_agent,
                 "locale": "zh-CN",
+                "viewport": {"width": 1366, "height": 768},
             }
             if self.proxy:
                 context_kwargs["proxy"] = {"server": self.proxy}
             self._browser = await self._pw.chromium.launch(**launch_kwargs)
             self._context = await self._browser.new_context(**context_kwargs)
+            # 弱化 webdriver 特征（对部分被动 CF 有帮助）
+            await self._context.add_init_script(
+                "Object.defineProperty(navigator, 'webdriver', {get: () => undefined});"
+            )
 
             seed = dict(self.cookies) if self.cookies else {}
             seed.setdefault("safe", "1")
+            # 失效 cf_clearance 会反复卡在挑战页；启动时若强制重建可清掉
+            if (os.getenv("SHT_CF_DROP_STALE_CLEARANCE") or "1").strip().lower() not in {
+                "0",
+                "false",
+                "no",
+                "off",
+            }:
+                # 保留 jar，但浏览器上下文先不注入旧 clearance，让挑战重发新 cookie
+                seed.pop("cf_clearance", None)
             await self._set_context_cookies(seed)
 
             page = await self._context.new_page()
@@ -406,11 +500,21 @@ class SessionManager:
             async def _route(route: Any) -> None:
                 req = route.request
                 url = (req.url or "").lower()
+                # Cloudflare / Turnstile 资源一律放行，否则过不了挑战
+                if any(
+                    k in url
+                    for k in (
+                        "cloudflare",
+                        "turnstile",
+                        "cdn-cgi",
+                        "cf-challenge",
+                        "challenge-platform",
+                    )
+                ):
+                    await route.continue_()
+                    return
                 if req.resource_type in {"image", "media", "font"}:
                     await route.abort()
-                    return
-                if req.resource_type == "script" and "static/safe/js/" not in url:
-                    await route.continue_()
                     return
                 await route.continue_()
 
@@ -453,7 +557,12 @@ class SessionManager:
         if not self._context:
             return
         raw = await self._context.cookies()
-        self.cookies = {c["name"]: c["value"] for c in raw}
+        # 合并而非整表替换，避免换域/局部同步时丢掉已注入的登录 Cookie
+        for c in raw:
+            name = c.get("name") or ""
+            value = c.get("value") or ""
+            if name and value:
+                self.cookies[name] = value
         self.cookies.setdefault("safe", "1")
         self.save()
 

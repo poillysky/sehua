@@ -908,7 +908,7 @@ export function ResourcesPage() {
             </button>
             <input
               type="search"
-              placeholder="按名称搜索…"
+              placeholder="搜索标题 / 判定…"
               value={qInput}
               onChange={(e) => setQInput(e.target.value)}
             />

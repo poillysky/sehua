@@ -86,6 +86,10 @@ class RandomTidLoopBody(BaseModel):
     tid_max: int | None = Field(default=None, ge=1, le=50_000_000)
 
 
+class RecrawlStubsBody(BaseModel):
+    forum_id: str = ""
+
+
 def _resolve_crawler_forum_id(raw: str | None = None) -> str:
     """优先请求体 forum_id，否则调度焦点论坛，最后回退色花堂。"""
     fid = (raw or "").strip()
@@ -102,7 +106,11 @@ def _resolve_crawler_forum_id(raw: str | None = None) -> str:
 
 
 @router.get("/status")
-def get_crawler_status(_user: dict = Depends(require_permission("crawler.view"))) -> dict:
+def get_crawler_status(
+    since_id: int = 0,
+    _user: dict = Depends(require_permission("crawler.view")),
+) -> dict:
+    from crawler.list_urls import site_root
     from crawler.sites import get_site_adapter
     from parsers.boards import enabled_queue_board_keys, queue_board_keys
 
@@ -111,6 +119,7 @@ def get_crawler_status(_user: dict = Depends(require_permission("crawler.view"))
 
     active = SITE_CRAWLER_FORUM_ID
     active_forum_name = SITE_CRAWLER_FORUM_ID
+    active_forum: dict | None = None
     cfg_forum_id = SITE_CRAWLER_FORUM_ID
     cfg: dict = {}
     board_fid = ""
@@ -153,15 +162,19 @@ def get_crawler_status(_user: dict = Depends(require_permission("crawler.view"))
         except Exception:
             qstats = {}
         try:
-            discarded_stats = count_discarded(conn, status="all")
+            discarded_stats = count_discarded(conn, status="all", forum_id=active)
         except Exception:
             discarded_stats = {}
         try:
-            discarded_access_denied = count_discarded_kind(conn, "access_denied_bad_title")
+            discarded_access_denied = count_discarded_kind(
+                conn, "access_denied_bad_title", forum_id=active
+            )
         except Exception:
             discarded_access_denied = 0
         try:
-            discarded_failed_kind = count_discarded_kind(conn, "failed_all")
+            discarded_failed_kind = count_discarded_kind(
+                conn, "failed_all", forum_id=active
+            )
         except Exception:
             discarded_failed_kind = 0
         if board_fid:
@@ -181,7 +194,9 @@ def get_crawler_status(_user: dict = Depends(require_permission("crawler.view"))
 
         rconn = connect_resource()
         try:
-            priority_stubs = int(count_priority_account_stubs(rconn) or 0)
+            priority_stubs = int(
+                count_priority_account_stubs(rconn, forum_id=active) or 0
+            )
         finally:
             rconn.close()
     except Exception:
@@ -240,6 +255,87 @@ def get_crawler_status(_user: dict = Depends(require_permission("crawler.view"))
     except Exception:
         import_rate = {"per_minute": 0, "window_sec": 60}
 
+    preferred_entry = str(cfg.get("preferred_entry_url") or "").strip()
+    crawl_urls = str(cfg.get("web_crawl_urls") or "").strip()
+    first_crawl = next((u.strip() for u in crawl_urls.split(",") if u.strip()), "")
+    thread_root = site_root(preferred_entry or first_crawl or str((active_forum or {}).get("base_url") or ""))
+
+    from db.activity import latest_activity_id, list_recent_activity
+
+    since = max(0, int(since_id or 0))
+    try:
+        activities = list_recent_activity(120, since_id=since)
+    except Exception:
+        activities = recent_activity(120)
+    try:
+        latest_id = latest_activity_id()
+    except Exception:
+        latest_id = max((int(a.get("id") or 0) for a in activities), default=0)
+
+    metrics = {
+        "discovered": last.get("discovered") or 0,
+        "enqueued": last.get("enqueued") or 0,
+        "crawled": last.get("crawled") or 0,
+        "imports": last.get("imports") or 0,
+        "stubs": last.get("stubs") or 0,
+        "retries": last.get("retries") or 0,
+        "soft_browser_retried": last.get("soft_browser_retried") or 0,
+        "queue_ready": (qstats or {}).get("ready") or 0,
+        "queue_ready_active": active_ready,
+        "queue_soft_ad": (qstats or {}).get("soft_ad") or 0,
+        "queue_abnormal": (qstats or {}).get("abnormal") or 0,
+        "queue_deferred": (qstats or {}).get("deferred") or 0,
+        "discarded_failed": (discarded_stats or {}).get("failed") or 0,
+        "discarded_skipped": (discarded_stats or {}).get("skipped") or 0,
+        "discarded_total": (discarded_stats or {}).get("total") or 0,
+        "random_probed": rnd.get("probed") or 0,
+        "random_budget": rnd.get("probe_budget") or 0,
+        "random_imported": rnd.get("imported") or 0,
+        "random_session": rnd.get("session_probed") or 0,
+        "stub_done": stub_prog.get("done") or 0,
+        "stub_budget": stub_prog.get("remaining") or stub_prog.get("budget") or 0,
+        "stub_remaining": stub_prog.get("remaining") or stub_prog.get("budget") or 0,
+        "stub_upgraded": stub_prog.get("upgraded") or 0,
+        "priority_stubs": priority_stubs,
+        "discarded_access_denied_title": discarded_access_denied,
+        "discarded_failed_kind": discarded_failed_kind,
+        "account_pass_total": (
+            int(priority_stubs) + int(discarded_access_denied) + int(discarded_failed_kind)
+        ),
+        "board_updated": last.get("board_updated") or 0,
+        "imports_per_minute": import_rate.get("per_minute") or 0,
+    }
+    throttle = st.get("throttle") or {}
+    runtime = {
+        "enabled": bool(cfg.get("web_crawler_enabled")),
+        "running": bool(st.get("running") or st.get("looping")),
+        "looping": bool(st.get("looping")),
+        "stopping": bool(st.get("stopping")),
+        "phase": st.get("phase") or "idle",
+        "active_forum_id": active,
+        "forum_id": cfg_forum_id,
+        "crawler_registered": bool((active_forum or {}).get("crawler_registered")),
+        "interval_minutes": 0,
+        "list_pages_per_board": cfg.get("web_crawler_list_pages_per_board"),
+        "pending_queue": (qstats or {}).get("ready") or 0,
+        "pending_discovered": (qstats or {}).get("ready") or 0,
+        "pending_abnormal_discovered": (qstats or {}).get("abnormal") or 0,
+        "pending_soft_ad": (qstats or {}).get("soft_ad") or 0,
+        "pending_carryover": (qstats or {}).get("deferred") or 0,
+        "run_crawled_threads": last.get("crawled") or 0,
+        "run_links_imported": last.get("imports") or 0,
+        "risk_control_tripped": bool(throttle.get("tripped") or throttle.get("risk_tripped")),
+        "risk_control_message": str(throttle.get("message") or throttle.get("risk_message") or ""),
+        "fetch_delay_current": throttle.get("delay_current") or throttle.get("current_delay"),
+        "fetch_delay_base": throttle.get("delay_base") or cfg.get("web_crawler_request_delay"),
+        "fetch_delay_max": throttle.get("delay_max") or cfg.get("web_crawler_autothrottle_max_delay"),
+        "fetch_success_rate": throttle.get("success_rate"),
+        "fetch_sample_size": throttle.get("sample_size"),
+        "fetch_failure_threshold": cfg.get("web_crawler_fetch_failure_threshold"),
+        "preferred_entry_url": preferred_entry,
+        "thread_root": thread_root,
+    }
+
     return {
         "forum_id": cfg_forum_id,
         "active_forum_id": active,
@@ -272,45 +368,18 @@ def get_crawler_status(_user: dict = Depends(require_permission("crawler.view"))
         "random_progress": rnd,
         "account_stub_progress": stub_prog,
         "board_list_cursors": board_cursors,
-        "web_crawl_urls": str(cfg.get("web_crawl_urls") or ""),
-        "activity": recent_activity(120),
+        "web_crawl_urls": crawl_urls,
+        "preferred_entry_url": preferred_entry,
+        "thread_root": thread_root,
+        "activity": activities,
+        "activities": activities,
+        "latest_activity_id": latest_id,
+        "runtime": runtime,
         "boards": boards,
         "queue": qstats or st.get("queue") or {},
         "discarded": discarded_stats or {},
-        "throttle": st.get("throttle") or {},
-        "metrics": {
-            "discovered": last.get("discovered") or 0,
-            "enqueued": last.get("enqueued") or 0,
-            "crawled": last.get("crawled") or 0,
-            "imports": last.get("imports") or 0,
-            "stubs": last.get("stubs") or 0,
-            "retries": last.get("retries") or 0,
-            "soft_browser_retried": last.get("soft_browser_retried") or 0,
-            "queue_ready": (qstats or {}).get("ready") or 0,
-            "queue_ready_active": active_ready,
-            "queue_soft_ad": (qstats or {}).get("soft_ad") or 0,
-            "queue_abnormal": (qstats or {}).get("abnormal") or 0,
-            "queue_deferred": (qstats or {}).get("deferred") or 0,
-            "discarded_failed": (discarded_stats or {}).get("failed") or 0,
-            "discarded_skipped": (discarded_stats or {}).get("skipped") or 0,
-            "discarded_total": (discarded_stats or {}).get("total") or 0,
-            "random_probed": rnd.get("probed") or 0,
-            "random_budget": rnd.get("probe_budget") or 0,
-            "random_imported": rnd.get("imported") or 0,
-            "random_session": rnd.get("session_probed") or 0,
-            "stub_done": stub_prog.get("done") or 0,
-            "stub_budget": stub_prog.get("remaining") or stub_prog.get("budget") or 0,
-            "stub_remaining": stub_prog.get("remaining") or stub_prog.get("budget") or 0,
-            "stub_upgraded": stub_prog.get("upgraded") or 0,
-            "priority_stubs": priority_stubs,
-            "discarded_access_denied_title": discarded_access_denied,
-            "discarded_failed_kind": discarded_failed_kind,
-            "account_pass_total": (
-                int(priority_stubs) + int(discarded_access_denied) + int(discarded_failed_kind)
-            ),
-            "board_updated": last.get("board_updated") or 0,
-            "imports_per_minute": import_rate.get("per_minute") or 0,
-        },
+        "throttle": throttle,
+        "metrics": metrics,
         "import_rate": import_rate,
     }
 
@@ -325,10 +394,15 @@ def clear_crawler_activity(
     deleted = clear_activity_log()
     # 清完写一条提示，方便确认面板已刷新
     _log_activity(f"活动日志已清空 · 删除 {deleted} 条")
+    from db.activity import latest_activity_id, list_recent_activity
+
+    activities = list_recent_activity(120)
     return {
         "message": "success",
         "deleted": deleted,
-        "activity": recent_activity(120),
+        "activity": activities,
+        "activities": activities,
+        "latest_activity_id": latest_activity_id(),
     }
 
 
@@ -537,8 +611,11 @@ async def post_crawler_stop(_user: dict = Depends(require_permission("crawl.run"
 
 async def _post_queue_retry(kind: str) -> dict:
     _require_manual_idle(action="异常重试")
+    # 必须跟调度焦点一致；默认 SITE 色花堂会漏掉 2048 异常池
+    fid = _resolve_crawler_forum_id()
     result = await await_crawl(
         run_crawl_once(
+            forum_id=fid,
             persist=True,
             scan_list=False,
             from_loop=False,
@@ -599,20 +676,30 @@ def get_queue_browse(
         st = (status or "all").strip().lower()
         if st not in {"all", "failed", "skipped"}:
             raise HTTPException(status_code=400, detail="status 仅支持 all / failed / skipped")
+        focus = _resolve_crawler_forum_id()
         conn = connect()
         try:
-            counts = count_discarded(conn, status=st, q=query)
+            counts = count_discarded(conn, status=st, q=query, forum_id=focus)
             total = (
-                count_discarded(conn, status=st, q=query, reason=reason_key)["total"]
+                count_discarded(
+                    conn, status=st, q=query, reason=reason_key, forum_id=focus
+                )["total"]
                 if reason_key
                 else int(counts.get("total") or 0)
             )
             items = list_discarded(
-                conn, status=st, q=query, reason=reason_key or None, limit=lim, offset=off
+                conn,
+                status=st,
+                q=query,
+                reason=reason_key or None,
+                limit=lim,
+                offset=off,
+                forum_id=focus,
             )
-            reasons = list_discarded_reasons(conn, status=st, q=query)
+            reasons = list_discarded_reasons(conn, status=st, q=query, forum_id=focus)
             kind_counts = {
-                k: count_discarded_kind(conn, k) for k in DISCARDED_REQUEUE_KINDS
+                k: count_discarded_kind(conn, k, forum_id=focus)
+                for k in DISCARDED_REQUEUE_KINDS
             }
         finally:
             conn.close()
@@ -621,6 +708,7 @@ def get_queue_browse(
             "status": st,
             "q": query,
             "reason": reason_key,
+            "forum_id": focus,
             "limit": lim,
             "offset": off,
             "total": int(total),
@@ -638,21 +726,30 @@ def get_queue_browse(
         )
         from db.resource_db import connect_resource
 
+        focus = _resolve_crawler_forum_id()
         rconn = connect_resource()
         try:
             total = count_priority_account_stubs_q(
-                rconn, q=query, reason=reason_key or None
+                rconn, q=query, reason=reason_key or None, forum_id=focus
             )
             items = list_priority_account_stubs(
-                rconn, limit=lim, offset=off, q=query, reason=reason_key or None
+                rconn,
+                limit=lim,
+                offset=off,
+                q=query,
+                reason=reason_key or None,
+                forum_id=focus,
             )
-            reasons = list_priority_account_stub_reasons(rconn, q=query)
+            reasons = list_priority_account_stub_reasons(
+                rconn, q=query, forum_id=focus
+            )
         finally:
             rconn.close()
         return {
             "kind": key,
             "q": query,
             "reason": reason_key,
+            "forum_id": focus,
             "limit": lim,
             "offset": off,
             "total": int(total),
@@ -719,18 +816,23 @@ def get_queue_discarded(
         raise HTTPException(status_code=400, detail="status 仅支持 all / failed / skipped")
     lim = max(1, min(200, int(limit or 50)))
     off = max(0, int(offset or 0))
+    focus = _resolve_crawler_forum_id()
     conn = connect()
     try:
-        counts = count_discarded(conn, status=st, q=q)
-        items = list_discarded(conn, status=st, q=q, limit=lim, offset=off)
+        counts = count_discarded(conn, status=st, q=q, forum_id=focus)
+        items = list_discarded(
+            conn, status=st, q=q, limit=lim, offset=off, forum_id=focus
+        )
         kind_counts = {
-            key: count_discarded_kind(conn, key) for key in DISCARDED_REQUEUE_KINDS
+            key: count_discarded_kind(conn, key, forum_id=focus)
+            for key in DISCARDED_REQUEUE_KINDS
         }
     finally:
         conn.close()
     return {
         "status": st,
         "q": (q or "").strip(),
+        "forum_id": focus,
         "limit": lim,
         "offset": off,
         "total": int(counts.get("total") or 0),
@@ -759,10 +861,13 @@ def get_discarded_tids(
     lim = max(1, min(5000, int(limit or 2000)))
     query = (q or "").strip()
     reason_key = (reason or "").strip()
+    focus = _resolve_crawler_forum_id()
     conn = connect()
     try:
         total = int(
-            count_discarded(conn, status=st, q=query, reason=reason_key or None).get("total")
+            count_discarded(
+                conn, status=st, q=query, reason=reason_key or None, forum_id=focus
+            ).get("total")
             or 0
         )
         tids = list_discarded_tids(
@@ -771,6 +876,7 @@ def get_discarded_tids(
             q=query,
             reason=reason_key or None,
             limit=lim,
+            forum_id=focus,
         )
     finally:
         conn.close()
@@ -778,6 +884,7 @@ def get_discarded_tids(
         "status": st,
         "q": query,
         "reason": reason_key,
+        "forum_id": focus,
         "total": total,
         "limit": lim,
         "count": len(tids),
@@ -810,6 +917,7 @@ async def _maybe_crawl_after_requeue(
         return None, "；爬虫忙，已入队待连续调度/空闲后抓取"
     crawl_result = await await_crawl(
         run_crawl_once(
+            forum_id=_resolve_crawler_forum_id(),
             persist=True,
             scan_list=False,
             from_loop=False,
@@ -1011,13 +1119,18 @@ async def post_retry_soft_ad(_user: dict = Depends(require_permission("crawl.run
 
 @router.post("/recrawl-stubs")
 async def post_recrawl_stubs(
+    body: RecrawlStubsBody | None = None,
     _user: dict = Depends(require_permission("crawl.run")),
 ) -> dict:
-    """用账号 Cookie 重爬全部优先占位；后台执行，进度见 status.account_stub_progress。"""
+    """用账号 Cookie 重爬焦点论坛优先占位；后台执行，进度见 status.account_stub_progress。"""
     from workers.recrawl import start_account_stub_recrawl
 
+    body = body or RecrawlStubsBody()
+    fid = _resolve_crawler_forum_id(body.forum_id)
+    if fid not in FULL_CRAWLER_FORUM_IDS:
+        raise HTTPException(status_code=400, detail="该论坛尚未接入爬虫")
     _require_manual_idle(action="账号重爬")
-    result = start_account_stub_recrawl()
+    result = start_account_stub_recrawl(forum_id=fid)
     if not result.get("ok") and result.get("reason") in ("busy", "loop_running"):
         raise HTTPException(status_code=409, detail=str(result.get("error") or "爬虫正在处理其他任务，请稍候"))
     if not result.get("ok") and result.get("reason") == "no_account_cookie":
@@ -1026,6 +1139,7 @@ async def post_recrawl_stubs(
     return {
         "message": "started" if result.get("started") else ("ok" if result.get("ok") else "failed"),
         "started": bool(result.get("started")),
+        "forum_id": fid,
         "remaining": remaining,
         "budget": remaining,
         "stub_remaining": int(result.get("stub_remaining") or 0),

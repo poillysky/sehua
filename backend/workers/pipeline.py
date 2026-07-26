@@ -86,7 +86,20 @@ async def fetch_and_parse_thread(
             await session.close()
 
 
-_ACCOUNT_STUB_SKIP_OUTCOMES = frozenset({"需回复贴", "需购买贴"})
+_ACCOUNT_STUB_SKIP_OUTCOMES = frozenset({"需回复贴", "需购买贴", "0元购买贴"})
+
+
+def _is_account_stub_skip_outcome(label: str) -> bool:
+    s = str(label or "").strip()
+    if not s:
+        return False
+    if s in _ACCOUNT_STUB_SKIP_OUTCOMES:
+        return True
+    return (
+        s.startswith("需回复")
+        or s.startswith("需购买")
+        or s.startswith("0元购买")
+    )
 
 
 async def process_thread(
@@ -144,9 +157,18 @@ async def process_thread(
         if not session._ready:
             probe = bootstrap_probe_for_forum(cfg, forum_id)
             await session.bootstrap(entry_urls=entries or None, probe_url=probe)
-        root = site_root(
-            session.active_entry_url or (entries[0] if entries else BASE_URL)
-        )
+        # 2048：{当日进站 BBS}/read.php?tid=N；域名跟 active/preferred，不写死
+        preferred = str(cfg.get("preferred_entry_url") or "").strip()
+        if forum_id == "2048":
+            root = site_root(
+                session.active_entry_url
+                or preferred
+                or (entries[0] if entries else BASE_URL)
+            )
+        else:
+            root = site_root(
+                session.active_entry_url or (entries[0] if entries else BASE_URL)
+            )
         thread_url = adapter.build_thread_url(root, tid)
         list_url = adapter.build_list_url(root, board_fid, 1)
         # 批量重爬共用 Fetcher 时也要随板块更新 Referer
@@ -156,6 +178,15 @@ async def process_thread(
             # HTTP 读帖；软文/安全壳时 get_thread_html 内会浏览器整页重试
             html = await fetcher.get_thread_html(thread_url, retries=retries)
             soft_browser_retried = fetcher.last_soft_browser_retried
+
+        # 0 元购买：先点购买链解锁正文；付费购买在 judge 里跳过
+        from workers.purchase_unlock import unlock_free_purchase_html
+
+        html, free_buy_note = await unlock_free_purchase_html(
+            fetcher, html, thread_url, retries=retries
+        )
+        if free_buy_note:
+            log.info("tid=%s free-purchase: %s", tid, free_buy_note)
 
         # 按帖页回写二级板块（已入库重爬常带旧纯 fid / 空名）；PHPWind 跳过 Discuz 元数据推断
         from crawler.sites import is_phpwind
@@ -179,11 +210,40 @@ async def process_thread(
             forum_id=forum_id,
             tid=tid,
         )
-        # 兜底：判定仍要求浏览器重试且尚未做过
+        # 0 元购买未解锁且仍无链：占位入库，留给账号爬补链
+        if free_buy_note and outcome.verdict in {"skipped", "failed"}:
+            tip = str(outcome.outcome or "")
+            if (not tip) or ("未解析到" in tip) or ("非资源" in tip) or ("未发现" in tip):
+                outcome = ThreadOutcome(
+                    "stub",
+                    "0元购买贴",
+                    outcome.link_kind,
+                    outcome.title or list_title,
+                )
+        elif free_buy_note and outcome.verdict == "stub" and not str(
+            outcome.outcome or ""
+        ).startswith("0元购买"):
+            # 统一占位文案，便于账号爬识别
+            if "需回复" not in str(outcome.outcome or ""):
+                outcome = ThreadOutcome(
+                    "stub",
+                    "0元购买贴",
+                    outcome.link_kind,
+                    outcome.title or list_title,
+                )
+        # 兜底：软文壳 / 空提示页 → 浏览器整页重读
         if outcome.need_browser_retry and not soft_browser_retried:
-            log.info("tid=%s soft-ad → force browser page read", tid)
+            reason = "soft-ad" if "软文" in str(outcome.outcome or "") else "tip-page"
+            log.info("tid=%s %s → force browser page read", tid, reason)
             html = await fetcher.get_html(thread_url, mode="browser", retries=min(2, retries))
             soft_browser_retried = True
+            # 浏览器过壳后再试一次 0 元购买解锁
+            html, free_buy_note2 = await unlock_free_purchase_html(
+                fetcher, html, thread_url, retries=retries
+            )
+            if free_buy_note2:
+                free_buy_note = free_buy_note2
+                log.info("tid=%s free-purchase(after browser): %s", tid, free_buy_note2)
             if not is_phpwind(forum_id):
                 board_fid, persist_board_name = resolve_thread_board_meta(
                     html,
@@ -201,7 +261,15 @@ async def process_thread(
                 forum_id=forum_id,
                 tid=tid,
             )
-
+            if free_buy_note and outcome.verdict in {"skipped", "failed"}:
+                tip = str(outcome.outcome or "")
+                if (not tip) or ("未解析到" in tip) or ("非资源" in tip) or ("未发现" in tip):
+                    outcome = ThreadOutcome(
+                        "stub",
+                        "0元购买贴",
+                        outcome.link_kind,
+                        outcome.title or list_title,
+                    )
         attachment_kind = outcome.attachment_kind
         attachment_text = ""
         attach_tried = False
@@ -244,6 +312,9 @@ async def process_thread(
                     soft_browser_retried=soft_browser_retried,
                     attachments_already_tried=True,
                     attachment_denied=attach_res.denied,
+                    attachment_login_required=bool(
+                        getattr(attach_res, "login_required", False)
+                    ),
                     attachment_failed=attach_res.failed and not attach_res.downloaded,
                     had_attachments=attach_res.downloaded or bool(attachment_text),
                     preferred_link=link_pref,
@@ -251,10 +322,11 @@ async def process_thread(
                     tid=tid,
                 )
                 # 电驴板：txt/zip/excel 无果再试种子；磁力/双链：种子无果再试 txt/excel
-                # stub/无权不再二轮（已能判定）；仅 retry/failed 等才回退
+                # stub/无权/需登录不再二轮（已能判定）；仅 retry/failed 等才回退
                 if (
                     outcome.verdict not in {"import", "skipped", "stub"}
                     and not attach_res.denied
+                    and not getattr(attach_res, "login_required", False)
                     and looks_like_attachment_zone(html)
                     and (
                         (link_pref == "ed2k" and attachment_kind == "txt_tail")
@@ -293,6 +365,10 @@ async def process_thread(
                             soft_browser_retried=soft_browser_retried,
                             attachments_already_tried=True,
                             attachment_denied=attach_res.denied or attach_res2.denied,
+                            attachment_login_required=bool(
+                                getattr(attach_res, "login_required", False)
+                                or getattr(attach_res2, "login_required", False)
+                            ),
                             attachment_failed=(
                                 (attach_res.failed and not attach_res.downloaded)
                                 or (attach_res2.failed and not attach_res2.downloaded)
@@ -381,7 +457,7 @@ async def process_thread(
         if (
             account_stub_pass
             and outcome.verdict == "stub"
-            and str(outcome.outcome or "") in _ACCOUNT_STUB_SKIP_OUTCOMES
+            and _is_account_stub_skip_outcome(str(outcome.outcome or ""))
         ):
             outcome = ThreadOutcome(
                 "skipped",

@@ -732,6 +732,13 @@ def save_forum_config(conn: Any, forum_id: str, config: dict) -> dict:
     normalized = normalize_forum_config(forum_id, config)
     configs[forum_id] = normalized
     save_settings(conn, {FORUM_CONFIG_KEY: json.dumps(configs, ensure_ascii=False)})
+    # 配置 Cookie ↔ 本地 jar：清空即抹登录，填入即覆写生效
+    try:
+        from workers.session_factory import sync_forum_cookie_jars
+
+        sync_forum_cookie_jars(forum_id, normalized)
+    except Exception:
+        pass
     return normalized
 
 

@@ -243,9 +243,14 @@ def _enqueue_batch(
                     page_skipped_young += 1
                     continue
                 out.threads.append(t)
+                enqueue_url = t.url
+                if forum_id == "2048":
+                    from crawler.sites.forum_2048 import normalize_2048_thread_url
+
+                    enqueue_url = normalize_2048_thread_url(t.tid, entry_url)
                 if enqueue_thread(
                     conn,
-                    url=t.url,
+                    url=enqueue_url,
                     board_fid=board_fid,
                     board_name=board_name,
                     title=t.title,

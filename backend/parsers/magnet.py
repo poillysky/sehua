@@ -30,6 +30,7 @@ _FILM_SIZE_RE = re.compile(
 )
 
 # 中文编辑粘贴常见：全角标点 + 零宽/软连字符（防复制检测）
+# 另：2048 国内原创常见【ＨＡＳＨ】全角拉丁（须折半角再认线索）
 _FULLWIDTH_TRANS = str.maketrans(
     {
         "：": ":",
@@ -43,6 +44,9 @@ _FULLWIDTH_TRANS = str.maketrans(
         "\u200d": "",
         "\ufeff": "",
         "\u00ad": "",
+        **{chr(0xFF21 + i): chr(ord("A") + i) for i in range(26)},
+        **{chr(0xFF41 + i): chr(ord("a") + i) for i in range(26)},
+        **{chr(0xFF10 + i): chr(ord("0") + i) for i in range(10)},
     }
 )
 
@@ -132,6 +136,7 @@ def bare_infohash_structure_cue_labels() -> tuple[str, ...]:
             labels.append(f"{seed}子特{code}")
         for back in _BARE_HASH_BACK2:
             labels.append(f"{seed}子{back}")
+    labels.extend(("HASH", "Hash", "hash", "哈希"))
     return tuple(dict.fromkeys(labels))
 
 
@@ -159,6 +164,9 @@ _BARE_INFOHASH_CUED_RE = re.compile(
     r"|info\s*hash"
     r"|种子(?:哈希|hash)"
     r"|種子(?:哈希|hash)"
+    # 2048 国内原创：【HASH】/【ＨＡＳＨ】(全角拉丁先折半角)
+    r"|HASH"
+    r"|哈希"
     rf"|{_BARE_HASH_STRUCTURE_ALT}"
     r")"
     rf"{_BARE_HASH_GAP}"

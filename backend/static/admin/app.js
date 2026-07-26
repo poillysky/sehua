@@ -27,6 +27,8 @@ let boardSortSuppressClickUntil = 0;
 let boardSortDragState = null;
 let boardStatsRefreshing = false;
 let lastActivityId = 0;
+let cachedCrawlForumId = null;
+let cachedCrawlThreadRoot = "";
 let crawlerPollTimer = null;
 let crawlerPollRunning = false;
 let crawlerBurstTimer = null;
@@ -256,7 +258,7 @@ function statusTag(status) {
 }
 
 function threadTitle(url) {
-  const match = url.match(/thread-(\d+)-/);
+  const match = url.match(/thread-(\d+)-/) || url.match(/[?&]tid=(\d+)/i);
   if (match) return `帖子 #${match[1]}`;
   try {
     const path = new URL(url).pathname;
@@ -264,6 +266,68 @@ function threadTitle(url) {
   } catch {
     return url.length > 48 ? `${url.slice(0, 48)}…` : url;
   }
+}
+
+function siteRootFromEntry(url) {
+  const raw = String(url || "").trim();
+  if (!raw) return "";
+  try {
+    const u = new URL(raw.includes("://") ? raw : `https://${raw}`);
+    return `${u.protocol}//${u.host}/`;
+  } catch {
+    return raw.endsWith("/") ? raw : `${raw}/`;
+  }
+}
+
+function forumLiveRoot(forumId) {
+  const fid = forumId || cachedCrawlForumId || getActiveForumId() || "sehuatang";
+  if (cachedCrawlThreadRoot && (!forumId || forumId === cachedCrawlForumId)) {
+    const live = siteRootFromEntry(cachedCrawlThreadRoot);
+    if (live) return live;
+  }
+  const cfg = cachedForumConfigs[fid] || {};
+  const forum = cachedForums.find((f) => f.id === fid);
+  const preferred =
+    cfg.preferred_entry_url ||
+    forum?.crawler_config?.preferred_entry_url ||
+    "";
+  if (preferred) return siteRootFromEntry(preferred);
+  const crawlUrls = String(
+    cfg.web_crawl_urls || forum?.crawler_config?.web_crawl_urls || ""
+  )
+    .split(",")
+    .map((u) => u.trim())
+    .find(Boolean);
+  if (crawlUrls) return siteRootFromEntry(crawlUrls);
+  return siteRootFromEntry(forum?.base_url || "");
+}
+
+function buildForumThreadUrl(forumId, tid) {
+  const n = Number(tid);
+  if (!Number.isFinite(n) || n <= 0) return "";
+  const fid = forumId || cachedCrawlForumId || getActiveForumId() || "sehuatang";
+  const root =
+    forumLiveRoot(fid) ||
+    (fid === "2048" ? "https://fby.tfzqs88.com/" : "https://www.sehuatang.net/");
+  if (fid === "2048") return `${root}read.php?tid=${n}`;
+  return `${root}thread-${n}-1-1.html`;
+}
+
+function rewriteForumThreadUrl(url, forumId) {
+  const raw = String(url || "").trim();
+  if (!raw) return "";
+  const tidMatch = raw.match(/[?&]tid=(\d+)/i) || raw.match(/thread-(\d+)/i) || raw.match(/\/read\.php\?[^#]*tid=(\d+)/i);
+  if (!tidMatch) return raw;
+  return buildForumThreadUrl(forumId, tidMatch[1]) || raw;
+}
+
+function linkifyActivityMessage(msg, forumId) {
+  const escaped = escapeHtml(msg || "");
+  return escaped.replace(/tid=(\d+)/g, (token, tid) => {
+    const href = buildForumThreadUrl(forumId, tid);
+    if (!href) return token;
+    return `<a class="thread-link activity-tid-link" href="${escapeHtml(href)}" target="_blank" rel="noopener">${token}</a>`;
+  });
 }
 
 function linkTypeTag(type) {
@@ -1718,7 +1782,7 @@ function renderTopoBoardQueueModalBody(data) {
     <span>待处理帖 ${formatCount(stats.pending)}</span>
     ${data.active_board_name ? `<span class="topo-board-queue-current">当前 · ${escapeHtml(data.active_board_name)}</span>` : ""}
   </div>
-  <p class="hint topo-board-queue-hint">顺序与「板块列表」拖拽一致；list_exhausted 且无 pending 后进入下一板块；同批内先 pending → 扫列表 → 新帖。</p>
+  <p class="hint topo-board-queue-hint">顺序与「板块列表」拖拽一致；列表深扫到底后先清空当前板可抓队列再进下一板（退避中不阻塞）；同批内先 pending → 扫列表 → 新帖。</p>
   <div class="table-wrap">
     <table class="data-table settings-table compact topo-board-queue-table">
       <thead>
@@ -2063,7 +2127,7 @@ function renderForumConfigTab(forum) {
           <span class="forum-config-step-badge">③</span>
           <div>
             <h4>抓帖与连接</h4>
-            <p class="field-hint">magnet 板优先正文 magnet；无链接时 Playwright 下载 .torrent 解析为 magnet。ed2k 板正文无 ed2k 时下载 txt/zip/rar（最多 3 个）。仅登录/回复/无权下载/需购买贴占位入库；其余异常保留 pending 重试。</p>
+            <p class="field-hint">magnet 板优先正文 magnet；无链接时 Playwright 下载 .torrent 解析为 magnet。ed2k 板正文无 ed2k 时下载 txt/zip/rar（最多 3 个）。登录/回复/无权下载/0元购买未解锁占位入库；付费购买跳过；其余异常保留 pending 重试。</p>
           </div>
         </div>
         <div class="settings-grid-2 forum-config-grid">
@@ -2075,7 +2139,7 @@ function renderForumConfigTab(forum) {
           ${field(
             "论坛 Cookie",
             '<textarea rows="4" data-forum-key="web_crawler_cookie" class="forum-field forum-cookie-field" spellcheck="false" placeholder="safe=1; bbs_sid=...; 粘贴浏览器完整 Cookie"></textarea>',
-            "浏览器登录后 F12 → Application → Cookies 复制全部，或 Network 请求头里的 Cookie。用于 18+ 验证与破解软文拦截；修改后请重启爬虫",
+            "浏览器登录后：Network → 选文档请求 → Request Headers 里整段 Cookie 原样粘贴（含 a22e7_ck_info=%2F%09 等编码，勿只拷 document.cookie）。用于登录态/0元购买；改后请重启爬虫",
             "forum-field-block--full"
           )}
         </div>
@@ -2948,12 +3012,31 @@ async function loadCrawlerStatus(fullReload = false) {
   if (fullReload) lastActivityId = 0;
   const logEl = document.getElementById("activityLog");
   try {
+    await ensureForumCache();
     const data = await api(`/api/crawl/status?since_id=${lastActivityId}`);
-    const runtime = data.runtime || {};
+    const runtime = data.runtime || data;
     crawlerPollRunning = !!runtime.running;
+    cachedCrawlForumId =
+      runtime.active_forum_id ||
+      data.active_forum_id ||
+      data.focus_forum_id ||
+      cachedSettings.active_forum_id ||
+      "sehuatang";
+    cachedCrawlThreadRoot =
+      runtime.thread_root ||
+      data.thread_root ||
+      runtime.preferred_entry_url ||
+      data.preferred_entry_url ||
+      "";
+    if (cachedCrawlForumId && cachedCrawlThreadRoot) {
+      cachedForumConfigs[cachedCrawlForumId] = {
+        ...(cachedForumConfigs[cachedCrawlForumId] || {}),
+        preferred_entry_url: cachedCrawlThreadRoot,
+      };
+    }
     updateCrawlerRunUI(runtime);
 
-    const activities = data.activities || [];
+    const activities = data.activities || data.activity || [];
     if (logEl) {
       if (!activities.length && lastActivityId === 0) {
         const starting = runtime.enabled && !runtime.running;
@@ -2961,17 +3044,21 @@ async function loadCrawlerStatus(fullReload = false) {
           ? '<div class="activity-empty">正在启动爬虫，稍候…</div>'
           : '<div class="activity-empty">暂无爬取记录，点击「立即爬取」开始</div>';
       } else if (activities.length) {
-        const html = activities.map(renderActivityRow).join("");
+        const html = activities.map((item) => renderActivityRow(item, cachedCrawlForumId)).join("");
         if (lastActivityId === 0) {
           logEl.innerHTML = html;
         } else {
           logEl.querySelector(".activity-empty")?.remove();
-          logEl.insertAdjacentHTML("beforeend", html);
+          logEl.insertAdjacentHTML("afterbegin", html);
         }
-        logEl.scrollTop = logEl.scrollHeight;
+        logEl.scrollTop = 0;
       }
     }
     if (data.latest_activity_id) lastActivityId = data.latest_activity_id;
+    else if (activities.length) {
+      const maxId = Math.max(...activities.map((a) => Number(a.id) || 0));
+      if (maxId > lastActivityId) lastActivityId = maxId;
+    }
   } catch (e) {
     if (logEl && lastActivityId === 0) {
       logEl.innerHTML = `<div class="activity-empty activity-error">加载失败：${escapeHtml(e.message)}</div>`;
@@ -2980,19 +3067,28 @@ async function loadCrawlerStatus(fullReload = false) {
 }
 
 function activityLevelClass(level, message = "") {
-  if (String(message).includes("风控熔断")) return "activity-risk";
+  const msg = String(message || "");
+  if (msg.includes("风控熔断")) return "activity-risk";
+  let resolved = level;
+  if (!resolved || resolved === "info") {
+    if (/失败|异常|错误|超时/.test(msg)) resolved = "error";
+    else if (/跳过|保留重试|待重试|需登录|停板|取消|停止/.test(msg)) resolved = "warn";
+    else if (/正常入库|占位入库|成功|进站就绪|已启动/.test(msg)) resolved = "success";
+    else resolved = "info";
+  }
   return (
     {
       info: "activity-info",
       warn: "activity-warn",
       error: "activity-error",
       success: "activity-success",
-    }[level] || "activity-info"
+    }[resolved] || "activity-info"
   );
 }
 
 function formatActivityTime(iso) {
   if (!iso) return "--:--:--";
+  if (/^\d{2}:\d{2}:\d{2}$/.test(String(iso))) return String(iso);
   try {
     const d = new Date(iso);
     return d.toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
@@ -3001,19 +3097,24 @@ function formatActivityTime(iso) {
   }
 }
 
-function renderActivityRow(item) {
-  const msg = item.message || "";
+function renderActivityRow(item, forumId = "") {
+  const msg = item.message || item.msg || "";
   const boardName = (item.board_name || "").trim();
   const title = (item.thread_title || "").trim();
+  const fid = forumId || cachedCrawlForumId || getActiveForumId();
+  const liveThreadUrl = item.thread_url
+    ? rewriteForumThreadUrl(item.thread_url, fid)
+    : "";
   const board = boardName && !msg.includes(boardName)
     ? `<span class="activity-board">${escapeHtml(boardName)}</span>`
     : "";
-  const link = item.thread_url && title && !msg.includes(title)
-    ? `<a class="activity-link" href="${escapeHtml(item.thread_url)}" target="_blank" rel="noopener">${escapeHtml(title || threadTitle(item.thread_url))}</a>`
+  const link = liveThreadUrl && title && !msg.includes(title)
+    ? `<a class="activity-link" href="${escapeHtml(liveThreadUrl)}" target="_blank" rel="noopener">${escapeHtml(title || threadTitle(liveThreadUrl))}</a>`
     : "";
-  return `<div class="activity-row ${activityLevelClass(item.level, item.message)}" data-id="${item.id}">
-    <span class="activity-time">${formatActivityTime(item.created_at)}</span>
-    <span class="activity-msg">${escapeHtml(item.message)}</span>
+  const timeText = item.created_at || item.t || "";
+  return `<div class="activity-row ${activityLevelClass(item.level, msg)}" data-id="${item.id || ""}">
+    <span class="activity-time">${formatActivityTime(timeText)}</span>
+    <span class="activity-msg">${linkifyActivityMessage(msg, fid)}</span>
     ${board}${link}
   </div>`;
 }

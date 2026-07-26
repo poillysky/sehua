@@ -187,6 +187,11 @@ def parse_thread_dual(
     元数据仍取主贴字段；链接/子资源认楼主各层（含二楼补链），路人回帖不参与。
     """
     content = parse_thread_content(html, tid=tid, base_url=base_url)
+    # 2048 等板：繁简标签归一、丢掉裸 hash/残片种子名，便于片名与大小精准入库
+    if board_fid is not None:
+        from parsers.content import normalize_metadata_for_board
+
+        content.metadata = normalize_metadata_for_board(content.metadata, board_fid)
     link_html = extract_link_corpus_html(html)
     link_block = extract_blockcode_text(link_html) if link_html else ""
     corpus = "\n".join(
@@ -240,6 +245,17 @@ def parse_thread_dual(
                 ordered.append(asset)
             if ordered:
                 ordered[0].is_primary = True
+                # 切段未覆盖的 hash 仍保留（防御：无子标题/切段漏配）
+                kept = {(a.hash or "").strip().upper() for a in ordered}
+                for asset in assets:
+                    h = (asset.hash or "").strip().upper()
+                    if not h or h in kept:
+                        continue
+                    if asset.link_kind not in {"magnet", "ed2k"}:
+                        continue
+                    asset.is_primary = False
+                    ordered.append(asset)
+                    kept.add(h)
                 assets = ordered
                 primary_kind = ordered[0].link_kind  # type: ignore[assignment]
     extract_password = content.extract_password

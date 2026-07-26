@@ -153,27 +153,55 @@ function activityLevelClass(msg: string): string {
   return 'activity-info'
 }
 
-/** 从爬虫配置解析帖页根地址 */
-function forumThreadRoot(webCrawlUrls?: string | null): string {
-  const first = (webCrawlUrls || '')
+/** 从入口 / 根地址解析 origin+/ */
+function siteRootFromEntry(raw?: string | null, fallback = 'https://www.sehuatang.net/'): string {
+  const first = (raw || '')
     .split(/[,，\s]+/)
     .map((s) => s.trim())
     .find(Boolean)
-  if (!first) return 'https://www.sehuatang.net/'
+  if (!first) return fallback
   try {
     const u = new URL(first.includes('://') ? first : `https://${first}`)
     return `${u.protocol}//${u.host}/`
   } catch {
-    return 'https://www.sehuatang.net/'
+    return fallback
   }
 }
 
-function threadPageUrl(tid: string, webCrawlUrls?: string | null): string {
-  return `${forumThreadRoot(webCrawlUrls)}thread-${tid}-1-1.html`
+/** 活动日志 tid 链：2048 → {liveRoot}/read.php?tid=N；色花堂 → thread-N-1-1.html */
+function threadPageUrl(
+  tid: string,
+  opts?: {
+    forumId?: string | null
+    threadRoot?: string | null
+    preferredEntryUrl?: string | null
+    webCrawlUrls?: string | null
+  },
+): string {
+  const fid = (opts?.forumId || '').trim() || 'sehuatang'
+  const fallback = fid === '2048' ? 'https://bbs.xfca2022.com/' : 'https://www.sehuatang.net/'
+  const root = siteRootFromEntry(
+    opts?.threadRoot || opts?.preferredEntryUrl || opts?.webCrawlUrls,
+    fallback,
+  )
+  if (fid === '2048') return `${root}read.php?tid=${tid}`
+  return `${root}thread-${tid}-1-1.html`
 }
 
 /** 活动日志：把 tid=123 渲染成可点击外链 */
-function ActivityMsg({ msg, webCrawlUrls }: { msg: string; webCrawlUrls?: string | null }) {
+function ActivityMsg({
+  msg,
+  forumId,
+  threadRoot,
+  preferredEntryUrl,
+  webCrawlUrls,
+}: {
+  msg: string
+  forumId?: string | null
+  threadRoot?: string | null
+  preferredEntryUrl?: string | null
+  webCrawlUrls?: string | null
+}) {
   const text = msg || ''
   const parts: Array<string | { tid: string }> = []
   const re = /tid=(\d+)/gi
@@ -186,25 +214,26 @@ function ActivityMsg({ msg, webCrawlUrls }: { msg: string; webCrawlUrls?: string
   }
   if (last < text.length) parts.push(text.slice(last))
   if (!parts.length) return <>{text}</>
+  const linkOpts = { forumId, threadRoot, preferredEntryUrl, webCrawlUrls }
   return (
     <>
-      {parts.map((p, i) =>
-        typeof p === 'string' ? (
-          <span key={i}>{p}</span>
-        ) : (
+      {parts.map((p, i) => {
+        if (typeof p === 'string') return <span key={i}>{p}</span>
+        const href = threadPageUrl(p.tid, linkOpts)
+        return (
           <a
             key={`${p.tid}-${i}`}
             className="activity-tid-link"
-            href={threadPageUrl(p.tid, webCrawlUrls)}
+            href={href}
             target="_blank"
             rel="noopener noreferrer"
-            title={`打开帖子 tid=${p.tid}`}
+            title={href}
             onClick={(e) => e.stopPropagation()}
           >
             tid={p.tid}
           </a>
-        ),
-      )}
+        )
+      })}
     </>
   )
 }
@@ -847,7 +876,9 @@ export function CrawlerPage() {
     stubWasActive.current = true
     setRunHint('账号重爬启动中…')
     try {
-      const res = await recrawlAccountStubs()
+      const res = await recrawlAccountStubs(
+        crawlForumId ? { forum_id: crawlForumId } : undefined,
+      )
       if (res.started) {
         const disc = Number(res.discarded_remaining ?? 0)
         const stubs = Number(res.stub_remaining ?? res.remaining ?? res.budget ?? 0)
@@ -1137,7 +1168,13 @@ export function CrawlerPage() {
                     <div key={`${a.t}-${i}-${a.msg}`} className={`activity-row ${activityLevelClass(a.msg)}`}>
                       <span className="activity-time">{a.t || '—'}</span>
                       <span className="activity-msg">
-                        <ActivityMsg msg={a.msg} webCrawlUrls={status?.web_crawl_urls} />
+                        <ActivityMsg
+                          msg={a.msg}
+                          forumId={status?.focus_forum_id || status?.forum_id || status?.active_forum_id}
+                          threadRoot={status?.thread_root}
+                          preferredEntryUrl={status?.preferred_entry_url}
+                          webCrawlUrls={status?.web_crawl_urls}
+                        />
                       </span>
                     </div>
                   ))
@@ -1528,7 +1565,15 @@ export function CrawlerPage() {
                         >
                           <span className="activity-time">{a.t || '—'}</span>
                           <span className="activity-msg">
-                            <ActivityMsg msg={a.msg} webCrawlUrls={status?.web_crawl_urls} />
+                            <ActivityMsg
+                              msg={a.msg}
+                              forumId={
+                                status?.focus_forum_id || status?.forum_id || status?.active_forum_id
+                              }
+                              threadRoot={status?.thread_root}
+                              preferredEntryUrl={status?.preferred_entry_url}
+                              webCrawlUrls={status?.web_crawl_urls}
+                            />
                           </span>
                         </div>
                       ))

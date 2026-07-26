@@ -34,10 +34,23 @@ _ED2K_SPACED_PIPES_RE = re.compile(
     re.IGNORECASE,
 )
 
+# 2048 附件 txt 常见：缺 | 把 扩展名+大小+hash 粘在一起
+# ed2k://|file|www.98T.la@AMBI-039.mp4206253751428B6B3…421
+_GLUED_ED2K_RE = re.compile(
+    r"ed2k://\|file\|"
+    r"([^\|\r\n]+?\."
+    r"(?:mp4|mkv|avi|wmv|ts|iso|mov|flv|m4v|rmvb|mpg|mpeg|zip|rar|7z|txt))"
+    r"(\d{3,})"
+    r"([0-9A-Fa-f]{32})"
+    r"(?:\|/?|/)?",
+    re.IGNORECASE,
+)
+
 _FULLWIDTH_TRANS = str.maketrans(
     {
         "：": ":",
-        "｜": "|",
+        # 注意：勿把「｜」全局换成「|」——中文片名常含全角竖线（如「精华版｜梦幻」），
+        # 换掉后会把 filename 拆成多余字段，导致整链匹配失败。
         "／": "/",
         "．": ".",
         "\u200b": "",
@@ -46,6 +59,12 @@ _FULLWIDTH_TRANS = str.maketrans(
         "\ufeff": "",
         "\u00ad": "",
     }
+)
+
+# 仅还原「结构全角竖线」的电驴链：ed2k://｜file｜名｜大小｜hash｜
+_FW_STRUCT_ED2K_RE = re.compile(
+    r"ed2k://\s*｜\s*file\s*｜([^｜]+?)｜(\d+)｜([A-Fa-f0-9]{32})｜",
+    re.IGNORECASE,
 )
 
 _ENTITY_PIPE_RE = re.compile(r"&vert;|&#0*124;|&#x0*7c;", re.I)
@@ -69,10 +88,19 @@ def normalize_ed2k_corpus(text: str) -> str:
         return ""
     out = text.translate(_FULLWIDTH_TRANS)
     out = _ENTITY_PIPE_RE.sub("|", out)
+    # 结构全角竖线 → ASCII（保留文件名里的全角｜）
+    out = _FW_STRUCT_ED2K_RE.sub(
+        lambda m: f"ed2k://|file|{m.group(1).strip()}|{m.group(2)}|{m.group(3).upper()}|/",
+        out,
+    )
     out = _TRUNCATED_ED2K_SCHEME_RE.sub("ed2k://|file|", out)
     out = _SPACED_ED2K_SCHEME_RE.sub("ed2k://|file|", out)
     out = _ED2K_SLASH_FIX_RE.sub("ed2k://|file|", out)
     out = _ED2K_SPACED_PIPES_RE.sub(
+        lambda m: f"ed2k://|file|{m.group(1).strip()}|{m.group(2)}|{m.group(3).upper()}|/",
+        out,
+    )
+    out = _GLUED_ED2K_RE.sub(
         lambda m: f"ed2k://|file|{m.group(1).strip()}|{m.group(2)}|{m.group(3).upper()}|/",
         out,
     )

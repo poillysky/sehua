@@ -290,7 +290,11 @@ export function BasicForumConfigModal({
                           onChange={(e) => setDraft({ ...draft, web_crawler_ua: e.target.value })}
                         />
                       </Field>
-                      <Field label="论坛 Cookie" hint="过年龄门 / 登录态时可填" full>
+                      <Field
+                        label="论坛 Cookie"
+                        hint="保存后生效；清空并保存会同步清除本地会话"
+                        full
+                      >
                         <textarea
                           rows={4}
                           className="forum-cookie-field"
@@ -300,7 +304,11 @@ export function BasicForumConfigModal({
                           onChange={(e) => setDraft({ ...draft, web_crawler_cookie: e.target.value })}
                         />
                       </Field>
-                      <Field label="账号 Cookie" hint="与上方普通 Cookie 分开保存" full>
+                      <Field
+                        label="账号 Cookie"
+                        hint="账号爬用；清空并保存会同步清除账号会话"
+                        full
+                      >
                         <textarea
                           rows={4}
                           className="forum-cookie-field"
@@ -1188,7 +1196,11 @@ function ConfigTab({
             <Field label="浏览器标识（UA）" hint="伪装成普通浏览器访问" full>
               <input type="text" value={draft.web_crawler_ua} onChange={(e) => setDraft({ ...draft, web_crawler_ua: e.target.value })} />
             </Field>
-            <Field label="论坛 Cookie" hint="普通爬虫用（匿名/过年龄门）；看列表要登录时可填" full>
+            <Field
+              label="论坛 Cookie"
+              hint="普通爬虫用。保存后生效；清空并保存会同步清除本地会话 Cookie"
+              full
+            >
               <textarea
                 rows={4}
                 className="forum-cookie-field"
@@ -1200,7 +1212,7 @@ function ConfigTab({
             </Field>
             <Field
               label="账号 Cookie"
-              hint="仅「账号爬占位」使用；浏览器登录论坛后复制完整 Cookie，与上方普通 Cookie 分开"
+              hint="仅「账号爬占位」。保存后生效；清空并保存会同步清除账号会话 Cookie"
               full
             >
               <textarea

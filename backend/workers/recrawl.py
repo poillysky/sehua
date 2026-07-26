@@ -60,12 +60,17 @@ from workers.session_factory import (
 log = logging.getLogger(__name__)
 
 _IMPORT_VERDICTS = frozenset({"import", "stub"})
-_ACCOUNT_STUB_SKIP_OUTCOMES = frozenset({"需回复贴", "需购买贴"})
+_ACCOUNT_STUB_SKIP_OUTCOMES = frozenset({"需回复贴", "需购买贴", "0元购买贴"})
 
 
 def _is_reply_or_purchase_outcome(label: str) -> bool:
     s = str(label or "")
-    return s in _ACCOUNT_STUB_SKIP_OUTCOMES or "需回复" in s or "需购买" in s
+    return (
+        s in _ACCOUNT_STUB_SKIP_OUTCOMES
+        or "需回复" in s
+        or "需购买" in s
+        or "0元购买" in s
+    )
 
 
 def _empty_account_stub_progress(*, active: bool = False, remaining: int = 0) -> dict[str, Any]:
@@ -83,22 +88,43 @@ def _empty_account_stub_progress(*, active: bool = False, remaining: int = 0) ->
     }
 
 
-def _count_account_discarded(conn: Any) -> int:
+def _resolve_focus_forum_id(raw: str | None = None) -> str:
+    """账号重爬等侧线：优先入参，否则调度焦点，最后色花堂。"""
+    fid = (raw or "").strip()
+    if fid in FULL_CRAWLER_FORUM_IDS:
+        return fid
+    conn = connect()
+    try:
+        active = (get_active_forum_id(conn) or "").strip()
+    finally:
+        conn.close()
+    if active in FULL_CRAWLER_FORUM_IDS:
+        return active
+    return SITE_CRAWLER_FORUM_ID
+
+
+def _count_account_discarded(conn: Any, *, forum_id: str | None = None) -> int:
     total = 0
     for kind in ACCOUNT_DISCARDED_KINDS:
-        total += int(count_discarded_kind(conn, kind) or 0)
+        total += int(count_discarded_kind(conn, kind, forum_id=forum_id) or 0)
     return total
 
 
-def _db_priority_remaining(*, exclude_hashes: list[str] | None = None) -> int:
+def _db_priority_remaining(
+    *,
+    exclude_hashes: list[str] | None = None,
+    forum_id: str | None = None,
+) -> int:
     conn = connect_resource()
     try:
-        stubs = count_priority_account_stubs(conn, exclude_hashes=exclude_hashes)
+        stubs = count_priority_account_stubs(
+            conn, exclude_hashes=exclude_hashes, forum_id=forum_id
+        )
     finally:
         conn.close()
     qconn = connect()
     try:
-        discarded = _count_account_discarded(qconn)
+        discarded = _count_account_discarded(qconn, forum_id=forum_id)
     finally:
         qconn.close()
     return int(stubs) + int(discarded)
@@ -116,10 +142,13 @@ def _publish_account_stub_progress(
     current_tid: int | None = None,
     current_title: str = "",
     exclude_hashes: list[str] | None = None,
+    forum_id: str | None = None,
 ) -> None:
     if remaining is None:
         try:
-            remaining = _db_priority_remaining(exclude_hashes=exclude_hashes)
+            remaining = _db_priority_remaining(
+                exclude_hashes=exclude_hashes, forum_id=forum_id
+            )
         except Exception:
             log.exception("count priority stubs for progress")
             remaining = 0
@@ -152,11 +181,15 @@ _account_stub_task: Optional[asyncio.Task[Any]] = None
 _account_stub_future: Any = None
 
 
-def start_account_stub_recrawl() -> dict[str, Any]:
-    """校验后后台跑账号爬占位（不限数量，直到队列清空或本轮均已尝试）。"""
+def start_account_stub_recrawl(*, forum_id: str = "") -> dict[str, Any]:
+    """校验后后台跑账号爬占位（不限数量，直到队列清空或本轮均已尝试）。
+
+    仅处理调度焦点（或显式 forum_id）论坛的未处理/占位，避免跨站 Cookie 串用。
+    """
     global _account_stub_task, _account_stub_future
     from workers.crawl_executor import spawn_crawl
 
+    focus_fid = _resolve_focus_forum_id(forum_id)
     recover_stuck_after_stop(activity="账号重爬")
     st = crawl_status()
     if st.get("looping") or st.get("running"):
@@ -179,7 +212,7 @@ def start_account_stub_recrawl() -> dict[str, Any]:
 
     conn = connect()
     try:
-        cfg = _load_crawler_cfg(conn)
+        cfg = _load_crawler_cfg(conn, focus_fid)
         account_cookie = str(cfg.get("web_crawler_account_cookie") or "").strip()
         if not account_cookie:
             return {
@@ -193,24 +226,25 @@ def start_account_stub_recrawl() -> dict[str, Any]:
 
     rconn = connect_resource()
     try:
-        stub_remaining = count_priority_account_stubs(rconn)
+        stub_remaining = count_priority_account_stubs(rconn, forum_id=focus_fid)
     finally:
         rconn.close()
 
     qconn = connect()
     try:
-        discarded_remaining = _count_account_discarded(qconn)
+        discarded_remaining = _count_account_discarded(qconn, forum_id=focus_fid)
     finally:
         qconn.close()
 
     remaining = int(stub_remaining) + int(discarded_remaining)
     if remaining <= 0:
-        _log_activity("账号爬占位 · 无优先占位 / 未处理失败·无权跳过可处理")
-        _publish_account_stub_progress(active=False, remaining=0)
+        _log_activity(f"账号爬占位 · {focus_fid} · 无优先占位 / 未处理失败·无权跳过可处理")
+        _publish_account_stub_progress(active=False, remaining=0, forum_id=focus_fid)
         return {
             "ok": True,
             "started": False,
             "reason": "empty",
+            "forum_id": focus_fid,
             "remaining": 0,
             "budget": 0,
             "stub_remaining": 0,
@@ -218,37 +252,41 @@ def start_account_stub_recrawl() -> dict[str, Any]:
             "message": "无「优先占位」或「未处理失败 / 无阅读权限跳过」可处理",
         }
 
-    _publish_account_stub_progress(active=True, remaining=remaining)
+    _publish_account_stub_progress(active=True, remaining=remaining, forum_id=focus_fid)
 
     async def _runner() -> None:
         global _account_stub_task
         _account_stub_task = asyncio.current_task()
         try:
-            await recrawl_account_stubs()
+            await recrawl_account_stubs(forum_id=focus_fid)
         except Exception:
             log.exception("account stub background failed")
             try:
-                rem = _db_priority_remaining()
+                rem = _db_priority_remaining(forum_id=focus_fid)
             except Exception:
                 rem = 0
-            _publish_account_stub_progress(active=False, remaining=rem)
+            _publish_account_stub_progress(
+                active=False, remaining=rem, forum_id=focus_fid
+            )
         finally:
             if _account_stub_task is asyncio.current_task():
                 _account_stub_task = None
 
     _account_stub_future = spawn_crawl(_runner(), name="account-stubs")
     _log_activity(
-        f"账号爬占位已启动 · 占位 {stub_remaining} · 未处理 {discarded_remaining} · 跑完为止"
+        f"账号爬占位已启动 · {focus_fid} · 占位 {stub_remaining} · 未处理 {discarded_remaining} · 跑完为止"
     )
     return {
         "ok": True,
         "started": True,
+        "forum_id": focus_fid,
         "remaining": remaining,
         "budget": remaining,
         "stub_remaining": int(stub_remaining),
         "discarded_remaining": int(discarded_remaining),
         "message": (
-            f"已开始 · 占位 {stub_remaining} · 未处理失败/无权跳过 {discarded_remaining} · 直至重爬完"
+            f"已开始 · {focus_fid} · 占位 {stub_remaining} · "
+            f"未处理失败/无权跳过 {discarded_remaining} · 直至重爬完"
         ),
     }
 
@@ -700,19 +738,25 @@ async def recrawl_imported_resources(hashes: list[str]) -> dict[str, Any]:
     }
 
 
-async def recrawl_account_stubs() -> dict[str, Any]:
+async def recrawl_account_stubs(*, forum_id: str = "") -> dict[str, Any]:
     """用账号 Cookie 重爬优先占位，不限数量：每次从库取下一条，直至无可再试。
 
-    本轮已尝试过的 hash（含仍占位）不再重复捞取，避免死循环；进度 remaining 每次查库。
+    仅处理焦点论坛；本轮已尝试过的 hash（含仍占位）不再重复捞取，避免死循环。
     """
+    focus_fid = _resolve_focus_forum_id(forum_id)
     st = crawl_status()
     if st.get("looping") or st.get("running"):
-        _publish_account_stub_progress(active=False, remaining=_db_priority_remaining())
+        _publish_account_stub_progress(
+            active=False,
+            remaining=_db_priority_remaining(forum_id=focus_fid),
+            forum_id=focus_fid,
+        )
         return {
             "ok": False,
             "skipped": True,
             "reason": "busy" if st.get("running") else "loop_running",
             "error": "爬虫正在执行，请先停止后再账号爬占位",
+            "forum_id": focus_fid,
             "processed": 0,
             "upgraded": 0,
             "still_stub": 0,
@@ -721,15 +765,16 @@ async def recrawl_account_stubs() -> dict[str, Any]:
 
     conn = connect()
     try:
-        cfg = _load_crawler_cfg(conn)
+        cfg = _load_crawler_cfg(conn, focus_fid)
         account_cookie = str(cfg.get("web_crawler_account_cookie") or "").strip()
         if not account_cookie:
-            _publish_account_stub_progress(active=False, remaining=0)
+            _publish_account_stub_progress(active=False, remaining=0, forum_id=focus_fid)
             return {
                 "ok": False,
                 "skipped": True,
                 "reason": "no_account_cookie",
                 "error": "未配置账号 Cookie，请到论坛配置 → 进站 →「账号 Cookie」填写登录态",
+                "forum_id": focus_fid,
                 "processed": 0,
                 "upgraded": 0,
                 "still_stub": 0,
@@ -740,21 +785,22 @@ async def recrawl_account_stubs() -> dict[str, Any]:
 
     rconn = connect_resource()
     try:
-        stub_remaining0 = count_priority_account_stubs(rconn)
+        stub_remaining0 = count_priority_account_stubs(rconn, forum_id=focus_fid)
     finally:
         rconn.close()
     qconn = connect()
     try:
-        discarded_remaining0 = _count_account_discarded(qconn)
+        discarded_remaining0 = _count_account_discarded(qconn, forum_id=focus_fid)
     finally:
         qconn.close()
     remaining0 = int(stub_remaining0) + int(discarded_remaining0)
 
     if remaining0 <= 0:
-        _log_activity("账号爬占位 · 无优先占位 / 未处理失败·无权跳过可处理")
-        _publish_account_stub_progress(active=False, remaining=0)
+        _log_activity(f"账号爬占位 · {focus_fid} · 无优先占位 / 未处理失败·无权跳过可处理")
+        _publish_account_stub_progress(active=False, remaining=0, forum_id=focus_fid)
         return {
             "ok": True,
+            "forum_id": focus_fid,
             "processed": 0,
             "upgraded": 0,
             "still_stub": 0,
@@ -766,12 +812,15 @@ async def recrawl_account_stubs() -> dict[str, Any]:
 
     lock = try_begin_exclusive("account_stubs")
     if not lock.get("ok"):
-        _publish_account_stub_progress(active=False, remaining=remaining0)
+        _publish_account_stub_progress(
+            active=False, remaining=remaining0, forum_id=focus_fid
+        )
         return {
             "ok": False,
             "skipped": True,
             "reason": lock.get("reason") or "busy",
             "error": lock.get("error") or "爬虫正在执行，请稍候",
+            "forum_id": focus_fid,
             "processed": 0,
             "upgraded": 0,
             "still_stub": 0,
@@ -803,11 +852,12 @@ async def recrawl_account_stubs() -> dict[str, Any]:
             current_tid=current_tid,
             current_title=current_title,
             exclude_hashes=None,
+            forum_id=focus_fid,
         )
 
-    async def _switch_session(forum_id: str) -> dict[str, Any]:
+    async def _switch_session(target_forum_id: str) -> dict[str, Any]:
         nonlocal session, fetcher, session_forum_id, cfg
-        if session is not None and session_forum_id == forum_id and session._ready:
+        if session is not None and session_forum_id == target_forum_id and session._ready:
             return cfg
         if session is not None:
             try:
@@ -816,30 +866,39 @@ async def recrawl_account_stubs() -> dict[str, Any]:
                 pass
             session = None
             fetcher = None
+        # 始终用目标论坛自己的账号 Cookie，禁止跨站覆盖
+        cookie = account_cookie if target_forum_id == focus_fid else None
+        if cookie is None:
+            conn_cfg = connect()
+            try:
+                peer_cfg = _load_crawler_cfg(conn_cfg, target_forum_id)
+            finally:
+                conn_cfg.close()
+            cookie = str(peer_cfg.get("web_crawler_account_cookie") or "").strip() or None
         forum_cfg, session, fetcher = await _open_forum_session(
-            forum_id,
-            cookie_override=account_cookie,
+            target_forum_id,
+            cookie_override=cookie,
             account_jar=True,
         )
-        # 账号 Cookie 以当前论坛配置为准；调用方传入的覆盖优先
-        session_forum_id = forum_id
+        session_forum_id = target_forum_id
         cfg = forum_cfg
         return forum_cfg
 
     try:
         _log_activity(
-            f"账号爬占位开始 · 占位 {stub_remaining0} · 未处理 {discarded_remaining0} · 登录 Cookie"
+            f"账号爬占位开始 · {focus_fid} · 占位 {stub_remaining0} · "
+            f"未处理 {discarded_remaining0} · 登录 Cookie"
         )
         THROTTLE.clear_stop()
         _push_progress(active=True)
-        await _switch_session(str(cfg.get("_forum_id") or SITE_CRAWLER_FORUM_ID))
+        await _switch_session(focus_fid)
 
         # ① 先用账号 Cookie 处理未处理：失败全部 → 无阅读权限跳过
         for disc_kind in ACCOUNT_DISCARDED_KINDS:
             kind_label = str(
                 (DISCARDED_REQUEUE_KINDS.get(disc_kind) or {}).get("label") or disc_kind
             )
-            _log_activity(f"账号爬未处理 · 开始类别「{kind_label}」")
+            _log_activity(f"账号爬未处理 · {focus_fid} · 开始类别「{kind_label}」")
             while True:
                 if THROTTLE.should_stop():
                     _log_activity("账号爬占位 · 收到停止请求")
@@ -852,6 +911,7 @@ async def recrawl_account_stubs() -> dict[str, Any]:
                         disc_kind,
                         limit=1,
                         exclude_urls=attempted_urls,
+                        forum_id=focus_fid,
                     )
                 finally:
                     qconn.close()
@@ -879,10 +939,10 @@ async def recrawl_account_stubs() -> dict[str, Any]:
                 board_fid_s = str(row.get("board_fid") or "").strip() or str(
                     cfg.get("active_board_fid") or ""
                 )
-                forum_id = _forum_id_of_resource(row)
                 from crawler.sites import get_site_adapter
 
-                forum_cfg = await _switch_session(forum_id)
+                forum_cfg = await _switch_session(focus_fid)
+                forum_id = focus_fid
                 adapter = get_site_adapter(forum_id)
                 pol = adapter.get_board_policy(board_fid_s or "0")
                 board_fid = int(pol.fid or 0)
@@ -1005,6 +1065,7 @@ async def recrawl_account_stubs() -> dict[str, Any]:
                     conn,
                     limit=1,
                     exclude_hashes=attempted,
+                    forum_id=focus_fid,
                 )
             finally:
                 conn.close()
@@ -1036,7 +1097,7 @@ async def recrawl_account_stubs() -> dict[str, Any]:
             board_fid_s = str(row.get("board_fid") or "").strip()
             if not board_fid_s:
                 board_fid_s = str(cfg.get("active_board_fid") or "")
-            forum_id = _forum_id_of_resource(row)
+            forum_id = focus_fid
             from crawler.sites import get_site_adapter
 
             forum_cfg = await _switch_session(forum_id)
@@ -1230,15 +1291,17 @@ async def recrawl_account_stubs() -> dict[str, Any]:
         end_exclusive()
 
     processed = upgraded + still_stub + failed + skipped_prep
-    rem_left = _db_priority_remaining()
+    rem_left = _db_priority_remaining(forum_id=focus_fid)
     _log_activity(
-        f"账号爬占位结束 · 处理 {processed} · 升级 {upgraded} · 仍占位 {still_stub} · 失败 {failed}"
+        f"账号爬占位结束 · {focus_fid} · 处理 {processed} · 升级 {upgraded} · "
+        f"仍占位 {still_stub} · 失败 {failed}"
         + f" · 未处理已跑 {discarded_done}"
         + f" · 库内剩余 {rem_left}"
         + (f" · 跳过 {skipped_prep}" if skipped_prep else "")
     )
     return {
         "ok": True,
+        "forum_id": focus_fid,
         "processed": processed,
         "upgraded": upgraded,
         "still_stub": still_stub,
@@ -1511,8 +1574,13 @@ async def recrawl_discarded_tids(tids: list[int]) -> dict[str, Any]:
 
                     crawled_n += 1
                     verdict = str(outcome.get("verdict") or "failed")
-                    label = str(
-                        outcome.get("verdict_label") or outcome.get("outcome") or verdict
+                    detail = str(outcome.get("outcome") or "").strip()
+                    vlabel = str(outcome.get("verdict_label") or verdict).strip()
+                    # 活动日志要看出具体原因（勿只写「跳过」）
+                    label = (
+                        detail
+                        if detail and detail != vlabel
+                        else (detail or vlabel or verdict)
                     )
                     conn = connect()
                     try:

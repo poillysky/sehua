@@ -1,0 +1,76 @@
+# 98tang 主栈（与 sehua 同镜像，独立数据/端口）
+# NAS: /vol1/1000/Docker/98tang/
+#
+#   docker compose -f docker-compose.98tang.yml pull
+#   docker compose -f docker-compose.98tang.yml up -d
+# 访问: 管理+API :8083
+
+name: 98tang
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: 98tang-postgres
+    restart: always
+    ports:
+      - "5434:5432"
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: ed2k
+      POSTGRES_INITDB_ARGS: "--encoding=UTF8 --lc-collate=C --lc-ctype=C"
+      PGDATA: /var/lib/postgresql/data/pgdata
+      TZ: Asia/Shanghai
+    volumes:
+      - /vol1/1000/Docker/98tang/data/postgres:/var/lib/postgresql/data
+    shm_size: 1g
+    sysctls:
+      - kernel.shmmax=1073741824
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d ed2k"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    deploy:
+      resources:
+        limits:
+          cpus: "2"
+          memory: 2G
+        reservations:
+          cpus: "0.5"
+          memory: 512M
+
+  app:
+    image: poillysky/sehuatang-app:1.2.2
+    container_name: 98tang-app
+    restart: always
+    ports:
+      - "8083:80"
+    shm_size: 2g
+    environment:
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: ed2k
+      TZ: Asia/Shanghai
+      AUTH_REQUIRED: "true"
+      INITIAL_ADMIN_USERNAME: admin
+      INITIAL_ADMIN_PASSWORD: admin123
+      CORS_ORIGINS: ""
+      WEB_CRAWLER_PROXY: ""
+      SEARCH_FRONTEND_URL: http://192.168.2.38:3010
+      BACKUP_DIR: /app/data/backups
+      LOG_LEVEL: INFO
+      UVICORN_LOG_LEVEL: info
+    volumes:
+      - /vol1/1000/Docker/98tang/data/backend:/app/data
+      - /vol1/1000/Docker/98tang/data/backups:/app/data/backups
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+networks:
+  default:
+    name: 98tang-network

@@ -804,3 +804,36 @@ def test_password_in_attachment_text_fills_field_and_description():
     assert parsed.extract_password == "www.98T.la@"
     assert "【解压密码】：www.98T.la@" in (parsed.description or "")
     assert parsed.primary_link_kind == "ed2k"
+
+
+def test_phpwind_attach_card_torrent():
+    """2048/PHPWind：job.php?action=download 的 .torrent 附件应识别为种子。"""
+    html = """
+    <div class="attach-card" id="att_6650545">
+      <div class="attach-icon">
+        <img style="width:30px;" src="images/wind/file/torrent.gif" alt="torrent" />
+      </div>
+      <div class="attach-main">
+        <div class="attach-header"><span class="attach-label">附件</span></div>
+        <a href="job.php?action=download&amp;aid=6650545&amp;time=1&amp;sign=1"
+           class="attach-name-link">
+          <span>87-1021497.torrent</span>
+        </a>
+        <div class="attach-meta"><span>大小：18 K</span></div>
+      </div>
+    </div>
+    """
+    base = "https://bbs.xfca2022.com/"
+    all_a = extract_download_attachments(base, html)
+    assert len(all_a) == 1
+    assert all_a[0].kind == "torrent"
+    assert all_a[0].name == "87-1021497.torrent"
+    assert "job.php?action=download" in all_a[0].url
+    assert "aid=6650545" in all_a[0].url
+    torrents = filter_torrent_attachments(all_a)
+    assert len(torrents) == 1
+    from parsers.attachments import pick_magnet_attachment_kind
+    from parsers.thread_gates import looks_like_attachment_zone
+
+    assert looks_like_attachment_zone(html) is True
+    assert pick_magnet_attachment_kind(base, html) == "torrent"

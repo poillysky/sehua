@@ -27,6 +27,7 @@ from parsers.thread_gates import (
     has_xunlei_share_link,
     is_genuine_non_resource,
     is_non_target_cloud_share,
+    is_free_purchase_post,
     is_purchase_required_post,
     is_reply_required_post,
     is_safe_or_soft_shell,
@@ -35,6 +36,7 @@ from parsers.thread_gates import (
     is_thread_login_required,
     is_thread_moderator_blocked,
     looks_like_attachment_zone,
+    is_empty_tip_page,
     is_missing_thread,
     page_title,
     post_text,
@@ -86,6 +88,7 @@ def judge_thread_html(
     list_title: str = "",
     base_url: str = "",
     attachment_denied: bool = False,
+    attachment_login_required: bool = False,
     attachment_failed: bool = False,
     had_attachments: bool = False,
     attachments_already_tried: bool = False,
@@ -176,6 +179,24 @@ def judge_thread_html(
             list_title or page_tit or title,
         )
 
+    # 空提示页（限流/临时错误）：先浏览器整页重读；仍空再进退避队列
+    if is_empty_tip_page(html):
+        if soft_browser_retried:
+            return ThreadOutcome(
+                "retry",
+                "提示页无正文，待重试",
+                link_kind,
+                title,
+                soft_browser_retried=True,
+            )
+        return ThreadOutcome(
+            "retry",
+            "提示页无正文，改用浏览器整页重试",
+            link_kind,
+            title,
+            need_browser_retry=True,
+        )
+
     # 帖子已删 / tid 无效：明确跳过（勿落成「非资源帖」）
     if is_missing_thread(html, page_tit):
         return ThreadOutcome("skipped", "帖子不存在（跳过）", link_kind, title)
@@ -201,6 +222,18 @@ def judge_thread_html(
             link_kind,
             list_title or page_tit or title,
         )
+
+    # 楼主区明示附件无权（PHPWind「用户组无法下载」）。
+    # 勿扫全页：2048 打赏脚本含「请先登录再打赏」会误伤无附件磁链帖；
+    # 仍有种子/txt 附件时先下，不要在此提前 stub。
+    from parsers.attachments import thread_body_shows_attach_denied
+
+    if (
+        not has_lz_target
+        and thread_body_shows_attach_denied(html)
+        and (attachments_already_tried or not looks_like_attachment_zone(html))
+    ):
+        return ThreadOutcome("stub", "无权限下载附件", link_kind, title)
 
     # 龄期板（网友原创区等）：未满龄一律跳过，不占位、不抓附件
     if min_age > 0:
@@ -313,8 +346,9 @@ def judge_thread_html(
     # 需回复：满龄（或非龄期板）→ 占位显示；未满龄已在上一步跳过
     if is_reply_required_post(html):
         return ThreadOutcome("stub", "需回复贴", link_kind, title)
+    # 付费购买：跳过（不占位）；0 元由调用方先解锁，仍无链时在下方 stub
     if is_purchase_required_post(html):
-        return ThreadOutcome("stub", "需购买贴", link_kind, title)
+        return ThreadOutcome("skipped", "需购买贴（付费，跳过）", link_kind, title)
 
     # Body has target link? 仅认楼主语料（与 parse_thread_dual 一致）
     # 回帖/侧栏误检到的链不走进「有链但无主资源」失败。
@@ -387,6 +421,10 @@ def judge_thread_html(
                 return ThreadOutcome("skipped", tip, link_kind, title)
             return ThreadOutcome("failed", "解析入库失败（有链但无主资源）", link_kind, title)
 
+    # 0 元购买仍无链（未登录/未解锁）：占位，留给账号爬；勿再走附件/无磁力跳过
+    if not has_lz_target and is_free_purchase_post(html):
+        return ThreadOutcome("stub", "0元购买贴", link_kind, title)
+
     # No usable body link yet — attachment strategy (ed2k-aligned)
     if not attachments_already_tried and looks_like_attachment_zone(html):
         if link_kind in {"magnet", "both"}:
@@ -426,11 +464,19 @@ def judge_thread_html(
                 attachment_kind=attach_kind,
             )
 
-    if attachment_denied:
+    # 附件无权 / 下载落到登录提示页：占位「无权限下载附件」（账号可重爬）
+    if attachment_denied or attachment_login_required:
         return ThreadOutcome("stub", "无权限下载附件", link_kind, title)
     if attachment_failed:
         return ThreadOutcome("retry", "附件下载失败，待重试", link_kind, title)
-    # 附件已下载/已尝试，但抽不出 ed2k/磁力 → 跳过（勿占位；无权才走上方 stub）
+    # 有附件区、已试、却没下到任何内容：登录墙常漏检 → 无权占位，勿跳过
+    if (
+        attachments_already_tried
+        and not had_attachments
+        and looks_like_attachment_zone(html)
+    ):
+        return ThreadOutcome("stub", "无权限下载附件", link_kind, title)
+    # 附件已下载但抽不出 ed2k/磁力 → 跳过
     if had_attachments or attachments_already_tried:
         return ThreadOutcome(
             "skipped",

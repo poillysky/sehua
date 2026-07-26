@@ -197,6 +197,34 @@ def test_resource_name_block_still_works():
     assert blocks[h2].size == 500 * 1024 * 1024
 
 
+def test_no_subtitle_keeps_all_distinct_hashes():
+    """无【影片名称】时，同帖 HD/4K 等不同 hash 应全部保留（勿只留首链）。"""
+    from parsers.content import extract_subresource_blocks
+    from parsers.links import parse_thread_dual
+
+    h1 = "F4E9F5A8D71E12EAEF679D672B35F33B95DE8F82"
+    h2 = "6D4B13B194AC9262556B0489B73E231E896AB660"
+    title = "[HD/0.8G] Demo Film 1080p+4K"
+    html = f"""
+    <html><head><title>{title}</title></head>
+    <body><div id="read_tpc" class="tpc_content">
+      HD-MP4 https://www.rmdown.com/link.php?hash=26{h1.lower()}
+      4K-MP4 https://www.rmdown.com/link.php?hash=26{h2.lower()}
+    </div></body></html>
+    """
+    blocks = extract_subresource_blocks(
+        html, [h1, h2], fallback_title=title
+    )
+    assert {b.infohash for b in blocks} == {h1, h2}
+    assert all(b.title == title for b in blocks)
+
+    parsed = parse_thread_dual(
+        html, tid=1, preferred_link="magnet", board_fid="13"
+    )
+    assert len(parsed.assets) == 2
+    assert {a.hash for a in parsed.assets} == {h1, h2}
+
+
 def test_traditional_resource_block_variants():
     """繁体/异写：資源名稱、資源大小、資源類型、種子名稱、磁力連結。"""
     from parsers.content import extract_subresource_blocks
@@ -259,8 +287,8 @@ def test_parse_thread_dual_overrides_filename_from_span():
     assert by_hash[h2].preview_images[0].endswith("b.jpg")
 
 
-def test_two_magnets_without_subtitles_keep_primary_only():
-    """无【影片名称】：子标题=帖标题，段内多个磁力只留一条子资源。"""
+def test_two_magnets_without_subtitles_keep_all_hashes():
+    """无【影片名称】：不同 hash 全部入库（首条为主资源）。"""
     from parsers.links import parse_thread_dual
 
     h1 = "20D70DBFC950B719335BCED87AEE73DFB6848301"
@@ -277,10 +305,11 @@ def test_two_magnets_without_subtitles_keep_primary_only():
     </body></html>
     """
     parsed = parse_thread_dual(html, tid=929130, preferred_link="magnet")
-    assert len(parsed.assets) == 1
-    assert parsed.assets[0].hash.upper() == h1
-    assert parsed.assets[0].is_primary
-    assert "单资源双链" in (parsed.assets[0].filename or "")
+    assert len(parsed.assets) == 2
+    assert {a.hash.upper() for a in parsed.assets} == {h1, h2}
+    primary = next(a for a in parsed.assets if a.is_primary)
+    assert primary.hash.upper() == h1
+    assert "单资源双链" in (primary.filename or "")
 
 
 def test_one_subtitle_owns_all_magnets_in_segment():

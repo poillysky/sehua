@@ -182,14 +182,21 @@ BOARD_DESCRIPTION_PROFILES: dict[str, dict] = {
 }
 
 # 2048 PHPWind：展示描述不含裸 hash（已转磁力）；字段与 STRUCTURE_LABELS_2048 / 结构卡片对齐
+# 抽样（各白名单板随机帖）后补全：影片标题→片名、檔案大小、繁简异写归一
 _PW_2048_BT_ALIASES: dict[str, str] = {
     "影片名稱": "影片名称",
+    "影片标题": "影片名称",
+    "影片標題": "影片名称",
+    "影片题名": "影片名称",
+    "影片題名": "影片名称",
     "資源名稱": "资源名称",
     "资源名": "资源名称",
     "影片格式": "影片格式",
     "資源類型": "资源类型",
     "资源類型": "资源类型",
     "文件大小": "影片大小",
+    "檔案大小": "影片大小",
+    "档案大小": "影片大小",
     "资源大小": "影片大小",
     "資源大小": "影片大小",
     "影片容量": "影片大小",
@@ -203,6 +210,8 @@ _PW_2048_BT_ALIASES: dict[str, str] = {
     "解析度": "分辨率",
     "有無浮水印": "有无水印",
     "有无第三方水印": "有无水印",
+    "有無第三方水印": "有无水印",
+    "有無第三方浮水印": "有无水印",
     "下载方式": "下载方式",
     "下載方式": "下载方式",
     "作種期限": "作种期限",
@@ -211,6 +220,8 @@ _PW_2048_BT_ALIASES: dict[str, str] = {
     "圖片預覽": "图片预览",
     "影片預覽": "影片预览",
     "影片截圖": "影片截图",
+    "影片說明": "影片说明",
+    "解壓密碼": "解压密码",
 }
 
 _PW_2048_BT_LABELS = (
@@ -282,11 +293,30 @@ _KNOWN_NEXT_FIELD_RE = re.compile(
     rf"\s*{STRUCTURE_FIELD_OPEN}\s*(?:{_LABEL_ALT})\s*{STRUCTURE_FIELD_CLOSE}",
     re.I,
 )
-_TITLE_FIELD_LABELS = frozenset(SUBRESOURCE_TITLE_LABELS)
-_SIZE_FIELD_LABELS = frozenset({"资源大小", "文件大小", "影片大小", "影片容量"})
+# 片名裁剪：简繁/异写均走「仅已知结构字段」边界，避免【午夜寻花】等装饰括号截断
+_TITLE_FIELD_LABELS = frozenset(SUBRESOURCE_TITLE_MATCH_FORMS) | frozenset(
+    SUBRESOURCE_TITLE_LABELS
+)
+
+
+def _is_title_field_label(label: str) -> bool:
+    lab = (label or "").strip()
+    return bool(lab) and lab in _TITLE_FIELD_LABELS
+_SIZE_FIELD_LABELS = frozenset(
+    {
+        "资源大小",
+        "資源大小",
+        "文件大小",
+        "檔案大小",
+        "档案大小",
+        "影片大小",
+        "影片容量",
+    }
+)
 # 82V+173P/6.7G/1配额 · 70.6G/1169V//7配额 · 807 M / 1V
+# 允许前缀全角冒号/点号（2048 实录「︰5.23GB」）
 _SIZE_VALUE_RE = re.compile(
-    r"^("
+    r"^[︰:：.\s]*("
     r"(?:"
     r"\d+(?:\.\d+)?\s*[GMTK]B?"
     r"|\d+\s*[VvPp]"
@@ -296,6 +326,31 @@ _SIZE_VALUE_RE = re.compile(
     r")+"
     r")",
     re.I,
+)
+# 种子文件名脏值（2048 合集帖正文残片「]ent」）
+_BOGUS_TORRENT_NAME_RE = re.compile(
+    r"^(?:\]?ent|\.?torrent|\]+)$",
+    re.I,
+)
+# 预览类字段若是下载页/购买提示/纯磁链导语，则丢弃（勿当结构字段入库）
+_BOGUS_PREVIEW_META_RE = re.compile(
+    r"(?:"
+    r"rmdown\.com|购买本帖|立即购买|购买人名单|需向作者支付"
+    r"|下载磁链|磁力链接\s*$|磁力連接"
+    r")",
+    re.I,
+)
+_HASH_META_LABEL_HINTS = (
+    "特征",
+    "特徵",
+    "验证",
+    "驗證",
+    "试证",
+    "試證",
+    "种子特",
+    "種子特",
+    "哈希",
+    "雜湊",
 )
 # Discuz 一楼正文起点（仅数字楼 id，跳过 postmessage_attach* 注入）
 _OP_POST_START_RE = re.compile(r'id="postmessage_(\d+)"[^>]*>', re.I)
@@ -539,6 +594,10 @@ def extract_tid(html: str, fallback: int = 0) -> int:
 def extract_first_postmessage_html(html: str) -> str:
     """只取一楼 postmessage 正文，避免把回复楼/页脚揉进元数据。"""
     src = html or ""
+    # PHPWind：完整 #read_tpc（含 comment_ 后的售价/电驴）；勿先被 Discuz postmessage 截断
+    pw = _phpwind_post_html(src)
+    if pw:
+        return pw
     for m in _OP_POST_START_RE.finditer(src):
         # 仅纯数字楼层 id（1、2…）；跳过异常 id
         if not m.group(1).isdigit():
@@ -549,27 +608,41 @@ def extract_first_postmessage_html(html: str) -> str:
         body = src[start:end].strip()
         if body:
             return body
-    # PHPWind 一楼
-    if 'id="read_tpc"' in src or "id='read_tpc'" in src or "tpc_content" in src:
-        try:
-            from crawler.parser_phpwind import extract_phpwind_post_html
-
-            pw = extract_phpwind_post_html(src)
-            if pw and pw is not src and len(pw) < len(src):
-                return pw
-        except Exception:
-            pass
     return src
+
+
+def _is_phpwind_thread_html(html: str) -> bool:
+    src = html or ""
+    return 'id="read_tpc"' in src or "id='read_tpc'" in src or 'class="tpc_content"' in src
+
+
+def _phpwind_post_html(html: str) -> str:
+    if not _is_phpwind_thread_html(html):
+        return ""
+    try:
+        from crawler.parser_phpwind import extract_phpwind_post_html
+
+        pw = extract_phpwind_post_html(html or "")
+        if pw and pw is not html and len(pw) < len(html or ""):
+            return pw
+        return pw or ""
+    except Exception:
+        return ""
 
 
 def extract_lz_posts_html(html: str, *, limit: int = 5) -> list[str]:
     """取带「楼主」标的各层 postmessage（一楼 + 楼主二楼补链等）。
 
     路人回帖不纳入。limit 限制最多纳入几层楼主帖。
+    PHPWind：优先 #read_tpc（Discuz 式 postmessage 会被 comment_ 截断，漏掉售价后的 ed2k）。
     """
     src = html or ""
     if not src:
         return []
+
+    pw = _phpwind_post_html(src)
+    if pw:
+        return [pw]
 
     starts = [m for m in _OP_POST_START_RE.finditer(src) if m.group(1).isdigit()]
     posts: list[tuple[str, bool]] = []
@@ -602,10 +675,15 @@ def extract_lz_scope_html(html: str, *, limit: int = 5) -> str:
 
     用于需回复/购买等门控：提示常在 postmessage 外的同楼 DOM。
     门控只看第一层楼主帖（通常即一楼），避免二楼正文干扰。
+    PHPWind：用完整 #read_tpc（含 comment_ 后的售价/电驴块）。
     """
     src = html or ""
     if not src:
         return ""
+
+    pw = _phpwind_post_html(src)
+    if pw:
+        return pw
 
     starts = [m for m in _OP_POST_START_RE.finditer(src) if m.group(1).isdigit()]
     scopes: list[tuple[str, bool]] = []
@@ -633,18 +711,9 @@ def extract_link_corpus_html(html: str, *, limit: int = 5) -> str:
     parts: list[str] = list(extract_lz_posts_html(html, limit=limit))
     if not parts:
         # PHPWind：#read_tpc / .tpc_content（无 Discuz postmessage_*）
-        try:
-            from crawler.parser_phpwind import extract_phpwind_post_html
-
-            pw = extract_phpwind_post_html(html or "")
-            if pw and (
-                'id="read_tpc"' in (html or "")
-                or "id='read_tpc'" in (html or "")
-                or "tpc_content" in (html or "")
-            ):
-                parts.append(pw)
-        except Exception:
-            pass
+        pw = _phpwind_post_html(html or "")
+        if pw:
+            parts.append(pw)
     # 附件下载后 inject_attachment_text 写入的块（非纯数字楼 id）
     for m in re.finditer(
         r'id=["\']postmessage_attach\d+["\'][^>]*>(.*?)</div>',
@@ -665,12 +734,15 @@ def _clip_field_value(
     label: str = "",
 ) -> str:
     """裁掉粘在后面的【下一字段】、附件区与楼层噪声。"""
-    val = " ".join((value or "").replace("\r", "\n").split())
-    val = val.lstrip(":：").strip()
+    # 2048/转帖常见：变体选择符、全角冒号前缀
+    val = (value or "").replace("\r", "\n")
+    val = re.sub(r"[\ufe0e\ufe0f\u200d\u200b\u200c\u200d]", "", val)
+    val = " ".join(val.split())
+    val = val.lstrip(":：︰.").strip()
     if not val:
         return ""
-    # 名称可含嵌套【标签】；其它字段遇到任意【…】即截
-    next_re = _KNOWN_NEXT_FIELD_RE if label in _TITLE_FIELD_LABELS else _NEXT_FIELD_RE
+    # 名称可含嵌套装饰【标签】；其它字段遇到任意【…】即截
+    next_re = _KNOWN_NEXT_FIELD_RE if _is_title_field_label(label) else _NEXT_FIELD_RE
     m = next_re.search(val)
     if m:
         val = val[: m.start()].strip()
@@ -698,14 +770,18 @@ def _clip_field_value(
             val = m3.group(1).strip()
         if len(val) > 32:
             val = val[:32].rstrip()
-    elif label in _SIZE_FIELD_LABELS:
-        # 大小后常跟博主导语（某房/颜值/合集…），只留容量串
+    elif label in _SIZE_FIELD_LABELS or label in SIZE_FIELD_FORMS:
+        # 大小后常跟博主导语 / rmdown URL，只留容量串
         m4 = _SIZE_VALUE_RE.match(val)
         if m4:
             val = m4.group(1).strip().strip("/+-\u00d7xX \t")
+        # 仍残留 URL 时截掉
+        m_url = re.search(r"https?://|www\.", val, re.I)
+        if m_url:
+            val = val[: m_url.start()].strip()
         if len(val) > 48:
             val = val[:48].rstrip()
-    elif label in _TITLE_FIELD_LABELS:
+    elif _is_title_field_label(label):
         # 片名常带装饰前缀/嵌套括号，放宽长度
         if len(val) > 255:
             val = val[:255].rstrip()
@@ -713,6 +789,90 @@ def _clip_field_value(
         # 非密码字段被整页吞入时硬顶，避免描述爆炸
         val = val[:200].rstrip()
     return val
+
+
+def _is_bogus_meta_value(key: str, val: str) -> bool:
+    """抽样见到的脏结构值：残片种子名、预览写成下载/购买文案。"""
+    k = (key or "").strip()
+    v = (val or "").strip()
+    if not k or not v:
+        return True
+    if k in TORRENT_FIELD_FORMS or k in {"种子名称", "種子名稱"}:
+        if _BOGUS_TORRENT_NAME_RE.fullmatch(v):
+            return True
+        if len(v) < 4:
+            return True
+    if any(h in k for h in ("预览", "預覽", "截图", "截圖")):
+        if _BOGUS_PREVIEW_META_RE.search(v):
+            return True
+    return False
+
+
+def _canonicalize_meta_key(key: str, aliases: dict[str, str] | None = None) -> str:
+    k = (key or "").strip()
+    if not k:
+        return ""
+    if aliases and k in aliases:
+        return aliases[k]
+    if k in DESCRIPTION_LABEL_ALIASES:
+        return DESCRIPTION_LABEL_ALIASES[k]
+    return k
+
+
+def normalize_metadata_for_board(
+    metadata: dict[str, str] | None,
+    board_fid: str | int | None = None,
+) -> dict[str, str]:
+    """按板块别名把繁简/异写键归一；去掉明显脏值。便于片名/大小精准入库。"""
+    profile = description_profile_for_board(board_fid)
+    aliases = dict(profile.get("aliases") or {})
+    # 2048：额外并入全局别名里「大小/密码」类，避免漏繁体
+    if str(board_fid or "").split(":", 1)[0] in _PW_2048_FIDS:
+        for src, dst in DESCRIPTION_LABEL_ALIASES.items():
+            aliases.setdefault(src, dst if dst != "资源大小" else "影片大小")
+            if dst == "资源大小":
+                aliases[src] = "影片大小"
+            elif dst == "资源类型" and src in {"影片格式", "檔案格式", "文件格式"}:
+                aliases[src] = "影片格式"
+            elif dst == "资源名称" and src in {
+                "影片标题",
+                "影片標題",
+                "影片名称",
+                "影片名稱",
+                "影片名",
+            }:
+                aliases[src] = "影片名称"
+    out: dict[str, str] = {}
+    for raw_key, raw_val in (metadata or {}).items():
+        if _is_bogus_meta_value(raw_key, raw_val):
+            continue
+        key = _canonicalize_meta_key(raw_key, aliases)
+        if not key or any(h in key for h in _HASH_META_LABEL_HINTS):
+            # 裸 hash 标签只用于转磁力，不进结构化元数据
+            continue
+        if key in TORRENT_FIELD_FORMS or key in {"种子名称", "種子名稱"}:
+            # 种子文件名不是子资源标题，不进展示元数据
+            continue
+        # 裁剪模式按「原始键或归一键」任一是否片名/大小字段决定，避免繁体片名被当普通字段截断
+        clip_label = (
+            raw_key
+            if raw_key in _SIZE_FIELD_LABELS or _is_title_field_label(raw_key)
+            else (
+                key
+                if key in _SIZE_FIELD_LABELS or _is_title_field_label(key)
+                else raw_key
+            )
+        )
+        val = _clip_field_value(
+            raw_val,
+            password=key == "解压密码" or raw_key in _PASSWORD_LABELS,
+            short_enum=key in _SHORT_ENUM_LABELS or raw_key in _SHORT_ENUM_LABELS,
+            label=clip_label,
+        )
+        if not val or _is_bogus_meta_value(key, val):
+            continue
+        out.setdefault(key, val)
+    return out
 
 
 def extract_metadata(text: str) -> dict[str, str]:
@@ -726,7 +886,7 @@ def extract_metadata(text: str) -> dict[str, str]:
             short_enum=key in _SHORT_ENUM_LABELS,
             label=key,
         )
-        if key and val:
+        if key and val and not _is_bogus_meta_value(key, val):
             meta[key] = val
     return meta
 
@@ -823,7 +983,15 @@ def build_structured_description(
         if key not in allowed or key in picked:
             continue
         is_pwd = key == "解压密码" or raw_key in _PASSWORD_LABELS
-        clip_label = raw_key if raw_key in _SIZE_FIELD_LABELS | _TITLE_FIELD_LABELS else key
+        clip_label = (
+            raw_key
+            if raw_key in _SIZE_FIELD_LABELS or _is_title_field_label(raw_key)
+            else (
+                key
+                if key in _SIZE_FIELD_LABELS or _is_title_field_label(key)
+                else raw_key
+            )
+        )
         val = _clip_field_value(
             raw_val,
             password=is_pwd,
@@ -1222,7 +1390,7 @@ def extract_subresource_blocks(
     """按子标题切段挂资源链。
 
     规则：
-    - 无子标题：整段主贴归帖标题，只留一条主链（帖内多链视为同一主资源的重复）
+    - 无子标题：整段主贴归帖标题；同帖多个不同 hash 仍全部入库（如 HD/4K 双码）
     - 有子标题：名称 i → 名称 i+1 为一段；段内全部 magnet/ed2k 同属该名称，全部入库
     - 连续 N 个名称后才出现链接：按顺序 1:1 配对；多出的链挂到最后一个名称
     """
@@ -1249,24 +1417,28 @@ def extract_subresource_blocks(
     out: list[SubresourceBlock] = []
     seen: set[str] = set()
 
-    # 无子标题：整帖一段，标题用帖子标题；只留主链
+    # 无子标题：整帖一段，标题用帖子标题；多 hash 全部保留
     if not titles:
         name = (fallback_title or "").strip()[:255]
         if not name:
             return []
-        paired = link_pos[0][0]
-        return [
-            _assemble_subresource_block(
-                paired=paired,
-                name=name,
-                scope=scope,
-                field_lo=0,
-                field_hi=len(scope),
-                kind="film",
-                lim=lim,
-                base_url=base_url,
+        for h, _s, _e in link_pos:
+            if h in seen:
+                continue
+            seen.add(h)
+            out.append(
+                _assemble_subresource_block(
+                    paired=h,
+                    name=name,
+                    scope=scope,
+                    field_lo=0,
+                    field_hi=len(scope),
+                    kind="film",
+                    lim=lim,
+                    base_url=base_url,
+                )
             )
-        ]
+        return out
 
     # 连续名称 → 连续链接：1:1
     if _is_names_then_links_layout(titles, link_pos):

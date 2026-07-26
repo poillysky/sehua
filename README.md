@@ -2,7 +2,7 @@
 
 家庭 NAS 上的 **论坛资源采集与检索全栈**：爬虫入库 · 管理运维 · 全文搜索，一套 Compose 跑通。
 
-[![Version](https://img.shields.io/badge/version-1.2.1-0ea5e9?style=flat-square)](./VERSION)
+[![Version](https://img.shields.io/badge/version-1.2.2-0ea5e9?style=flat-square)](./VERSION)
 [![Stack](https://img.shields.io/badge/stack-FastAPI%20%7C%20React%20%7C%20Next.js%20%7C%20Postgres-64748b?style=flat-square)](#技术栈)
 [![Deploy](https://img.shields.io/badge/deploy-Docker%20Hub%20pull%20only-22c55e?style=flat-square)](#nas-部署)
 [![License](https://img.shields.io/badge/use-personal%20%2F%20LAN-f59e0b?style=flat-square)](#声明)
@@ -94,7 +94,7 @@ flowchart LR
 ### GHCR（可选）
 
 ```text
-ghcr.io/poillysky/sehuatang-app:1.2.1
+ghcr.io/poillysky/sehuatang-app:1.2.2
 ghcr.io/poillysky/sehuatang-search:1.2.0
 ```
 

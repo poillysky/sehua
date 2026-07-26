@@ -272,7 +272,8 @@ async def run_crawl_once(
 
     - 手动「立即爬取」：from_loop=False；连续调度启用时拒绝；默认仅深扫当前板。
     - 手动「扫新帖」：scan_head=True, deep_scan=False；可由 run_scan_head_once 按启用队列逐板调用。
-    - 连续循环：scan_head=False, deep_scan=True, from_loop=True；当前板 list_exhausted 后切下一启用板。
+    - 连续循环：scan_head=False, deep_scan=True, from_loop=True；当前板 list_exhausted 后
+      先消化当前板可抓队列至空，再切下一启用板（退避中不阻塞切板；停止/熔断则暂不切）。
     - queue_kind=abnormal|soft_ad：只在该队列内重爬，成功才出队，不扫列表。
     - hold_lock=True：调用方已占用 running，本函数不抢锁/不释放。
     - force_list_scan=True：忽略队列背压，仍读本板列表（扫新帖防漏板）。
@@ -627,26 +628,9 @@ async def run_crawl_once(
                 finally:
                     cursor_conn.close()
                 if scan.login_required:
-                    _log_activity("列表需登录 · 停板，请补 Cookie")
+                    _log_activity("列表需登录 · 停板，请补 Cookie · 仍先消化当前板队列再切板")
                     result["reason"] = "list_login_required"
-                    if result.get("board_will_advance"):
-                        try:
-                            adv_conn = connect()
-                            try:
-                                saved = advance_active_board_fid(
-                                    adv_conn,
-                                    forum_id,
-                                    from_fid=str(result.get("board_advance_from") or unit_key),
-                                )
-                                nxt = str(saved.get("active_board_fid") or "")
-                                result["board_advanced"] = True
-                                result["next_board_fid"] = nxt
-                                _log_activity(f"列表需登录 · 仍切换下一子版 → {nxt or '—'}")
-                            finally:
-                                adv_conn.close()
-                        except Exception as adv_exc:
-                            log.warning("advance board after list login: %s", adv_exc)
-                    return result
+                    # 不在此处切板/return：落到下方抓帖 + 换板前消化
                 head_n = len(getattr(scan, "pages_head", None) or [])
                 if scan.head_skipped:
                     head_label = "首页跳过"
@@ -663,16 +647,17 @@ async def run_crawl_once(
                         if scan.harvest_start_page
                         else ""
                     )
-                _log_activity(
-                    f"扫列表(发帖时间) · {head_label} · {deep_label}"
-                    + f" · 发现 {len(scan.threads)} · 新入队 {scan.enqueued}"
-                    + (
-                        f" · 改板块 {scan.board_updated}"
-                        if getattr(scan, "board_updated", 0)
-                        else ""
+                if not scan.login_required:
+                    _log_activity(
+                        f"扫列表(发帖时间) · {head_label} · {deep_label}"
+                        + f" · 发现 {len(scan.threads)} · 新入队 {scan.enqueued}"
+                        + (
+                            f" · 改板块 {scan.board_updated}"
+                            if getattr(scan, "board_updated", 0)
+                            else ""
+                        )
+                        + (f" · 游标 P{scan.last_list_page}" if scan.last_list_page else "")
                     )
-                    + (f" · 游标 P{scan.last_list_page}" if scan.last_list_page else "")
-                )
 
         list_url = adapter.build_list_url(root, unit_key, 1)
         fetcher.set_referer(list_url)
@@ -740,222 +725,302 @@ async def run_crawl_once(
             cfg_cap = int(cfg.get("web_crawler_max_threads_per_run") or 0)
             thread_cap = cfg_cap if cfg_cap > 0 else None
 
-        for idx, row in enumerate(pending):
-            if THROTTLE.should_stop():
-                result["reason"] = "stopped"
-                break
-            if thread_cap is not None and idx >= thread_cap:
-                break
-            if target > 0 and result["imports"] + result["stubs"] >= target:
-                _log_activity(f"本批入库已达上限 {target} · 收工")
-                result["reason"] = "target_reached"
-                break
+        pending_queue: list[dict[str, Any]] | None = list(pending)
+        draining = False
+        drain_rounds = 0
 
-            if consecutive_fail >= fail_threshold:
-                if cooldowns >= max_cools:
-                    _log_activity(f"连续失败熔断（冷却已满 {max_cools} 次）")
-                    result["reason"] = "cooldown_tripped"
-                    break
-                cooldowns += 1
-                result["cooldowns"] = cooldowns
-                _log_activity(
-                    f"连续失败 ≥ {fail_threshold} · 冷却 {cool_secs}s（{cooldowns}/{max_cools}）"
-                )
-                _STATE["phase"] = "cooldown"
-                await THROTTLE.sleep_for(cool_secs)
+        while pending_queue is not None:
+            batch_worked = 0
+            for idx, row in enumerate(pending_queue):
                 if THROTTLE.should_stop():
                     result["reason"] = "stopped"
                     break
-                consecutive_fail = 0
-                _STATE["phase"] = "thread_crawl"
+                # 换板前消化不受本轮帖数上限限制，务必清完当前板可抓队列
+                if not draining:
+                    if thread_cap is not None and idx >= thread_cap:
+                        break
+                    if target > 0 and result["imports"] + result["stubs"] >= target:
+                        _log_activity(f"本批入库已达上限 {target} · 收工")
+                        result["reason"] = "target_reached"
+                        break
 
-            tid = int(row.get("tid") or tid_from_url(row["url"]) or 0)
-            if not tid:
-                continue
-            if tid in seen_tids:
-                continue
-            seen_tids.add(tid)
-            title = str(row.get("thread_title") or "")
-            thread_url = str(row["url"])
-            stored_key = str(row.get("board_fid") or "").strip()
-            stored_name = str(row.get("board_name") or "").strip()
-            # 旧队列纯 fid：归到当前子版；新队列用子版 key
-            if stored_key and ":" in stored_key:
-                thread_key = stored_key
-                thread_pol = adapter.get_board_policy(thread_key)
-                thread_name = stored_name or thread_pol.name
-            else:
-                thread_key = unit_key
-                thread_name = stored_name if (" · " in stored_name or "-" in stored_name) else pol.name
-
-            try:
-                await THROTTLE.sleep()
-                if THROTTLE.should_stop():
-                    result["reason"] = "stopped"
-                    break
-                outcome = await process_thread(
-                    tid,
-                    board_fid=thread_key,
-                    board_name=thread_name,
-                    session=session,
-                    list_title=title,
-                    persist=persist,
-                    crawler_config=cfg,
-                    fetcher=fetcher,
-                    forum_id=forum_id,
-                )
-                result["crawled"] += 1
-                verdict = str(outcome.get("verdict") or "failed")
-                result["verdicts"][verdict] = result["verdicts"].get(verdict, 0) + 1
-                if outcome.get("soft_browser_retried"):
-                    result["soft_browser_retried"] += 1
-
-                log_label = str(outcome.get("verdict_label") or verdict)
-
-                def _update_queue_after_thread() -> str:
-                    label = log_label
-                    conn = connect()
-                    try:
-                        if verdict == "import":
-                            result["imports"] += 1
-                            from workers.import_rate import note_persisted
-
-                            note_persisted(kind="import")
-                            THROTTLE.record_success()
-                            mark_thread_done(
-                                conn, thread_url, outcome=str(outcome.get("outcome") or "import")
-                            )
-                        elif verdict == "stub":
-                            result["stubs"] += 1
-                            from workers.import_rate import note_persisted
-
-                            note_persisted(kind="stub")
-                            THROTTLE.record_success()
-                            mark_thread_done(
-                                conn, thread_url, outcome=str(outcome.get("outcome") or "stub")
-                            )
-                        elif verdict == "skipped":
-                            result["skipped"] += 1
-                            THROTTLE.record_success()
-                            mark_thread_skipped(
-                                conn, thread_url, str(outcome.get("outcome") or "skipped")
-                            )
-                            try:
-                                from db.repository import delete_stub_by_source_url
-                                from db.resource_db import connect_resource
-
-                                rconn = connect_resource()
-                                try:
-                                    if delete_stub_by_source_url(rconn, thread_url):
-                                        label = f"{label} · 已删占位"
-                                finally:
-                                    rconn.close()
-                            except Exception:
-                                pass
-                        elif verdict == "retry" or "软文" in str(outcome.get("outcome") or ""):
-                            result["retries"] += 1
-                            THROTTLE.record_failure()
-                            prev_fails = int(row.get("fetch_fail_count") or 0)
-                            err_msg = str(outcome.get("outcome") or "retry")
-                            if prev_fails + 1 >= MAX_THREAD_RETRIES:
-                                mark_thread_done(
-                                    conn,
-                                    thread_url,
-                                    outcome=f"重试{MAX_THREAD_RETRIES}次仍失败：{err_msg[:120]}",
-                                    status="failed",
-                                )
-                                result["failed"] += 1
-                                label = f"重试耗尽出队 · {err_msg}"
-                            else:
-                                backoff = (
-                                    3600
-                                    if (
-                                        outcome.get("soft_browser_retried")
-                                        or "软文" in err_msg
-                                        or "安全壳" in err_msg
-                                    )
-                                    else 900
-                                )
-                                mark_pending_retry(
-                                    conn,
-                                    thread_url,
-                                    err_msg,
-                                    backoff_seconds=backoff,
-                                )
-                        elif verdict == "need_attachments":
-                            result["retries"] += 1
-                            THROTTLE.record_failure()
-                            prev_fails = int(row.get("fetch_fail_count") or 0)
-                            if prev_fails + 1 >= MAX_THREAD_RETRIES:
-                                mark_thread_done(
-                                    conn,
-                                    thread_url,
-                                    outcome="重试耗尽：需下附件仍失败",
-                                    status="failed",
-                                )
-                                result["failed"] += 1
-                                label = "重试耗尽出队 · 需下附件仍失败"
-                            else:
-                                mark_pending_retry(
-                                    conn, thread_url, "need_attachments", backoff_seconds=600
-                                )
-                        else:
-                            result["failed"] += 1
-                            THROTTLE.record_failure()
-                            mark_thread_done(
-                                conn,
-                                thread_url,
-                                outcome=str(outcome.get("outcome") or "failed"),
-                                status="failed",
-                            )
-                    finally:
-                        conn.close()
-                    return label
-
-                log_label = await asyncio.to_thread(_update_queue_after_thread)
-                if verdict in {"import", "stub", "skipped"}:
-                    consecutive_fail = 0
-                elif verdict in {"retry", "need_attachments"} or "软文" in str(
-                    outcome.get("outcome") or ""
-                ):
-                    consecutive_fail += 1
-                else:
-                    consecutive_fail += 1
-
-                from workers.activity_format import format_thread_activity
-
-                _log_activity(
-                    format_thread_activity(
-                        tid,
-                        outcome,
-                        prefix="抓帖",
-                        queue_note=log_label,
-                        soft_browser=bool(outcome.get("soft_browser_retried")),
+                if consecutive_fail >= fail_threshold:
+                    if cooldowns >= max_cools:
+                        _log_activity(f"连续失败熔断（冷却已满 {max_cools} 次）")
+                        result["reason"] = "cooldown_tripped"
+                        break
+                    cooldowns += 1
+                    result["cooldowns"] = cooldowns
+                    _log_activity(
+                        f"连续失败 ≥ {fail_threshold} · 冷却 {cool_secs}s（{cooldowns}/{max_cools}）"
                     )
-                )
-            except Exception as exc:
-                consecutive_fail += 1
-                result["failed"] += 1
-                result["fetch_failures"] += 1
-                THROTTLE.record_failure()
+                    _STATE["phase"] = "cooldown"
+                    await THROTTLE.sleep_for(cool_secs)
+                    if THROTTLE.should_stop():
+                        result["reason"] = "stopped"
+                        break
+                    consecutive_fail = 0
+                    _STATE["phase"] = "thread_crawl"
+
+                tid = int(row.get("tid") or tid_from_url(row["url"]) or 0)
+                if not tid:
+                    continue
+                if tid in seen_tids:
+                    continue
+                seen_tids.add(tid)
+                batch_worked += 1
+                title = str(row.get("thread_title") or "")
+                thread_url = str(row["url"])
+                stored_key = str(row.get("board_fid") or "").strip()
+                stored_name = str(row.get("board_name") or "").strip()
+                # 旧队列纯 fid：归到当前子版；新队列用子版 key
+                if stored_key and ":" in stored_key:
+                    thread_key = stored_key
+                    thread_pol = adapter.get_board_policy(thread_key)
+                    thread_name = stored_name or thread_pol.name
+                else:
+                    thread_key = unit_key
+                    thread_name = (
+                        stored_name if (" · " in stored_name or "-" in stored_name) else pol.name
+                    )
+
                 try:
-                    def _mark_retry() -> None:
+                    await THROTTLE.sleep()
+                    if THROTTLE.should_stop():
+                        result["reason"] = "stopped"
+                        break
+                    outcome = await process_thread(
+                        tid,
+                        board_fid=thread_key,
+                        board_name=thread_name,
+                        session=session,
+                        list_title=title,
+                        persist=persist,
+                        crawler_config=cfg,
+                        fetcher=fetcher,
+                        forum_id=forum_id,
+                    )
+                    result["crawled"] += 1
+                    verdict = str(outcome.get("verdict") or "failed")
+                    result["verdicts"][verdict] = result["verdicts"].get(verdict, 0) + 1
+                    if outcome.get("soft_browser_retried"):
+                        result["soft_browser_retried"] += 1
+
+                    log_label = str(outcome.get("verdict_label") or verdict)
+
+                    def _update_queue_after_thread() -> str:
+                        label = log_label
                         conn = connect()
                         try:
-                            mark_pending_retry(
-                                conn, thread_url, str(exc)[:200], backoff_seconds=600
-                            )
+                            if verdict == "import":
+                                result["imports"] += 1
+                                from workers.import_rate import note_persisted
+
+                                note_persisted(kind="import")
+                                THROTTLE.record_success()
+                                mark_thread_done(
+                                    conn,
+                                    thread_url,
+                                    outcome=str(outcome.get("outcome") or "import"),
+                                )
+                            elif verdict == "stub":
+                                result["stubs"] += 1
+                                from workers.import_rate import note_persisted
+
+                                note_persisted(kind="stub")
+                                THROTTLE.record_success()
+                                mark_thread_done(
+                                    conn,
+                                    thread_url,
+                                    outcome=str(outcome.get("outcome") or "stub"),
+                                )
+                            elif verdict == "skipped":
+                                result["skipped"] += 1
+                                THROTTLE.record_success()
+                                mark_thread_skipped(
+                                    conn, thread_url, str(outcome.get("outcome") or "skipped")
+                                )
+                                try:
+                                    from db.repository import delete_stub_by_source_url
+                                    from db.resource_db import connect_resource
+
+                                    rconn = connect_resource()
+                                    try:
+                                        if delete_stub_by_source_url(rconn, thread_url):
+                                            label = f"{label} · 已删占位"
+                                    finally:
+                                        rconn.close()
+                                except Exception:
+                                    pass
+                            elif verdict == "retry" or "软文" in str(
+                                outcome.get("outcome") or ""
+                            ):
+                                result["retries"] += 1
+                                THROTTLE.record_failure()
+                                prev_fails = int(row.get("fetch_fail_count") or 0)
+                                err_msg = str(outcome.get("outcome") or "retry")
+                                if prev_fails + 1 >= MAX_THREAD_RETRIES:
+                                    mark_thread_done(
+                                        conn,
+                                        thread_url,
+                                        outcome=(
+                                            f"重试{MAX_THREAD_RETRIES}次仍失败："
+                                            f"{err_msg[:120]}"
+                                        ),
+                                        status="failed",
+                                    )
+                                    result["failed"] += 1
+                                    label = f"重试耗尽出队 · {err_msg}"
+                                else:
+                                    backoff = (
+                                        3600
+                                        if (
+                                            outcome.get("soft_browser_retried")
+                                            or "软文" in err_msg
+                                            or "安全壳" in err_msg
+                                        )
+                                        else 900
+                                    )
+                                    mark_pending_retry(
+                                        conn,
+                                        thread_url,
+                                        err_msg,
+                                        backoff_seconds=backoff,
+                                    )
+                            elif verdict == "need_attachments":
+                                result["retries"] += 1
+                                THROTTLE.record_failure()
+                                prev_fails = int(row.get("fetch_fail_count") or 0)
+                                if prev_fails + 1 >= MAX_THREAD_RETRIES:
+                                    mark_thread_done(
+                                        conn,
+                                        thread_url,
+                                        outcome="重试耗尽：需下附件仍失败",
+                                        status="failed",
+                                    )
+                                    result["failed"] += 1
+                                    label = "重试耗尽出队 · 需下附件仍失败"
+                                else:
+                                    mark_pending_retry(
+                                        conn,
+                                        thread_url,
+                                        "need_attachments",
+                                        backoff_seconds=600,
+                                    )
+                            else:
+                                result["failed"] += 1
+                                THROTTLE.record_failure()
+                                mark_thread_done(
+                                    conn,
+                                    thread_url,
+                                    outcome=str(outcome.get("outcome") or "failed"),
+                                    status="failed",
+                                )
                         finally:
                             conn.close()
+                        return label
 
-                    await asyncio.to_thread(_mark_retry)
-                except Exception:
-                    pass
-                _log_activity(f"抓帖 tid={tid} 失败 · {exc}")
+                    log_label = await asyncio.to_thread(_update_queue_after_thread)
+                    if verdict in {"import", "stub", "skipped"}:
+                        consecutive_fail = 0
+                    elif verdict in {"retry", "need_attachments"} or "软文" in str(
+                        outcome.get("outcome") or ""
+                    ):
+                        consecutive_fail += 1
+                    else:
+                        consecutive_fail += 1
 
-            if THROTTLE.should_stop():
-                result["reason"] = "stopped"
+                    from workers.activity_format import format_thread_activity
+
+                    _log_activity(
+                        format_thread_activity(
+                            tid,
+                            outcome,
+                            prefix="换板消化" if draining else "抓帖",
+                            queue_note=log_label,
+                            soft_browser=bool(outcome.get("soft_browser_retried")),
+                        )
+                    )
+                except Exception as exc:
+                    consecutive_fail += 1
+                    result["failed"] += 1
+                    result["fetch_failures"] += 1
+                    THROTTLE.record_failure()
+                    try:
+
+                        def _mark_retry() -> None:
+                            conn = connect()
+                            try:
+                                mark_pending_retry(
+                                    conn, thread_url, str(exc)[:200], backoff_seconds=600
+                                )
+                            finally:
+                                conn.close()
+
+                        await asyncio.to_thread(_mark_retry)
+                    except Exception:
+                        pass
+                    _log_activity(f"抓帖 tid={tid} 失败 · {exc}")
+
+                if THROTTLE.should_stop():
+                    result["reason"] = "stopped"
+                    break
+
+            # 非换板：本批结束即停；换板前继续消化「当前工作子板」可抓队列
+            if result.get("reason") in {"stopped", "cooldown_tripped"}:
                 break
+            if not result.get("board_will_advance") or result.get("board_advanced"):
+                break
+            if result.get("reason") == "target_reached":
+                # 换板前须清队列：忽略本轮入库上限，继续消化
+                result.pop("reason", None)
+
+            if draining and batch_worked <= 0 and pending_queue:
+                # 本批全是已抓过的 tid / 无效行，避免空转
+                _log_activity("换板前消化 · 本批无新帖可抓，结束消化")
+                result["board_queue_drained"] = True
+                break
+
+            if not draining:
+                draining = True
+                _log_activity(
+                    f"换板前消化 · 开始清空当前子板 {unit_key} 可抓队列（退避中不阻塞）"
+                )
+                _STATE["phase"] = "board_drain"
+
+            try:
+                conn = connect()
+                try:
+                    # 只清当前工作板，不动其它启用板积压
+                    qstats = count_pending(conn, board_fid=queue_keys)
+                    _STATE["queue"] = qstats
+                    pending_queue = fetch_pending_threads(
+                        conn, board_fid=queue_keys, limit=500
+                    )
+                finally:
+                    conn.close()
+            except Exception as drain_exc:
+                log.warning("board drain fetch failed: %s", drain_exc)
+                qstats = {"workable": 0, "deferred": 0}
+                pending_queue = []
+
+            if not pending_queue:
+                deferred = int(qstats.get("deferred") or 0)
+                result["board_queue_drained"] = True
+                if deferred > 0:
+                    _log_activity(
+                        f"换板前消化完成 · 无可抓帖 · 退避中 {deferred} 条不阻塞切板"
+                    )
+                else:
+                    _log_activity("换板前消化完成 · 当前子板队列已清空")
+                break
+
+            drain_rounds += 1
+            result["board_drain_rounds"] = drain_rounds
+            _log_activity(
+                f"换板前消化 · 第 {drain_rounds} 轮 · "
+                f"可抓 {qstats.get('workable', 0)} · 本批 {len(pending_queue)}"
+            )
 
         _STATE["phase"] = "import"
         result["phase"] = "done"
@@ -968,24 +1033,59 @@ async def run_crawl_once(
                 conn.close()
         except Exception:
             pass
-        # 深扫到底：抓帖结束后再切板，状态页本轮内仍对应当前子板
+        # 深扫到底：当前板可抓队列清完后再切板；停止/熔断则暂不切
         if result.get("board_will_advance") and not result.get("board_advanced"):
-            try:
-                adv_conn = connect()
-                try:
-                    saved = advance_active_board_fid(
-                        adv_conn,
-                        forum_id,
-                        from_fid=str(result.get("board_advance_from") or unit_key),
-                    )
-                    nxt = str(saved.get("active_board_fid") or "")
-                    result["board_advanced"] = True
-                    result["next_board_fid"] = nxt
-                    _log_activity(f"本轮抓帖结束 · 切换下一子版 → {nxt or '—'}")
-                finally:
-                    adv_conn.close()
-            except Exception as adv_exc:
-                log.warning("advance board after crawl: %s", adv_exc)
+            block_advance = result.get("reason") in {"stopped", "cooldown_tripped"}
+            drained = bool(result.get("board_queue_drained"))
+            if block_advance:
+                _log_activity(
+                    f"{'已停止' if result.get('reason') == 'stopped' else '熔断冷却'} · "
+                    f"当前板未清完，暂不切板"
+                )
+            elif not drained and draining:
+                _log_activity("换板前消化未完成 · 暂不切板")
+            else:
+                # drained，或本轮无需消化（首批后已空且直接 drained）
+                if not drained:
+                    # 未进入消化循环：再确认当前板无可抓
+                    try:
+                        conn = connect()
+                        try:
+                            q_left = count_pending(conn, board_fid=queue_keys)
+                            left = int(q_left.get("workable") or 0)
+                        finally:
+                            conn.close()
+                    except Exception:
+                        left = -1
+                    if left > 0:
+                        _log_activity(
+                            f"当前板仍有可抓 {left} · 暂不切板（下轮继续）"
+                        )
+                        drained = False
+                    else:
+                        result["board_queue_drained"] = True
+                        drained = True
+                if drained:
+                    try:
+                        adv_conn = connect()
+                        try:
+                            saved = advance_active_board_fid(
+                                adv_conn,
+                                forum_id,
+                                from_fid=str(
+                                    result.get("board_advance_from") or unit_key
+                                ),
+                            )
+                            nxt = str(saved.get("active_board_fid") or "")
+                            result["board_advanced"] = True
+                            result["next_board_fid"] = nxt
+                            _log_activity(
+                                f"当前板队列已清 · 切换下一子版 → {nxt or '—'}"
+                            )
+                        finally:
+                            adv_conn.close()
+                    except Exception as adv_exc:
+                        log.warning("advance board after crawl: %s", adv_exc)
         if result.get("reason") == "stopped":
             _log_activity(
                 f"本轮已手动停止 · 抓 {result['crawled']} · 入库 {result['imports']} · "
@@ -995,6 +1095,11 @@ async def run_crawl_once(
             _log_activity(
                 f"本轮结束 · 入队 {result['enqueued']} · 抓 {result['crawled']} · "
                 f"入库 {result['imports']}+占位 {result['stubs']} · 重试 {result['retries']}"
+                + (
+                    f" · 换板消化 {result.get('board_drain_rounds') or 0} 轮"
+                    if result.get("board_drain_rounds")
+                    else ""
+                )
             )
         return result
     except asyncio.CancelledError:

@@ -78,6 +78,7 @@ _REPLY_GATE_RE = re.compile(
 )
 PURCHASE_MARKERS = (
     "本主题需向作者支付",
+    "本内容需向作者支付",
     "需向作者支付",
     "金钱 才能浏览",
     "积分 才能浏览",
@@ -87,6 +88,19 @@ PURCHASE_MARKERS = (
     "您必须先购买",
     "付费主题",
     "您还没有购买此主题",
+)
+# 购买价格：0=免费购买可尝试解锁；>0=付费，普通爬跳过（账号爬另做）
+_PURCHASE_PRICE_RE = re.compile(
+    r"(?:"
+    r"(?:本内容|本主题)?需向作者支付\s*(\d+)\s*(?:金币|金錢|金钱|积分|積分|色币|色幣)?"
+    r"|(?:本帖|此帖)售价\s*[:：]?\s*(\d+)"
+    r"|(\d+)\s*(?:金币|金錢|金钱|积分|積分|色币|色幣)\s*才能浏览"
+    r")",
+    re.I,
+)
+_PURCHASE_BUY_HREF_RE = re.compile(
+    r"""href=["']([^"']*(?:action=buytopic|(?:mod=misc[^"']*action=pay)|action=pay)[^"']*)["']""",
+    re.I,
 )
 CLOUD_SHARE_RE = re.compile(
     r"(?:https?://)?(?:"
@@ -215,6 +229,34 @@ def _lz_gate_blob(html: str) -> str:
     except Exception:
         pass
     return html or ""
+
+
+_SELL_CONTENT_RE = re.compile(
+    r"""<(?:div|section|td|span)[^>]*class=["'][^"']*\bsell_content\b[^"']*["'][^>]*>(.*?)</(?:div|section|td|span)>""",
+    re.I | re.S,
+)
+_BUYTOPIC_NEIGHBOR_RE = re.compile(
+    r""".{0,240}(?:action=buytopic|buytopicUrl).{0,360}""",
+    re.I | re.S,
+)
+
+
+def _purchase_gate_blob(html: str) -> str:
+    """购买门语料：楼主帖 + PHPWind sell_content / buytopic 邻域。
+
+    2048 常把「本内容需向作者支付 + 0金币」放在 #read_tpc 外的 .sell_content，
+    仅扫楼主正文会漏判 0 元贴。
+    """
+    raw = html or ""
+    parts = [_lz_gate_blob(raw), post_text(raw)]
+    for m in _SELL_CONTENT_RE.finditer(raw):
+        parts.append(m.group(0))
+    if "buytopic" in raw.lower() or "需向作者支付" in raw:
+        for m in _BUYTOPIC_NEIGHBOR_RE.finditer(raw):
+            parts.append(m.group(0))
+            if len(parts) > 8:
+                break
+    return "\n".join(p for p in parts if p)
 
 
 def has_thread_post_body(html: str) -> bool:
@@ -479,24 +521,39 @@ def is_thread_access_denied(html: str) -> bool:
 
 
 def is_missing_thread(html: str, title: str = "") -> bool:
-    """识别「没有找到帖子 / 主题不存在」等空洞页。"""
+    """识别「没有找到帖子 / 主题不存在」等空洞页。
+
+    只认明确文案。PHPWind 空「提示信息」（限流/临时错误）不得当成永久不存在。
+    """
     if not html and not title:
         return False
     tit = (title or page_title(html) or "").strip()
     blob = f"{tit}\n{html or ''}"
-    if any(m in blob for m in MISSING_THREAD_MARKERS):
-        return True
-    # 极短提示页且无正文
-    if len(html or "") < 12000 and not has_thread_post_body(html or "") and (
-        "提示信息" in tit or normalize_title_core(tit) in GENERIC_TITLES
+    return any(m in blob for m in MISSING_THREAD_MARKERS)
+
+
+def is_empty_tip_page(html: str) -> bool:
+    """空提示页：标题为提示信息/通用壳，无一楼正文，也无明确删帖/权限文案。
+
+    常见于 PHPWind 限流、线路抖动；应重试而非永久跳过。
+    """
+    if not html or has_thread_post_body(html):
+        return False
+    tit = normalize_title_core(page_title(html))
+    if not (
+        tit == "提示信息"
+        or tit in GENERIC_TITLES
+        or (page_title(html) or "").strip().startswith("提示信息")
     ):
-        # 避免把登录/权限提示页误当成不存在（那些有专门分支）
-        if any(m in blob for m in LOGIN_MARKERS) or any(
-            m in blob for m in ACCESS_DENIED_MARKERS
-        ):
-            return False
-        return True
-    return False
+        return False
+    blob = html or ""
+    if any(m in blob for m in MISSING_THREAD_MARKERS):
+        return False
+    if any(m in blob for m in ACCESS_DENIED_MARKERS):
+        return False
+    if any(m in blob for m in LOGIN_MARKERS):
+        return False
+    return True
 
 
 def is_thread_moderator_blocked(html: str) -> bool:
@@ -578,12 +635,86 @@ def is_reply_required_post(html: str) -> bool:
     return False
 
 
-def is_purchase_required_post(html: str) -> bool:
+def extract_purchase_price(html: str) -> int | None:
+    """从购买门控文案解析售价；无门控或不含数字时返回 None。"""
+    if not html:
+        return None
+    blob = _purchase_gate_blob(html)
+    plain = re.sub(r"<[^>]+>", " ", blob)
+    plain = re.sub(r"\s+", " ", plain)
+    if not any(m in plain for m in PURCHASE_MARKERS):
+        # 去标签后仍可能被拆开；再扫原始 blob
+        if not any(m in blob for m in PURCHASE_MARKERS):
+            return None
+    m = _PURCHASE_PRICE_RE.search(plain) or _PURCHASE_PRICE_RE.search(blob)
+    if not m:
+        return None
+    for g in m.groups():
+        if g is not None and str(g).isdigit():
+            return int(g)
+    return None
+
+
+_PURCHASE_BUY_LOOSE_RE = re.compile(
+    r"""(?:job\.php\?[^\"'\s<>]*action=buytopic[^\"'\s<>]*|action=buytopic[^\"'\s<>]*)""",
+    re.I,
+)
+
+
+def extract_purchase_buy_url(html: str, base_url: str = "") -> str:
+    """提取免费/付费购买按钮链接（PHPWind buytopic / Discuz pay）。"""
+    if not html:
+        return ""
+    from urllib.parse import urljoin
+
+    m = _PURCHASE_BUY_HREF_RE.search(html)
+    href = ""
+    if m:
+        href = (m.group(1) or "").replace("&amp;", "&").strip()
+    if not href:
+        # 部分模板把购买链放在 JS / hidden input，无 a[href]
+        m2 = _PURCHASE_BUY_LOOSE_RE.search(html)
+        if m2:
+            href = (m2.group(0) or "").replace("&amp;", "&").strip()
+            if not href.lower().startswith("job.php") and "job.php" not in href.lower():
+                if href.lower().startswith("action="):
+                    href = "job.php?" + href
+    if not href:
+        return ""
+    if base_url:
+        return urljoin(base_url, href)
+    return href
+
+
+def purchase_gate_kind(html: str) -> str:
+    """购买门控分类：none | free | paid。
+
+    - free：售价 0，可尝试点购买后入库
+    - paid：售价>0 或无法解析价格的购买门 → 普通爬跳过，留给账号爬
+    """
     if not html or is_reply_required_post(html):
-        return False
-    blob = _lz_gate_blob(html)
-    blob = f"{blob}\n{post_text(html)}"
-    return any(m in blob for m in PURCHASE_MARKERS)
+        return "none"
+    blob = _purchase_gate_blob(html)
+    plain = re.sub(r"<[^>]+>", " ", blob)
+    plain = re.sub(r"\s+", " ", plain)
+    if not any(m in blob or m in plain for m in PURCHASE_MARKERS):
+        return "none"
+    price = extract_purchase_price(html)
+    if price == 0:
+        return "free"
+    return "paid"
+
+
+def is_purchase_required_post(html: str) -> bool:
+    """是否付费购买门（售价>0 或有门控但解析不出 0）。
+
+    0 元购买不算「需购买拦截」——调用方应先尝试解锁再解析入库。
+    """
+    return purchase_gate_kind(html) == "paid"
+
+
+def is_free_purchase_post(html: str) -> bool:
+    return purchase_gate_kind(html) == "free"
 
 
 def is_non_target_cloud_share(*, link_kind: str, text: str) -> bool:

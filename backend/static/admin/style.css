@@ -3435,6 +3435,17 @@ body.board-sort-active .forum-board-row {
 
 .activity-link:hover { text-decoration: underline; }
 
+.activity-tid-link {
+  color: inherit;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  font-weight: 500;
+}
+
+.activity-tid-link:hover {
+  opacity: 0.85;
+}
+
 .activity-info .activity-msg { color: var(--text); }
 .activity-warn .activity-msg { color: var(--warn); }
 .activity-error .activity-msg { color: var(--danger); }

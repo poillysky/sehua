@@ -147,10 +147,13 @@ def get_board_policy_2048(fid_or_key: int | str) -> BoardPolicy:
 # 须与 FORMAT_GUIDES_2048 字段、magnet 裸 hash 线索、resource_names 边界同源覆盖。
 STRUCTURE_LABELS_2048: tuple[str, ...] = (
     "影片名称",
+    "影片标题",
     "中文片名",
     "资源名称",
     "影片格式",
     "影片大小",
+    "文件大小",
+    "檔案大小",
     "是否有码",
     "影片时间",
     "影片时长",
@@ -210,6 +213,7 @@ FORMAT_GUIDES_2048: list[dict] = [
         "notes": [
             "fid=5 日本騎兵、fid=13 歐美新片：需登录后免费购买才能看链",
             "简繁异写（名稱/名称、有碼/有码）一律归一入库",
+            "购买帖：售价 0 先尝试解锁入库，未解锁则占位留给账号爬；售价>0 跳过",
         ],
     },
     {

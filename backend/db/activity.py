@@ -28,6 +28,9 @@ def append_activity(
     if not msg:
         return
     rid = (run_id or _RUN_ID).strip() or "live"
+    resolved_level = (level or "info").strip() or "info"
+    if resolved_level == "info":
+        resolved_level = infer_activity_level(msg)
     conn = connect()
     try:
         cur = conn.cursor()
@@ -40,7 +43,7 @@ def append_activity(
             """,
             (
                 rid,
-                (level or "info")[:32],
+                resolved_level[:32],
                 msg[:2000],
                 (board_fid or None),
                 (board_name or None),
@@ -71,21 +74,91 @@ def append_activity(
         conn.close()
 
 
-def list_recent_activity(limit: int = 120) -> list[dict[str, Any]]:
-    """返回 [{t, msg}]，最新在前；时间用本地时分秒。"""
+def infer_activity_level(message: str) -> str:
+    msg = message or ""
+    if "风控熔断" in msg or "熔断" in msg:
+        return "error"
+    if any(x in msg for x in ("失败", "异常", "错误", "超时")):
+        return "error"
+    if any(x in msg for x in ("跳过", "保留重试", "待重试", "需登录", "停板", "取消", "停止")):
+        return "warn"
+    if any(x in msg for x in ("正常入库", "占位入库", "成功", "进站就绪", "已启动")):
+        return "success"
+    return "info"
+
+
+def _row_to_activity(row: tuple[Any, ...]) -> dict[str, Any]:
+    (
+        row_id,
+        created_at,
+        level,
+        message,
+        board_fid,
+        board_name,
+        thread_url,
+        thread_title,
+    ) = row
+    msg = str(message or "").strip()
+    lvl = str(level or "info").strip() or "info"
+    if lvl == "info":
+        lvl = infer_activity_level(msg)
+    if hasattr(created_at, "strftime"):
+        try:
+            local = created_at
+            if getattr(created_at, "tzinfo", None) is not None:
+                local = created_at.astimezone()
+            t = local.strftime("%H:%M:%S")
+            created_iso = local.isoformat()
+        except Exception:
+            t = time.strftime("%H:%M:%S")
+            created_iso = None
+    else:
+        t = time.strftime("%H:%M:%S")
+        created_iso = str(created_at) if created_at else None
+    return {
+        "id": int(row_id or 0),
+        "t": t,
+        "msg": msg,
+        "message": msg,
+        "level": lvl,
+        "created_at": created_iso,
+        "board_fid": board_fid,
+        "board_name": board_name,
+        "thread_url": thread_url,
+        "thread_title": thread_title,
+    }
+
+
+def list_recent_activity(limit: int = 120, *, since_id: int = 0) -> list[dict[str, Any]]:
+    """返回活动行（新→旧）；含 id/level/message，兼容旧 {t,msg}。"""
     lim = max(1, min(int(limit or 120), 300))
+    since = max(0, int(since_id or 0))
     conn = connect()
     try:
         cur = conn.cursor()
-        cur.execute(
-            """
-            SELECT created_at, message
-            FROM crawl_activity_log
-            ORDER BY id DESC
-            LIMIT %s
-            """,
-            [lim],
-        )
+        if since > 0:
+            cur.execute(
+                """
+                SELECT id, created_at, level, message,
+                       board_fid, board_name, thread_url, thread_title
+                FROM crawl_activity_log
+                WHERE id > %s
+                ORDER BY id DESC
+                LIMIT %s
+                """,
+                [since, lim],
+            )
+        else:
+            cur.execute(
+                """
+                SELECT id, created_at, level, message,
+                       board_fid, board_name, thread_url, thread_title
+                FROM crawl_activity_log
+                ORDER BY id DESC
+                LIMIT %s
+                """,
+                [lim],
+            )
         rows = cur.fetchall() or []
     except Exception as exc:
         log.debug("list_recent_activity failed: %s", exc)
@@ -93,24 +166,20 @@ def list_recent_activity(limit: int = 120) -> list[dict[str, Any]]:
     finally:
         conn.close()
 
-    out: list[dict[str, Any]] = []
-    for created_at, message in rows:
-        msg = str(message or "").strip()
-        if not msg:
-            continue
-        if hasattr(created_at, "strftime"):
-            try:
-                # 库内一般是 UTC；按本地墙钟显示更贴近操作感
-                local = created_at
-                if getattr(created_at, "tzinfo", None) is not None:
-                    local = created_at.astimezone()
-                t = local.strftime("%H:%M:%S")
-            except Exception:
-                t = time.strftime("%H:%M:%S")
-        else:
-            t = time.strftime("%H:%M:%S")
-        out.append({"t": t, "msg": msg})
-    return out
+    return [_row_to_activity(r) for r in rows if str(r[3] or "").strip()]
+
+
+def latest_activity_id() -> int:
+    conn = connect()
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT COALESCE(MAX(id), 0) FROM crawl_activity_log")
+        row = cur.fetchone()
+        return int((row or [0])[0] or 0)
+    except Exception:
+        return 0
+    finally:
+        conn.close()
 
 
 def clear_activity_log() -> int:

@@ -759,17 +759,19 @@ def update_board_meta_by_tids(
     return n
 
 
-# 账号 Cookie 优先重爬的占位（需回复/需购买不入队；登录后若判为该类则跳过删占位）
+# 账号 Cookie 优先重爬的占位（需回复/付费购买不入队；登录后若判为该类则跳过删占位）
 ACCOUNT_STUB_OUTCOMES: tuple[str, ...] = (
     "帖子需论坛登录",
     "无阅读权限 · 占位入库",
     "无权限下载附件",
+    "0元购买贴",
 )
 
 
 def _priority_stub_where(
     *,
     exclude_hashes: list[str] | None = None,
+    forum_id: str | None = None,
 ) -> tuple[str, list[Any]]:
     """WHERE 子句 + 参数（不含 ORDER/LIMIT）。"""
     outcomes = list(ACCOUNT_STUB_OUTCOMES)
@@ -781,6 +783,11 @@ def _priority_stub_where(
         "rs.import_outcome IN %s",
     ]
     params: list[Any] = [f"{STUB_LINK_PREFIX}%", tuple(outcomes)]
+    forum = (forum_id or "").strip()
+    if forum:
+        # 历史空 forum_id 视为色花堂，与资源列表筛选一致
+        clauses.append("COALESCE(NULLIF(BTRIM(rs.forum_id), ''), 'sehuatang') = %s")
+        params.append(forum)
     excl = [h for h in (exclude_hashes or []) if h]
     if excl:
         clauses.append("r.hash NOT IN %s")
@@ -792,10 +799,13 @@ def count_priority_account_stubs(
     conn: Any,
     *,
     exclude_hashes: list[str] | None = None,
+    forum_id: str | None = None,
 ) -> int:
     """优先占位队列条数（可排除本轮已尝试 hash）。"""
     _ensure_resource_schema(conn)
-    where_sql, params = _priority_stub_where(exclude_hashes=exclude_hashes)
+    where_sql, params = _priority_stub_where(
+        exclude_hashes=exclude_hashes, forum_id=forum_id
+    )
     with conn.cursor() as cur:
         cur.execute(
             f"""
@@ -818,6 +828,7 @@ def list_priority_account_stubs(
     exclude_hashes: list[str] | None = None,
     q: str | None = None,
     reason: str | None = None,
+    forum_id: str | None = None,
 ) -> list[dict[str, Any]]:
     """捞出需登录 / 无阅读权限 / 无权限下载附件的占位帖，供账号重爬。"""
     _ensure_resource_schema(conn)
@@ -827,7 +838,9 @@ def list_priority_account_stubs(
     order_case = " ".join(
         f"WHEN rs.import_outcome = %s THEN {i}" for i, _ in enumerate(outcomes)
     )
-    where_sql, where_params = _priority_stub_where(exclude_hashes=exclude_hashes)
+    where_sql, where_params = _priority_stub_where(
+        exclude_hashes=exclude_hashes, forum_id=forum_id
+    )
     text = (q or "").strip()
     q_sql = ""
     q_params: list[Any] = []
@@ -901,10 +914,13 @@ def list_priority_account_stub_reasons(
     *,
     exclude_hashes: list[str] | None = None,
     q: str | None = None,
+    forum_id: str | None = None,
 ) -> list[dict[str, Any]]:
     """优先占位原因分组（供下拉筛选）。"""
     _ensure_resource_schema(conn)
-    where_sql, params = _priority_stub_where(exclude_hashes=exclude_hashes)
+    where_sql, params = _priority_stub_where(
+        exclude_hashes=exclude_hashes, forum_id=forum_id
+    )
     text = (q or "").strip()
     q_sql = ""
     q_params: list[Any] = []
@@ -949,10 +965,13 @@ def count_priority_account_stubs_q(
     exclude_hashes: list[str] | None = None,
     q: str | None = None,
     reason: str | None = None,
+    forum_id: str | None = None,
 ) -> int:
     """优先占位计数（可带搜索）。"""
     _ensure_resource_schema(conn)
-    where_sql, params = _priority_stub_where(exclude_hashes=exclude_hashes)
+    where_sql, params = _priority_stub_where(
+        exclude_hashes=exclude_hashes, forum_id=forum_id
+    )
     text = (q or "").strip()
     q_sql = ""
     q_params: list[Any] = []
@@ -1027,11 +1046,15 @@ def _resource_list_where(
             "not _resource_list_where"
         )
     if q:
-        # 仅搜展示标题（帖子标题；无标题时回落 filename），不扫描述/search_string
+        # 展示标题（无标题回落 filename）+ 判定文案；不扫描述/search_string
         where.append(
+            "("
             "COALESCE(NULLIF(TRIM(rs.title), ''), r.filename) ILIKE %s"
+            " OR COALESCE(rs.import_outcome, '') ILIKE %s"
+            ")"
         )
-        params.append(f"%{q}%")
+        like = f"%{q}%"
+        params.extend([like, like])
 
     where_sql = (" WHERE " + " AND ".join(where)) if where else ""
     return where_sql, params

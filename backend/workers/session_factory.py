@@ -2,17 +2,80 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any, Optional
 from urllib.parse import urlparse
 
 from crawler.fetcher import Fetcher
 from crawler.list_urls import site_root
-from crawler.session import COOKIE_FILE, DEFAULT_UA, SessionManager
+from crawler.session import DEFAULT_UA, SessionManager
 from crawler.sites import get_site_adapter
 
-# 账号爬占位专用 jar，避免与匿名会话互相覆盖
-ACCOUNT_COOKIE_FILE = Path(__file__).resolve().parent.parent / "data" / "cookies_account.json"
+# 账号爬占位专用 jar（按论坛分文件；旧版单文件仍兼容色花堂）
+_DATA_DIR = Path(__file__).resolve().parent.parent / "data"
+ACCOUNT_COOKIE_FILE = _DATA_DIR / "cookies_account.json"
+
+
+def account_cookie_file_for(forum_id: str) -> Path:
+    fid = (forum_id or "sehuatang").strip() or "sehuatang"
+    specific = _DATA_DIR / f"cookies_account_{fid}.json"
+    if specific.exists():
+        return specific
+    if fid == "sehuatang" and ACCOUNT_COOKIE_FILE.exists():
+        return ACCOUNT_COOKIE_FILE
+    return specific
+
+
+def cookie_header_to_map(cookie_header: str) -> dict[str, str]:
+    out: dict[str, str] = {}
+    for part in (cookie_header or "").split(";"):
+        part = part.strip()
+        if not part or "=" not in part:
+            continue
+        key, value = part.split("=", 1)
+        key, value = key.strip(), value.strip()
+        if key and value:
+            out[key] = value
+    return out
+
+
+def write_cookie_jar(path: Path, cookies: dict[str, str]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    data = {k: v for k, v in (cookies or {}).items() if k and v}
+    data.setdefault("safe", "1")
+    path.write_text(
+        json.dumps(data, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+
+
+def sync_forum_cookie_jars(forum_id: str, config: dict[str, Any]) -> None:
+    """配置 Cookie 为权威：清空则抹本地 jar，填入则覆写 jar（保存配置时调用）。"""
+    from crawler.sites import get_site_adapter
+
+    fid = (forum_id or "").strip() or "sehuatang"
+    adapter = get_site_adapter(fid)
+    normal = str((config or {}).get("web_crawler_cookie") or "").strip()
+    account = str((config or {}).get("web_crawler_account_cookie") or "").strip()
+
+    normal_map = cookie_header_to_map(normal) if normal else {}
+    normal_map.setdefault("safe", "1")
+    write_cookie_jar(adapter.cookie_file(), normal_map)
+
+    account_map = cookie_header_to_map(account) if account else {}
+    if account_map:
+        account_map.setdefault("safe", "1")
+    else:
+        account_map = {"safe": "1"}
+    write_cookie_jar(account_cookie_file_for(fid), account_map)
+    # 旧全局账号 jar：焦点/2048 清空时一并清掉，避免残留登录
+    if not account and ACCOUNT_COOKIE_FILE.exists() and fid in {"2048", "sehuatang"}:
+        try:
+            if fid == "sehuatang" or not (_DATA_DIR / "cookies_account_2048.json").exists():
+                write_cookie_jar(ACCOUNT_COOKIE_FILE, {"safe": "1"})
+        except Exception:
+            pass
 
 
 def entry_urls_from_config(cfg: dict[str, Any]) -> list[str]:
@@ -109,7 +172,7 @@ def session_from_config(
     entries = entry_urls_from_config(cfg)
     entry0 = entries[0] if entries else ""
     if account_jar:
-        cookie_file = ACCOUNT_COOKIE_FILE
+        cookie_file = account_cookie_file_for(forum_id)
     else:
         cookie_file = adapter.cookie_file()
     domains = adapter.cookie_domains(entry0)
@@ -121,13 +184,17 @@ def session_from_config(
     )
     if cookie_override is not None:
         cookie = str(cookie_override or "").strip()
+    elif account_jar:
+        # 账号爬只用账号 Cookie，禁止回落到普通 web_crawler_cookie
+        cookie = str(cfg.get("web_crawler_account_cookie") or "").strip()
     else:
         cookie = str(cfg.get("web_crawler_cookie") or "").strip()
+    # 配置/覆盖为权威：有则只用填写的 Cookie；空则游客（勿复活磁盘旧登录态）
     if cookie:
+        session.cookies = {"safe": "1"}
         session.apply_cookie_header(cookie)
-    session.load()
-    if cookie:
-        session.apply_cookie_header(cookie)
+    else:
+        session.cookies = {"safe": "1"}
     return session
 
 
