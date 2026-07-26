@@ -84,17 +84,53 @@ export function ResourcesPage() {
   const lastScrollTop = useRef(0)
   /** 同一筛选条件下锁定总数，避免翻页/并发写入导致 180→177 跳动 */
   const pinnedTotalRef = useRef<{ key: string; total: number } | null>(null)
+  /** 已加载过 facets 的筛选 key；翻页复用，避免每次重算侧面栏 */
+  const facetsFilterKeyRef = useRef('')
 
   const load = useCallback(
     async (opts?: { silent?: boolean; pageOverride?: number }) => {
       const silent = Boolean(opts?.silent && hasLoaded.current)
       const pageNo = opts?.pageOverride ?? page
       const seq = ++reqSeq.current
+      const filterKey = `${forum}|${source}|${board}|${result}|${q}`
+      const needFacets = facetsFilterKeyRef.current !== filterKey
+      const needTotal =
+        !pinnedTotalRef.current || pinnedTotalRef.current.key !== filterKey
 
       if (silent) setRefreshing(true)
       else setLoading(true)
 
       try {
+        // 列表 / 总数 / 侧面栏拆开：表格先出，翻页几乎不碰慢查询
+        const facetsPromise = needFacets
+          ? fetchRecentResources({
+              page: 1,
+              pageSize: 1,
+              source,
+              board,
+              result,
+              forum,
+              q,
+              includeFacets: true,
+              includeTotal: false,
+              includeItems: false,
+            })
+          : null
+        const totalPromise = needTotal
+          ? fetchRecentResources({
+              page: 1,
+              pageSize: 1,
+              source,
+              board,
+              result,
+              forum,
+              q,
+              includeFacets: false,
+              includeTotal: true,
+              includeItems: false,
+            })
+          : null
+
         const data = await fetchRecentResources({
           page: pageNo,
           pageSize: PAGE_SIZE,
@@ -103,50 +139,29 @@ export function ResourcesPage() {
           result,
           forum,
           q,
+          includeFacets: false,
+          includeTotal: false,
+          includeItems: true,
         })
         if (seq !== reqSeq.current) return
 
         const rows = data.items.map(mapApiResource)
-        const filterKey = `${forum}|${source}|${board}|${result}|${q}`
-        let totalCount = Number(data.total ?? data.count ?? rows.length) || 0
-        const pinned = pinnedTotalRef.current
-        if (!silent && pageNo === 1) {
-          pinnedTotalRef.current = { key: filterKey, total: totalCount }
-        } else if (pinned && pinned.key === filterKey && pinned.total > 0) {
-          totalCount = pinned.total
-        } else {
-          pinnedTotalRef.current = { key: filterKey, total: totalCount }
-        }
+        let totalCount =
+          pinnedTotalRef.current?.key === filterKey
+            ? pinnedTotalRef.current.total
+            : 0
         const pageCount = Math.max(1, Math.ceil(totalCount / PAGE_SIZE) || 1)
-        const nextFacets: ResourceFacets = data.facets
-          ? {
-              sources: { ...EMPTY_FACETS.sources, ...(data.facets.sources || {}) },
-              boards: data.facets.boards || [],
-              forums: data.facets.forums || [],
-              results: { ...EMPTY_FACETS.results, ...(data.facets.results || {}) },
-            }
-          : {
-              ...EMPTY_FACETS,
-              boards: (data.boards || []).map((name) => ({ name, count: 0 })),
-              sources: { ...EMPTY_FACETS.sources, all: totalCount },
-              results: { ...EMPTY_FACETS.results, all: totalCount },
-            }
-        const boardNames =
-          nextFacets.boards.length > 0
-            ? nextFacets.boards.map((b) => b.name)
-            : data.boards || []
         startTransition(() => {
           setItems(rows)
           setLoadedPage(pageNo)
-          setTotal(totalCount)
-          setPages(pageCount)
-          setFacets(nextFacets)
-          setBoards(boardNames)
+          if (totalCount > 0) {
+            setTotal(totalCount)
+            setPages(pageCount)
+          }
           setSelectedId((prev) => {
             if (prev && rows.some((r) => r.id === prev)) return prev
             return ''
           })
-          // 跨页勾选：保留已选；本页行刷新已选 meta
           setCheckedMeta((prev) => {
             let changed = false
             const next = { ...prev }
@@ -175,6 +190,45 @@ export function ResourcesPage() {
           })
         })
         hasLoaded.current = true
+
+        if (totalPromise) {
+          void totalPromise
+            .then((totData) => {
+              if (seq !== reqSeq.current || totData.total == null) return
+              const n = Number(totData.total) || 0
+              pinnedTotalRef.current = { key: filterKey, total: n }
+              startTransition(() => {
+                setTotal(n)
+                setPages(Math.max(1, Math.ceil(n / PAGE_SIZE) || 1))
+              })
+            })
+            .catch(() => {})
+        }
+
+        if (facetsPromise) {
+          void facetsPromise
+            .then((facData) => {
+              if (seq !== reqSeq.current || !facData.facets) return
+              const nextFacets: ResourceFacets = {
+                sources: { ...EMPTY_FACETS.sources, ...(facData.facets.sources || {}) },
+                boards: facData.facets.boards || [],
+                forums: facData.facets.forums || [],
+                results: { ...EMPTY_FACETS.results, ...(facData.facets.results || {}) },
+              }
+              const boardNames =
+                nextFacets.boards.length > 0
+                  ? nextFacets.boards.map((b) => b.name)
+                  : facData.boards || []
+              startTransition(() => {
+                setFacets(nextFacets)
+                setBoards(boardNames)
+              })
+              facetsFilterKeyRef.current = filterKey
+            })
+            .catch(() => {
+              /* 侧面栏失败不挡列表 */
+            })
+        }
       } catch (err) {
         if (seq !== reqSeq.current) return
         toast.error(err instanceof Error ? err.message : '加载失败')

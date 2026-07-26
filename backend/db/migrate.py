@@ -121,6 +121,7 @@ RESOURCE_DB_MIGRATIONS = {
     "018_resource_sources_forum_board.sql",
     "019_resource_sources_source_url_index.sql",
     "020_ed2k_resources_stub_index.sql",
+    "022_ed2k_resources_updated_at_index.sql",
 }
 
 
@@ -155,5 +156,6 @@ def ensure_ed2k_schema() -> None:
             "019_resource_sources_source_url_index.sql",
             "020_ed2k_resources_stub_index.sql",
             "021_crawl_pages_tid_index.sql",
+            "022_ed2k_resources_updated_at_index.sql",
         }
     )

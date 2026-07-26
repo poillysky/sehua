@@ -78,12 +78,12 @@ export type ResourceFacets = {
 export type ResourcesPageResult = {
   items: ApiResource[]
   count: number
-  total: number
+  total: number | null
   page: number
   page_size: number
-  pages: number
-  boards: string[]
-  facets?: ResourceFacets
+  pages: number | null
+  boards: string[] | null
+  facets?: ResourceFacets | null
 }
 
 const KIND_OUTCOME: Record<string, string> = {
@@ -402,6 +402,9 @@ export function fetchRecentResources(params: {
   result?: string
   forum?: string
   q?: string
+  includeFacets?: boolean
+  includeTotal?: boolean
+  includeItems?: boolean
 }) {
   const page = params.page ?? 1
   const pageSize = params.pageSize ?? PAGE_SIZE
@@ -414,6 +417,9 @@ export function fetchRecentResources(params: {
   if (params.result && params.result !== 'all') sp.set('result', params.result)
   if (params.forum && params.forum !== 'all') sp.set('forum', params.forum)
   if (params.q?.trim()) sp.set('q', params.q.trim())
+  if (params.includeFacets === false) sp.set('include_facets', '0')
+  if (params.includeTotal === false) sp.set('include_total', '0')
+  if (params.includeItems === false) sp.set('include_items', '0')
   return api<ResourcesPageResult>(`/api/resources/recent?${sp}`)
 }
 

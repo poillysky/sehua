@@ -74,7 +74,20 @@ def test_resource_list_where_board_parent_matches_children():
     assert "国产原创 · 国产无码 · %" in params2
 
 
-def test_assemble_thread_merges_assets():
+def test_group_light_rows_in_order():
+    from db.repository import _group_light_rows_in_order
+
+    rows = [
+        (1, "AAA", None, "https://x/1"),
+        (2, "BBB", None, "https://x/1"),
+        (3, "CCC", None, None),
+        (4, "DDD", None, "https://x/2"),
+    ]
+    order, firsts = _group_light_rows_in_order(rows)
+    assert order == ["url:https://x/1", "hash:CCC", "url:https://x/2"]
+    assert firsts["url:https://x/1"][1] == "AAA"
+    assert firsts["hash:CCC"][1] == "CCC"
+
     row = _assemble_thread_resource_row(
         group_id=99,
         updated_at=None,

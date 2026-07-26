@@ -1295,6 +1295,29 @@ def _flat_resource_select_sql(where_sql: str) -> str:
             """
 
 
+def _flat_resource_keys_sql(where_sql: str) -> str:
+    """oversample 只取分组键：避免把 description/预览图等大字段拖进 1.2 万行窗口。"""
+    return f"""
+            SELECT
+              rs.id, r.hash, r.updated_at, rs.source_url, r.created_at
+            FROM ed2k_resources r
+            JOIN resource_sources rs ON rs.hash = r.hash
+            JOIN sources s ON s.id = rs.source_id
+            {where_sql}
+            ORDER BY r.updated_at DESC NULLS LAST, r.created_at DESC, rs.id DESC
+            """
+
+
+_FULL_FLAT_SELECT = """
+              rs.id, r.hash, r.filename, r.size, r.ed2k_link, r.updated_at,
+              rs.title, rs.description, rs.source_url, rs.board_fid, rs.board_name,
+              rs.ed2k_links, rs.extract_password, s.key, s.source_type,
+              rs.preview_images,
+              rs.import_outcome,
+              rs.forum_id
+"""
+
+
 def _asset_dict_from_flat_row(row: Any) -> dict:
     return {
         "hash": row[1],
@@ -1323,6 +1346,66 @@ def _group_flat_rows_in_order(rows: list[Any]) -> tuple[list[str], dict[str, lis
             order.append(key)
         groups[key].append(row)
     return order, groups
+
+
+def _group_light_rows_in_order(
+    rows: list[Any],
+) -> tuple[list[str], dict[str, Any]]:
+    """轻量 oversample 行：(id, hash, updated_at, source_url, created_at)。"""
+    order: list[str] = []
+    first_by_key: dict[str, Any] = {}
+    for row in rows:
+        key = _thread_group_key(row[3], str(row[1] or ""))
+        if key not in first_by_key:
+            first_by_key[key] = row
+            order.append(key)
+    return order, first_by_key
+
+
+def _fetch_full_rows_for_thread_keys(
+    cur: Any,
+    page_keys: list[str],
+) -> tuple[dict[str, list[Any]], dict[str, list[Any]]]:
+    """按本页帖键批量拉全字段子资源。返回 (by_url, by_hash_key)。"""
+    urls = [k[4:] for k in page_keys if k.startswith("url:")]
+    orphan_hashes = [
+        k[5:] for k in page_keys if k.startswith("hash:") and k[5:]
+    ]
+    by_url: dict[str, list[Any]] = {}
+    by_hash: dict[str, list[Any]] = {}
+    if urls:
+        cur.execute(
+            f"""
+            SELECT {_FULL_FLAT_SELECT}
+            FROM ed2k_resources r
+            JOIN resource_sources rs ON rs.hash = r.hash
+            JOIN sources s ON s.id = rs.source_id
+            WHERE rs.source_url = ANY(%s)
+            ORDER BY r.created_at ASC NULLS LAST, rs.id ASC
+            """,
+            (urls,),
+        )
+        for row in cur.fetchall():
+            url = (row[8] or "").strip()
+            if not url:
+                continue
+            by_url.setdefault(url, []).append(row)
+    if orphan_hashes:
+        cur.execute(
+            f"""
+            SELECT {_FULL_FLAT_SELECT}
+            FROM ed2k_resources r
+            JOIN resource_sources rs ON rs.hash = r.hash
+            JOIN sources s ON s.id = rs.source_id
+            WHERE r.hash = ANY(%s)
+            ORDER BY r.created_at ASC NULLS LAST, rs.id ASC
+            """,
+            (orphan_hashes,),
+        )
+        for row in cur.fetchall():
+            key = _thread_group_key(row[8], str(row[1] or ""))
+            by_hash.setdefault(key, []).append(row)
+    return by_url, by_hash
 
 
 def _fast_flat_total(
@@ -1404,6 +1487,13 @@ def _fast_thread_total(
             [*params, cap + 1],
         )
         return int((cur.fetchone() or [0])[0] or 0)
+
+    # 无筛选：COUNT(DISTINCT source_url) 随库膨胀可到数秒；短时缓存
+    now = time.time()
+    cached = _THREAD_TOTAL_CACHE.get("")
+    if cached and now - cached[0] < _THREAD_TOTAL_CACHE_TTL_SEC:
+        return int(cached[1])
+
     cur.execute(
         """
         SELECT
@@ -1419,7 +1509,13 @@ def _fast_thread_total(
           )
         """
     )
-    return int((cur.fetchone() or [0])[0] or 0)
+    total = int((cur.fetchone() or [0])[0] or 0)
+    _THREAD_TOTAL_CACHE[""] = (now, total)
+    return total
+
+
+_THREAD_TOTAL_CACHE: dict[str, tuple[float, int]] = {}
+_THREAD_TOTAL_CACHE_TTL_SEC = 60.0
 
 
 def list_recent_resources(
@@ -1432,10 +1528,12 @@ def list_recent_resources(
     link_kind: str | None = None,
     q: str | None = None,
     forum_id: str | None = None,
-) -> tuple[list[dict], int]:
+    compute_total: bool = True,
+) -> tuple[list[dict], int | None]:
     """分页处理记录：有来源帖 URL 时按帖聚合（一帖一行），否则按 hash。
 
-    用「最近行 oversample + 内存分组」避免全表 GROUP BY 拖死接口。
+    用「最近行轻量 oversample + 内存分组」避免全表 GROUP BY；本页再拉全字段。
+    compute_total=False 时跳过总数查询（翻页由前端钉住 total）。
     """
     if (link_kind or "").strip() == "multi":
         return _list_multi_asset_resources(
@@ -1446,6 +1544,7 @@ def list_recent_resources(
             board_name=board_name,
             q=q,
             forum_id=forum_id,
+            compute_total=compute_total,
         )
 
     where_sql, params = _resource_list_where(
@@ -1470,12 +1569,16 @@ def list_recent_resources(
 
     with conn.cursor() as cur:
         # 总数必须跨页稳定：始终按帖聚合计数，勿用本页 oversample 的 len(order)
-        thread_total = _fast_thread_total(
-            cur, where_sql, params, q=q, capped=has_filter
-        )
-        flat_total = _fast_flat_total(
-            cur, where_sql, params, q=q, capped=has_filter
-        )
+        thread_total: int | None = None
+        flat_total = 0
+        if compute_total:
+            thread_total = _fast_thread_total(
+                cur, where_sql, params, q=q, capped=has_filter
+            )
+        if has_filter:
+            flat_total = _fast_flat_total(
+                cur, where_sql, params, q=q, capped=True
+            )
 
         if has_filter:
             # 匹配行未触顶时一次拉全，避免第 1/2 页窗口不同导致漏帖或顺序跳变
@@ -1489,62 +1592,39 @@ def list_recent_resources(
 
         rows: list[Any] = []
         order: list[str] = []
-        groups: dict[str, list[Any]] = {}
         while True:
             cur.execute(
-                _flat_resource_select_sql(where_sql) + " LIMIT %s",
+                _flat_resource_keys_sql(where_sql) + " LIMIT %s",
                 [*params, fetch_n],
             )
             rows = list(cur.fetchall())
-            order, groups = _group_flat_rows_in_order(rows)
+            order, _firsts = _group_light_rows_in_order(rows)
             # 帖数仍不足且还有更大窗口可拉时扩窗再取
             if len(order) >= need or len(rows) < fetch_n or fetch_n >= 12000:
                 break
             fetch_n = min(fetch_n * 2, 12000)
 
-    page_keys = order[offset : offset + limit]
-
-    # 补全本页帖的全部子资源（oversample 窗口外的旧 hash）
-    urls = [k[4:] for k in page_keys if k.startswith("url:")]
-    by_url: dict[str, list[Any]] = {}
-    if urls:
-        with conn.cursor() as cur:
-            cur.execute(
-                """
-                SELECT
-                  rs.id, r.hash, r.filename, r.size, r.ed2k_link, r.updated_at,
-                  rs.title, rs.description, rs.source_url, rs.board_fid, rs.board_name,
-                  rs.ed2k_links, rs.extract_password, s.key, s.source_type,
-                  rs.preview_images,
-                  rs.import_outcome,
-                  rs.forum_id
-                FROM ed2k_resources r
-                JOIN resource_sources rs ON rs.hash = r.hash
-                JOIN sources s ON s.id = rs.source_id
-                WHERE rs.source_url = ANY(%s)
-                ORDER BY r.created_at ASC NULLS LAST, rs.id ASC
-                """,
-                (urls,),
-            )
-            for row in cur.fetchall():
-                url = (row[8] or "").strip()
-                if not url:
-                    continue
-                by_url.setdefault(url, []).append(row)
+        page_keys = order[offset : offset + limit]
+        by_url, by_hash = _fetch_full_rows_for_thread_keys(cur, page_keys)
 
     out: list[dict] = []
     for key in page_keys:
         if key.startswith("url:"):
-            asset_rows = by_url.get(key[4:]) or groups.get(key) or []
+            asset_rows = by_url.get(key[4:]) or []
         else:
-            asset_rows = groups.get(key) or []
+            asset_rows = by_hash.get(key) or []
         if not asset_rows:
             continue
         first = asset_rows[0]
+        # 列表展示时间取帖内最新 updated_at（轻量键已按新→旧）
+        newest_at = max(
+            (r[5] for r in asset_rows if r[5] is not None),
+            default=first[5],
+        )
         out.append(
             _assemble_thread_resource_row(
                 group_id=int(first[0]),
-                updated_at=first[5],
+                updated_at=newest_at,
                 source_key=first[13],
                 source_type=first[14],
                 import_outcome=first[16],
@@ -1552,10 +1632,14 @@ def list_recent_resources(
             )
         )
 
-    total = int(thread_total or 0)
-    # 跨页禁止改用 len(order)：oversample 窗口随页变化会让总数 180↔177 跳动
-    if has_filter and total >= 5000 and len(out) >= limit:
-        total = max(total, offset + limit + 1)
+    total: int | None
+    if compute_total:
+        total = int(thread_total or 0)
+        # 跨页禁止改用 len(order)：oversample 窗口随页变化会让总数 180↔177 跳动
+        if has_filter and total >= 5000 and len(out) >= limit:
+            total = max(total, offset + limit + 1)
+    else:
+        total = None
     return out, total
 
 
@@ -1718,12 +1802,12 @@ def list_resource_ids_for_selection(
         thread_total = _fast_thread_total(cur, where_sql, params, q=q, capped=True)
 
         cur.execute(
-            _flat_resource_select_sql(where_sql) + " LIMIT %s",
+            _flat_resource_keys_sql(where_sql) + " LIMIT %s",
             [*params, fetch_n],
         )
         rows = list(cur.fetchall())
 
-    order, groups = _group_flat_rows_in_order(rows)
+    order, first_by_key = _group_light_rows_in_order(rows)
     page_keys = order[:lim]
 
     urls = [k[4:] for k in page_keys if k.startswith("url:")]
@@ -1743,24 +1827,49 @@ def list_resource_ids_for_selection(
             for url, h in cur.fetchall():
                 hashes_by_url.setdefault(str(url or "").strip(), []).append(str(h))
 
+    # 代表性行补 title / link（轻量键没有这些列）
+    rep_hashes = []
+    for key in page_keys:
+        row0 = first_by_key.get(key)
+        if row0 and row0[1]:
+            rep_hashes.append(str(row0[1]))
+    meta_by_hash: dict[str, tuple[Any, ...]] = {}
+    if rep_hashes:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT r.hash, rs.id, r.ed2k_link, rs.title, r.filename, rs.source_url
+                FROM ed2k_resources r
+                JOIN resource_sources rs ON rs.hash = r.hash
+                WHERE r.hash = ANY(%s)
+                """,
+                (rep_hashes,),
+            )
+            for row in cur.fetchall():
+                meta_by_hash[str(row[0])] = row
+
     items: list[dict] = []
     for key in page_keys:
-        asset_rows = groups.get(key) or []
-        if not asset_rows:
+        light = first_by_key.get(key)
+        if not light:
             continue
-        first = asset_rows[0]
-        link = first[4] or ""
+        rep_h = str(light[1] or "")
+        meta = meta_by_hash.get(rep_h)
         if key.startswith("url:"):
-            hashes = _dedupe_preserve(hashes_by_url.get(key[4:]) or [r[1] for r in asset_rows])
+            hashes = _dedupe_preserve(hashes_by_url.get(key[4:]) or [rep_h])
         else:
-            hashes = _dedupe_preserve([r[1] for r in asset_rows])
+            hashes = _dedupe_preserve([rep_h] if rep_h else [])
+        if not hashes:
+            continue
+        link = (meta[2] if meta else "") or ""
+        title = (meta[3] if meta else None) or (meta[4] if meta else None) or hashes[0]
         items.append(
             {
-                "id": int(first[0]),
-                "hash": hashes[0] if hashes else first[1],
+                "id": int(meta[1] if meta else light[0]),
+                "hash": hashes[0],
                 "hashes": hashes,
-                "source_url": first[8],
-                "title": first[6] or first[2] or first[1],
+                "source_url": (meta[5] if meta else light[3]),
+                "title": title,
                 "link_kind": infer_resource_link_kind(link),
                 "asset_count": len(hashes),
             }
@@ -1945,7 +2054,8 @@ def _list_multi_asset_resources(
     board_name: str | None = None,
     q: str | None = None,
     forum_id: str | None = None,
-) -> tuple[list[dict], int]:
+    compute_total: bool = True,
+) -> tuple[list[dict], int | None]:
     """只列出会显示 ×N 的合集帖。"""
     base_where, params = _resource_list_where(
         source_type=source_type,
@@ -1962,24 +2072,20 @@ def _list_multi_asset_resources(
         urls = _multi_asset_url_page(
             cur, base_where, params, limit=limit, offset=offset
         )
-        if offset == 0 and len(urls) < limit:
-            total = len(urls)
-        else:
-            total = _count_multi_asset_threads(cur, base_where, params, capped=True)
+        total: int | None = None
+        if compute_total:
+            if offset == 0 and len(urls) < limit:
+                total = len(urls)
+            else:
+                total = _count_multi_asset_threads(cur, base_where, params, capped=True)
 
     if not urls:
-        return [], int(total)
+        return [], total
 
     with conn.cursor() as cur:
         cur.execute(
-            """
-            SELECT
-              rs.id, r.hash, r.filename, r.size, r.ed2k_link, r.updated_at,
-              rs.title, rs.description, rs.source_url, rs.board_fid, rs.board_name,
-              rs.ed2k_links, rs.extract_password, s.key, s.source_type,
-              rs.preview_images,
-              rs.import_outcome,
-              rs.forum_id
+            f"""
+            SELECT {_FULL_FLAT_SELECT}
             FROM ed2k_resources r
             JOIN resource_sources rs ON rs.hash = r.hash
             JOIN sources s ON s.id = rs.source_id
@@ -2017,7 +2123,7 @@ def _list_multi_asset_resources(
                 assets_raw=[_asset_dict_from_flat_row(r) for r in asset_rows],
             )
         )
-    return out, int(total)
+    return out, (int(total) if total is not None else None)
 
 
 _FACET_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}

@@ -27,6 +27,10 @@ from db.forum_configs import SITE_CRAWLER_FORUM_ID, load_forum_configs_map, save
 from db.migrate import ensure_ed2k_schema
 from db.persist import persist_from_html
 from db.repository import (
+    _count_multi_asset_threads,
+    _ensure_resource_schema,
+    _fast_thread_total,
+    _resource_list_where,
     clear_forum_crawl_progress,
     clear_forum_head_catchup,
     delete_resource_by_hash,
@@ -626,8 +630,14 @@ def resources_recent(
     result: str = "",
     forum: str = "",
     q: str = "",
+    include_facets: int = 1,
+    include_total: int = 1,
+    include_items: int = 1,
 ) -> dict:
-    """Paginated resources. Prefer page/page_size; legacy `limit` still accepted."""
+    """Paginated resources. Prefer page/page_size; legacy `limit` still accepted.
+
+    include_facets / include_total / include_items: 可拆请求——先出列表再补侧面栏。
+    """
     size = max(1, min(int(limit) if limit is not None else page_size, 100))
     page = max(1, page)
     offset = (page - 1) * size
@@ -640,31 +650,80 @@ def resources_recent(
     link_kind = result_raw if result_raw and result_raw != "all" else None
     forum_id = forum_raw if forum_raw and forum_raw != "all" else None
     query = q.strip() or None
+    want_facets = int(include_facets or 0) != 0
+    want_total = int(include_total or 0) != 0
+    want_items = int(include_items or 0) != 0
 
     conn = connect_resource()
     try:
-        items, total = list_recent_resources(
-            conn,
-            limit=size,
-            offset=offset,
-            source_type=source_type,
-            board_name=board_name,
-            link_kind=link_kind,
-            q=query,
-            forum_id=forum_id,
+        items: list = []
+        total = None
+        if want_items:
+            items, total = list_recent_resources(
+                conn,
+                limit=size,
+                offset=offset,
+                source_type=source_type,
+                board_name=board_name,
+                link_kind=link_kind,
+                q=query,
+                forum_id=forum_id,
+                compute_total=want_total,
+            )
+        elif want_total:
+            # 仅总数：不跑 oversample / 装配
+            _ensure_resource_schema(conn)
+            if (link_kind or "").strip() == "multi":
+                base_where, params = _resource_list_where(
+                    source_type=source_type,
+                    board_name=board_name,
+                    link_kind=None,
+                    q=query,
+                    forum_id=forum_id,
+                )
+                with conn.cursor() as cur:
+                    total = _count_multi_asset_threads(
+                        cur, base_where, params, capped=True
+                    )
+            else:
+                where_sql, params = _resource_list_where(
+                    source_type=source_type,
+                    board_name=board_name,
+                    link_kind=link_kind,
+                    q=query,
+                    forum_id=forum_id,
+                )
+                has_filter = bool(
+                    (query or "").strip()
+                    or source_type
+                    or board_name
+                    or link_kind
+                    or forum_id
+                )
+                with conn.cursor() as cur:
+                    total = _fast_thread_total(
+                        cur, where_sql, params, q=query, capped=has_filter
+                    )
+        facets = None
+        boards: list[str] | None = None
+        if want_facets:
+            facets = list_resource_facets(
+                conn,
+                q=query,
+                source_type=source_type,
+                board_name=board_name,
+                link_kind=link_kind,
+                forum_id=forum_id,
+            )
+            facet_board_names = [
+                b["name"] for b in facets.get("boards") or [] if b.get("name")
+            ]
+            boards = facet_board_names or list_resource_boards(conn)
+        pages = (
+            max(1, (int(total) + size - 1) // size)
+            if want_total and total
+            else None
         )
-        facets = list_resource_facets(
-            conn,
-            q=query,
-            source_type=source_type,
-            board_name=board_name,
-            link_kind=link_kind,
-            forum_id=forum_id,
-        )
-        # 兼容旧前端：boards 为名称列表；优先用按帖 facet，避免再扫 DISTINCT
-        facet_board_names = [b["name"] for b in facets.get("boards") or [] if b.get("name")]
-        boards = facet_board_names or list_resource_boards(conn)
-        pages = max(1, (total + size - 1) // size) if total else 1
         return {
             "items": items,
             "count": len(items),
