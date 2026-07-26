@@ -37,7 +37,7 @@ _ATTACH_ZONE_HINT_RE = re.compile(
     r"attachment\.php|mod=attachment|action=download|"
     r"job\.php\?[^\"'>\s]*download|"
     r"href=[\"'][^\"']*(?:attachment|action=download|job=download)[^\"']*[\"']|"
-    r"\.(?:torrent|rar|zip|7z|txt|xlsx?|xls|docx?)\b",
+    r"\.(?:torrent?|rar|zip|7z|txt|xlsx?|xls|docx?)\b",
     re.I,
 )
 _ATTACH_ZONE_FP_MEMO: dict[tuple[int, int, int, int], bool] = {}

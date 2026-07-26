@@ -806,6 +806,31 @@ def test_password_in_attachment_text_fills_field_and_description():
     assert parsed.primary_link_kind == "ed2k"
 
 
+def test_archive_password_falls_back_to_author_name():
+    """正文未写密码时，用一楼作者名作解压候选（tid 332436）。"""
+    from crawler.attachments import _archive_password_candidates, _extract_zip_txt
+
+    html = """
+    <html><body>
+      <div id="postlist">
+        <div id="post_1">
+          <div class="authi"><a href="space-uid-1.html" class="xw1">ffdshow000</a></div>
+          <div id="postmessage_1">解压密码 见下面这个帖子</div>
+        </div>
+      </div>
+    </body></html>
+    """
+    assert _archive_password_candidates(html) == ["ffdshow000"]
+
+    # 同包多 torrent：全部转磁力（不因第一个命中早停）
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr("a.torrent", _minimal_torrent(b"a.bin", 100))
+        zf.writestr("b.torrent", _minimal_torrent(b"b.bin", 200))
+    text = _extract_zip_txt(buf.getvalue(), passwords=["ffdshow000"])
+    assert text.count("magnet:?xt=urn:btih:") == 2
+
+
 def test_phpwind_attach_card_torrent():
     """2048/PHPWind：job.php?action=download 的 .torrent 附件应识别为种子。"""
     html = """
@@ -832,6 +857,30 @@ def test_phpwind_attach_card_torrent():
     assert "aid=6650545" in all_a[0].url
     torrents = filter_torrent_attachments(all_a)
     assert len(torrents) == 1
+    from parsers.attachments import pick_magnet_attachment_kind
+    from parsers.thread_gates import looks_like_attachment_zone
+
+    assert looks_like_attachment_zone(html) is True
+    assert pick_magnet_attachment_kind(base, html) == "torrent"
+
+
+def test_truncated_torrent_extension_torren():
+    """发帖截断 .torren（缺末尾 t）仍应识别为种子附件（tid 3615372）。"""
+    html = """
+    <div class="t_f" id="postmessage_1">
+      <ignore_js_op>
+        <img src="static/image/filetype/torrent.gif" alt="torrent" />
+        <a href="forum.php?mod=attachment&amp;aid=MQ%3D%3D" target="_blank">
+          HMN-439 影片.torren
+        </a>
+      </ignore_js_op>
+    </div>
+    """
+    base = "https://www.sehuatang.net/"
+    all_a = extract_download_attachments(base, html)
+    assert len(all_a) == 1
+    assert all_a[0].kind == "torrent"
+    assert all_a[0].name.lower().endswith(".torren")
     from parsers.attachments import pick_magnet_attachment_kind
     from parsers.thread_gates import looks_like_attachment_zone
 

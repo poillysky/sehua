@@ -81,8 +81,27 @@ def _rar_tool_candidates() -> list[str]:
     return [item for item in candidates if item and Path(item).exists()]
 
 
+def _thread_author_name(html: str) -> str:
+    """一楼作者名（常见作压缩包密码）。"""
+    blob = html or ""
+    m = re.search(
+        r"""class=["']authi["'][^>]*>\s*<a[^>]*class=["'][^"']*\bxw1\b[^"']*["'][^>]*>\s*([^<]{1,40}?)\s*</a>""",
+        blob,
+        re.I,
+    )
+    if m:
+        return re.sub(r"\s+", "", m.group(1)).strip()
+    m = re.search(r"本帖最后由\s*([^\s<]{1,40})\s*于", blob)
+    if m:
+        return re.sub(r"\s+", "", m.group(1)).strip()
+    return ""
+
+
 def _archive_password_candidates(html: str) -> list[str]:
-    """从一楼正文抽解压密码，并生成常见变体（空格/@/误粘扩展名）。"""
+    """从一楼正文抽解压密码，并生成常见变体（空格/@/误粘扩展名）。
+
+    正文未写密码时，补试楼主用户名（JapanHDV 等帖常见，tid 332436）。
+    """
     from parsers.content import extract_password, parse_thread_content
 
     content = parse_thread_content(html or "")
@@ -91,32 +110,38 @@ def _archive_password_candidates(html: str) -> list[str]:
         # 标签拆开后「密码」与 www.98T.la@ 仍可能被漏抽，再扫一遍纯文本
         blob = f"{content.plain_text or ''}\n{content.blockcode_text or ''}"
         raw = (extract_password(blob) or "").strip()
-    if not raw:
-        return []
     out: list[str] = []
     seen: set[str] = set()
-    variants = [
-        raw,
-        raw.replace(" ", ""),
-        raw.replace("＠", "@"),
-    ]
-    # www.98T.la@ ↔ www.98T.la
-    if raw.endswith("@") and len(raw) > 1:
-        variants.append(raw[:-1].strip())
-    elif "@" not in raw and "." in raw:
-        variants.append(raw + "@")
-    # CF 常把 MyBigDick@host 编成 MyBigDick@host.txt；实际解压不要 .txt
-    for base in list(variants):
-        low = base.lower()
-        for suf in (".txt", ".rar", ".zip", ".7z", ".doc", ".docx"):
-            if low.endswith(suf) and len(base) > len(suf) + 1:
-                variants.append(base[: -len(suf)].rstrip("."))
-                break
-    for cand in variants:
+
+    def _push(cand: str) -> None:
         c = (cand or "").strip()
         if c and c not in seen:
             seen.add(c)
             out.append(c)
+
+    if raw:
+        variants = [
+            raw,
+            raw.replace(" ", ""),
+            raw.replace("＠", "@"),
+        ]
+        # www.98T.la@ ↔ www.98T.la
+        if raw.endswith("@") and len(raw) > 1:
+            variants.append(raw[:-1].strip())
+        elif "@" not in raw and "." in raw:
+            variants.append(raw + "@")
+        # CF 常把 MyBigDick@host 编成 MyBigDick@host.txt；实际解压不要 .txt
+        for base in list(variants):
+            low = base.lower()
+            for suf in (".txt", ".rar", ".zip", ".7z", ".doc", ".docx"):
+                if low.endswith(suf) and len(base) > len(suf) + 1:
+                    variants.append(base[: -len(suf)].rstrip("."))
+                    break
+        for cand in variants:
+            _push(cand)
+    author = _thread_author_name(html or "")
+    if author and author.lower() not in {"匿名", "游客", "guest"}:
+        _push(author)
     return out
 
 
@@ -142,11 +167,16 @@ def _csv_names_in_archive(names: list[str]) -> list[str]:
     ]
 
 
+def _is_torrent_filename(name: str) -> bool:
+    """识别 .torrent；发帖截断常见 .torren（缺末尾 t）。"""
+    return bool(re.search(r"\.torrent?$", (name or "").lower()))
+
+
 def _torrent_names_in_archive(names: list[str]) -> list[str]:
     return [
         n
         for n in names
-        if n and not n.endswith("/") and n.lower().endswith(".torrent")
+        if n and not n.endswith("/") and _is_torrent_filename(n)
     ]
 
 
@@ -199,7 +229,7 @@ def _push_member_text(member_texts: list[str], text: str) -> str | None:
 
 def _text_from_archive_member(name: str, data: bytes) -> str:
     lower = (name or "").lower()
-    if lower.endswith(".torrent"):
+    if _is_torrent_filename(name):
         magnet = parse_torrent_bytes(data, filename_hint=name)
         return magnet.link if magnet else ""
     if lower.endswith((".xlsx", ".xlsm", ".xls", ".xlsb")):
@@ -303,6 +333,7 @@ def _extract_via_7z(
                     ".doc",
                     ".docx",
                     ".torrent",
+                    ".torren",
                 }:
                     continue
                 try:
@@ -560,6 +591,10 @@ def _extract_zip_txt(
                     continue
                 text = _text_from_archive_member(name, raw)
                 if text.strip():
+                    # 同包多 .torrent：全部转磁力；txt/excel 仍可早停
+                    if _is_torrent_filename(name):
+                        member_texts.append(text)
+                        break
                     early = _push_member_text(member_texts, text)
                     if early:
                         return early

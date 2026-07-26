@@ -151,7 +151,8 @@ def _attachment_kind(name: str) -> str | None:
     # 预览图 / 115 截图：文件名常带「115」但不可当链接附件下
     if lower.endswith(_IMAGE_SUFFIXES):
         return None
-    if lower.endswith(".torrent"):
+    # .torrent；发帖截断常见 .torren（缺末尾 t，tid 3615372）
+    if re.search(r"\.torrent?$", lower):
         return "torrent"
     if lower.endswith(".zip"):
         return "zip"
@@ -243,12 +244,26 @@ def extract_download_attachments(base_url: str, html: str) -> list[DownloadAttac
                     continue
                 kind = _attachment_kind(name)
                 if not kind:
-                    # 文件名无后缀时：用 torrent.gif / alt=torrent 推断
+                    # 文件名无后缀 / 截断后缀：邻近 torrent.gif / alt=torrent 推断
                     parent = a.find_parent("div", class_="attach-card")
-                    if parent is not None:
-                        icon = parent.select_one("img[src*='torrent'], img[alt='torrent']")
-                        if icon is not None and not name.lower().endswith(".torrent"):
-                            name = f"{name}.torrent"
+                    scope = parent if parent is not None else (
+                        a.find_parent("ignore_js_op")
+                        or a.find_parent("div", class_="tattl")
+                        or a.find_parent("div", class_="pattl")
+                        or a.parent
+                    )
+                    if scope is not None:
+                        icon = scope.select_one(
+                            "img[src*='torrent'], img[alt*='torrent']"
+                        )
+                        # 同段文字旁的 filetype/torrent.gif（色花转帖常见）
+                        if icon is None and a.parent is not None:
+                            icon = a.parent.find_previous(
+                                "img", src=re.compile(r"torrent", re.I)
+                            )
+                        if icon is not None:
+                            if not re.search(r"\.torrent?$", name, re.I):
+                                name = f"{name}.torrent"
                             kind = "torrent"
                 if not kind:
                     continue
