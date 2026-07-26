@@ -271,14 +271,14 @@ def description_profile_for_board(board_fid: str | int | None) -> dict:
     }
 
 _LABEL_ALT = "|".join(map(re.escape, LABEL_KEYS))
-_STRUCTURE_SEP = r"[:：﹒．.]?"
+_STRUCTURE_SEP = r"[:：︰﹒．.]?"
 # 值截到下一个字段标签为止（同行/换行均可）。
 # 「文件大小」等若不在白名单，旧逻辑整页揉在一起会导致解压密码吞到帖尾。
 LABEL_RE = re.compile(
     rf"{STRUCTURE_FIELD_OPEN}\s*({_LABEL_ALT})\s*{STRUCTURE_FIELD_CLOSE}\s*{_STRUCTURE_SEP}\s*"
     rf"(.*?)(?="
     rf"(?:\s*{STRUCTURE_FIELD_OPEN}\s*(?:{_LABEL_ALT})\s*{STRUCTURE_FIELD_CLOSE})"  # 已知字段
-    rf"|(?:\s*{STRUCTURE_FIELD_OPEN}[^】］〗」』\]\n]{{1,40}}{STRUCTURE_FIELD_CLOSE}\s*[:：﹒．.])"  # 任意「【标签】：」
+    rf"|(?:\s*{STRUCTURE_FIELD_OPEN}[^】］〗」』\]\n]{{1,40}}{STRUCTURE_FIELD_CLOSE}\s*[:：︰﹒．.])"  # 任意「【标签】：」
     rf"|$"
     rf")",
     re.I | re.S,

@@ -249,6 +249,43 @@ def test_parse_bare_infohash_verify_full_code_2048():
     assert has_target_link(raw, "magnet")
 
 
+def test_parse_bare_infohash_verify_number_vertical_colon_sehua():
+    """色花堂【驗證編號】︰hash（U+FE30 竖排冒号，tid 1537403）。
+
+    漏认会误走附件下载；认出后单资源帖直接入库，无需下种子。
+    """
+    h = "28d281aba2ecad0c13f03843c6e6894c79a78043"
+    raw = (
+        "【影片名稱】︰我選你~來看我的穴\n"
+        "【影片大小】︰601 MB\n"
+        f"【驗證編號】︰{h}\n"
+        "【圖片預覽】︰\n"
+        "10musume-090623_01-FHD.torrent\n"
+    )
+    links = parse_magnet_text(raw)
+    assert len(links) == 1
+    assert links[0].infohash == h.upper()
+    assert has_target_link(raw, "magnet")
+
+    from workers.thread_outcome import judge_thread_html
+
+    html = f"<div class='t_f' id='postmessage_1'>{raw}</div>"
+    # 附件区存在也不该 need_attachments
+    html += (
+        "<ignore_js_op><a href='forum.php?mod=attachment&aid=1'>"
+        "10musume-090623_01-FHD.torrent</a></ignore_js_op>"
+    )
+    out = judge_thread_html(
+        html,
+        board_fid=2,
+        list_title="[FHD] sample",
+        base_url="https://www.sehuatang.net/thread-1537403-1-1.html",
+        preferred_link="magnet",
+    )
+    assert out.verdict == "import"
+    assert out.need_attachments is False
+
+
 def test_parse_magnet_btih_wrapped_in_escaped_span():
     """blockcode 把 hash 包进 &lt;span&gt;（tid 3094851 磁力+特征编码同帖）。"""
     h = "bd0be9bbbf9775c1aaeacbf1c3f957371f51542a"

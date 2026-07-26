@@ -1247,19 +1247,23 @@ async def fetch_attachments_for_outcome(
 ) -> AttachmentFetchResult:
     """按判定 kind 下载：txt_tail | torrent；轮询顺序跟板块主链。"""
     downloader = AttachmentDownloader(session)
-    # 帖 HTML 已含附件区时不必再整页导航（省 1–5s）；链上已带 aid/auth
+    # 附件 UI 点击依赖当前 Playwright 页在帖子上；即使 HTTP HTML 已有附件区也要导航。
+    # （曾跳过导航省时，会导致种子附件「下载失败」：page 仍停在列表/首页）
     from parsers.thread_gates import looks_like_attachment_zone
 
-    need_nav = not (
-        html and len(html) > 8000 and looks_like_attachment_zone(html)
-    )
-    if need_nav:
+    html_ok = bool(html and len(html) > 8000 and looks_like_attachment_zone(html))
+    if not getattr(session, "_ready", False):
         try:
-            page_html = await downloader.ensure_thread_page(thread_url)
-            if page_html and len(page_html) > 1000:
-                html = page_html
+            await session.bootstrap(force=False)
         except Exception as exc:
-            log.warning("Navigate to thread for attachments failed: %s", exc)
+            log.warning("Bootstrap session for attachments failed: %s", exc)
+    try:
+        page_html = await downloader.ensure_thread_page(thread_url)
+        # 导航只为对齐浏览器页；HTTP 语料已可用则保留 aid/auth
+        if (not html_ok) and page_html and len(page_html) > 1000:
+            html = page_html
+    except Exception as exc:
+        log.warning("Navigate to thread for attachments failed: %s", exc)
 
     # attachment_kind 仅作缺省主链提示；显式 preferred_link 优先
     link_pref = preferred_link

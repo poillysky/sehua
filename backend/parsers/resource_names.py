@@ -99,7 +99,7 @@ TORRENT_FIELD_FORMS: tuple[str, ...] = (
 STRUCTURE_FIELD_OPEN = r"[【［〖「『\[]"
 STRUCTURE_FIELD_CLOSE = r"[】］〗」』\]]"
 # 标签与值之间的分隔符（半角/全角冒号、点号）
-_STRUCTURE_SEP = r"[:：﹒．.]?"
+_STRUCTURE_SEP = r"[:：︰﹒．.]?"
 
 # 片名取值截断边界：仅「已知结构字段」，勿在装饰性【S级泄密】【自转】等处切断
 EXTRA_STRUCTURE_BOUNDARY_FORMS: tuple[str, ...] = (

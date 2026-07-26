@@ -25,7 +25,7 @@ XL_RE = re.compile(r"(?:^|&)xl=(\d+)", re.I)
 
 _FILM_SIZE_RE = re.compile(
     r"【\s*(?:影片大小|影片容量|资源大小|資源大小|文件大小|檔案大小|档案大小)\s*】"
-    r"\s*[:：]?\s*([0-9.]+)\s*(T|TB|G|GB|M|MB|K|KB)?",
+    r"\s*[:：︰]?\s*([0-9.]+)\s*(T|TB|G|GB|M|MB|K|KB)?",
     re.I,
 )
 
@@ -34,6 +34,7 @@ _FILM_SIZE_RE = re.compile(
 _FULLWIDTH_TRANS = str.maketrans(
     {
         "：": ":",
+        "︰": ":",  # U+FE30 竖排冒号（色花堂结构字段常用，如 tid 1537403）
         "？": "?",
         "＆": "&",
         "＝": "=",
@@ -146,7 +147,7 @@ _BARE_HASH_STRUCTURE_ALT = "|".join(re.escape(x) for x in _BARE_HASH_STRUCTURE_C
 # 线索与 hash 之间：空白/冒号/括号，以及 2048 实录「哈希校验; HASH; ;」（tid 27433099）
 _BARE_HASH_GAP = (
     r"(?:"
-    r"[\s:：\|\[\]【】=\-_;；,，\.．]"
+    r"[\s:：︰\|\[\]【】=\-_;；,，\.．]"
     r"|哈希校验|哈希值|雜湊校[验驗]|哈希校[验驗]"
     r"|<[^>\n]{0,120}>"
     r"){0,80}"
