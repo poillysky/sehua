@@ -28,6 +28,18 @@ _FID_RE = re.compile(
     re.I,
 )
 
+# 附件区快检：无此类线索则不必 BeautifulSoup（judge 热路径）
+# 勿单凭 ignore_js_op：预览图也包在里面
+_ATTACH_ZONE_HINT_RE = re.compile(
+    r"attach-card|\bpattl\b|\btattl\b|"
+    r"attachment\.php|mod=attachment|action=download|"
+    r"job\.php\?[^\"'>\s]*download|"
+    r"href=[\"'][^\"']*(?:attachment|action=download|job=download)[^\"']*[\"']|"
+    r"\.(?:torrent|rar|zip|7z|txt|xlsx?|xls|docx?)\b",
+    re.I,
+)
+_ATTACH_ZONE_MEMO: dict[int, bool] = {}
+
 LOGIN_MARKERS = (
     "请先登录后",
     "您需要登录后",
@@ -907,9 +919,28 @@ def thread_typeid_mismatch(html: str, board_fid: str, required_typeid: str | Non
 
 
 def looks_like_attachment_zone(html: str) -> bool:
-    """是否有可解析的资源附件（txt/zip/rar/torrent）。预览图不算。"""
+    """是否有可解析的资源附件（txt/zip/rar/torrent）。预览图不算。
+
+    大页热路径：无附件线索则跳过 BeautifulSoup；同 html 对象结果缓存，
+    避免 judge 内十余次重复抽附件。
+    """
     if not html:
+        return False
+    hid = id(html)
+    cached = _ATTACH_ZONE_MEMO.get(hid)
+    if cached is not None:
+        return cached
+    if not _ATTACH_ZONE_HINT_RE.search(html):
+        _ATTACH_ZONE_MEMO[hid] = False
+        if len(_ATTACH_ZONE_MEMO) > 64:
+            _ATTACH_ZONE_MEMO.clear()
+            _ATTACH_ZONE_MEMO[hid] = False
         return False
     from parsers.attachments import extract_download_attachments
 
-    return bool(extract_download_attachments("", html))
+    ok = bool(extract_download_attachments("", html))
+    _ATTACH_ZONE_MEMO[hid] = ok
+    if len(_ATTACH_ZONE_MEMO) > 64:
+        _ATTACH_ZONE_MEMO.clear()
+        _ATTACH_ZONE_MEMO[hid] = ok
+    return ok

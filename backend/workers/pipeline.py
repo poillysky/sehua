@@ -153,12 +153,14 @@ async def process_thread(
     retries = int(cfg.get("web_crawler_fetch_retries") or 3)
 
     try:
-        entries = resolve_forum_entry_urls(cfg, forum_id) if cfg else []
+        # 会话已就绪时勿每帖同步 expand 2048 发布页（可卡数秒）
+        preferred = str(cfg.get("preferred_entry_url") or "").strip()
+        entries: list[str] = []
         if not session._ready:
+            entries = resolve_forum_entry_urls(cfg, forum_id) if cfg else []
             probe = bootstrap_probe_for_forum(cfg, forum_id)
             await session.bootstrap(entry_urls=entries or None, probe_url=probe)
         # 2048：{当日进站 BBS}/read.php?tid=N；域名跟 active/preferred，不写死
-        preferred = str(cfg.get("preferred_entry_url") or "").strip()
         if forum_id == "2048":
             root = site_root(
                 session.active_entry_url

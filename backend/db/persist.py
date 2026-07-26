@@ -57,7 +57,7 @@ def persist_dual_parse(
             "import_outcome": "伪标题拒绝占位",
         }
 
-    source_id = ensure_source(conn, source_key, source_name, "web")
+    source_id = ensure_source(conn, source_key, source_name, "web", commit=False)
     fid = str(board_fid) if board_fid not in ("", None) else None
 
     if primary is None:
@@ -157,7 +157,7 @@ def persist_dual_parse(
         commit=False,
     )
     # 真链入库后清掉同帖占位，避免「ed2k + stub」被当成 ×2 合集
-    delete_stub_by_source_url(conn, source_url)
+    delete_stub_by_source_url(conn, source_url, commit=False)
     try:
         conn.commit()
     except Exception:

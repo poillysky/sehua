@@ -192,6 +192,8 @@ def ensure_source(
     name: str,
     source_type: str,
     url: str | None = None,
+    *,
+    commit: bool = True,
 ) -> int:
     with conn.cursor() as cur:
         cur.execute(
@@ -208,7 +210,8 @@ def ensure_source(
             (key, name, source_type, url),
         )
         source_id = cur.fetchone()[0]
-    conn.commit()
+    if commit:
+        conn.commit()
     return source_id
 
 
@@ -519,7 +522,9 @@ def _clear_forum_progress_keys(conn: Any, keys: tuple[str, ...]) -> int:
     return n
 
 
-def delete_resource_by_hash(conn: Any, resource_hash: str) -> bool:
+def delete_resource_by_hash(
+    conn: Any, resource_hash: str, *, commit: bool = True
+) -> bool:
     """按 hash 删除单条资源（含 resource_sources / tags）。"""
     h = (resource_hash or "").strip()
     if not h:
@@ -531,7 +536,8 @@ def delete_resource_by_hash(conn: Any, resource_hash: str) -> bool:
         cur.execute("DELETE FROM resource_sources WHERE hash = %s", (h,))
         cur.execute("DELETE FROM ed2k_resources WHERE hash = %s", (h,))
         n = int(cur.rowcount or 0)
-    conn.commit()
+    if commit:
+        conn.commit()
     return n > 0
 
 
@@ -580,7 +586,9 @@ def delete_other_resources_by_source_url(
     return len(victims)
 
 
-def delete_stub_by_source_url(conn: Any, source_url: str) -> bool:
+def delete_stub_by_source_url(
+    conn: Any, source_url: str, *, commit: bool = True
+) -> bool:
     """删除某帖对应的占位资源（unavailable://），真磁力/ED2K 不动。
 
     必须避免对 ed2k_link 做全表 LOWER/LIKE：旧写法 OR + LIKE 会 seq scan
@@ -619,8 +627,10 @@ def delete_stub_by_source_url(conn: Any, source_url: str) -> bool:
             hashes.add(str(row[0]))
     ok = False
     for h in hashes:
-        if delete_resource_by_hash(conn, h):
+        if delete_resource_by_hash(conn, h, commit=False):
             ok = True
+    if commit and ok:
+        conn.commit()
     return ok
 
 
