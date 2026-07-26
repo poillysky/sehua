@@ -232,10 +232,12 @@ def enqueue_thread(
     title: str = "",
     forum_id: str = "sehuatang",
     retry_after: object | None = None,
+    commit: bool = True,
 ) -> bool:
     """新帖入队；已存在则不覆盖状态。返回是否新插入。
 
     retry_after：龄期未满等场景先占位入队，到期后再被取队列抓取。
+    commit=False：由调用方按页批量提交（列表扫热路径）。
     """
     url = canonical_thread_url(url, forum_id=forum_id)
     tid = tid_from_url(url)
@@ -260,7 +262,8 @@ def enqueue_thread(
         ),
     )
     inserted = cur.rowcount > 0
-    conn.commit()
+    if commit:
+        conn.commit()
     return inserted
 
 

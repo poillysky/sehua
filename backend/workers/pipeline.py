@@ -202,7 +202,9 @@ async def process_thread(
             )
             policy = adapter.get_board_policy(board_fid)
 
-        outcome = judge_thread_html(
+        # CPU 重：大合集 HTML 勿堵爬虫事件循环（管理端同进程）
+        outcome = await asyncio.to_thread(
+            judge_thread_html,
             html,
             board_fid=board_fid,
             list_title=list_title,
@@ -253,7 +255,8 @@ async def process_thread(
                     fallback_name=persist_board_name,
                 )
                 policy = adapter.get_board_policy(board_fid)
-            outcome = judge_thread_html(
+            outcome = await asyncio.to_thread(
+                judge_thread_html,
                 html,
                 board_fid=board_fid,
                 list_title=list_title,
@@ -306,7 +309,8 @@ async def process_thread(
             else:
                 if attachment_text:
                     html = inject_attachment_text(html, attachment_text)
-                outcome = judge_thread_html(
+                outcome = await asyncio.to_thread(
+                    judge_thread_html,
                     html,
                     board_fid=board_fid,
                     list_title=list_title,
@@ -359,7 +363,8 @@ async def process_thread(
                     elif attach_res2.text:
                         attachment_text = (attachment_text + "\n" + attach_res2.text).strip()
                         html = inject_attachment_text(html, attachment_text)
-                        outcome = judge_thread_html(
+                        outcome = await asyncio.to_thread(
+                            judge_thread_html,
                             html,
                             board_fid=board_fid,
                             list_title=list_title,
@@ -384,7 +389,8 @@ async def process_thread(
                 # 附件语料可能已含链但 judge 走了非 import：再双解析一次补全
                 # skipped（含 115sha）不再抬升为 import
                 if outcome.verdict not in {"import", "skipped"} and attachment_text:
-                    merged = parse_thread_dual(
+                    merged = await asyncio.to_thread(
+                        parse_thread_dual,
                         html,
                         tid=tid,
                         preferred_link=link_pref,  # type: ignore[arg-type]
@@ -408,14 +414,18 @@ async def process_thread(
                             parsed=merged,
                         )
 
-        parsed = outcome.parsed or parse_thread_dual(
-            html,
-            tid=tid,
-            preferred_link=link_pref,  # type: ignore[arg-type]
-            extra_text=attachment_text,
-            base_url=thread_url,
-            board_fid=board_fid,
-        )
+        if outcome.parsed is not None:
+            parsed = outcome.parsed
+        else:
+            parsed = await asyncio.to_thread(
+                parse_thread_dual,
+                html,
+                tid=tid,
+                preferred_link=link_pref,  # type: ignore[arg-type]
+                extra_text=attachment_text,
+                base_url=thread_url,
+                board_fid=board_fid,
+            )
         if adapter.engine == "phpwind":
             from crawler.parser_phpwind import parse_thread_phpwind
 

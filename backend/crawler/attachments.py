@@ -1247,12 +1247,19 @@ async def fetch_attachments_for_outcome(
 ) -> AttachmentFetchResult:
     """按判定 kind 下载：txt_tail | torrent；轮询顺序跟板块主链。"""
     downloader = AttachmentDownloader(session)
-    try:
-        page_html = await downloader.ensure_thread_page(thread_url)
-        if page_html and len(page_html) > 1000:
-            html = page_html
-    except Exception as exc:
-        log.warning("Navigate to thread for attachments failed: %s", exc)
+    # 帖 HTML 已含附件区时不必再整页导航（省 1–5s）；链上已带 aid/auth
+    from parsers.thread_gates import looks_like_attachment_zone
+
+    need_nav = not (
+        html and len(html) > 8000 and looks_like_attachment_zone(html)
+    )
+    if need_nav:
+        try:
+            page_html = await downloader.ensure_thread_page(thread_url)
+            if page_html and len(page_html) > 1000:
+                html = page_html
+        except Exception as exc:
+            log.warning("Navigate to thread for attachments failed: %s", exc)
 
     # attachment_kind 仅作缺省主链提示；显式 preferred_link 优先
     link_pref = preferred_link

@@ -1472,7 +1472,7 @@ export function ForumConfigModal({
     void pull()
     const timer = window.setInterval(() => {
       void pull()
-    }, 2000)
+    }, 8000)
     return () => {
       cancelled = true
       window.clearInterval(timer)

@@ -256,9 +256,18 @@ def _enqueue_batch(
                     title=t.title,
                     forum_id=forum_id,
                     retry_after=None,
+                    commit=False,
                 ):
                     out.enqueued += 1
                     page_enqueued += 1
+            try:
+                conn.commit()
+            except Exception:
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+                raise
         finally:
             try:
                 conn.close()

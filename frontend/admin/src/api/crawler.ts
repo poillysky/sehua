@@ -1,6 +1,12 @@
 import { api } from './client'
 
-export type CrawlerActivity = { t: string; msg: string }
+export type CrawlerActivity = {
+  t: string
+  msg: string
+  id?: number
+  level?: string
+  message?: string
+}
 
 export type CrawlerStatus = {
   forum_id: string
@@ -112,10 +118,14 @@ export type CrawlerStatus = {
     window_sec?: number
     raw_count?: number
   }
+  latest_activity_id?: number
+  activities?: CrawlerActivity[]
 }
 
-export function fetchCrawlerStatus() {
-  return api<CrawlerStatus>('/api/crawler/status')
+export function fetchCrawlerStatus(sinceId?: number) {
+  const q =
+    sinceId && sinceId > 0 ? `?since_id=${encodeURIComponent(String(sinceId))}` : ''
+  return api<CrawlerStatus>(`/api/crawler/status${q}`)
 }
 
 export function clearCrawlerActivity() {

@@ -520,10 +520,16 @@ def test_board_141_skips_young_posts(monkeypatch):
         def close(self):
             return None
 
+        def commit(self):
+            return None
+
+        def rollback(self):
+            return None
+
     enqueued_urls: list[str] = []
 
     def fake_enqueue_thread(
-        conn, *, url, board_fid, board_name, title, retry_after=None, forum_id="sehuatang"
+        conn, *, url, board_fid, board_name, title, retry_after=None, forum_id="sehuatang", **_kw
     ):
         enqueued_urls.append(url)
         assert retry_after is None

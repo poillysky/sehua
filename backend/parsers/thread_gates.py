@@ -30,6 +30,7 @@ _FID_RE = re.compile(
 
 # 附件区快检：无此类线索则不必 BeautifulSoup（judge 热路径）
 # 勿单凭 ignore_js_op：预览图也包在里面
+# 缓存用内容指纹，勿用 id(html)（GC 后 id 复用会串结果）
 _ATTACH_ZONE_HINT_RE = re.compile(
     r"attach-card|\bpattl\b|\btattl\b|"
     r"attachment\.php|mod=attachment|action=download|"
@@ -38,7 +39,19 @@ _ATTACH_ZONE_HINT_RE = re.compile(
     r"\.(?:torrent|rar|zip|7z|txt|xlsx?|xls|docx?)\b",
     re.I,
 )
-_ATTACH_ZONE_MEMO: dict[int, bool] = {}
+_ATTACH_ZONE_FP_MEMO: dict[tuple[int, int, int, int], bool] = {}
+
+
+def _attach_zone_fp(html: str) -> tuple[int, int, int, int]:
+    n = len(html)
+    mid = n // 2
+    return (
+        n,
+        hash(html[:256]),
+        hash(html[mid : mid + 256]),
+        hash(html[-256:] if n >= 256 else html),
+    )
+
 
 LOGIN_MARKERS = (
     "请先登录后",
@@ -921,26 +934,23 @@ def thread_typeid_mismatch(html: str, board_fid: str, required_typeid: str | Non
 def looks_like_attachment_zone(html: str) -> bool:
     """是否有可解析的资源附件（txt/zip/rar/torrent）。预览图不算。
 
-    大页热路径：无附件线索则跳过 BeautifulSoup；同 html 对象结果缓存，
+    大页热路径：无附件线索则跳过 BeautifulSoup；同页指纹结果缓存，
     避免 judge 内十余次重复抽附件。
     """
     if not html:
         return False
-    hid = id(html)
-    cached = _ATTACH_ZONE_MEMO.get(hid)
+    fp = _attach_zone_fp(html)
+    cached = _ATTACH_ZONE_FP_MEMO.get(fp)
     if cached is not None:
         return cached
     if not _ATTACH_ZONE_HINT_RE.search(html):
-        _ATTACH_ZONE_MEMO[hid] = False
-        if len(_ATTACH_ZONE_MEMO) > 64:
-            _ATTACH_ZONE_MEMO.clear()
-            _ATTACH_ZONE_MEMO[hid] = False
-        return False
-    from parsers.attachments import extract_download_attachments
+        ok = False
+    else:
+        from parsers.attachments import extract_download_attachments
 
-    ok = bool(extract_download_attachments("", html))
-    _ATTACH_ZONE_MEMO[hid] = ok
-    if len(_ATTACH_ZONE_MEMO) > 64:
-        _ATTACH_ZONE_MEMO.clear()
-        _ATTACH_ZONE_MEMO[hid] = ok
+        ok = bool(extract_download_attachments("", html))
+    _ATTACH_ZONE_FP_MEMO[fp] = ok
+    if len(_ATTACH_ZONE_FP_MEMO) > 128:
+        _ATTACH_ZONE_FP_MEMO.clear()
+        _ATTACH_ZONE_FP_MEMO[fp] = ok
     return ok

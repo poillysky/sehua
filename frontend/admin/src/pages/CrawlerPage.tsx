@@ -296,6 +296,7 @@ export function CrawlerPage() {
   const [runHint, setRunHint] = useState('')
   const autoLoopTried = useRef(false)
   const stubWasActive = useRef(false)
+  const activitySinceId = useRef(0)
 
   const [discStatus, setDiscStatus] = useState<'all' | 'failed' | 'skipped'>('failed')
   const [discQInput, setDiscQInput] = useState('')
@@ -316,8 +317,31 @@ export function CrawlerPage() {
 
   const refresh = useCallback(async () => {
     try {
-      const next = await fetchCrawlerStatus()
-      setStatus(next)
+      const since = activitySinceId.current
+      const next = await fetchCrawlerStatus(since > 0 ? since : undefined)
+      const latest = Number(next.latest_activity_id || 0)
+      setStatus((prev) => {
+        if (since > 0 && prev?.activity?.length) {
+          const incoming = next.activity || []
+          if (incoming.length) {
+            const seen = new Set<number>()
+            const merged: typeof incoming = []
+            for (const row of [...incoming, ...prev.activity]) {
+              const id = Number(row.id || 0)
+              if (id > 0) {
+                if (seen.has(id)) continue
+                seen.add(id)
+              }
+              merged.push(row)
+              if (merged.length >= 120) break
+            }
+            return { ...next, activity: merged }
+          }
+          return { ...next, activity: prev.activity }
+        }
+        return next
+      })
+      if (latest > 0) activitySinceId.current = latest
     } catch (err) {
       toast.error(err instanceof Error ? err.message : '读取爬虫状态失败')
     } finally {
@@ -698,6 +722,7 @@ export function CrawlerPage() {
     setClearingActivity(true)
     try {
       const res = await clearCrawlerActivity()
+      activitySinceId.current = 0
       setStatus((prev) =>
         prev
           ? { ...prev, activity: res.activity || [] }
