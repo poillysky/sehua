@@ -3,6 +3,7 @@ import { fetchForumRules, type ForumBoard, type ForumItem } from '../api/forums'
 import { importFromUrl } from '../api/importApi'
 import {
   buildBoardFacetTree,
+  buildForumBoardFacetTree,
   deleteResourcesBatch,
   fetchRecentResources,
   fetchResourceIds,
@@ -62,8 +63,13 @@ export function ResourcesPage() {
   const [selectAllBusy, setSelectAllBusy] = useState(false)
   const [filterOpen, setFilterOpen] = useState(false)
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
-  const [openDims, setOpenDims] = useState({ forum: true, source: true, board: true, result: true })
+  const [openDims, setOpenDims] = useState({ forumBoard: true, source: true, result: true })
+  /** 展开的论坛节点（三级树 L1） */
+  const [expandedForums, setExpandedForums] = useState<Set<string>>(() => new Set())
+  /** 展开的主板块（三级树 L2），key = `${forumId}::${parent}` */
   const [expandedBoardParents, setExpandedBoardParents] = useState<Set<string>>(() => new Set())
+  /** 论坛拓扑（用于准确的板块父子分类） */
+  const [forumTopology, setForumTopology] = useState<Record<string, ForumBoard[]>>({})
   const [forum, setForum] = useState('all')
   const [source, setSource] = useState<'all' | 'web' | 'upload'>('all')
   const [board, setBoard] = useState('all')
@@ -404,10 +410,14 @@ export function ResourcesPage() {
 
   function changeForum(next: string) {
     setForum(next)
+    setBoard('all')
     if (next !== 'all') {
-      setSource('all')
-      setBoard('all')
-      setResult('all')
+      setExpandedForums((prev) => {
+        if (prev.has(next)) return prev
+        const n = new Set(prev)
+        n.add(next)
+        return n
+      })
     }
     setPage(1)
     closeFilterIfMobile()
@@ -415,33 +425,28 @@ export function ResourcesPage() {
 
   function changeSource(next: 'all' | 'web' | 'upload') {
     setSource(next)
-    if (next !== 'all') {
-      setForum('all')
-      setBoard('all')
-      setResult('all')
-    }
     setPage(1)
     closeFilterIfMobile()
   }
 
-  function changeBoard(next: string) {
-    setBoard(next)
-    if (next !== 'all') {
-      setForum('all')
-      setSource('all')
-      setResult('all')
+  /** 在指定论坛下筛选板块（论坛+板块叠加） */
+  function changeBoard(next: string, forumId?: string) {
+    if (forumId && forumId !== 'all') {
+      setForum(forumId)
+      setExpandedForums((prev) => {
+        if (prev.has(forumId)) return prev
+        const n = new Set(prev)
+        n.add(forumId)
+        return n
+      })
     }
+    setBoard(next)
     setPage(1)
     closeFilterIfMobile()
   }
 
   function changeResult(next: ResultFilter) {
     setResult(next)
-    if (next !== 'all') {
-      setForum('all')
-      setSource('all')
-      setBoard('all')
-    }
     setPage(1)
     closeFilterIfMobile()
   }
@@ -459,26 +464,77 @@ export function ResourcesPage() {
     const items = facets.boards.length
       ? facets.boards
       : boards.map((name) => ({ name, count: 0 }))
+    const topo = forum !== 'all' ? forumTopology[forum] || [] : []
+    if (forum !== 'all' && topo.length > 0) {
+      return buildForumBoardFacetTree(forum, topo, items)
+    }
     return buildBoardFacetTree(items)
-  }, [facets.boards, boards])
+  }, [facets.boards, boards, forum, forumTopology])
 
   useEffect(() => {
-    if (board === 'all') return
+    let cancelled = false
+    void fetchForumRules()
+      .then((data) => {
+        if (cancelled) return
+        const map: Record<string, ForumBoard[]> = {}
+        for (const f of data.forums || []) {
+          if (f?.id && Array.isArray(f.boards)) map[f.id] = f.boards
+        }
+        setForumTopology(map)
+      })
+      .catch(() => {
+        /* 拓扑失败时侧栏回退名称拆分 */
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
+  useEffect(() => {
+    if (forum !== 'all') {
+      setExpandedForums((prev) => {
+        if (prev.has(forum)) return prev
+        const next = new Set(prev)
+        next.add(forum)
+        return next
+      })
+    }
+  }, [forum])
+
+  useEffect(() => {
+    if (board === 'all' || forum === 'all') return
     const { parent } = splitBoardParentChild(board)
     if (!parent) return
+    const key = `${forum}::${parent}`
     setExpandedBoardParents((prev) => {
-      if (prev.has(parent)) return prev
+      if (prev.has(key)) return prev
       const next = new Set(prev)
-      next.add(parent)
+      next.add(key)
       return next
     })
-  }, [board])
+  }, [board, forum])
 
-  function toggleBoardParent(parent: string) {
+  function toggleForumNode(forumId: string) {
+    setExpandedForums((prev) => {
+      const next = new Set(prev)
+      if (next.has(forumId)) next.delete(forumId)
+      else next.add(forumId)
+      return next
+    })
+    // 展开时切到该论坛，以便加载其板块计数
+    if (forum !== forumId) {
+      setForum(forumId)
+      setBoard('all')
+      setPage(1)
+    }
+  }
+
+  function toggleBoardParent(forumId: string, parent: string) {
+    const key = `${forumId}::${parent}`
     setExpandedBoardParents((prev) => {
       const next = new Set(prev)
-      if (next.has(parent)) next.delete(parent)
-      else next.add(parent)
+      if (next.has(key)) next.delete(key)
+      else next.add(key)
       return next
     })
   }
@@ -624,16 +680,15 @@ export function ResourcesPage() {
 
   const forumFacets = facets.forums || []
   const forumTotal = forumFacets.reduce((sum, f) => sum + f.count, 0)
-  const forumCount =
+  const activeForumCount =
     forum === 'all'
       ? forumTotal || facets.sources.all || 0
       : forumFacets.find((f) => f.id === forum)?.count ?? total
-  const sourceCount = facets.sources[source] ?? facets.sources.all ?? 0
-  const boardCount =
+  const forumBoardCount =
     board === 'all'
-      ? facets.boards.reduce((sum, b) => sum + b.count, 0)
+      ? activeForumCount
       : facets.boards.find((b) => b.name === board)?.count ?? total
-  const boardTotal = facets.boards.reduce((sum, b) => sum + b.count, 0)
+  const sourceCount = facets.sources[source] ?? facets.sources.all ?? 0
   const resultFacets = facets.results || EMPTY_FACETS.results || {}
   const resultCount = resultFacets[result] ?? resultFacets.all ?? 0
 
@@ -648,40 +703,182 @@ export function ResourcesPage() {
         </div>
 
         <div className="filter-panel">
-          <div className={`dim-card ${openDims.forum ? '' : 'collapsed'}`}>
+          <div className={`dim-card ${openDims.forumBoard ? '' : 'collapsed'}`}>
             <button
               type="button"
               className="dim-head"
-              aria-expanded={openDims.forum}
-              onClick={() => toggleDim('forum')}
+              aria-expanded={openDims.forumBoard}
+              onClick={() => toggleDim('forumBoard')}
             >
               <span className="dim-head-label">
                 <span className="dim-caret" aria-hidden />
-                <span>论坛</span>
+                <span>论坛 / 板块</span>
               </span>
-              <span className="dim-count">{forumCount}</span>
+              <span className="dim-count">{forumBoardCount}</span>
             </button>
-            {openDims.forum ? (
+            {openDims.forumBoard ? (
               <div className="dim-body">
                 <button
                   type="button"
-                  className={forum === 'all' ? 'dim-item active' : 'dim-item'}
+                  className={forum === 'all' && board === 'all' ? 'dim-item active' : 'dim-item'}
                   onClick={() => changeForum('all')}
                 >
-                  <span className="dim-item-label">全部论坛</span>
+                  <span className="dim-item-label">全部</span>
                   <span className="dim-item-count">{forumTotal || facets.sources.all || 0}</span>
                 </button>
-                {forumFacets.map((f) => (
-                  <button
-                    key={f.id}
-                    type="button"
-                    className={forum === f.id ? 'dim-item active' : 'dim-item'}
-                    onClick={() => changeForum(f.id)}
-                  >
-                    <span className="dim-item-label">{f.name}</span>
-                    <span className="dim-item-count">{f.count}</span>
-                  </button>
-                ))}
+                {forumFacets.map((f) => {
+                  const forumOpen = expandedForums.has(f.id)
+                  const forumActive = forum === f.id
+                  const showBoards = forumOpen && forumActive
+                  return (
+                    <div
+                      key={f.id}
+                      className={`dim-forum-group${forumOpen ? ' is-open' : ''}${forumActive ? ' has-active' : ''}`}
+                    >
+                      <div className="dim-board-parent-row">
+                        <button
+                          type="button"
+                          className={`dim-board-expand${forumOpen ? ' is-open' : ''}`}
+                          aria-expanded={forumOpen}
+                          title={forumOpen ? '收起板块' : '展开板块'}
+                          onClick={() => toggleForumNode(f.id)}
+                        >
+                          <span className="dim-caret" aria-hidden />
+                        </button>
+                        <button
+                          type="button"
+                          className={
+                            forumActive && board === 'all'
+                              ? 'dim-item dim-board-parent active'
+                              : 'dim-item dim-board-parent'
+                          }
+                          onClick={() => changeForum(f.id)}
+                          title={`筛选论坛：${f.name}`}
+                        >
+                          <span className="dim-item-label">{f.name}</span>
+                          <span className="dim-item-count">{f.count}</span>
+                        </button>
+                      </div>
+                      {showBoards ? (
+                        <div className="dim-forum-boards">
+                          <button
+                            type="button"
+                            className={
+                              forumActive && board === 'all'
+                                ? 'dim-item dim-board-child active'
+                                : 'dim-item dim-board-child'
+                            }
+                            onClick={() => changeBoard('all', f.id)}
+                          >
+                            <span className="dim-item-label">全部板块</span>
+                            <span className="dim-item-count">{f.count}</span>
+                          </button>
+                          {boardTree.map((node) => {
+                            const parentKey = `${f.id}::${node.parent}`
+                            const open = expandedBoardParents.has(parentKey)
+                            const hasKids = Boolean(node.self) || node.children.length > 0
+                            const parentActive =
+                              forumActive &&
+                              (board === node.parent ||
+                                (node.self && board === node.self.name) ||
+                                node.children.some((c) => c.name === board))
+                            const onlyParent = !node.children.length && Boolean(node.self)
+                            const canFilterParent = node.parentFilterable !== false
+                            const parentSelected =
+                              forumActive &&
+                              (board === node.parent ||
+                                (node.self && board === node.self.name && !node.children.some((c) => c.name === board)))
+                            return (
+                              <div
+                                key={parentKey}
+                                className={`dim-board-group${open ? ' is-open' : ''}${parentActive ? ' has-active' : ''}`}
+                              >
+                                <div className="dim-board-parent-row">
+                                  {hasKids && !onlyParent ? (
+                                    <button
+                                      type="button"
+                                      className={`dim-board-expand${open ? ' is-open' : ''}`}
+                                      aria-expanded={open}
+                                      title={open ? '收起子分类' : '展开子分类'}
+                                      onClick={() => toggleBoardParent(f.id, node.parent)}
+                                    >
+                                      <span className="dim-caret" aria-hidden />
+                                    </button>
+                                  ) : (
+                                    <span className="dim-board-expand-spacer" aria-hidden />
+                                  )}
+                                  <button
+                                    type="button"
+                                    className={
+                                      parentSelected
+                                        ? 'dim-item dim-board-parent active'
+                                        : 'dim-item dim-board-parent'
+                                    }
+                                    onClick={() => {
+                                      if (canFilterParent) {
+                                        changeBoard(node.self?.name || node.parent, f.id)
+                                        return
+                                      }
+                                      if (onlyParent && node.self) {
+                                        changeBoard(node.self.name, f.id)
+                                        return
+                                      }
+                                      toggleBoardParent(f.id, node.parent)
+                                    }}
+                                    title={
+                                      canFilterParent
+                                        ? `筛选：${node.parent}（含全部子类）`
+                                        : onlyParent
+                                          ? `筛选：${node.parent}`
+                                          : '展开查看子版块'
+                                    }
+                                  >
+                                    <span className="dim-item-label">{node.parent}</span>
+                                    <span className="dim-item-count">{node.total}</span>
+                                  </button>
+                                </div>
+                                {open && !onlyParent ? (
+                                  <div className="dim-board-children">
+                                    {node.self ? (
+                                      <button
+                                        type="button"
+                                        className={
+                                          forumActive && board === node.self.name
+                                            ? 'dim-item dim-board-child active'
+                                            : 'dim-item dim-board-child'
+                                        }
+                                        onClick={() => changeBoard(node.self!.name, f.id)}
+                                      >
+                                        <span className="dim-item-label">未分子类</span>
+                                        <span className="dim-item-count">{node.self.count}</span>
+                                      </button>
+                                    ) : null}
+                                    {node.children.map((c) => (
+                                      <button
+                                        key={c.name}
+                                        type="button"
+                                        className={
+                                          forumActive && board === c.name
+                                            ? 'dim-item dim-board-child active'
+                                            : 'dim-item dim-board-child'
+                                        }
+                                        onClick={() => changeBoard(c.name, f.id)}
+                                        title={c.name}
+                                      >
+                                        <span className="dim-item-label">{c.label}</span>
+                                        <span className="dim-item-count">{c.count}</span>
+                                      </button>
+                                    ))}
+                                  </div>
+                                ) : null}
+                              </div>
+                            )
+                          })}
+                        </div>
+                      ) : null}
+                    </div>
+                  )
+                })}
               </div>
             ) : null}
           </div>
@@ -718,109 +915,6 @@ export function ResourcesPage() {
                     <span className="dim-item-count">{facets.sources[id] ?? 0}</span>
                   </button>
                 ))}
-              </div>
-            ) : null}
-          </div>
-
-          <div className={`dim-card ${openDims.board ? '' : 'collapsed'}`}>
-            <button
-              type="button"
-              className="dim-head"
-              aria-expanded={openDims.board}
-              onClick={() => toggleDim('board')}
-            >
-              <span className="dim-head-label">
-                <span className="dim-caret" aria-hidden />
-                <span>板块</span>
-              </span>
-              <span className="dim-count">{boardCount}</span>
-            </button>
-            {openDims.board ? (
-              <div className="dim-body">
-                <button type="button" className={board === 'all' ? 'dim-item active' : 'dim-item'} onClick={() => changeBoard('all')}>
-                  <span className="dim-item-label">全部板块</span>
-                  <span className="dim-item-count">{boardTotal}</span>
-                </button>
-                {boardTree.map((node) => {
-                  const open = expandedBoardParents.has(node.parent)
-                  const hasKids = Boolean(node.self) || node.children.length > 0
-                  const parentActive =
-                    board === node.parent ||
-                    (node.self && board === node.self.name) ||
-                    node.children.some((c) => c.name === board)
-                  const onlyParent = !node.children.length && node.self
-                  return (
-                    <div
-                      key={node.parent}
-                      className={`dim-board-group${open ? ' is-open' : ''}${parentActive ? ' has-active' : ''}`}
-                    >
-                      <div className="dim-board-parent-row">
-                        {hasKids && !onlyParent ? (
-                          <button
-                            type="button"
-                            className={`dim-board-expand${open ? ' is-open' : ''}`}
-                            aria-expanded={open}
-                            title={open ? '收起子分类' : '展开子分类'}
-                            onClick={() => toggleBoardParent(node.parent)}
-                          >
-                            <span className="dim-caret" aria-hidden />
-                          </button>
-                        ) : (
-                          <span className="dim-board-expand-spacer" aria-hidden />
-                        )}
-                        <button
-                          type="button"
-                          className={
-                            board === (node.self?.name || node.parent) && !node.children.some((c) => c.name === board)
-                              ? 'dim-item dim-board-parent active'
-                              : 'dim-item dim-board-parent'
-                          }
-                          onClick={() => {
-                            if (node.self) changeBoard(node.self.name)
-                            else if (onlyParent) changeBoard(node.parent)
-                            else toggleBoardParent(node.parent)
-                          }}
-                          title={
-                            node.self
-                              ? `筛选：${node.self.name}`
-                              : onlyParent
-                                ? `筛选：${node.parent}`
-                                : '展开查看子分类'
-                          }
-                        >
-                          <span className="dim-item-label">{node.parent}</span>
-                          <span className="dim-item-count">{node.total}</span>
-                        </button>
-                      </div>
-                      {open && !onlyParent ? (
-                        <div className="dim-board-children">
-                          {node.self ? (
-                            <button
-                              type="button"
-                              className={board === node.self.name ? 'dim-item dim-board-child active' : 'dim-item dim-board-child'}
-                              onClick={() => changeBoard(node.self!.name)}
-                            >
-                              <span className="dim-item-label">未分子类</span>
-                              <span className="dim-item-count">{node.self.count}</span>
-                            </button>
-                          ) : null}
-                          {node.children.map((c) => (
-                            <button
-                              key={c.name}
-                              type="button"
-                              className={board === c.name ? 'dim-item dim-board-child active' : 'dim-item dim-board-child'}
-                              onClick={() => changeBoard(c.name)}
-                              title={c.name}
-                            >
-                              <span className="dim-item-label">{c.label}</span>
-                              <span className="dim-item-count">{c.count}</span>
-                            </button>
-                          ))}
-                        </div>
-                      ) : null}
-                    </div>
-                  )
-                })}
               </div>
             ) : null}
           </div>

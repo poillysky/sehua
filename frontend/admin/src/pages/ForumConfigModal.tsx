@@ -426,8 +426,17 @@ type ParentBoardGroup = {
   children: ForumBoard[]
 }
 
-function groupParentBoards(boards: ForumBoard[]): [string, ParentBoardGroup[]][] {
-  const categoryOrder = ['综合讨论区', '原创BT电影']
+/** 与爬虫白名单分区一致：色花堂 Discuz 大区；2048 PHPWind 分区 */
+function categoryOrderForForum(forumId: string): string[] {
+  if (forumId === '2048') return ['新片合集', '分区资源', 'BT磁力']
+  return ['综合讨论区', '原创BT电影']
+}
+
+function groupParentBoards(
+  boards: ForumBoard[],
+  forumId = 'sehuatang',
+): [string, ParentBoardGroup[]][] {
+  const preferred = categoryOrderForForum(forumId)
   const parents = new Map<string, ParentBoardGroup>()
   for (const board of boards) {
     const fid = String(board.fid)
@@ -453,10 +462,15 @@ function groupParentBoards(boards: ForumBoard[]): [string, ParentBoardGroup[]][]
     byCat.get(p.category)!.push(p)
   }
   for (const list of byCat.values()) {
-    list.sort((a, b) => Number(a.fid) - Number(b.fid) || a.name.localeCompare(b.name, 'zh-CN'))
+    list.sort(
+      (a, b) =>
+        (a.children[0]?.priority ?? 50) - (b.children[0]?.priority ?? 50) ||
+        Number(a.fid) - Number(b.fid) ||
+        a.name.localeCompare(b.name, 'zh-CN'),
+    )
   }
   const result: [string, ParentBoardGroup[]][] = []
-  for (const key of categoryOrder) {
+  for (const key of preferred) {
     if (byCat.has(key)) {
       result.push([key, byCat.get(key)!])
       byCat.delete(key)
@@ -497,25 +511,31 @@ function OverviewTab({
   const magnetCount = boards.filter((b) => b.primary_link === 'magnet').length
   const ed2kCount = boards.filter((b) => b.primary_link === 'ed2k').length
   const cfg = forum.crawler_config
+  const is2048 = forum.id === '2048'
+  const parentCount = new Set(boards.map((b) => String(b.fid))).size
+  const skipLabel = is2048 ? '登录购买板' : '跳过分区'
+  const skipCount = is2048
+    ? boards.filter((b) => b.fid === '5' || b.fid === '13').length
+    : 4
 
   return (
     <div className="forum-overview">
       <div className="forum-modal-stats">
         <div className="forum-stat-pill forum-stat-pill--boards">
           <span className="forum-stat-val">{boards.length}</span>
-          <span className="forum-stat-lbl">白名单子版</span>
+          <span className="forum-stat-lbl">白名单爬取单位</span>
         </div>
         <div className="forum-stat-pill forum-stat-pill--magnet">
           <span className="forum-stat-val">{magnetCount}</span>
-          <span className="forum-stat-lbl">磁力板块</span>
+          <span className="forum-stat-lbl">{is2048 ? '磁力优先' : '磁力板块'}</span>
         </div>
         <div className="forum-stat-pill forum-stat-pill--ed2k">
-          <span className="forum-stat-val">{ed2kCount}</span>
-          <span className="forum-stat-lbl">ED2K 板块</span>
+          <span className="forum-stat-val">{is2048 ? parentCount : ed2kCount}</span>
+          <span className="forum-stat-lbl">{is2048 ? '白名单子版' : 'ED2K 板块'}</span>
         </div>
         <div className="forum-stat-pill forum-stat-pill--skip">
-          <span className="forum-stat-val">4</span>
-          <span className="forum-stat-lbl">跳过分区</span>
+          <span className="forum-stat-val">{skipCount}</span>
+          <span className="forum-stat-lbl">{skipLabel}</span>
         </div>
       </div>
 
@@ -562,15 +582,31 @@ function OverviewTab({
             </div>
             <div className="forum-config-summary-item">
               <span className="lbl">扫列表</span>
-              <span className="val">发帖时间序 · 深扫每轮 {cfg.web_crawler_list_pages_per_board || 15} 页至板底</span>
+              <span className="val">
+                {is2048
+                  ? `thread.php · 跳过指南/广告置顶 · 深扫每轮 ${cfg.web_crawler_list_pages_per_board || 15} 页`
+                  : `发帖时间序 · 深扫每轮 ${cfg.web_crawler_list_pages_per_board || 15} 页至板底`}
+              </span>
             </div>
             <div className="forum-config-summary-item">
               <span className="lbl">抓帖</span>
-              <span className="val">HTTP · 软文浏览器重读</span>
+              <span className="val">
+                {is2048
+                  ? 'HTTP read.php · 0 元购买可解锁 · 软壳有正文则继续'
+                  : 'HTTP · 软文壳可浏览器重读 · 正文内 safe 链不算壳'}
+              </span>
             </div>
             <div className="forum-config-summary-item">
               <span className="lbl">入库</span>
-              <span className="val">每帖 1 主资源</span>
+              <span className="val">同帖多链可 ×N · 无链占位 · 附件无权/日限占位</span>
+            </div>
+            <div className="forum-config-summary-item">
+              <span className="lbl">Cookie</span>
+              <span className="val">
+                {is2048
+                  ? 'cookies_2048.json · 账号重爬独立 jar · 空配置=游客不复活旧 cookie'
+                  : 'cookies.json · 账号重爬独立 jar · 空配置=游客不复活旧 cookie'}
+              </span>
             </div>
             <div className="forum-config-summary-item full">
               <span className="lbl">入口 URL（含备用）</span>
@@ -587,12 +623,28 @@ function OverviewTab({
             </div>
             {cfg.preferred_entry_url?.trim() ? (
               <div className="forum-config-summary-item full">
-                <span className="lbl">上次成功进站</span>
+                <span className="lbl">{is2048 ? '上次成功 BBS 根' : '上次成功进站'}</span>
                 <span className="val mono">{cfg.preferred_entry_url.trim()}</span>
               </div>
             ) : null}
           </div>
         </section>
+
+        {(forum.policies || []).length ? (
+          <section className="forum-modal-block">
+            <div className="forum-block-head-inline">
+              <h4>爬虫策略（与白名单一致）</h4>
+              <button type="button" className="btn ghost sm" onClick={() => onGoto('topology')}>
+                执行拓扑
+              </button>
+            </div>
+            <ul className="forum-planned-policies">
+              {(forum.policies || []).map((line) => (
+                <li key={line}>{line}</li>
+              ))}
+            </ul>
+          </section>
+        ) : null}
       </div>
     </div>
   )
@@ -724,8 +776,9 @@ function BoardsTab({
     return map
   }, [enabledFids])
   const active = boards.find((b) => boardUnitKey(b) === activeBoardFid)
-  const tree = useMemo(() => groupParentBoards(boards), [boards])
+  const tree = useMemo(() => groupParentBoards(boards, forumId), [boards, forumId])
   const parentCount = useMemo(() => tree.reduce((n, [, list]) => n + list.length, 0), [tree])
+  const is2048 = forumId === '2048'
 
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set())
   const [clearing, setClearing] = useState<string | null>(null)
@@ -793,8 +846,9 @@ function BoardsTab({
         <div className="forum-boards-toolbar">
           <div className="forum-boards-toolbar-main">
             <p className="hint">
-              {parentCount} 个主板块 · {boards.length} 个分类子版 · 磁力 {magnetCount} · ED2K {ed2kCount}
-              · 点击主板块展开子版
+              {is2048
+                ? `${tree.length} 个分区 · ${boards.length} 个子版 · 全板磁力优先 · fid 5/13 需登录购买`
+                : `${parentCount} 个主板块 · ${boards.length} 个分类子版 · 磁力 ${magnetCount} · ED2K ${ed2kCount} · 点击主板块展开子版`}
             </p>
             <div className="forum-boards-active-card">
               <span className="forum-boards-active-lbl">

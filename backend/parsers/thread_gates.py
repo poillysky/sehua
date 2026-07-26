@@ -462,14 +462,18 @@ def is_safe_or_soft_shell(html: str) -> bool:
     """站点软文 / R18 安全壳 / CF 中间页。
 
     真帖（有一楼正文）即使较短、页脚未抓全，也不得当成软文壳。
+    含 tid=1742422 类：楼内 attach 嵌套整页广告 HTML（带 static/safe/），勿整帖当壳。
     """
     if not html:
         return True
-    # 安全壳脚本（名人名言 / R18 门）
-    if "var safeid" in html or "static/safe/" in html.lower():
-        return True
     title = page_title(html)
     if any(h in title for h in SOFT_AD_TITLE_HINTS):
+        return True
+    # 真帖一楼优先：正文里夹带的转义软文片段不算壳
+    if has_thread_post_body(html):
+        return False
+    # 安全壳脚本（名人名言 / R18 门）—— 仅无正文时生效
+    if "var safeid" in html or "static/safe/" in html.lower():
         return True
     # 无论坛页脚的短页：仅当也无一楼正文时才视为中间页
     # （旧逻辑只要 <5KB 且无 Powered by 就判软文，会误伤「需回复」等真帖片段）
@@ -481,11 +485,7 @@ def is_safe_or_soft_shell(html: str) -> bool:
         or "id=\"read_tpc\"" in lowered
         or "id='read_tpc'" in lowered
     )
-    if (
-        not has_engine_footer
-        and len(html) < 5000
-        and not has_thread_post_body(html)
-    ):
+    if not has_engine_footer and len(html) < 5000:
         return True
     return False
 

@@ -62,6 +62,18 @@ def test_resource_list_where_forum_id():
     assert params_empty == []
 
 
+def test_resource_list_where_board_parent_matches_children():
+    """主板块筛选：整板名 +「主板块 · 子类」一并命中。"""
+    sql, params = _resource_list_where(board_name="国产原创")
+    assert "LIKE" in sql
+    assert "国产原创" in params
+    assert "国产原创 · %" in params
+
+    sql2, params2 = _resource_list_where(board_name="国产原创 · 国产无码")
+    assert "国产原创 · 国产无码" in params2
+    assert "国产原创 · 国产无码 · %" in params2
+
+
 def test_assemble_thread_merges_assets():
     row = _assemble_thread_resource_row(
         group_id=99,

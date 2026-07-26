@@ -154,16 +154,18 @@ export type BoardFacetTreeNode = {
   /** 恰好等于主板块名的旧数据行 */
   self: BoardFacetItem | null
   children: { name: string; label: string; count: number }[]
+  /** 点击主节点是否可筛（色花堂主板块=可；2048 分区名不可直接筛） */
+  parentFilterable?: boolean
 }
 
-/** 资源侧栏：按主板块分组，子分类挂在下面 */
+/** 资源侧栏：按主板块分组，子分类挂在下面（仅靠名称拆分，作兜底） */
 export function buildBoardFacetTree(items: BoardFacetItem[]): BoardFacetTreeNode[] {
   const map = new Map<string, BoardFacetTreeNode>()
 
   const ensure = (parent: string) => {
     let node = map.get(parent)
     if (!node) {
-      node = { parent, total: 0, self: null, children: [] }
+      node = { parent, total: 0, self: null, children: [], parentFilterable: true }
       map.set(parent, node)
     }
     return node
@@ -190,6 +192,156 @@ export function buildBoardFacetTree(items: BoardFacetItem[]): BoardFacetTreeNode
   }
 
   return [...map.values()].sort((a, b) => b.total - a.total || a.parent.localeCompare(b.parent, 'zh'))
+}
+
+type TopologyBoard = {
+  name: string
+  board_name?: string
+  type_name?: string
+  category?: string
+  priority?: number
+}
+
+/**
+ * 按论坛拓扑建树（比纯名称拆分准确）：
+ * - 色花堂：主板块 board_name → 子类 type_name
+ * - 2048：分区 category → 子版 board_name
+ */
+export function buildForumBoardFacetTree(
+  forumId: string,
+  topology: TopologyBoard[],
+  facets: BoardFacetItem[],
+): BoardFacetTreeNode[] {
+  const countOf = (name: string) => {
+    const hit = facets.find((f) => f.name === name)
+    return hit ? Number(hit.count) || 0 : 0
+  }
+  const used = new Set<string>()
+  const nodes: BoardFacetTreeNode[] = []
+
+  if ((forumId || '').trim() === '2048') {
+    const byCat = new Map<string, TopologyBoard[]>()
+    for (const b of topology) {
+      const cat = (b.category || '其它').trim() || '其它'
+      const list = byCat.get(cat) || []
+      list.push(b)
+      byCat.set(cat, list)
+    }
+    for (const [cat, list] of byCat) {
+      const children: BoardFacetTreeNode['children'] = []
+      let total = 0
+      const seen = new Set<string>()
+      for (const b of [...list].sort(
+        (a, b) => (a.priority ?? 50) - (b.priority ?? 50) || (a.board_name || a.name).localeCompare(b.board_name || b.name, 'zh'),
+      )) {
+        const leaf = (b.board_name || b.name || '').trim()
+        if (!leaf || seen.has(leaf)) continue
+        seen.add(leaf)
+        const count = countOf(leaf)
+        used.add(leaf)
+        children.push({ name: leaf, label: leaf, count })
+        total += count
+      }
+      if (!children.length) continue
+      nodes.push({
+        parent: cat,
+        total,
+        self: null,
+        children,
+        parentFilterable: false,
+      })
+    }
+  } else {
+    // 色花堂等：board_name → 子类
+    const byParent = new Map<string, TopologyBoard[]>()
+    for (const b of topology) {
+      const parent =
+        (b.board_name || '').trim() ||
+        splitBoardParentChild(b.name || '').parent ||
+        (b.name || '').trim()
+      if (!parent) continue
+      const list = byParent.get(parent) || []
+      list.push(b)
+      byParent.set(parent, list)
+    }
+    for (const [parent, list] of byParent) {
+      const children: BoardFacetTreeNode['children'] = []
+      let self: BoardFacetItem | null = null
+      let total = 0
+      const seenChild = new Set<string>()
+      for (const b of [...list].sort(
+        (a, b) => (a.priority ?? 50) - (b.priority ?? 50) || (a.type_name || a.name).localeCompare(b.type_name || b.name, 'zh'),
+      )) {
+        const full = (b.name || '').trim()
+        const typeName = (b.type_name || '').trim()
+        if (!full) continue
+        if (!typeName) {
+          // 整板
+          const count = countOf(full)
+          used.add(full)
+          if (full === parent) {
+            self = { name: full, count }
+            total += count
+          } else if (!seenChild.has(full)) {
+            seenChild.add(full)
+            children.push({ name: full, label: full, count })
+            total += count
+          }
+          continue
+        }
+        if (seenChild.has(full)) continue
+        seenChild.add(full)
+        const count = countOf(full)
+        used.add(full)
+        children.push({ name: full, label: typeName, count })
+        total += count
+      }
+      // 库内「主板块」整板计数（无 · 后缀）若拓扑未单独列出
+      if (!self) {
+        const alone = countOf(parent)
+        if (alone > 0) {
+          self = { name: parent, count: alone }
+          total += alone
+          used.add(parent)
+        }
+      }
+      if (!self && !children.length) continue
+      nodes.push({
+        parent,
+        total,
+        self,
+        children,
+        parentFilterable: true,
+      })
+    }
+  }
+
+  // 拓扑外仍有计数的板块（脏名/历史名）归入「其它」
+  const orphans = facets.filter((f) => {
+    const n = (f.name || '').trim()
+    return n && n !== '未分类' && !used.has(n) && (Number(f.count) || 0) > 0
+  })
+  if (orphans.length) {
+    const children = orphans
+      .map((f) => {
+        const { child } = splitBoardParentChild(f.name)
+        return {
+          name: f.name,
+          label: child || f.name,
+          count: Number(f.count) || 0,
+        }
+      })
+      .sort((a, b) => b.count - a.count || a.label.localeCompare(b.label, 'zh'))
+    nodes.push({
+      parent: '其它',
+      total: children.reduce((s, c) => s + c.count, 0),
+      self: null,
+      children,
+      parentFilterable: false,
+    })
+  }
+
+  return nodes.sort((a, b) => b.total - a.total || a.parent.localeCompare(b.parent, 'zh'))
 }
 
 export function mapApiResource(item: ApiResource): ResourceRow {

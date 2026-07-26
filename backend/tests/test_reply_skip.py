@@ -70,3 +70,29 @@ def test_soft_shell_still_first_when_no_post_body():
     out = judge_thread_html(html, board_fid=36, list_title="x")
     assert out.verdict == "retry"
     assert out.need_browser_retry is True
+
+
+def test_nested_static_safe_in_post_not_soft_shell():
+    """tid=1742422：楼内嵌套转义广告页含 static/safe/，仍应按真帖解析哈希。"""
+    html = """
+    <html><head><title>【BT/磁力】demo - 转帖交流区 - Powered by Discuz!</title></head>
+    <body>
+    <div id="postmessage_1" class="t_f">
+      【影片名称】：demo<br>
+      【哈希校验】：8798ca7b401f4cf2e1541cfb240cd89ad4981c7c<br>
+      [attachimg]&lt;!DOCTYPE HTML&gt;&lt;link href="static/safe/css/main.css" /&gt;
+    </div>
+    </body></html>
+    """
+    assert is_safe_or_soft_shell(html) is False
+    out = judge_thread_html(
+        html,
+        board_fid=2,
+        forum_id="sehuatang",
+        preferred_link="magnet",
+        tid=1742422,
+        list_title="【BT/磁力】demo",
+    )
+    assert out.verdict == "import"
+    assert out.link_kind == "magnet"
+    assert "成功" in (out.outcome or "")

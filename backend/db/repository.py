@@ -1028,8 +1028,12 @@ def _resource_list_where(
         if board_name in ("未分类", "__empty__"):
             where.append("(rs.board_name IS NULL OR rs.board_name = '')")
         else:
-            where.append("COALESCE(rs.board_name, '') = %s")
-            params.append(board_name)
+            # 主板块名：同时匹配整板与「主板块 · 子类」
+            where.append(
+                "(COALESCE(rs.board_name, '') = %s"
+                " OR COALESCE(rs.board_name, '') LIKE %s)"
+            )
+            params.extend([board_name, f"{board_name} · %"])
     forum = (forum_id or "").strip()
     if forum and forum != "all":
         # 历史空 forum_id 视为本站色花堂
