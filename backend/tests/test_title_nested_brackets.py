@@ -38,9 +38,12 @@ def test_extract_and_desc_board_142_keeps_full_film_name():
     name = norm.get("资源名称") or norm.get("影片名称") or ""
     assert "午夜寻花" in name
     assert "草的嗷嗷叫" in name
+    # 转帖区常见【影片说明】：无码 → 是否有码
+    assert norm.get("是否有码") == "无码"
 
     desc = build_structured_description(norm, board_fid="142:697")
     assert "午夜寻花" in desc
+    assert "【是否有码】：无码" in desc
     assert "【资源名称】：❤√\n" not in desc  # 不得只剩前缀
 
 

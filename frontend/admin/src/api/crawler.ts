@@ -103,13 +103,14 @@ export type CrawlerStatus = {
     discarded_failed_kind?: number
     account_pass_total?: number
     board_updated?: number
-    /** 近 60 秒入库+占位帖数 */
+    /** 近窗口入库+占位折算 posts/min */
     imports_per_minute?: number
   }
-  /** 滚动窗口入库速度 */
+  /** 滚动窗口入库速度（活动日志为准） */
   import_rate?: {
     per_minute?: number
     window_sec?: number
+    raw_count?: number
   }
 }
 

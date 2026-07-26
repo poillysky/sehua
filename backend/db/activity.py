@@ -182,6 +182,58 @@ def latest_activity_id() -> int:
         conn.close()
 
 
+def persisted_rate_from_log(window_sec: int = 60) -> dict[str, int | float] | None:
+    """按活动日志统计近 window 秒入库/占位，并折算成 /分。
+
+    内存计数在进程重启后会丢，与面板日志不一致；以落库活动为准。
+    """
+    win = max(5, min(int(window_sec or 60), 600))
+    conn = connect()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT COUNT(*), MIN(created_at), MAX(created_at)
+            FROM crawl_activity_log
+            WHERE created_at >= now() - make_interval(secs => %s)
+              AND (
+                message LIKE '%%正常入库%%'
+                OR message LIKE '%%占位入库%%'
+                OR message LIKE '随机入库 %%'
+              )
+              AND message NOT LIKE '%%跳过已入库%%'
+              AND message NOT LIKE '%%列表所见均已入库%%'
+              AND message NOT LIKE '%%本批入库已达上限%%'
+            """,
+            [win],
+        )
+        row = cur.fetchone() or (0, None, None)
+        raw = int(row[0] or 0)
+        oldest = row[1]
+        if raw <= 0 or oldest is None:
+            return {"per_minute": 0, "window_sec": win, "raw_count": 0}
+        from datetime import datetime, timezone
+
+        now = datetime.now(timezone.utc)
+        if getattr(oldest, "tzinfo", None) is None:
+            oldest = oldest.replace(tzinfo=timezone.utc)
+        else:
+            oldest = oldest.astimezone(timezone.utc)
+        span = max(3.0, (now - oldest).total_seconds())
+        span = min(span, float(win))
+        per_min = int(round(raw * 60.0 / span))
+        return {
+            "per_minute": max(0, per_min),
+            "window_sec": win,
+            "raw_count": raw,
+        }
+    except Exception as exc:
+        log.debug("persisted_rate_from_log failed: %s", exc)
+        return None
+    finally:
+        conn.close()
+
+
 def clear_activity_log() -> int:
     """清空活动日志表；返回删除行数。"""
     conn = connect()

@@ -819,6 +819,46 @@ def _canonicalize_meta_key(key: str, aliases: dict[str, str] | None = None) -> s
     return k
 
 
+# 转帖区等常用【影片说明】：无码 代替【是否有码】；仅短枚举才提升，避免长简介误入
+_CODED_NOTE_KEYS = (
+    "影片说明",
+    "影片說明",
+    "资源说明",
+    "資源說明",
+    "说明",
+    "說明",
+)
+_CODED_STATUS_RE = re.compile(
+    r"^(?:有码|无码|有碼|無碼|素人|(?:有|无|無)码(?:破解|中字|中文字幕)?)$"
+)
+
+
+def _looks_like_coded_status(value: str) -> bool:
+    v = (value or "").strip()
+    if not v or len(v) > 16:
+        return False
+    # 模板占位「有/无码」「有无码」不算实填
+    if "/" in v or "有无" in v or "有無" in v:
+        return False
+    return bool(_CODED_STATUS_RE.fullmatch(v))
+
+
+def _promote_coded_from_notes(meta: dict[str, str]) -> dict[str, str]:
+    """【影片说明】：无码 → 是否有码（已有是否有码则不动）。"""
+    if not meta or meta.get("是否有码"):
+        return meta
+    for k in _CODED_NOTE_KEYS:
+        raw = meta.get(k)
+        if not raw:
+            continue
+        val = _clip_field_value(raw, short_enum=True, label="是否有码")
+        if _looks_like_coded_status(val):
+            out = dict(meta)
+            out["是否有码"] = val
+            return out
+    return meta
+
+
 def normalize_metadata_for_board(
     metadata: dict[str, str] | None,
     board_fid: str | int | None = None,
@@ -872,7 +912,7 @@ def normalize_metadata_for_board(
         if not val or _is_bogus_meta_value(key, val):
             continue
         out.setdefault(key, val)
-    return out
+    return _promote_coded_from_notes(out)
 
 
 def extract_metadata(text: str) -> dict[str, str]:
@@ -977,8 +1017,11 @@ def build_structured_description(
     title_as = str(profile.get("title_as") or "资源名称")
     allowed = set(labels)
 
+    # 未 normalize 的原文也可能只写【影片说明】：无码
+    src_meta = _promote_coded_from_notes(dict(metadata or {}))
+
     picked: dict[str, str] = {}
-    for raw_key, raw_val in (metadata or {}).items():
+    for raw_key, raw_val in src_meta.items():
         key = aliases.get(raw_key, raw_key)
         if key not in allowed or key in picked:
             continue

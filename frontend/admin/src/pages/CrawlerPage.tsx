@@ -1135,7 +1135,7 @@ export function CrawlerPage() {
                   ) : null}
                   <span
                     className={`metric-pill metric-pill-rate${importsPerMin > 0 ? ' is-live' : ''}`}
-                    title={`近 ${importRateWindow} 秒滚动窗口内入库+占位帖数`}
+                    title={`近 ${importRateWindow} 秒内入库+占位，按实际跨度折算为每分钟（与活动日志一致）`}
                   >
                     <span className="metric-val" key={importsPerMin}>
                       {importsPerMin}

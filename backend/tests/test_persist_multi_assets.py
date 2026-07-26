@@ -36,12 +36,24 @@ def _patch_common(monkeypatch) -> list[dict]:
                 "uri": link.link,
                 "ed2k_links": kwargs.get("ed2k_links"),
                 "title": kwargs.get("title"),
+                "commit": kwargs.get("commit", True),
             }
         )
         return True
 
     monkeypatch.setattr(persist_mod, "upsert_resource", fake_upsert)
     return calls
+
+
+class _FakeConn:
+    def __init__(self) -> None:
+        self.commits = 0
+
+    def commit(self) -> None:
+        self.commits += 1
+
+    def rollback(self) -> None:
+        pass
 
 
 def test_multi_magnet_upserts_each_as_single_resource(monkeypatch):
@@ -73,8 +85,9 @@ def test_multi_magnet_upserts_each_as_single_resource(monkeypatch):
             is_primary=False,
         ),
     ]
+    conn = _FakeConn()
     out = persist_mod.persist_dual_parse(
-        object(),
+        conn,
         _parsed(*assets),
         source_url="https://example.com/thread-1-1-1.html",
         board_fid="36:668",
@@ -84,6 +97,8 @@ def test_multi_magnet_upserts_each_as_single_resource(monkeypatch):
     for c in calls:
         assert c["title"] == "合集帖"
         assert c["ed2k_links"] == [c["uri"]]
+        assert c["commit"] is False
+    assert conn.commits == 1
 
 
 def test_single_keeps_real_filename(monkeypatch):
@@ -98,12 +113,13 @@ def test_single_keeps_real_filename(monkeypatch):
         is_primary=True,
     )
     persist_mod.persist_dual_parse(
-        object(),
+        _FakeConn(),
         _parsed(asset, title="【单资源】示例帖"),
         source_url="https://example.com/thread-2-1-1.html",
     )
     assert calls[0]["title"] == "【单资源】示例帖"
     assert calls[0]["filename"] == "专属片名.mp4"
+    assert calls[0]["commit"] is False
 
 
 def test_replace_thread_assets_purges_old_hashes(monkeypatch):
@@ -125,7 +141,7 @@ def test_replace_thread_assets_purges_old_hashes(monkeypatch):
         is_primary=True,
     )
     out = persist_mod.persist_dual_parse(
-        object(),
+        _FakeConn(),
         _parsed(asset, title="重爬帖"),
         source_url="https://www.sehuatang.net/thread-2663222-1-1.html",
         replace_thread_assets=True,
@@ -154,7 +170,7 @@ def test_replace_thread_assets_off_by_default(monkeypatch):
         is_primary=True,
     )
     persist_mod.persist_dual_parse(
-        object(),
+        _FakeConn(),
         _parsed(asset),
         source_url="https://example.com/thread-3-1-1.html",
     )

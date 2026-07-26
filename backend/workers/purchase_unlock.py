@@ -47,10 +47,12 @@ async def unlock_free_purchase_html(
     - note 空：未改动或已解锁
     - note 非空：解锁失败原因（调用方可写入 outcome / 日志）
     """
-    if not html or not thread_url or not is_free_purchase_post(html):
+    if not html or not thread_url:
         return html, ""
-    # 已买过 / 登录后已露出下载链：勿因缺少 buy 链接误报失败
+    # 已露出下载链：先快退，避免合集大页跑购买门扫描（可省 1s+）
     if _has_download_payload(html):
+        return html, ""
+    if not is_free_purchase_post(html):
         return html, ""
     buy = extract_purchase_buy_url(html, thread_url)
     if not buy:

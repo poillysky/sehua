@@ -1036,13 +1036,15 @@ export function ForumTopology({ forum, activeForumId, boards, activeBoardFid }: 
         </div>
       </div>
 
-      <div className="crawl-topo-section">
-        <div className="crawl-topo-section-title">白名单板块拓扑</div>
-        <p className="hint crawl-topo-pipeline-hint">
-          {is2048
-            ? '分区 → 子版（纯 fid）；主链磁力优先。fid 5/13 需登录后免费购买。'
-            : '大区 → 主板块/分类爬取单位（含 fid:typeid）；148 鲍鱼直播盒子不在白名单。'}
-        </p>
+      <div className="crawl-topo-section crawl-topo-section--boards">
+        <div className="crawl-topo-section-title">
+          白名单板块拓扑
+          <span className="crawl-topo-section-subhint">
+            {is2048
+              ? '分区 → 子版（纯 fid）；主链磁力优先。fid 5/13 需登录后免费购买。'
+              : '大区 → 主板块/分类爬取单位（含 fid:typeid）；148 鲍鱼直播盒子不在白名单。'}
+          </span>
+        </div>
         <div className="crawl-topo-board-map" aria-label="白名单板块拓扑">
           {boardTopo.map(({ cat, units }) => {
             const parents = new Map<string, ForumBoard[]>()

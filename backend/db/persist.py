@@ -99,6 +99,7 @@ def persist_dual_parse(
         f"成功：已提取 {len(uniq)} 条资源" if len(uniq) > 1 else "成功：已提取主链"
     )
     last_hash = primary.hash
+    # 合集 ×n：同事务批量 upsert，避免每条单独 commit（可达秒级）
     for asset in uniq:
         main_name = post_title or (asset.filename or "").strip() or asset.hash
         sub_name = resolve_sub_filename(
@@ -132,6 +133,7 @@ def persist_dual_parse(
             board_name=board_name or None,
             forum_id=forum_id,
             import_outcome=outcome_msg,
+            commit=False,
         )
         last_hash = asset.hash
 
@@ -152,10 +154,18 @@ def persist_dual_parse(
         board_fid=fid,
         board_name=board_name or None,
         forum_id=forum_id,
-        commit=True,
+        commit=False,
     )
     # 真链入库后清掉同帖占位，避免「ed2k + stub」被当成 ×2 合集
     delete_stub_by_source_url(conn, source_url)
+    try:
+        conn.commit()
+    except Exception:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        raise
 
     return {
         "count": len(uniq),

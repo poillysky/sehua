@@ -692,7 +692,12 @@ def purchase_gate_kind(html: str) -> str:
     - free：售价 0，可尝试点购买后入库
     - paid：售价>0 或无法解析价格的购买门 → 普通爬跳过，留给账号爬
     """
-    if not html or is_reply_required_post(html):
+    if not html:
+        return "none"
+    # 大页快拒：无购买文案则不做楼主抽取 / 去标签（合集帖主路径）
+    if not any(m in html for m in PURCHASE_MARKERS):
+        return "none"
+    if is_reply_required_post(html):
         return "none"
     blob = _purchase_gate_blob(html)
     plain = re.sub(r"<[^>]+>", " ", blob)
