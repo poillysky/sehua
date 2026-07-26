@@ -7,6 +7,21 @@ from parsers.content import (
 )
 
 
+def test_clip_exclusive_structure_tail_labels():
+    """独家帖【是否有水印】【目录树】须截断，避免 filename 顶满 255 仍含尾巴。"""
+    raw = (
+        "2048独家合集 气质御姐情趣慢摇【16gb/20v】 【是否有水印】:无 "
+        "【资源大小/数量】:16gb/20v 【目录树】: --> --> 购买本帖会留有购买记录"
+    )
+    assert _clip_field_value(raw, label="影片名称") == "2048独家合集 气质御姐情趣慢摇【16gb/20v】"
+    assert _clip_field_value(raw, label="资源名称") == "2048独家合集 气质御姐情趣慢摇【16gb/20v】"
+
+
+def test_clip_filetype_label_boundary():
+    raw = "FC2-PPV-4910529 受付嬢【高清無碼】 【文件类型】：MP4 【影片大小】：1.2G"
+    assert _clip_field_value(raw, label="影片名称") == "FC2-PPV-4910529 受付嬢【高清無碼】"
+
+
 def test_clip_size_strips_fullwidth_colon_and_url():
     assert _clip_field_value("︰5.23GB", label="文件大小") == "5.23GB"
     assert (

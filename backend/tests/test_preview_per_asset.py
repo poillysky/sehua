@@ -8,6 +8,87 @@ from parsers.content import (
 )
 
 
+def test_original_title_and_gallery_name_labels():
+    """老含及用【原文片名】；套图合集用【套圖名稱】。"""
+    from parsers.content import extract_subresource_blocks, iter_subresource_title_spans
+    from parsers.resource_names import SUBRESOURCE_TITLE_MATCH_FORMS
+
+    assert "原文片名" in SUBRESOURCE_TITLE_MATCH_FORMS
+    assert "套圖名稱" in SUBRESOURCE_TITLE_MATCH_FORMS
+
+    h1 = "E01A5B6A2CD1F1E8768884DEAD521D24F14D05EC"
+    h2 = "BB92537193A1096B571EA638534D7D969D4D47FC"
+    html = f"""
+    <div id="read_tpc">
+      【原文片名】：BABM-017 バブみあるあすかママ
+      【种子名称】：]ent
+      magnet:?xt=urn:btih:{h1}
+      <img file="https://cdn.example/a.jpg" src="https://cdn.example/ta.jpg" />
+      【原文片名】：BACJ-050 童貞を貪り弄んでイキ狂う人妻
+      magnet:?xt=urn:btih:{h2}
+      <img file="https://cdn.example/b.jpg" src="https://cdn.example/tb.jpg" />
+    </div>
+    """
+    assert len(iter_subresource_title_spans(html)) == 2
+    blocks = {b.infohash: b for b in extract_subresource_blocks(html, [h1, h2])}
+    assert blocks[h1].title.startswith("BABM-017")
+    assert blocks[h2].title.startswith("BACJ-050")
+
+    g1 = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+    g2 = "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB"
+    html2 = f"""
+    <div id="read_tpc">
+      【套圖名稱】：国模子琪2016.02.28（S）大尺度私拍套图
+      magnet:?xt=urn:btih:{g1}
+      <img file="https://cdn.example/g1.jpg" src="https://cdn.example/tg1.jpg" />
+      【套圖名稱】：不知名国模2014.06.16（S）大尺度私拍套图
+      magnet:?xt=urn:btih:{g2}
+      <img file="https://cdn.example/g2.jpg" src="https://cdn.example/tg2.jpg" />
+    </div>
+    """
+    blocks2 = {b.infohash: b for b in extract_subresource_blocks(html2, [g1, g2])}
+    assert "国模子琪" in blocks2[g1].title
+    assert "不知名国模" in blocks2[g2].title
+
+
+def test_film_name_code_label_splits_subresources():
+    """tj1221/湾搭：【影片名称代号】是子标题；种子名 ]ent 不可用。"""
+    from parsers.content import extract_subresource_blocks, iter_subresource_title_spans
+    from parsers.links import parse_thread_dual
+    from parsers.resource_names import SUBRESOURCE_TITLE_MATCH_FORMS
+
+    assert "影片名称代号" in SUBRESOURCE_TITLE_MATCH_FORMS
+
+    h1 = "86E3BCBA23EFBC7A0C1415B410891E5AEE098CCE"
+    h2 = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+    html = f"""
+    <div id="read_tpc">
+      【影片名称代号】：328HMDNV-937 雾气温泉熟女SEX 小夏
+      【影片格式】：MP4
+      【种子名称】：]ent
+      magnet:?xt=urn:btih:{h1}
+      <img file="https://cdn.example/a.jpg" src="https://cdn.example/ta.jpg" />
+      【影片名称代号】：261ARA-580 【可愛い少女】【アイドル顔】普段できない体験を求めて美少女がAV撮影に挑む！
+      【影片格式】：MP4
+      【种子名称】：]ent
+      magnet:?xt=urn:btih:{h2}
+      <img file="https://cdn.example/b.jpg" src="https://cdn.example/tb.jpg" />
+    </div>
+    """
+    assert len(iter_subresource_title_spans(html)) == 2
+    blocks = {b.infohash: b for b in extract_subresource_blocks(html, [h1, h2])}
+    assert "328HMDNV-937" in blocks[h1].title
+    assert "雾气温泉" in blocks[h1].title
+    assert blocks[h2].title == "261ARA-580"  # 截在营销【标签】前
+    assert blocks[h1].preview_images[0].endswith("a.jpg")
+    assert blocks[h2].preview_images[0].endswith("b.jpg")
+
+    parsed = parse_thread_dual(html, tid=27338313, preferred_link="magnet")
+    by = {a.hash: a for a in parsed.assets}
+    assert "328HMDNV-937" in (by[h1].filename or "")
+    assert by[h2].filename == "261ARA-580"
+
+
 def test_preview_by_true_subtitle_film_name():
     """【影片名称】才是子标题；本标题到下一标题之间的图归本条。种子名称不算子标题。"""
     h1 = "A14DF0858322E3D03BF0B2A1A2C781108602A3E1"
@@ -225,6 +306,112 @@ def test_no_subtitle_keeps_all_distinct_hashes():
     assert {a.hash for a in parsed.assets} == {h1, h2}
 
 
+def test_no_subtitle_uses_numeric_torrent_names():
+    """欧美合集常见 01.torrent / 02.torrent，应保留为子资源名。"""
+    from parsers.content import extract_subresource_blocks
+
+    h1 = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+    h2 = "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB"
+    title = "★●經典の歐美無碼合集"
+    html = f"""
+    <div id="read_tpc">
+      【種子名稱】：01.torrent
+      magnet:?xt=urn:btih:{h1}
+      <img file="https://cdn.example/eu1.jpg" src="https://cdn.example/t1.jpg" />
+      【種子名稱】：02.torrent
+      magnet:?xt=urn:btih:{h2}
+      <img file="https://cdn.example/eu2.jpg" src="https://cdn.example/t2.jpg" />
+    </div>
+    """
+    blocks = {
+        b.infohash: b
+        for b in extract_subresource_blocks(html, [h1, h2], fallback_title=title)
+    }
+    assert blocks[h1].title == "01"
+    assert blocks[h2].title == "02"
+    assert blocks[h1].preview_images[0].endswith("eu1.jpg")
+    assert blocks[h2].preview_images[0].endswith("eu2.jpg")
+
+
+def test_resolve_sub_filename_clips_exclusive_structure_tail():
+    from parsers.resource_names import resolve_sub_filename
+
+    polluted = (
+        "2048独家合集 气质御姐【16gb/20v】 【是否有水印】:无 "
+        "【资源大小/数量】:16gb/20v 【目录树】: --> --> 购买本帖会留有购买记录"
+    )
+    got = resolve_sub_filename(
+        inner_name=polluted,
+        title="帖标题",
+        hash_value="A" * 40,
+    )
+    assert got == "2048独家合集 气质御姐【16gb/20v】"
+    assert "是否有水印" not in got
+    assert "目录树" not in got
+    assert len(got) < 255
+
+
+def test_clip_filetype_and_movie_credit_tails():
+    from parsers.resource_names import clip_subresource_display_name, resolve_sub_filename
+
+    fc2 = (
+        "FC2-PPV-4910529 ガードが硬い受付嬢【高清無碼】 【文件类型】：MP4"
+    )
+    assert clip_subresource_display_name(fc2) == "FC2-PPV-4910529 ガードが硬い受付嬢【高清無碼】"
+
+    movie = (
+        "[情迷香港][AI修复版DVD-MP4/2.3G][国粤双语中字][陈宝莲陈颖芝中国香港给力犯罪] "
+        "导演: 黄树棠 编剧: 刘子进 主演: 陈宝莲 / 陈颖芝 类型: 剧情 / 犯罪 "
+        "制片国家/地区: 中国香港 语言: 粤语"
+    )
+    clipped = clip_subresource_display_name(movie)
+    assert clipped.startswith("[情迷香港]")
+    assert "导演" not in clipped
+    assert "主演" not in clipped
+    assert len(clipped) < 120
+
+    assert resolve_sub_filename(
+        inner_name="--※国产自拍合集58部 99G",
+        title="t",
+        hash_value="A" * 40,
+    ) == "※国产自拍合集58部 99G"
+
+
+def test_no_subtitle_uses_torrent_name_per_magnet():
+    """亚洲/欧美合集：无【影片名称】时用【种子名称】区分 ×N 子资源。"""
+    from parsers.content import extract_subresource_blocks
+    from parsers.links import parse_thread_dual
+
+    h1 = "28F16DFF971CD1F7C5695318AC13C7EB62CA112F"
+    h2 = "9D192F2F971CD1F7C5695318AC13C7EB62CA112F"
+    title = "★●最新の亚洲无码合集[06.13]"
+    html = f"""
+    <html><head><title>{title} | 最新合集 - 人人为我论坛</title></head>
+    <body><div id="read_tpc" class="tpc_content">
+      【影片大小】：0.87GB
+      【驗證全碼】：{h1}
+      【种子名称】：C0930-ki181129-480p&#46;torrent
+      【磁力连接】：magnet:?xt=urn:btih:{h1}
+      【影片大小】：1.2GB
+      【驗證全碼】：{h2}
+      【种子名称】：C0930-ki181220-480p.torrent
+      【磁力连接】：magnet:?xt=urn:btih:{h2}
+    </div></body></html>
+    """
+    blocks = {
+        b.infohash: b
+        for b in extract_subresource_blocks(html, [h1, h2], fallback_title=title)
+    }
+    assert blocks[h1].title == "C0930-ki181129-480p"
+    assert blocks[h2].title == "C0930-ki181220-480p"
+
+    parsed = parse_thread_dual(html, tid=26750104, preferred_link="magnet")
+    assert parsed.title == title
+    by_hash = {a.hash: a for a in parsed.assets}
+    assert by_hash[h1].filename == "C0930-ki181129-480p"
+    assert by_hash[h2].filename == "C0930-ki181220-480p"
+
+
 def test_traditional_resource_block_variants():
     """繁体/异写：資源名稱、資源大小、資源類型、種子名稱、磁力連結。"""
     from parsers.content import extract_subresource_blocks
@@ -410,9 +597,17 @@ def test_persist_uses_asset_preview_images(monkeypatch):
     from parsers.links import DualParseResult, ParsedAsset
     from db import persist as persist_mod
 
+    class _Conn:
+        def commit(self) -> None:
+            pass
+
+        def rollback(self) -> None:
+            pass
+
     calls: list[dict] = []
     monkeypatch.setattr(persist_mod, "ensure_source", lambda *a, **k: 1)
     monkeypatch.setattr(persist_mod, "delete_stub_by_source_url", lambda *a, **k: False)
+    monkeypatch.setattr(persist_mod, "sync_board_meta_by_source_url", lambda *a, **k: 0)
 
     def fake_upsert(conn, link, source_id, **kwargs):
         calls.append({"hash": link.hash, "preview": kwargs.get("preview_images")})
@@ -450,7 +645,7 @@ def test_persist_uses_asset_preview_images(monkeypatch):
         primary_link_kind="magnet",
     )
     persist_mod.persist_dual_parse(
-        object(), parsed, source_url="https://x/thread-1-1-1.html"
+        _Conn(), parsed, source_url="https://x/thread-1-1-1.html"
     )
     assert calls[0]["preview"] == ["https://cdn.example/a.jpg"]
     assert calls[1]["preview"] == ["https://cdn.example/b.jpg"]

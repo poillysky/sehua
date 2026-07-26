@@ -234,6 +234,36 @@ def test_parse_seed_feature_code_hash_check_semicolon_2048():
     assert has_target_link(raw, "magnet")
 
 
+def test_parse_downsx_torrent_path_hash():
+    """色花堂旧合集：仅 downsX /torrent/{infohash}，无 magnet 正文（tid 547624）。"""
+    h1 = "E6FA5EACD180AC430A4F6466D98E1641A68DAEAD"
+    h2 = "8132FDB7857E55B54CE76C7F6D71286EBE322C89"
+    raw = f"""
+    【影片名称】：片子A
+    https://www1.downsx.pw/torrent/{h1}
+    【影片名称】：片子B
+    https://www1.downsx.pw/torrent/{h2}
+    """
+    links = parse_magnet_text(raw)
+    assert {x.infohash for x in links} == {h1, h2}
+    assert has_target_link(raw, "magnet")
+
+
+def test_parse_download_address_bare_infohash():
+    """色花堂【磁力链接】帖：【下载地址】后直接跟 40 位 hash（tid 1224229）。"""
+    h = "e64776f87ac8657ca084045d44c766d57a4c2386"
+    raw = f"""
+    【资源名称】：stars-779
+    【文件大小】：1.44GB
+    【下载地址】：{h}
+    【収録時間】：121分
+    """
+    links = parse_magnet_text(raw)
+    assert len(links) == 1
+    assert links[0].infohash == h.upper()
+    assert has_target_link(raw, "magnet")
+
+
 def test_parse_bare_infohash_verify_full_code_2048():
     """2048【驗證全码】裸 infohash。"""
     h = "0c5ae2d3436fcd2bd4359bafdde3bd65ec835deb"
@@ -247,6 +277,25 @@ def test_parse_bare_infohash_verify_full_code_2048():
     assert len(links) == 1
     assert links[0].infohash == h.upper()
     assert has_target_link(raw, "magnet")
+
+
+def test_extract_title_strips_2048_board_suffix():
+    from parsers.content import extract_title
+
+    assert (
+        extract_title("<title>♀合集♀[06.13] | 最新合集</title>")
+        == "♀合集♀[06.13]"
+    )
+    assert (
+        extract_title(
+            "<title>★●亚洲无码[06.13] | 最新合集 - 人人为我论坛</title>"
+        )
+        == "★●亚洲无码[06.13]"
+    )
+    assert (
+        extract_title('<a id="thread_subject">片名 | 最新合集</a>')
+        == "片名"
+    )
 
 
 def test_parse_magnet_infohash_split_by_ideographic_comma():
@@ -625,3 +674,140 @@ def test_parse_ed2k_filename_keeps_fullwidth_pipe():
     assert len(links) == 1
     assert links[0].hash == h
     assert "｜精华版｜" in links[0].filename
+
+
+def test_parse_magnet_btih_link_aspx_hash():
+    """magnet:?xt=urn:btih:link.aspx?hash=HEX（tid 1256892 jukujo）。"""
+    h = "472B011E237DD9C8C80C02407AF91739225EFD09"
+    raw = f"magnet:?xt=urn:btih:link.aspx?hash={h}"
+    fixed = normalize_magnet_corpus(raw)
+    assert f"magnet:?xt=urn:btih:{h}" in fixed
+    assert "link.aspx?hash=" not in fixed.lower()
+    links = parse_magnet_text(raw)
+    assert len(links) == 1
+    assert links[0].infohash == h
+    assert has_target_link(raw, "magnet")
+
+
+def test_parse_magnet_scheme_split_from_xt_by_html_tags():
+    """magnet:? 与 xt=urn:btih: 被 font/blockcode 拆开（tid 2012676）。"""
+    h = "7647B28982C984F05F3AB20ADA170BD6A9487D52"
+    raw = (
+        f'<font color="#ff0000">magnet:?</font><br />'
+        f'<div class="blockcode"><ol><li>xt=urn:btih:{h}'
+        f"&amp;dn=demo.mp4</ol></div>"
+    )
+    links = parse_magnet_text(raw)
+    assert len(links) == 1
+    assert links[0].infohash == h
+    assert has_target_link(raw, "magnet")
+
+
+def test_parse_magnet_btih_leading_slash():
+    """magnet:?xt=urn:btih:/HASH（tid 700913）。"""
+    h = "E283FFB0062623A275EF645162124F8FE7507042"
+    raw = f"magnet:?xt=urn:btih:/{h}"
+    links = parse_magnet_text(raw)
+    assert len(links) == 1
+    assert links[0].infohash == h
+
+
+def test_parse_magnet_urn_missing_btih():
+    """magnet:?xt=urn:HASH 缺 btih:（tid 442964）。"""
+    h = "8874953A5594EC85F00BDA4E3001045B362EFE3A"
+    raw = f"【下载地址】：magnet:?xt=urn:{h}"
+    links = parse_magnet_text(raw)
+    assert len(links) == 1
+    assert links[0].infohash == h
+
+
+def test_parse_magnet_clipped_to_net():
+    """net:?xt=urn:btih:HASH（tid 582630）。"""
+    h = "223b40a3ab682a9ad5f7f009eef7bf6c7818ebf4"
+    raw = f"net:?xt=urn:btih:{h}&www.fulisoso.net-"
+    links = parse_magnet_text(raw)
+    assert len(links) == 1
+    assert links[0].infohash.upper() == h.upper()
+
+
+def test_parse_bare_hash_after_nbsp_feature_code():
+    """特征码，&nbsp; HASH（tid 718959）。"""
+    h = "ac1d5ce61d2cd2e5bcfaea54a832b4c4061c9e51"
+    raw = f"特征码，&nbsp; &nbsp;{h}"
+    links = parse_magnet_text(raw)
+    assert len(links) == 1
+    assert links[0].infohash.upper() == h.upper()
+
+
+def test_parse_bare_hash_spaced_feature_code_label():
+    """【特 徵 碼 】字间插空（tid 1473899 破坏版）。"""
+    h = "da783ddcb70e4e89e198a6b2a002276f458fd303"
+    raw = f"【特 徵 碼 】：{h}"
+    links = parse_magnet_text(raw)
+    assert len(links) == 1
+    assert links[0].infohash.upper() == h.upper()
+    assert has_target_link(raw, "magnet")
+
+
+def test_parse_magnet_dn_before_xt():
+    """magnet:?dn=NAME&xt=urn:btih:HASH（JAVPLAYER tid 513815）。"""
+    h = "034E3A2F3AC9B29E96C98D09A1D5953AB84DF884"
+    raw = f"magnet:?dn=ABS-223_000&amp;xt=urn:btih:{h}"
+    links = parse_magnet_text(raw)
+    assert len(links) == 1
+    assert links[0].infohash == h
+    assert has_target_link(raw, "magnet")
+
+
+def test_parse_magnet_hash_split_by_br():
+    """btih hash 被 <br> 拆成两段（tid 191451）。"""
+    h = "B7FC49C33D009772E369670BEBB9CF1FFCC1DA72"
+    raw = (
+        "【下载地址】magnet:?xt=urn:btih:B7FC49C33D009772E369670BEBB9CF1<br />\n\n"
+        "FFCC1DA72<br />"
+    )
+    links = parse_magnet_text(raw)
+    assert len(links) == 1
+    assert links[0].infohash == h
+
+
+def test_judge_import_jukujo_link_aspx_and_split_magnet():
+    """门控与 dual 对齐：两种残磁链应 import，勿「未解析到」。"""
+    from workers.thread_outcome import judge_thread_html
+
+    h1 = "472B011E237DD9C8C80C02407AF91739225EFD09"
+    html1 = f"""
+    <html><head><title>【磁力】示例 - 论坛</title></head>
+    <body>
+    <span id="thread_subject">【磁力】示例</span>
+    <div id="postmessage_1">
+      【资源名称】：demo<br/>
+      <div class="blockcode"><ol><li>magnet:?xt=urn:btih:link.aspx?hash={h1}</ol></div>
+    </div>
+    Powered by Discuz!
+    </body></html>
+    """
+    html1 = html1 + ("x" * 15000)
+    out1 = judge_thread_html(
+        html1, board_fid="104", list_title="【磁力】示例", preferred_link="magnet"
+    )
+    assert out1.verdict == "import", out1.outcome
+
+    h2 = "7647B28982C984F05F3AB20ADA170BD6A9487D52"
+    html2 = f"""
+    <html><head><title>【磁力鏈接】示例 - 论坛</title></head>
+    <body>
+    <span id="thread_subject">【磁力鏈接】示例</span>
+    <div id="postmessage_1">
+      【影片名称】：demo<br/>
+      <font color="#ff0000">magnet:?</font><br/>
+      <div class="blockcode"><ol><li>xt=urn:btih:{h2}&amp;dn=demo.mp4</ol></div>
+    </div>
+    Powered by Discuz!
+    </body></html>
+    """
+    html2 = html2 + ("x" * 15000)
+    out2 = judge_thread_html(
+        html2, board_fid="104", list_title="【磁力鏈接】示例", preferred_link="magnet"
+    )
+    assert out2.verdict == "import", out2.outcome

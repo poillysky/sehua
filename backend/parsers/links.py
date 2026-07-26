@@ -234,7 +234,9 @@ def parse_thread_dual(
                 if not asset:
                     continue
                 if b.title:
-                    asset.filename = b.title[:255]
+                    from parsers.resource_names import clip_subresource_display_name
+
+                    asset.filename = clip_subresource_display_name(b.title)[:255] or b.title[:255]
                 if b.size and b.size > 0:
                     asset.size = int(b.size)
                 if b.preview_images:

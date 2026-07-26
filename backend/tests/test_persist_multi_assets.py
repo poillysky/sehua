@@ -36,6 +36,7 @@ def _patch_common(monkeypatch) -> list[dict]:
                 "uri": link.link,
                 "ed2k_links": kwargs.get("ed2k_links"),
                 "title": kwargs.get("title"),
+                "import_outcome": kwargs.get("import_outcome"),
                 "commit": kwargs.get("commit", True),
             }
         )
@@ -93,11 +94,13 @@ def test_multi_magnet_upserts_each_as_single_resource(monkeypatch):
         board_fid="36:668",
     )
     assert out["count"] == 3
+    assert out["import_outcome"] == "成功：已提取 3 条资源"
     assert [c["filename"] for c in calls] == ["子文件A.mp4", "子文件B.mp4", "合集帖"]
     for c in calls:
         assert c["title"] == "合集帖"
         assert c["ed2k_links"] == [c["uri"]]
         assert c["commit"] is False
+        assert c.get("import_outcome") == "成功：已提取 3 条资源"
     assert conn.commits == 1
 
 

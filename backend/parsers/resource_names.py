@@ -21,7 +21,18 @@ _PLACEHOLDER_MAGNET_RE = re.compile(r"^magnet-[0-9A-Fa-f]{8}$", re.I)
 SUBRESOURCE_TITLE_LABELS: tuple[str, ...] = ("影片名称", "资源名称")
 
 # 影片类子标题（简繁/异写）；优先于资源类
+# 「影片名称代号」须写在「影片名称」前，避免短标签抢匹配（虽有】锚点，仍保持长优先）
 FILM_TITLE_FORMS: tuple[str, ...] = (
+    "影片名称代号",
+    "影片名稱代號",
+    "影片名称代號",
+    "影片名稱代号",
+    "名称代号",
+    "名稱代號",
+    "原文片名",  # 老含及无码破坏精选等
+    "原影片名",
+    "原片名称",
+    "原片名稱",
     "影片名称",
     "影片名稱",
     "影片名",
@@ -49,6 +60,12 @@ RESOURCE_TITLE_FORMS: tuple[str, ...] = (
     "資源标题",
     "作品名称",
     "作品名稱",
+    "套图名称",  # 套图写真合集
+    "套圖名稱",
+    "套图名稱",
+    "套圖名称",
+    "图片名称",
+    "圖片名稱",
     "片名",
 )
 
@@ -72,7 +89,12 @@ FORMAT_FIELD_FORMS: tuple[str, ...] = (
     "资源類型",
     "資源类型",
     "檔案格式",
+    "档案格式",
     "文件格式",
+    "文件类型",  # FC2/合集常见粘在片名后
+    "文件類型",
+    "檔案類型",
+    "档案类型",
 )
 NOTE_FIELD_FORMS: tuple[str, ...] = (
     "影片说明",
@@ -107,10 +129,18 @@ EXTRA_STRUCTURE_BOUNDARY_FORMS: tuple[str, ...] = (
     "出演女優",
     "有无水印",
     "有無浮水印",
+    "是否有水印",  # 2048 独家合集常见
+    "是否有浮水印",
     "有无第三方水印",
     "有無第三方浮水印",
     "第三方水印",
     "第三方浮水印",
+    "目录树",  # 独家帖结构尾巴，勿吞进片名
+    "目錄樹",
+    "资源大小/数量",
+    "資源大小/數量",
+    "资源大小／数量",
+    "資源大小／數量",
     "解压密码",
     "解壓密碼",
     "解压码",
@@ -198,6 +228,8 @@ EXTRA_STRUCTURE_BOUNDARY_FORMS: tuple[str, ...] = (
     "解析度",
     "磁力链接",
     "磁力連結",
+    "磁力连接",  # 2048 合集常见简体「连接」
+    "磁力連接",
     "迅雷链接",
     "迅雷連結",
     "电驴链接",
@@ -211,6 +243,8 @@ EXTRA_STRUCTURE_BOUNDARY_FORMS: tuple[str, ...] = (
     "访问码",
     "訪問碼",
     "有效期",
+    "注意事项",  # 套图合集常见解压提示
+    "注意事項",
     "码别",
     "碼別",
     "字幕",
@@ -394,6 +428,8 @@ def resolve_sub_filename(
         # 与链内技术名相同 → 不是子资源名
         if link_norm and text.lower() == link_norm:
             return ""
+        # 裁掉粘连的【是否有水印】【目录树】等结构尾巴（独家帖常见）
+        text = _clip_filename_structure_tail(text)
         return text
 
     for cand in (
@@ -404,6 +440,48 @@ def resolve_sub_filename(
         if got:
             return got[:255]
     if main:
-        return main[:255]
+        clipped = _clip_filename_structure_tail(main)
+        return (clipped or main)[:255]
     h = (hash_value or "").strip() or "resource"
     return h[:255]
+
+
+_FILENAME_BUY_TIP_RE = re.compile(r"购买本帖|預覽圖\s*:|预览图\s*:")
+# 港台修复版常见：片名后直接跟「导演: … 主演: …」元数据
+_FILENAME_CREDIT_TAIL_RE = re.compile(
+    r"\s+(?:"
+    r"导演|導演|编剧|編劇|主演|演员|演員|"
+    r"类型|類型|制片国家/?地区|製片國家/?地區|制片国家|製片國家|"
+    r"语言|語言|片长|片長|上映日期|又名"
+    r")\s*[:：]"
+)
+_FILENAME_LEADING_DASH_RE = re.compile(r"^[\-\u2013\u2014\s]{1,}")
+
+
+def clip_subresource_display_name(text: str | None) -> str:
+    """公开入口：清洗子资源展示名（结构尾巴 / 演职员元数据 / 前导破折号）。"""
+    return _clip_filename_structure_tail(text)
+
+
+def _clip_filename_structure_tail(text: str | None) -> str:
+    """去掉片名后粘连的结构字段 / 购买提示 / 影讯元数据（长度顶到 255 前先语义截断）。"""
+    import html as html_lib
+
+    val = html_lib.unescape((text or "").strip())
+    if not val:
+        return ""
+    val = _FILENAME_LEADING_DASH_RE.sub("", val).strip()
+    m = re.search(
+        rf"\s*{STRUCTURE_FIELD_OPEN}\s*(?:{_STRUCTURE_BOUNDARY_ALT})\s*{STRUCTURE_FIELD_CLOSE}",
+        val,
+        re.I,
+    )
+    if m:
+        val = val[: m.start()].strip()
+    m2 = _FILENAME_BUY_TIP_RE.search(val)
+    if m2:
+        val = val[: m2.start()].strip()
+    m3 = _FILENAME_CREDIT_TAIL_RE.search(val)
+    if m3:
+        val = val[: m3.start()].strip()
+    return val.strip()

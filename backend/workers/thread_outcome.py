@@ -19,12 +19,8 @@ from parsers.links import DualParseResult, parse_thread_dual
 from parsers.list_dates import extract_thread_posted_at, is_thread_old_enough
 from parsers.thread_gates import (
     has_115_sha_link,
-    has_baidu_share_link,
     has_115_share_link,
-    has_pikpak_share_link,
-    has_quark_share_link,
     has_target_link,
-    has_xunlei_share_link,
     is_genuine_non_resource,
     is_non_target_cloud_share,
     is_free_purchase_post,
@@ -38,16 +34,14 @@ from parsers.thread_gates import (
     looks_like_attachment_zone,
     is_empty_tip_page,
     is_missing_thread,
+    match_skip_cloud_share_link,
+    match_skip_cloud_share_title,
     page_title,
     post_text,
     should_skip_as_115sha_only,
     thread_typeid_mismatch,
     title_implies_resource,
     title_is_115sha_without_ed2k_magnet,
-    title_is_baidu_pan_without_ed2k_magnet,
-    title_is_pikpak_without_ed2k_magnet,
-    title_is_quark_without_ed2k_magnet,
-    title_is_xunlei_cloud_without_ed2k_magnet,
     title_recognizable,
     coalesce_thread_title,
 )
@@ -269,32 +263,17 @@ def judge_thread_html(
     # 115 网盘分享页：有分享链则走正文解析入库（见 parse_thread_dual），不再跳过。
     # 仍跳过：仅标题写 115 分享、正文无实际链接（见下方 title 分支已移除分享标题硬跳）。
 
-    # 迅雷 / PikPak / 百度 / 夸克：只看楼主语料（勿扫回帖广告链）；无目标链且无附件可试时才跳过
-    if has_xunlei_share_link(link_corpus) and not has_lz_target:
-        if not attachments_already_tried and looks_like_attachment_zone(html):
+    # 各类网盘分享（迅雷/百度/夸克/MEGA/阿里/天翼/123/蓝奏…）：只看楼主语料
+    cloud_hit = match_skip_cloud_share_link(link_corpus)
+    if cloud_hit is not None and not has_lz_target:
+        if cloud_hit.try_attachments and (
+            not attachments_already_tried and looks_like_attachment_zone(html)
+        ):
             pass
         else:
-            return ThreadOutcome("skipped", "迅雷云盘（跳过）", link_kind, title)
+            return ThreadOutcome("skipped", cloud_hit.skip_tip(), link_kind, title)
 
-    if has_pikpak_share_link(link_corpus) and not has_lz_target:
-        if not attachments_already_tried and looks_like_attachment_zone(html):
-            pass
-        else:
-            return ThreadOutcome("skipped", "PikPak网盘（跳过）", link_kind, title)
-
-    if has_baidu_share_link(link_corpus) and not has_lz_target:
-        if not attachments_already_tried and looks_like_attachment_zone(html):
-            pass
-        else:
-            return ThreadOutcome("skipped", "百度网盘（跳过）", link_kind, title)
-
-    if has_quark_share_link(link_corpus) and not has_lz_target:
-        if not attachments_already_tried and looks_like_attachment_zone(html):
-            pass
-        else:
-            return ThreadOutcome("skipped", "夸克网盘（跳过）", link_kind, title)
-
-    # 标题仅 115sha / 迅雷 / PikPak / 百度 / 夸克、且正文无目标链：
+    # 标题仅 115sha / 各类网盘、且正文无目标链：
     # 115sha 标题若带附件区，先下附件（常见：标题写 115sha1，rar 内实为 ed2k）
     # （正文已有 115cdn 分享 / ed2k / 磁力时不因标题里的「百度」等字样硬跳）
     if title_is_115sha_without_ed2k_magnet(title) or title_is_115sha_without_ed2k_magnet(
@@ -310,38 +289,19 @@ def judge_thread_html(
         else:
             return ThreadOutcome("skipped", "115sha 标题（无 ed2k/磁力，跳过）", link_kind, title)
     _has_body_target = has_lz_target
-    if not _has_body_target and (
-        title_is_xunlei_cloud_without_ed2k_magnet(title)
-        or title_is_xunlei_cloud_without_ed2k_magnet(list_title)
-    ):
-        if not attachments_already_tried and looks_like_attachment_zone(html):
-            pass
-        else:
-            return ThreadOutcome("skipped", "迅雷云盘标题（无 ed2k/磁力，跳过）", link_kind, title)
-    if not _has_body_target and (
-        title_is_pikpak_without_ed2k_magnet(title)
-        or title_is_pikpak_without_ed2k_magnet(list_title)
-    ):
-        if not attachments_already_tried and looks_like_attachment_zone(html):
-            pass
-        else:
-            return ThreadOutcome("skipped", "PikPak标题（无 ed2k/磁力，跳过）", link_kind, title)
-    if not _has_body_target and (
-        title_is_baidu_pan_without_ed2k_magnet(title)
-        or title_is_baidu_pan_without_ed2k_magnet(list_title)
-    ):
-        if not attachments_already_tried and looks_like_attachment_zone(html):
-            pass
-        else:
-            return ThreadOutcome("skipped", "百度网盘标题（无 ed2k/磁力，跳过）", link_kind, title)
-    if not _has_body_target and (
-        title_is_quark_without_ed2k_magnet(title)
-        or title_is_quark_without_ed2k_magnet(list_title)
-    ):
-        if not attachments_already_tried and looks_like_attachment_zone(html):
-            pass
-        else:
-            return ThreadOutcome("skipped", "夸克网盘标题（无 ed2k/磁力，跳过）", link_kind, title)
+    if not _has_body_target:
+        title_cloud = match_skip_cloud_share_title(title) or match_skip_cloud_share_title(
+            list_title
+        )
+        if title_cloud is not None:
+            if title_cloud.try_attachments and (
+                not attachments_already_tried and looks_like_attachment_zone(html)
+            ):
+                pass
+            else:
+                return ThreadOutcome(
+                    "skipped", title_cloud.skip_tip(from_title=True), link_kind, title
+                )
 
     # 需回复：满龄（或非龄期板）→ 占位显示；未满龄已在上一步跳过
     if is_reply_required_post(html):
@@ -399,26 +359,9 @@ def judge_thread_html(
                 return ThreadOutcome(
                     "skipped", "非ED2K资源（网盘分享）", link_kind, title
                 )
-            if (
-                has_baidu_share_link(link_corpus)
-                or has_xunlei_share_link(link_corpus)
-                or has_pikpak_share_link(link_corpus)
-                or has_quark_share_link(link_corpus)
-            ):
-                tip = (
-                    "百度网盘（跳过）"
-                    if has_baidu_share_link(link_corpus)
-                    else (
-                        "迅雷云盘（跳过）"
-                        if has_xunlei_share_link(link_corpus)
-                        else (
-                            "PikPak网盘（跳过）"
-                            if has_pikpak_share_link(link_corpus)
-                            else "夸克网盘（跳过）"
-                        )
-                    )
-                )
-                return ThreadOutcome("skipped", tip, link_kind, title)
+            cloud_fail = match_skip_cloud_share_link(link_corpus)
+            if cloud_fail is not None:
+                return ThreadOutcome("skipped", cloud_fail.skip_tip(), link_kind, title)
             return ThreadOutcome("failed", "解析入库失败（有链但无主资源）", link_kind, title)
 
     # 0 元购买仍无链（未登录/未解锁）：占位，留给账号爬；勿再走附件/无磁力跳过

@@ -20,13 +20,47 @@ SAMPLE_115_MULTILINE = (
     "7F1DB1A9F83C83D4FF1CD36A4CA53282E1DF2D1F"
 )
 
+# 色花【sha1】帖 rar 内常见无 115:// 前缀
+SAMPLE_115_BARE = (
+    "fc3046937.mp4|636932634|"
+    "F5D49210FBFBF1473326D911BCFF57C0C8D819AB|"
+    "10B8F07E6A5DD161DF9C38047FB6DB8870C7DB22"
+)
+
 
 def test_has_115_sha_link_matches_sample():
     assert has_115_sha_link(SAMPLE_115) is True
     assert has_115_sha_link(f'<div id="postmessage_1">{SAMPLE_115}</div>') is True
     assert has_115_sha_link(SAMPLE_115_MULTILINE) is True
+    assert has_115_sha_link(SAMPLE_115_BARE) is True
     assert has_115_sha_link("magnet:?xt=urn:btih:ABCDEF0123456789ABCDEF0123456789ABCDEF01") is False
     assert has_115_sha_link("115://incomplete") is False
+
+
+def test_judge_skips_bare_sha1_attach_corpus():
+    """附件解出无协议头 sha1 管线 → 115sha 跳过（勿落成「未解析到」）。"""
+    html = """
+    <html><head><title>【sha1】(fc3046937) 示例 - 论坛</title></head>
+    <body>
+    <div id="postmessage_1">【下载地址】：见附件</div>
+    <div class="tattl"><ignore_js_op>
+      <a href="forum.php?mod=attachment&aid=1">fc3046937.rar</a>
+    </ignore_js_op></div>
+    Powered by Discuz!
+    </body></html>
+    """
+    html = html + ("x" * 15000)
+    html2 = inject_attachment_text(html, SAMPLE_115_BARE)
+    out = judge_thread_html(
+        html2,
+        board_fid=104,
+        list_title="【sha1】(fc3046937) 示例",
+        preferred_link="magnet",
+        attachments_already_tried=True,
+        had_attachments=True,
+    )
+    assert out.verdict == "skipped"
+    assert "115sha" in out.outcome.lower() or "115" in out.outcome.lower()
 
 
 def test_judge_skips_115_sha_immediately():
@@ -126,6 +160,7 @@ def test_title_115sha_only_skips_without_trying_attachments():
     from parsers.thread_gates import title_is_115sha_without_ed2k_magnet
 
     assert title_is_115sha_without_ed2k_magnet("【115SHA1】欧美合集 37V") is True
+    assert title_is_115sha_without_ed2k_magnet("【sha1】(fc3046937) 回収") is True
     assert title_is_115sha_without_ed2k_magnet("【115sha1】【ed2k】合集") is False
     assert title_is_115sha_without_ed2k_magnet("【磁力】合集") is False
 
@@ -403,6 +438,130 @@ def test_quark_pan_share_skips():
     assert out.verdict == "skipped"
     assert "夸克" in out.outcome
     assert out.need_attachments is False
+
+
+def test_quark_title_with_txt_attach_skips_without_need_attachments():
+    """标题【夸克】+ 附件区 txt：磁力板直接跳过，勿 need_attachments。"""
+    html = """
+    <html><head><title>【夸克网盘】魔改示例 - 论坛</title></head>
+    <body>
+    <span id="thread_subject">【夸克网盘】魔改示例</span>
+    <div id="postlist">
+      <div id="post_1">
+        <div class="authi"><em>1#</em><img src="ico_lz.png" alt="楼主"/></div>
+        <div id="postmessage_1">【资源名称】：demo<br/>【下载地址】：</div>
+        <div class="tattl"><ignore_js_op>
+          <a href="forum.php?mod=attachment&aid=1">链接.txt</a>
+        </ignore_js_op></div>
+      </div>
+    </div>
+    Powered by Discuz!
+    </body></html>
+    """
+    html = html + ("<!-- pad -->" * 900)
+    out = judge_thread_html(
+        html,
+        board_fid="104",
+        list_title="【夸克网盘】魔改示例",
+        preferred_link="magnet",
+    )
+    assert out.verdict == "skipped"
+    assert "夸克" in out.outcome
+    assert out.need_attachments is False
+
+
+def test_mega_and_gdrive_skip_clear_reason():
+    """MEGA / Google 网盘勿落成笼统「非资源帖」。"""
+    from parsers.thread_gates import (
+        has_gdrive_share_link,
+        has_mega_share_link,
+        title_is_gdrive_without_ed2k_magnet,
+        title_is_mega_without_ed2k_magnet,
+    )
+
+    assert has_mega_share_link("https://mega.nz/folder/L0NERCLT#xUQyaEhzOPSLCLEcV8pWBA")
+    assert has_gdrive_share_link("https://drive.google.com/file/d/abc/view")
+    assert title_is_mega_without_ed2k_magnet("【MEGA】FC2示例") is True
+    assert title_is_mega_without_ed2k_magnet("【mg网盘】示例") is True
+    assert title_is_gdrive_without_ed2k_magnet("[GOOGLE網盤]示例") is True
+
+    html = """
+    <html><head><title>【MEGA】示例 - 论坛</title></head>
+    <body>
+    <span id="thread_subject">【MEGA】示例</span>
+    <div id="postlist">
+      <div id="post_1">
+        <div class="authi"><em>1#</em><img src="ico_lz.png" alt="楼主"/></div>
+        <div id="postmessage_1">
+          【下载地址】：https://mega.nz/folder/Abc123#key
+        </div>
+      </div>
+    </div>
+    Powered by Discuz!
+    </body></html>
+    """
+    html = html + ("<!-- pad -->" * 900)
+    out = judge_thread_html(
+        html,
+        board_fid="104",
+        list_title="【MEGA】示例",
+        preferred_link="magnet",
+    )
+    assert out.verdict == "skipped"
+    assert "MEGA" in out.outcome
+    assert "非资源" not in out.outcome
+
+
+def test_extra_cloud_shares_skip_clear_reason():
+    """阿里/天翼/123/蓝奏/UC 等扩展网盘：明确跳过，勿「非资源帖」。"""
+    from parsers.thread_gates import (
+        has_aliyun_share_link,
+        has_lanzou_share_link,
+        has_pan123_share_link,
+        has_tianyi_share_link,
+        match_skip_cloud_share_link,
+        match_skip_cloud_share_title,
+    )
+
+    assert has_aliyun_share_link("https://www.alipan.com/s/abcDEF")
+    assert has_tianyi_share_link("https://cloud.189.cn/t/xyz")
+    assert has_pan123_share_link("https://www.123pan.com/s/abcd")
+    assert has_lanzou_share_link("https://wwasp.lanzoul.com/iakns3n074eh")
+    assert match_skip_cloud_share_title("【阿里云盘】合集") is not None
+    assert match_skip_cloud_share_title("【123云盘】合集") is not None
+    assert match_skip_cloud_share_title("【蓝奏云】工具") is not None
+    assert match_skip_cloud_share_link("https://drive.uc.cn/s/xxx").key == "uc"
+
+    cases = [
+        ("阿里云盘", "https://www.aliyundrive.com/s/abc123", "阿里"),
+        ("123云盘", "https://www.123pan.com/s/abc123", "123"),
+        ("蓝奏云", "https://wwasp.lanzoul.com/iakns3n074eh", "蓝奏"),
+        ("天翼云盘", "https://cloud.189.cn/t/AbCdEf", "天翼"),
+    ]
+    for label, url, needle in cases:
+        html = f"""
+        <html><head><title>【{label}】示例 - 论坛</title></head>
+        <body>
+        <span id="thread_subject">【{label}】示例</span>
+        <div id="postlist">
+          <div id="post_1">
+            <div class="authi"><em>1#</em><img src="ico_lz.png" alt="楼主"/></div>
+            <div id="postmessage_1">下载：{url}</div>
+          </div>
+        </div>
+        Powered by Discuz!
+        </body></html>
+        """
+        html = html + ("<!-- pad -->" * 900)
+        out = judge_thread_html(
+            html,
+            board_fid="104",
+            list_title=f"【{label}】示例",
+            preferred_link="magnet",
+        )
+        assert out.verdict == "skipped", (label, out.outcome)
+        assert needle in out.outcome, (label, out.outcome)
+        assert "非资源" not in out.outcome
 
 
 def test_reply_baidu_does_not_skip_lz_ed2k_attachment():

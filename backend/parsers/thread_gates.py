@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass
 
 # 目标链探测：须可解析入库的完整形态（勿把缺 hash 的半截 ed2k 当有链）
 ED2K_RE = re.compile(
@@ -131,21 +132,37 @@ CLOUD_SHARE_RE = re.compile(
     r"(?:https?://)?(?:"
     r"pan\.xunlei\.com|"
     r"pan\.baidu\.com|"
+    r"yun\.baidu\.com|"
     r"(?:www\.)?aliyundrive\.com|"
     r"(?:www\.)?alipan\.com|"
     r"pan\.quark\.cn|"
     r"cloud\.189\.cn|"
+    r"(?:www\.)?(?:123pan|123684|123865|123912|123592)\.com|"
+    r"(?:[\w-]+\.)?lanzou[a-z0-9]*\.com|"
+    r"(?:www\.)?lanzoux\.com|"
+    r"drive\.uc\.cn|"
+    r"fast\.uc\.cn|"
+    r"share\.weiyun\.com|"
+    r"(?:www\.)?ctfile\.com|"
+    r"(?:www\.)?ctdisk\.com|"
+    r"1drv\.ms|"
+    r"onedrive\.live\.com|"
+    r"(?:www\.)?dropbox\.com/"
+    r"(?:s|scl)/|"
+    r"(?:www\.)?mediafire\.com/file/|"
+    r"(?:www\.)?terabox(?:app)?\.com|"
+    r"(?:www\.)?mega(?:\.co)?\.nz/|"
+    r"(?:drive|docs)\.google\.com/|"
+    r"(?:www\.)?mypikpak\.com/s/|"
     r"(?:www\.)?115\.com/s/|"
-    r"(?:www\.)?115cdn\.com/s/|"
-    r"(?:www\.)?mypikpak\.com/s/"
+    r"(?:www\.)?115cdn\.com/s/"
     r")",
     re.I,
 )
 # 115 直链分享：115://文件名|字节数|hash|hash
-RE_115_SHA = re.compile(
-    r"115://[^\s<>\"'|]+\|\d+\|[A-Fa-f0-9]{32,64}\|[A-Fa-f0-9]{32,64}",
-    re.I,
-)
+# 色花【sha1】帖附件常无协议头：文件名|size|sha1|pickcode（例 fc3046937.rar）
+_RE_115_SHA_BODY = r"[^\s<>\"'|]+\|\d+\|[A-Fa-f0-9]{32,64}\|[A-Fa-f0-9]{32,64}"
+RE_115_SHA = re.compile(rf"(?:115://)?{_RE_115_SHA_BODY}", re.I)
 # 115 网盘分享页：115.com/s/... 或 115cdn.com/s/...（含访问码参数亦可）
 RE_115_SHARE = re.compile(
     r"(?:https?://)?(?:www\.)?(?:115\.com|115cdn\.com)/s/[A-Za-z0-9]+",
@@ -171,6 +188,239 @@ RE_QUARK_SHARE = re.compile(
     r"(?:https?://)?(?:pan\.)?quark\.cn/s/[A-Za-z0-9_-]+",
     re.I,
 )
+# MEGA 分享：mega.nz/file|folder|…
+RE_MEGA_SHARE = re.compile(
+    r"(?:https?://)?(?:www\.)?mega(?:\.co)?\.nz/(?:file|folder|#!|embed)",
+    re.I,
+)
+# Google Drive：drive.google.com / docs.google.com
+RE_GDRIVE_SHARE = re.compile(
+    r"(?:https?://)?(?:drive|docs)\.google\.com/",
+    re.I,
+)
+# 阿里云盘
+RE_ALIYUN_SHARE = re.compile(
+    r"(?:https?://)?(?:www\.)?(?:aliyundrive|alipan)\.com/(?:s|t)/[A-Za-z0-9_-]+",
+    re.I,
+)
+# 天翼云盘
+RE_TIANYI_SHARE = re.compile(
+    r"(?:https?://)?cloud\.189\.cn/(?:t|web/share)(?:/|\?|#)",
+    re.I,
+)
+# 123 云盘（含常见镜像域）
+RE_PAN123_SHARE = re.compile(
+    r"(?:https?://)?(?:www\.)?(?:123pan|123684|123865|123912|123592)\.com/s/[A-Za-z0-9_-]+",
+    re.I,
+)
+# 蓝奏云（多子域/变体域）
+RE_LANZOU_SHARE = re.compile(
+    r"(?:https?://)?(?:[\w-]+\.)?(?:lanzou[a-z0-9]*|lanzoux)\.com/[A-Za-z0-9_-]+",
+    re.I,
+)
+# UC 网盘
+RE_UC_SHARE = re.compile(
+    r"(?:https?://)?(?:drive|fast)\.uc\.cn/s/[A-Za-z0-9_-]+",
+    re.I,
+)
+# 腾讯微云
+RE_WEIYUN_SHARE = re.compile(
+    r"(?:https?://)?share\.weiyun\.com/[A-Za-z0-9_-]+",
+    re.I,
+)
+# 城通网盘
+RE_CTFILE_SHARE = re.compile(
+    r"(?:https?://)?(?:www\.)?(?:ctfile|ctdisk)\.com/(?:f|d|file)/[A-Za-z0-9_-]+",
+    re.I,
+)
+# OneDrive
+RE_ONEDRIVE_SHARE = re.compile(
+    r"(?:https?://)?(?:1drv\.ms/[A-Za-z0-9_-]+|onedrive\.live\.com/)",
+    re.I,
+)
+# Dropbox
+RE_DROPBOX_SHARE = re.compile(
+    r"(?:https?://)?(?:www\.)?dropbox\.com/(?:s|scl)/[A-Za-z0-9_/%-]+",
+    re.I,
+)
+# MediaFire
+RE_MEDIAFIRE_SHARE = re.compile(
+    r"(?:https?://)?(?:www\.)?mediafire\.com/file/[A-Za-z0-9]+",
+    re.I,
+)
+# Terabox（百度国际盘）
+RE_TERABOX_SHARE = re.compile(
+    r"(?:https?://)?(?:www\.)?terabox(?:app)?\.com/s/[A-Za-z0-9_-]+",
+    re.I,
+)
+
+_TITLE_HAS_TARGET_HINT_RE = re.compile(
+    r"ed2k|magnet|磁力|电驴|种子|torrent",
+    re.I,
+)
+
+
+@dataclass(frozen=True, slots=True)
+class CloudShareSpec:
+    """磁力板应跳过的网盘分享（非 115 分享码入库类）。"""
+
+    key: str
+    label: str
+    url_re: re.Pattern[str]
+    title_re: re.Pattern[str] | None = None
+    try_attachments: bool = False
+
+    def skip_tip(self, *, from_title: bool = False) -> str:
+        if from_title:
+            return f"{self.label}标题（无 ed2k/磁力，跳过）"
+        return f"{self.label}（跳过）"
+
+
+# 顺序即匹配优先级；新增网盘只加条目即可
+SKIP_CLOUD_SHARE_SPECS: tuple[CloudShareSpec, ...] = (
+    CloudShareSpec(
+        "xunlei",
+        "迅雷云盘",
+        RE_XUNLEI_SHARE,
+        re.compile(r"迅雷\s*(?:云盘|网盘|雲盤|網盤)", re.I),
+        try_attachments=True,
+    ),
+    CloudShareSpec(
+        "pikpak",
+        "PikPak网盘",
+        RE_PIKPAK_SHARE,
+        re.compile(r"pik\s*pak", re.I),
+        try_attachments=True,
+    ),
+    CloudShareSpec(
+        "baidu",
+        "百度网盘",
+        RE_BAIDU_SHARE,
+        re.compile(r"百度\s*(?:网盘|雲盤|云盘|網盤)|百度云", re.I),
+        try_attachments=True,
+    ),
+    CloudShareSpec(
+        "quark",
+        "夸克网盘",
+        RE_QUARK_SHARE,
+        re.compile(r"夸\s*克|quark", re.I),
+        try_attachments=False,
+    ),
+    CloudShareSpec(
+        "mega",
+        "MEGA网盘",
+        RE_MEGA_SHARE,
+        re.compile(r"mega|mg\s*(?:网盘|網盤)", re.I),
+        try_attachments=False,
+    ),
+    CloudShareSpec(
+        "gdrive",
+        "Google网盘",
+        RE_GDRIVE_SHARE,
+        re.compile(r"google|谷歌\s*(?:网盘|雲盤|云盘|網盤)", re.I),
+        try_attachments=False,
+    ),
+    CloudShareSpec(
+        "aliyun",
+        "阿里云盘",
+        RE_ALIYUN_SHARE,
+        re.compile(r"阿里\s*(?:云盘|雲盤|网盘|網盤)|aliyun|alipan", re.I),
+        try_attachments=True,
+    ),
+    CloudShareSpec(
+        "tianyi",
+        "天翼云盘",
+        RE_TIANYI_SHARE,
+        re.compile(r"天翼\s*(?:云盘|雲盤|网盘|網盤)|189\s*(?:云盘|雲盤)", re.I),
+        try_attachments=True,
+    ),
+    CloudShareSpec(
+        "pan123",
+        "123云盘",
+        RE_PAN123_SHARE,
+        re.compile(r"123\s*(?:云盘|雲盤|网盘|網盤)|123pan", re.I),
+        try_attachments=True,
+    ),
+    CloudShareSpec(
+        "lanzou",
+        "蓝奏云",
+        RE_LANZOU_SHARE,
+        re.compile(r"蓝奏\s*云|藍奏\s*雲|lanzou", re.I),
+        try_attachments=False,
+    ),
+    CloudShareSpec(
+        "uc",
+        "UC网盘",
+        RE_UC_SHARE,
+        re.compile(r"UC\s*(?:网盘|網盤|云盘|雲盤)", re.I),
+        try_attachments=False,
+    ),
+    CloudShareSpec(
+        "weiyun",
+        "微云",
+        RE_WEIYUN_SHARE,
+        re.compile(r"微\s*云|微\s*雲|weiyun", re.I),
+        try_attachments=False,
+    ),
+    CloudShareSpec(
+        "ctfile",
+        "城通网盘",
+        RE_CTFILE_SHARE,
+        re.compile(r"城通\s*(?:网盘|網盤)|ctfile", re.I),
+        try_attachments=False,
+    ),
+    CloudShareSpec(
+        "onedrive",
+        "OneDrive",
+        RE_ONEDRIVE_SHARE,
+        re.compile(r"onedrive|one\s*drive", re.I),
+        try_attachments=False,
+    ),
+    CloudShareSpec(
+        "dropbox",
+        "Dropbox",
+        RE_DROPBOX_SHARE,
+        re.compile(r"dropbox", re.I),
+        try_attachments=False,
+    ),
+    CloudShareSpec(
+        "mediafire",
+        "MediaFire",
+        RE_MEDIAFIRE_SHARE,
+        re.compile(r"media\s*fire", re.I),
+        try_attachments=False,
+    ),
+    CloudShareSpec(
+        "terabox",
+        "Terabox",
+        RE_TERABOX_SHARE,
+        re.compile(r"tera\s*box", re.I),
+        try_attachments=False,
+    ),
+)
+
+
+def match_skip_cloud_share_link(text: str) -> CloudShareSpec | None:
+    """正文/楼主语料命中应跳过的网盘分享链（不含 115 分享码）。"""
+    blob = text or ""
+    if not blob:
+        return None
+    for spec in SKIP_CLOUD_SHARE_SPECS:
+        if spec.url_re.search(blob):
+            return spec
+    return None
+
+
+def match_skip_cloud_share_title(title: str) -> CloudShareSpec | None:
+    """标题标明网盘且未暗示 ed2k/磁力 → 应跳过。"""
+    t = (title or "").strip()
+    if not t or _TITLE_HAS_TARGET_HINT_RE.search(t):
+        return None
+    for spec in SKIP_CLOUD_SHARE_SPECS:
+        if spec.title_re is not None and spec.title_re.search(t):
+            return spec
+    return None
+
 SOFT_AD_TITLE_HINTS = ("名人名言", "佛教谚语", "请稍候", "Just a moment")
 GENERIC_TITLES = frozenset({"提示信息", "提示", "手机版", "请稍候", "佛教谚语"})
 MOBILE_SHELL_TITLES = frozenset({"手机版", "请稍候…", "请稍候"})
@@ -376,57 +626,94 @@ def has_quark_share_link(text: str) -> bool:
     return bool(RE_QUARK_SHARE.search(text or ""))
 
 
+def has_mega_share_link(text: str) -> bool:
+    """识别 MEGA 分享：mega.nz/file|folder|…"""
+    return bool(RE_MEGA_SHARE.search(text or ""))
+
+
+def has_gdrive_share_link(text: str) -> bool:
+    """识别 Google Drive：drive.google.com / docs.google.com。"""
+    return bool(RE_GDRIVE_SHARE.search(text or ""))
+
+
+def has_aliyun_share_link(text: str) -> bool:
+    return bool(RE_ALIYUN_SHARE.search(text or ""))
+
+
+def has_tianyi_share_link(text: str) -> bool:
+    return bool(RE_TIANYI_SHARE.search(text or ""))
+
+
+def has_pan123_share_link(text: str) -> bool:
+    return bool(RE_PAN123_SHARE.search(text or ""))
+
+
+def has_lanzou_share_link(text: str) -> bool:
+    return bool(RE_LANZOU_SHARE.search(text or ""))
+
+
+def has_uc_share_link(text: str) -> bool:
+    return bool(RE_UC_SHARE.search(text or ""))
+
+
+def has_weiyun_share_link(text: str) -> bool:
+    return bool(RE_WEIYUN_SHARE.search(text or ""))
+
+
+def has_ctfile_share_link(text: str) -> bool:
+    return bool(RE_CTFILE_SHARE.search(text or ""))
+
+
+def has_onedrive_share_link(text: str) -> bool:
+    return bool(RE_ONEDRIVE_SHARE.search(text or ""))
+
+
+def has_dropbox_share_link(text: str) -> bool:
+    return bool(RE_DROPBOX_SHARE.search(text or ""))
+
+
+def has_mediafire_share_link(text: str) -> bool:
+    return bool(RE_MEDIAFIRE_SHARE.search(text or ""))
+
+
+def has_terabox_share_link(text: str) -> bool:
+    return bool(RE_TERABOX_SHARE.search(text or ""))
+
+
 def title_is_xunlei_cloud_without_ed2k_magnet(title: str) -> bool:
     """标题标明迅雷云盘，且未写 ed2k / magnet / 磁力 / 电驴 → 直接跳过。"""
-    t = (title or "").strip()
-    if not t:
-        return False
-    if "迅雷云盘" not in t and "迅雷网盘" not in t and not re.search(r"迅雷\s*云盘", t):
-        return False
-    lower = t.lower()
-    if any(x in lower for x in ("ed2k", "magnet", "磁力", "电驴", "种子", "torrent")):
-        return False
-    return True
+    spec = match_skip_cloud_share_title(title)
+    return spec is not None and spec.key == "xunlei"
 
 
 def title_is_pikpak_without_ed2k_magnet(title: str) -> bool:
     """标题标明 PikPak，且未写 ed2k / magnet / 磁力 / 电驴 → 直接跳过。"""
-    t = (title or "").strip()
-    if not t:
-        return False
-    lower = t.lower()
-    if "pikpak" not in lower and "pik pak" not in lower:
-        return False
-    if any(x in lower for x in ("ed2k", "magnet", "磁力", "电驴", "种子", "torrent")):
-        return False
-    return True
+    spec = match_skip_cloud_share_title(title)
+    return spec is not None and spec.key == "pikpak"
 
 
 def title_is_baidu_pan_without_ed2k_magnet(title: str) -> bool:
     """标题标明百度网盘，且未写 ed2k / magnet / 磁力 / 电驴 → 直接跳过。"""
-    t = (title or "").strip()
-    if not t:
-        return False
-    if "百度网盘" not in t and "百度云" not in t and not re.search(r"百度\s*网盘", t):
-        return False
-    lower = t.lower()
-    if any(x in lower for x in ("ed2k", "magnet", "磁力", "电驴", "种子", "torrent")):
-        return False
-    return True
+    spec = match_skip_cloud_share_title(title)
+    return spec is not None and spec.key == "baidu"
 
 
 def title_is_quark_without_ed2k_magnet(title: str) -> bool:
     """标题标明夸克网盘，且未写 ed2k / magnet / 磁力 / 电驴 → 直接跳过。"""
-    t = (title or "").strip()
-    if not t:
-        return False
-    if "夸克" not in t and "quark" not in t.lower():
-        return False
-    lower = t.lower()
-    if any(x in lower for x in ("ed2k", "magnet", "磁力", "电驴", "种子", "torrent")):
-        return False
-    return True
+    spec = match_skip_cloud_share_title(title)
+    return spec is not None and spec.key == "quark"
 
+
+def title_is_mega_without_ed2k_magnet(title: str) -> bool:
+    """标题标明 MEGA / mg网盘，且未写 ed2k / magnet / 磁力 / 电驴 → 直接跳过。"""
+    spec = match_skip_cloud_share_title(title)
+    return spec is not None and spec.key == "mega"
+
+
+def title_is_gdrive_without_ed2k_magnet(title: str) -> bool:
+    """标题标明 Google 网盘，且未写 ed2k / magnet / 磁力 / 电驴 → 直接跳过。"""
+    spec = match_skip_cloud_share_title(title)
+    return spec is not None and spec.key == "gdrive"
 
 def title_is_115_share_without_ed2k_magnet(title: str) -> bool:
     """标题标明 115 分享/分享码/网盘分享，且未写 ed2k / magnet / 磁力 / 电驴 → 直接跳过。"""
@@ -443,12 +730,16 @@ def title_is_115_share_without_ed2k_magnet(title: str) -> bool:
 
 
 def title_is_115sha_without_ed2k_magnet(title: str) -> bool:
-    """标题标明 115sha，且未写 ed2k / magnet / 磁力 / 电驴 → 直接跳过。"""
+    """标题标明 115sha / 【sha1】，且未写 ed2k / magnet / 磁力 / 电驴 → 直接跳过。"""
     t = (title or "").strip()
     if not t:
         return False
     lower = re.sub(r"\s+", "", t.lower())
-    has_115 = "115sha" in lower or bool(re.search(r"\[?\s*115\s*sha", t, re.I))
+    has_115 = (
+        "115sha" in lower
+        or bool(re.search(r"\[?\s*115\s*sha", t, re.I))
+        or bool(re.search(r"[【\[]\s*sha1\s*[】\]]", t, re.I))
+    )
     if not has_115:
         return False
     if any(x in lower for x in ("ed2k", "magnet")):
@@ -596,22 +887,24 @@ def is_thread_author_banned(html: str) -> bool:
     """作者被禁止或删除，内容自动屏蔽。
 
     必须明确出现「作者被禁止」；若一楼已有有效正文/链接，视为正常帖（避免误跳过）。
-    只认楼主帖块，忽略回帖引用。
+    优先楼主帖块；scope 偶发抽到侧栏漏 locked 时回退全页（再用正文长度兜底）。
     """
     if not html:
         return False
     blob = _lz_gate_blob(html)
     plain = re.sub(r"<[^>]+>", "\n", blob)
-    locked_hit = bool(
-        re.search(
-            r'class=["\']locked["\'][^>]*>[^<]*作者被禁止',
-            blob,
-            re.I,
-        )
+    # locked 内常包 <em>…</em>，勿用 [^<]*
+    locked_re = re.compile(
+        r'class=["\']locked["\'][^>]*>.{0,160}?作者被禁止',
+        re.I | re.S,
     )
+    locked_hit = bool(locked_re.search(blob))
     text_hit = any(m in blob or m in plain for m in AUTHOR_BANNED_MARKERS)
     if not (locked_hit or text_hit):
-        return False
+        locked_hit = bool(locked_re.search(html))
+        text_hit = any(m in html for m in AUTHOR_BANNED_MARKERS)
+        if not (locked_hit or text_hit):
+            return False
 
     text = post_text(html)
     if has_target_link(text, "both"):

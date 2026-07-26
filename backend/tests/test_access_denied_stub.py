@@ -156,6 +156,38 @@ def test_author_banned_content_masked_skips():
     assert out.need_attachments is False
 
 
+def test_author_banned_lz_locked_with_sidebar_noise():
+    """楼主 pcb 仅 locked；页内另有侧栏噪声时仍应识别作者已禁（tid 3151928）。"""
+    from parsers.thread_gates import is_thread_author_banned
+
+    html = """
+    <html><head><title>【磁力连接】示例 - 论坛</title></head>
+    <body>
+    <span id="thread_subject">【磁力连接】示例</span>
+    <div id="post_1">
+      <div class="authi"><em>1#</em>
+        <a href="forum.php?mod=redirect">楼主</a>
+      </div>
+      <div class="pcb">
+        <div class="locked">提示: <em>作者被禁止或删除 内容自动屏蔽</em></div>
+      </div>
+    </div>
+    <div class="avtm"><img src="/uc_server/data/avatar/000/56/67/15_avatar_middle.jpg"/></div>
+    Powered by Discuz!
+    </body></html>
+    """
+    html = html + ("<!-- pad -->" * 900)
+    assert is_thread_author_banned(html) is True
+    out = judge_thread_html(
+        html,
+        board_fid="104",
+        list_title="【磁力连接】示例",
+        preferred_link="magnet",
+    )
+    assert out.verdict == "skipped"
+    assert out.outcome == "作者已禁止（跳过）"
+
+
 def test_author_banned_not_triggered_when_post_has_body():
     """锁定提示残留但一楼已有正常正文 → 不当作作者已禁。"""
     html = """

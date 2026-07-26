@@ -95,9 +95,14 @@ def persist_dual_parse(
     if not uniq:
         uniq = [primary]
 
-    outcome_msg = import_outcome or (
-        f"成功：已提取 {len(uniq)} 条资源" if len(uniq) > 1 else "成功：已提取主链"
-    )
+    # 合集以条数为准；勿被 judge 的「正文含目标链接」盖住 ×N 文案
+    tip = (import_outcome or "").strip()
+    if len(uniq) > 1:
+        outcome_msg = f"成功：已提取 {len(uniq)} 条资源"
+    elif tip:
+        outcome_msg = tip
+    else:
+        outcome_msg = "成功：已提取主链"
     last_hash = primary.hash
     # 合集 ×n：同事务批量 upsert，避免每条单独 commit（可达秒级）
     for asset in uniq:
@@ -115,6 +120,10 @@ def persist_dual_parse(
             hash=asset.hash,
             link=asset.uri,
         )
+        # 多资源：只用本条预览，避免空预览时回落到整帖前 5 张导致「图不对号」
+        previews = list(asset.preview_images or [])
+        if not previews and len(uniq) <= 1:
+            previews = list(parsed.preview_images or [])
         upsert_resource(
             conn,
             link,
@@ -122,11 +131,7 @@ def persist_dual_parse(
             source_url=source_url,
             title=main_name,
             description=asset.description or parsed.description or None,
-            preview_images=(
-                (asset.preview_images or parsed.preview_images or None)[:5]
-                if (asset.preview_images or parsed.preview_images)
-                else None
-            ),
+            preview_images=(previews[:5] if previews else None),
             ed2k_links=[asset.uri],
             extract_password=parsed.extract_password or None,
             board_fid=fid,

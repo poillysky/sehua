@@ -82,9 +82,9 @@ _MAGNET_NO_QMARK_RE = re.compile(
     re.I,
 )
 
-# 防和谐砍字母：agnet / magne / magent / mgnet
+# 防和谐砍字母：agnet / magne / magent / mgnet / net（magnet 残成 net:?；tid 582630）
 _CLIPPED_MAGNET_HEAD_RE = re.compile(
-    rf"(?<![A-Za-z0-9])(?:agnet|magne|magent|mgnet)\s*:\s*\??\s*xt\s*=\s*urn\s*:\s*btih\s*:\s*"
+    rf"(?<![A-Za-z0-9])(?:agnet|magne|magent|mgnet|net)\s*:\s*\??\s*xt\s*=\s*urn\s*:\s*btih\s*:\s*"
     rf"({_INFOHASH})",
     re.I,
 )
@@ -95,16 +95,22 @@ _BTIH_SPACE_HASH_RE = re.compile(
     re.I,
 )
 
-# hash 被顿号/逗号/点号等打断（tid 1540160：btih:67745fc、1f43dbc15d…）
+# hash 被顿号/逗号/点号/换行/br 打断（tid 1540160；tid 191451 用 <br> 拆 40 位）
 _MAGNET_BTIH_SPLIT_HASH_RE = re.compile(
     rf"(magnet:\?xt=urn:btih:)"
-    rf"((?:[A-Fa-f0-9]{{2,}}[\s、，,．.\u00b7·]*){{1,12}}[A-Fa-f0-9]{{2,}})",
+    rf"((?:[A-Fa-f0-9]{{2,}}"
+    rf"(?:[\s、，,．.\u00b7·]|&nbsp;|&amp;nbsp;|<br\s*/?>)*"
+    rf"){{1,12}}[A-Fa-f0-9]{{2,}})",
     re.I,
 )
 
 
 def _stitch_split_btih_hash(m: re.Match[str]) -> str:
-    hex_only = re.sub(r"[^A-Fa-f0-9]", "", m.group(2) or "")
+    chunk = m.group(2) or ""
+    # 先去掉 br/nbsp，避免 <br> 里的字母 b/a/f 混进 hex
+    chunk = re.sub(r"<br\s*/?>", "", chunk, flags=re.I)
+    chunk = re.sub(r"&nbsp;|&amp;nbsp;", "", chunk, flags=re.I)
+    hex_only = re.sub(r"[^A-Fa-f0-9]", "", chunk)
     if len(hex_only) in (32, 40):
         return f"{m.group(1)}{hex_only}"
     return m.group(0)
@@ -152,6 +158,19 @@ def bare_infohash_structure_cue_labels() -> tuple[str, ...]:
         for back in _BARE_HASH_BACK2:
             labels.append(f"{seed}子{back}")
     labels.extend(("HASH", "Hash", "hash", "哈希"))
+    # 色花堂「磁力链接」帖常见：【下载地址】后直接跟 40 位 infohash（无 magnet: 前缀）
+    labels.extend(
+        (
+            "下载地址",
+            "下載地址",
+            "下载链接",
+            "下載鏈接",
+            "下载连接",
+            "下載連接",
+            "下载連结",
+            "下載連结",
+        )
+    )
     return tuple(dict.fromkeys(labels))
 
 
@@ -159,13 +178,27 @@ _BARE_HASH_STRUCTURE_CUES = bare_infohash_structure_cue_labels()
 _BARE_HASH_STRUCTURE_ALT = "|".join(re.escape(x) for x in _BARE_HASH_STRUCTURE_CUES)
 
 # 线索与 hash 之间：空白/冒号/括号，以及 2048 实录「哈希校验; HASH; ;」（tid 27433099）
+# 色花「特征码，&nbsp; HASH」（tid 718959）
 _BARE_HASH_GAP = (
     r"(?:"
     r"[\s:：︰\|\[\]【】=\-_;；,，\.．]"
     r"|哈希校验|哈希值|雜湊校[验驗]|哈希校[验驗]"
+    r"|&nbsp;|&amp;nbsp;"
     r"|<[^>\n]{0,120}>"
     r"){0,80}"
 )
+
+# 色花反爬：标签字间插空格「【特 徵 碼 】」（tid 1473899 破坏版）
+_CJK_INSERTED_SPACE_RE = re.compile(
+    r"(?<=[\u4e00-\u9fff])(?:[\s\u3000]+|&nbsp;|&amp;nbsp;)+(?=[\u4e00-\u9fff])"
+)
+
+
+def _collapse_cjk_inserted_spaces(text: str) -> str:
+    """去掉汉字之间的反爬空格/nbsp，便于命中特徵碼等结构标签。"""
+    if not text:
+        return ""
+    return _CJK_INSERTED_SPACE_RE.sub("", text)
 
 _BARE_INFOHASH_CUED_RE = re.compile(
     r"(?:"
@@ -197,6 +230,12 @@ _RMDOWN_HASH_RE = re.compile(
     re.I,
 )
 
+# 更宽：任意 */torrent/{40hex}（downsx 等镜像；色花堂旧合集常见无 magnet 正文）
+_TORRENT_PATH_HASH_GENERIC_RE = re.compile(
+    r"(?:https?://)[^\s\"'<>]*/torrent/([A-Fa-f0-9]{40})",
+    re.I,
+)
+
 # blockcode 里把 hash 包进转义/真实标签
 _MAGNET_BTIH_TAG_JUNK_RE = re.compile(
     rf"(magnet:\?xt=urn:btih:)"
@@ -209,6 +248,43 @@ _MAGNET_BTIH_TAG_JUNK_RE = re.compile(
 # magnet:?xt=urn:btih:202601/HASH（tid 3286293）
 _MAGNET_BTIH_DATE_PREFIX_RE = re.compile(
     rf"(magnet:\?xt=urn:btih:)(?:[0-9]{{4,8}}/)+({_INFOHASH})",
+    re.I,
+)
+
+# magnet:?xt=urn:btih:/HASH（误插斜杠；tid 700913 / 707141）
+_MAGNET_BTIH_LEADING_SLASH_RE = re.compile(
+    rf"(magnet:\?xt=urn:btih:)/+({_INFOHASH})",
+    re.I,
+)
+
+# magnet:?xt=urn:HASH（缺 btih:；tid 442964）
+_MAGNET_URN_MISSING_BTIH_RE = re.compile(
+    rf"(magnet:\?xt=urn:)(?!btih:)({_INFOHASH})",
+    re.I,
+)
+
+# magnet:?xt=urn:btih:link.aspx?hash=HEX（jukujo 等站点把 hash 包进伪下载页；tid 1256892）
+_MAGNET_BTIH_LINK_ASPX_RE = re.compile(
+    rf"(magnet:\?xt=urn:btih:)link\.aspx\?hash=({_INFOHASH})",
+    re.I,
+)
+
+# magnet:? 与 xt=urn:btih: 被 font/br/blockcode 拆开（tid 2012676）
+_MAGNET_SPLIT_SCHEME_XT_RE = re.compile(
+    rf"magnet\s*:\s*\?"
+    rf"(?:(?:</?(?:font|div|span|br|li|ol|ul|p|em|strong|b|i)\b[^>\n]*>)"
+    rf"|&nbsp;|&amp;nbsp;|\s){{0,80}}"
+    rf"(?:<(?:div|ol|ul|li)\b[^>\n]*>\s*){{0,6}}"
+    rf"xt\s*=\s*urn\s*:\s*btih\s*:\s*"
+    rf"({_INFOHASH})",
+    re.I,
+)
+
+# magnet:?dn=NAME&xt=urn:btih:HASH（dn 在 xt 前；JAVPLAYER tid 513815）
+_MAGNET_XT_AFTER_PARAMS_RE = re.compile(
+    rf"magnet:\?"
+    rf"(?:(?!xt=)[^&\s<>\"'#]+&(?:amp;)?)+"
+    rf"xt=urn:btih:({_INFOHASH})",
     re.I,
 )
 
@@ -229,6 +305,25 @@ def _expand_rmdown_hashes(text: str) -> str:
         return f"{m.group(0)} magnet:?xt=urn:btih:{h} "
 
     return _RMDOWN_HASH_RE.sub(repl, text)
+
+
+def _expand_torrent_path_hashes(text: str) -> str:
+    """downsx 等 /torrent/{infohash} 下载页 → 追加 magnet，便于统一解析。"""
+    if not text or "/torrent/" not in text.lower():
+        return text or ""
+
+    known = {m.group(1).lower() for m in BTIH_RE.finditer(text)}
+
+    def repl(m: re.Match[str]) -> str:
+        h = m.group(1)
+        key = h.lower()
+        if key in known:
+            return m.group(0)
+        known.add(key)
+        return f"{m.group(0)} magnet:?xt=urn:btih:{h} "
+
+    # 先走 generic，覆盖 downsX 及其它镜像
+    return _TORRENT_PATH_HASH_GENERIC_RE.sub(repl, text)
 
 
 def _expand_bare_infohashes(text: str) -> str:
@@ -258,6 +353,7 @@ def normalize_magnet_corpus(text: str) -> str:
     if not text:
         return ""
     out = text.translate(_FULLWIDTH_TRANS)
+    out = _collapse_cjk_inserted_spaces(out)
     out = _ENTITY_COLON_RE.sub(":", out)
     out = _MAGNET_BTIH_TAG_JUNK_RE.sub(
         lambda m: f"{m.group(1)}{m.group(2)}",
@@ -265,6 +361,26 @@ def normalize_magnet_corpus(text: str) -> str:
     )
     out = _MAGNET_BTIH_DATE_PREFIX_RE.sub(
         lambda m: f"{m.group(1)}{m.group(2)}",
+        out,
+    )
+    out = _MAGNET_BTIH_LEADING_SLASH_RE.sub(
+        lambda m: f"{m.group(1)}{m.group(2)}",
+        out,
+    )
+    out = _MAGNET_URN_MISSING_BTIH_RE.sub(
+        lambda m: f"{m.group(1)}btih:{m.group(2)}",
+        out,
+    )
+    out = _MAGNET_BTIH_LINK_ASPX_RE.sub(
+        lambda m: f"{m.group(1)}{m.group(2)}",
+        out,
+    )
+    out = _MAGNET_SPLIT_SCHEME_XT_RE.sub(
+        lambda m: f"magnet:?xt=urn:btih:{m.group(1)}",
+        out,
+    )
+    out = _MAGNET_XT_AFTER_PARAMS_RE.sub(
+        lambda m: f"magnet:?xt=urn:btih:{m.group(1)}",
         out,
     )
     out = _SPACED_MAGNET_SCHEME_RE.sub(
@@ -293,6 +409,7 @@ def normalize_magnet_corpus(text: str) -> str:
     )
     out = _MAGNET_BTIH_SPLIT_HASH_RE.sub(_stitch_split_btih_hash, out)
     out = _expand_rmdown_hashes(out)
+    out = _expand_torrent_path_hashes(out)
     out = _expand_bare_infohashes(out)
     return out
 
