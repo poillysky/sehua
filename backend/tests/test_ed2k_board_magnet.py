@@ -249,6 +249,24 @@ def test_parse_bare_infohash_verify_full_code_2048():
     assert has_target_link(raw, "magnet")
 
 
+def test_parse_magnet_infohash_split_by_ideographic_comma():
+    """色花堂 blockcode 把顿号塞进 hash（tid 1540160）。"""
+    h = "67745fc1f43dbc15d347cd80c226835de33c01fd"
+    raw = (
+        "【资源名称】：FC2-PPV-3775668\n"
+        "【下载链接】：\n"
+        f"magnet:?xt=urn:btih:67745fc、1f43dbc15d347cd80c226835de33c01fd\n"
+        "复制代码\n"
+        "【文件大小】：【2.7g】\n"
+    )
+    fixed = normalize_magnet_corpus(raw)
+    assert f"magnet:?xt=urn:btih:{h}" in fixed.lower()
+    links = parse_magnet_text(raw)
+    assert len(links) == 1
+    assert links[0].infohash == h.upper()
+    assert has_target_link(raw, "magnet")
+
+
 def test_parse_bare_infohash_verify_number_vertical_colon_sehua():
     """色花堂【驗證編號】︰hash（U+FE30 竖排冒号，tid 1537403）。
 

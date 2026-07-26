@@ -95,6 +95,20 @@ _BTIH_SPACE_HASH_RE = re.compile(
     re.I,
 )
 
+# hash 被顿号/逗号/点号等打断（tid 1540160：btih:67745fc、1f43dbc15d…）
+_MAGNET_BTIH_SPLIT_HASH_RE = re.compile(
+    rf"(magnet:\?xt=urn:btih:)"
+    rf"((?:[A-Fa-f0-9]{{2,}}[\s、，,．.\u00b7·]*){{1,12}}[A-Fa-f0-9]{{2,}})",
+    re.I,
+)
+
+
+def _stitch_split_btih_hash(m: re.Match[str]) -> str:
+    hex_only = re.sub(r"[^A-Fa-f0-9]", "", m.group(2) or "")
+    if len(hex_only) in (32, 40):
+        return f"{m.group(1)}{hex_only}"
+    return m.group(0)
+
 # Discuz「复制代码」旁裸 infohash（例：复制代码下载：f7809dc8…）
 # 转帖常见【哈希校验】：40位 hex（tid 3628517）
 #
@@ -277,6 +291,7 @@ def normalize_magnet_corpus(text: str) -> str:
         lambda m: f"{m.group(1)}:{m.group(2)}",
         out,
     )
+    out = _MAGNET_BTIH_SPLIT_HASH_RE.sub(_stitch_split_btih_hash, out)
     out = _expand_rmdown_hashes(out)
     out = _expand_bare_infohashes(out)
     return out
