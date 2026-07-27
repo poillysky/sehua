@@ -6,6 +6,7 @@ from dataclasses import replace
 from typing import Any
 
 from db.repository import (
+    delete_other_resources_by_forum_tid,
     delete_other_resources_by_source_url,
     delete_stub_by_source_url,
     ensure_source,
@@ -82,6 +83,7 @@ def _pick_writable_primary(
     source_url: str,
     *,
     resource_name: str = "",
+    forum_id: str = "",
 ) -> ParsedAsset:
     """优先空闲/本帖 hash；全部被其它帖占用时用帖+资源名合成行键（真链仍进 ed2k_links）。
 
@@ -117,7 +119,11 @@ def _pick_writable_primary(
             return _pick_group_primary(pool)
 
     base = _pick_group_primary(members)
-    syn = name_row_hash(url, resource_name or base.filename or base.hash or "")
+    syn = name_row_hash(
+        url,
+        resource_name or base.filename or base.hash or "",
+        forum_id=forum_id,
+    )
     return replace(base, hash=syn, is_primary=True)
 
 
@@ -331,7 +337,11 @@ def persist_dual_parse(
 
     for row in frame.rows:
         head = _pick_writable_primary(
-            conn, row.members, source_url, resource_name=row.filename
+            conn,
+            row.members,
+            source_url,
+            resource_name=row.filename,
+            forum_id=forum_id,
         )
         main_name = post_title or row.filename or head.hash
         uris = list(row.links)
@@ -408,6 +418,19 @@ def persist_dual_parse(
             kept,
             commit=False,
         )
+        # 2048 镜像域名：同 forum+tid 的其它 URL 一并清掉，避免处理记录出现两行同帖
+        from db.queue import tid_from_url
+
+        tid_i = tid_from_url(source_url) or 0
+        if (forum_id or "").strip() == "2048" and tid_i:
+            purged += delete_other_resources_by_forum_tid(
+                conn,
+                forum_id="2048",
+                tid=int(tid_i),
+                keep_hashes=kept,
+                keep_source_url=source_url,
+                commit=False,
+            )
     # 同帖旧 hash 行也回写板块（未开启替换时仍修正脏名）
     sync_board_meta_by_source_url(
         conn,

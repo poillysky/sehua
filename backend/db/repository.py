@@ -55,9 +55,14 @@ CASE
 END
 """
 
-# 处理记录按帖聚合：有 source_url 则同帖多子资源合成一行；无 URL 仍按 hash 一行
+# 处理记录按帖聚合：
+# - 2048：同 tid 跨镜像域名合成一行（bbs.A / bbs.B 不拆成两帖）
+# - 其它：有 source_url 按 URL；无 URL 仍按 hash
 RESOURCE_GROUP_KEY_SQL = """
 CASE
+  WHEN COALESCE(NULLIF(BTRIM(rs.forum_id), ''), '') = '2048'
+   AND (regexp_match(BTRIM(COALESCE(rs.source_url, '')), 'tid=([0-9]+)'))[1] IS NOT NULL
+    THEN 'tid:2048:' || (regexp_match(BTRIM(rs.source_url), 'tid=([0-9]+)'))[1]
   WHEN NULLIF(BTRIM(COALESCE(rs.source_url, '')), '') IS NOT NULL
     THEN 'url:' || BTRIM(rs.source_url)
   ELSE 'hash:' || upper(r.hash)
@@ -67,6 +72,9 @@ END
 # 仅 resource_sources 表上的同口径分组键（无 ed2k_resources 别名 r）
 RESOURCE_GROUP_KEY_RS_SQL = """
 CASE
+  WHEN COALESCE(NULLIF(BTRIM(rs.forum_id), ''), '') = '2048'
+   AND (regexp_match(BTRIM(COALESCE(rs.source_url, '')), 'tid=([0-9]+)'))[1] IS NOT NULL
+    THEN 'tid:2048:' || (regexp_match(BTRIM(rs.source_url), 'tid=([0-9]+)'))[1]
   WHEN NULLIF(BTRIM(COALESCE(rs.source_url, '')), '') IS NOT NULL
     THEN 'url:' || BTRIM(rs.source_url)
   ELSE 'hash:' || upper(rs.hash)
@@ -120,9 +128,24 @@ def thread_stub_hash(source_url: str) -> str:
     return hashlib.sha256(source_url.encode("utf-8")).hexdigest()[:32].upper()
 
 
-def name_row_hash(source_url: str, resource_name: str) -> str:
-    """同帖同资源名的稳定行键（真链 hash 已被其它帖占用时用）。"""
-    raw = f"{(source_url or '').strip()}\n{(resource_name or '').strip()}"
+def name_row_hash(
+    source_url: str,
+    resource_name: str,
+    *,
+    forum_id: str = "",
+) -> str:
+    """同帖同资源名的稳定行键（真链 hash 已被其它帖占用时用）。
+
+    2048 用 forum+tid，避免镜像域名切换生成另一套合成 hash。
+    """
+    from db.queue import tid_from_url
+
+    fid = (forum_id or "").strip().lower()
+    tid = tid_from_url(source_url or "")
+    if fid == "2048" and tid:
+        raw = f"2048:tid:{int(tid)}\n{(resource_name or '').strip()}"
+    else:
+        raw = f"{(source_url or '').strip()}\n{(resource_name or '').strip()}"
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:40].upper()
 
 
@@ -705,6 +728,66 @@ def delete_other_resources_by_source_url(
             for row in cur.fetchall()
             if row and str(row[0] or "").strip().upper() not in keep
         ]
+        if not victims:
+            return 0
+        cur.execute("SELECT to_regclass(%s)", ("public.resource_tags",))
+        if cur.fetchone()[0] is not None:
+            cur.execute("DELETE FROM resource_tags WHERE hash = ANY(%s)", (victims,))
+        cur.execute("DELETE FROM resource_sources WHERE hash = ANY(%s)", (victims,))
+        cur.execute("DELETE FROM ed2k_resources WHERE hash = ANY(%s)", (victims,))
+    if commit:
+        conn.commit()
+    return len(victims)
+
+
+def delete_other_resources_by_forum_tid(
+    conn: Any,
+    *,
+    forum_id: str,
+    tid: int,
+    keep_hashes: list[str] | set[str] | tuple[str, ...],
+    keep_source_url: str = "",
+    commit: bool = True,
+) -> int:
+    """删除同论坛同 tid 下、不在 keep 内的资源（清镜像域名重复帖）。
+
+    2048 多入口重爬时，旧镜像 URL 行不会被 delete_other_resources_by_source_url 扫到。
+    """
+    fid = (forum_id or "").strip()
+    keep = {
+        str(h).strip().upper()
+        for h in (keep_hashes or [])
+        if str(h or "").strip()
+    }
+    tid_i = int(tid or 0)
+    if not fid or tid_i <= 0 or not keep:
+        return 0
+    _ensure_resource_schema(conn)
+    like = f"%tid={tid_i}%"
+    keep_url = (keep_source_url or "").strip()
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT hash, source_url FROM resource_sources
+            WHERE COALESCE(NULLIF(BTRIM(forum_id), ''), '') = %s
+              AND source_url LIKE %s
+            """,
+            (fid, like),
+        )
+        victims: list[str] = []
+        for row in cur.fetchall():
+            h = str(row[0] or "").strip().upper()
+            url = str(row[1] or "").strip()
+            if not h or h in keep:
+                continue
+            # 只清明确属于该 tid 的 URL（防 LIKE 误伤 tid=267193970）
+            from db.queue import tid_from_url
+
+            if tid_from_url(url) != tid_i:
+                continue
+            if keep_url and url == keep_url:
+                continue
+            victims.append(h)
         if not victims:
             return 0
         cur.execute("SELECT to_regclass(%s)", ("public.resource_tags",))
@@ -1900,9 +1983,17 @@ def _fast_thread_total(
         """
         SELECT
           (
-            SELECT COUNT(DISTINCT BTRIM(source_url))
-            FROM resource_sources
-            WHERE NULLIF(BTRIM(COALESCE(source_url, '')), '') IS NOT NULL
+            SELECT COUNT(*) FROM (
+              SELECT DISTINCT
+                CASE
+                  WHEN COALESCE(NULLIF(BTRIM(forum_id), ''), '') = '2048'
+                   AND (regexp_match(BTRIM(source_url), 'tid=([0-9]+)'))[1] IS NOT NULL
+                    THEN 'tid:2048:' || (regexp_match(BTRIM(source_url), 'tid=([0-9]+)'))[1]
+                  ELSE 'url:' || BTRIM(source_url)
+                END
+              FROM resource_sources
+              WHERE NULLIF(BTRIM(COALESCE(source_url, '')), '') IS NOT NULL
+            ) t
           )
           + (
             SELECT COUNT(*)

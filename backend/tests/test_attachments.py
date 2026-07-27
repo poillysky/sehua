@@ -864,6 +864,82 @@ def test_body_link_plus_attachment_prefers_attachment():
     assert "A.mp4" in uris and "B.mp4" in uris
 
 
+def test_multi_seed_name_body_skips_forced_attachment():
+    """正文多 magnet + 多【种子名称】：直接入库，勿附件优先压成单资源。"""
+    from workers.thread_outcome import judge_thread_html
+
+    h1 = "E59DC164B2B932A1196311111111111111111111"
+    h2 = "307C9A4D097E011651FB11111111111111111111"
+    h3 = "63B6DB90BEF67F5FF532428E2796D42FC12E4C7B"
+    title = "★●經典の三级写真↗️精彩合集↘️♀[06.12]"
+    html = f"""
+    <html><head><title>{title}</title></head>
+    <body>
+      <div id="read_tpc" class="tpc_content">
+        【种子名称】：OAE-264.torrent
+        【磁力连接】：magnet:?xt=urn:btih:{h1}
+        【种子名称】：保险女王.torrent
+        【磁力连接】：magnet:?xt=urn:btih:{h2}
+        (2048 hk-137-8692321-4 torrent)油鬼子
+        【种子名称】：油鬼子 torrent
+        【磁力连接】：magnet:?xt=urn:btih:{h3}
+      </div>
+      <ignore_js_op>
+        <a href="job.php?action=download&amp;pid=1&amp;tid=26719397">OAE-264.torrent</a>
+      </ignore_js_op>
+      Powered by Discuz!
+    </body></html>
+    """
+    html = html + ("<!-- pad -->" * 900)
+    out = judge_thread_html(
+        html,
+        board_fid="3",
+        list_title=title,
+        preferred_link="magnet",
+        forum_id="2048",
+        tid=26719397,
+    )
+    assert out.verdict == "import"
+    assert out.need_attachments is False
+    assert out.parsed is not None
+    assert len(out.parsed.assets) >= 3
+    names = {a.filename for a in out.parsed.assets}
+    assert "油鬼子" in names
+    assert title not in names or len(names) > 1
+
+
+def test_single_magnet_body_still_prefers_attachment():
+    """单资源正文有链 + 附件区：仍「以附件为准」（例外仅多资源结构化正文）。"""
+    from workers.thread_outcome import judge_thread_html
+
+    h = "E59DC164B2B932A1196311111111111111111111"
+    html = f"""
+    <html><head><title>单部影片</title></head>
+    <body>
+      <div id="read_tpc" class="tpc_content">
+        【种子名称】：only.torrent
+        【磁力连接】：magnet:?xt=urn:btih:{h}
+      </div>
+      <ignore_js_op>
+        <a href="job.php?action=download&amp;pid=1&amp;tid=1">only.torrent</a>
+      </ignore_js_op>
+      Powered by Discuz!
+    </body></html>
+    """
+    html = html + ("<!-- pad -->" * 900)
+    out = judge_thread_html(
+        html,
+        board_fid="3",
+        list_title="单部影片",
+        preferred_link="magnet",
+        forum_id="2048",
+        tid=1,
+    )
+    assert out.verdict == "need_attachments"
+    assert out.need_attachments is True
+    assert "附件为准" in out.outcome
+
+
 def test_password_in_attachment_text_fills_field_and_description():
     """解压密码只在附件语料：字段与描述都要带上。"""
     html = """

@@ -58,6 +58,50 @@ VERDICT_LABELS: dict[str, str] = {
 }
 
 
+def _body_has_multi_structured_targets(link_corpus: str, *, link_kind: str) -> bool:
+    """仅「多资源结构化正文」可跳过附件优先；单资源仍以附件为准。
+
+    触发条件（同时满足）：
+    1. 正文独立目标链 ≥ 2（按 hash 去重）
+    2. 【种子名称】≥ 2 或 子标题（影片/资源名等）≥ 2
+
+    不触发则保持「正文有链且有附件 → 以附件为准」。
+    """
+    text = link_corpus or ""
+    if not text.strip():
+        return False
+    kind = (link_kind or "magnet").strip().lower()
+    n_links = 0
+    if kind in {"magnet", "both"}:
+        from parsers.magnet import parse_magnet_text
+
+        n_links = max(n_links, len({m.infohash for m in parse_magnet_text(text)}))
+    if kind in {"ed2k", "both"}:
+        from parsers.ed2k import parse_ed2k_text
+
+        try:
+            n_links = max(n_links, len({x.hash for x in parse_ed2k_text(text) if x.hash}))
+        except Exception:
+            pass
+    if n_links < 2:
+        return False
+    import re
+
+    seed_n = len(
+        re.findall(r"【\s*种子名称|【\s*種子名稱|【\s*种子名稱|【\s*種子名称", text)
+    )
+    if seed_n >= 2:
+        return True
+    try:
+        from parsers.content import iter_subresource_title_spans
+
+        if len(iter_subresource_title_spans(text)) >= 2:
+            return True
+    except Exception:
+        pass
+    return False
+
+
 @dataclass(slots=True)
 class ThreadOutcome:
     verdict: Verdict
@@ -312,11 +356,14 @@ def judge_thread_html(
 
     # Body has target link? 仅认楼主语料（与 parse_thread_dual 一致）
     # 回帖/侧栏误检到的链不走进「有链但无主资源」失败。
-    # 正文有链 + 有可解析资源附件：以附件为准，先下附件再解析（附件无果仍回落正文）。
+    # 正文有链 + 有可解析资源附件：默认以附件为准（正文常为样例/残链）。
+    # 例外：正文已有 ≥2 条带【种子名称】/子标题的独立链 → 直接解析正文，
+    # 避免附件只下到其中一条把合集压成单资源（2048 三级写真 tid=26719397）。
     if (
         has_lz_target
         and not attachments_already_tried
         and looks_like_attachment_zone(html)
+        and not _body_has_multi_structured_targets(link_corpus, link_kind=link_kind)
     ):
         if link_kind in {"magnet", "both"}:
             from parsers.attachments import pick_magnet_attachment_kind
