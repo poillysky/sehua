@@ -695,6 +695,16 @@ def subtitle_from_description(description: str | None) -> str:
         val = _clean_label_value(m.group(2) or "")
         if lab in wanted and val and lab not in found:
             found[lab] = val
+    # 2048 常见：影片名称=帖标题（含「2048独家合集」），资源名称=真名 → 优先资源名称
+    res_key = normalize_structure_label_key("资源名称")
+    film_key = normalize_structure_label_key("影片名称")
+    if res_key in found and film_key in found:
+        film = found[film_key]
+        res = found[res_key]
+        if res and film != res and (
+            film.startswith("2048") or (res in film and len(res) + 4 <= len(film))
+        ):
+            return res
     for lab in SUBRESOURCE_TITLE_MATCH_FORMS:
         key = normalize_structure_label_key(lab)
         if key in found:

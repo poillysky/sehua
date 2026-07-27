@@ -1279,18 +1279,22 @@ class AttachmentDownloader:
                 log.warning("Attachment download failed %s: %s", attachment.name, exc)
 
         result_text = _pick_best_archive_texts(chunks)
-        if result_text:
+        if result_text and _text_has_importable_link(result_text):
             # 已抽到可入库链接：即使部分附件无权/需登录也算成功
             return AttachmentFetchResult(
                 text=result_text, downloaded=True, denied=False, login_required=False
             )
-        # 登录提示页与用户组无权同一出路：denied → 占位「无权限下载附件」
+        # 有文本但无可入库链（如只下到百度口令 txt），且另有 115/目标附件无权：
+        # 必须保留 denied，否则会回落成正文「蓝奏/网盘跳过」（tid=3341941）
         if any_login or any_denied:
             return AttachmentFetchResult(
-                downloaded=any_downloaded,
+                text=result_text or "",
+                downloaded=any_downloaded or bool(result_text),
                 denied=True,
                 login_required=any_login,
             )
+        if result_text:
+            return AttachmentFetchResult(text=result_text, downloaded=True)
         if any_downloaded:
             return AttachmentFetchResult(downloaded=True)
         return AttachmentFetchResult(failed=True)

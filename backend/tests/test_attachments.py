@@ -264,10 +264,14 @@ def test_denied_not_masked_by_empty_download():
     any_downloaded = True
     any_denied = True
     result_text = ""
-    if result_text:
-        out = AttachmentFetchResult(text=result_text, downloaded=True, denied=any_denied)
+    if result_text and ("magnet:" in result_text.lower() or "ed2k://" in result_text.lower()):
+        out = AttachmentFetchResult(text=result_text, downloaded=True, denied=False)
     elif any_denied:
-        out = AttachmentFetchResult(downloaded=any_downloaded, denied=True)
+        out = AttachmentFetchResult(
+            text=result_text or "",
+            downloaded=any_downloaded,
+            denied=True,
+        )
     elif any_downloaded:
         out = AttachmentFetchResult(downloaded=True)
     else:
@@ -275,6 +279,28 @@ def test_denied_not_masked_by_empty_download():
     assert out.denied is True
     assert out.downloaded is True
     assert not out.text
+
+
+def test_denied_not_masked_by_baidu_password_txt():
+    """115 附件无权、只下到百度口令 txt → 仍须 denied（tid=3341941）。"""
+    from parsers.attachments import AttachmentFetchResult
+
+    any_downloaded = True
+    any_denied = True
+    result_text = "复制口令后打开「手机百度网盘 App」即可\n墀垩创街忐了心凉礼艇左凿圜\n"
+    has_importable = "magnet:" in result_text.lower() or "ed2k://" in result_text.lower()
+    if result_text and has_importable:
+        out = AttachmentFetchResult(text=result_text, downloaded=True, denied=False)
+    elif any_denied:
+        out = AttachmentFetchResult(
+            text=result_text, downloaded=True, denied=True
+        )
+    else:
+        out = AttachmentFetchResult(text=result_text, downloaded=True)
+    assert out.denied is True
+    assert out.downloaded is True
+    assert out.text
+    assert "ed2k://" not in out.text.lower()
 
 
 def test_denied_continues_to_next_then_import_wins():

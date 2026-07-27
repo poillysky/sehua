@@ -63,3 +63,44 @@ def test_normalize_2048_aliases_and_drop_hash_labels():
     assert "試證全碼" not in out and "试证全码" not in out
     assert "种子名称" not in out
     assert "图片预览" not in out
+
+
+def test_2048_exclusive_drops_fake_film_name_from_title():
+    """tid=27097301：正文【资源名称】真名；勿再用帖标题灌【影片名称】（带 2048独家合集）。"""
+    from parsers.content import (
+        build_structured_description,
+        strip_2048_exclusive_title_prefix,
+    )
+    from parsers.resource_names import resolve_sub_filename, subtitle_from_description
+
+    title = (
+        "2048独家合集 极品身材御姐【linjianvhai】连体情趣制服丝袜"
+        "灌肠扣逼扩阴器特写非常淫荡5月23日-6月22日part4【27V/26GB】"
+    )
+    real = (
+        "极品身材御姐【linjianvhai】连体情趣制服丝袜"
+        "灌肠扣逼扩阴器特写非常淫荡5月23日-6月22日part4【27V/26GB】"
+    )
+    assert strip_2048_exclusive_title_prefix(title) == real
+
+    desc = build_structured_description(
+        {"资源名称": real, "是否有水印": "无码/有水印"},
+        title=title,
+        board_fid="3",
+    )
+    assert "【资源名称】" in desc
+    assert "【影片名称】" not in desc
+    assert "2048独家合集" not in desc
+
+    # 旧库双字段 description 也应解析出真名
+    legacy = f"【影片名称】：{title}\n【资源名称】：{real}"
+    assert subtitle_from_description(legacy) == real
+    assert (
+        resolve_sub_filename(
+            inner_name="",
+            title=title,
+            description=legacy,
+            hash_value="A" * 40,
+        )
+        == real
+    )

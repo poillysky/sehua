@@ -255,10 +255,24 @@ _PW_2048_FIDS = frozenset(
 for _fid in _PW_2048_FIDS:
     BOARD_DESCRIPTION_PROFILES[_fid] = {
         "labels": _PW_2048_BT_LABELS,
-        "exclusive": (("影片时间", "影片时长"),),
+        # 正文【资源名称】与 title_as 灌入的【影片名称】（常带「2048独家合集」版头）互斥，
+        # 保留资源名称（tid=27097301：影片名称=假版头+真名，资源名称=真名）。
+        "exclusive": (("资源名称", "影片名称"), ("影片时间", "影片时长")),
         "aliases": _PW_2048_BT_ALIASES,
         "title_as": "影片名称",
     }
+
+
+_RE_2048_EXCLUSIVE_TITLE_PREFIX = re.compile(r"^2048\s*独家合集\s+", re.I)
+
+
+def strip_2048_exclusive_title_prefix(title: str) -> str:
+    """去掉最新合集帖标题版头「2048独家合集」，避免当子资源名。"""
+    t = " ".join((title or "").split()).strip()
+    if not t:
+        return ""
+    stripped = _RE_2048_EXCLUSIVE_TITLE_PREFIX.sub("", t).strip()
+    return stripped or t
 
 
 def description_profile_for_board(board_fid: str | int | None) -> dict:
@@ -1179,6 +1193,12 @@ def build_structured_description(
 
     if title_as in allowed and title_as not in picked:
         t = " ".join((title or "").split()).strip()
+        # 2048：title_as 用去版头后的标题；若已有资源名称则不再灌影片名称（交给 exclusive）
+        if str(board_fid or "").split(":", 1)[0] in _PW_2048_FIDS:
+            if "资源名称" in picked:
+                t = ""
+            else:
+                t = strip_2048_exclusive_title_prefix(t)
         if t:
             picked[title_as] = t[:300]
 

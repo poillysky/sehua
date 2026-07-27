@@ -148,3 +148,49 @@ def test_cloud_attach_denied_stubs_not_cloud_skip():
     assert out.verdict == "stub", out.outcome
     assert "无权限" in out.outcome
     assert "蓝奏" not in out.outcome
+
+
+def test_tid3341941_115_denied_baidu_txt_not_lanzou_skip():
+    """115 附件无权、只注入百度口令 → stub，勿标蓝奏（回归 tid=3341941）。"""
+    from parsers.attachments import inject_attachment_text
+
+    html = _pad(
+        """
+        <html><head><title>【自转】【百度网盘+115eD2k】汐梦瑶示例 - 论坛</title></head>
+        <body>
+        <span id="thread_subject">【自转】【百度网盘+115eD2k】汐梦瑶示例</span>
+        <div id="postlist">
+          <div id="post_1">
+            <div class="authi"><em>1#</em><img src="ico_lz.png" alt="楼主"/></div>
+            <div id="postmessage_1">
+              安卓手机可以下载这个： https://wwsx.lanzouw.com/iZq9b35t2p2h 密码:fwnu
+            </div>
+            <div class="tattl"><ignore_js_op>
+              <a href="forum.php?mod=attachment&aid=1">115防失效备用版.txt</a>
+              <a href="forum.php?mod=attachment&aid=2">百度网盘防失效备用版.txt</a>
+            </ignore_js_op></div>
+          </div>
+        </div>
+        Powered by Discuz!
+        </body></html>
+        """
+    )
+    baidu_only = (
+        "复制口令后打开「手机百度网盘 App」即可\n"
+        "墀垩创街忐了心凉礼艇左凿圜\n"
+        "【解压密码】：www.98T.la@\n"
+    )
+    html2 = inject_attachment_text(html, baidu_only)
+    out = judge_thread_html(
+        html2,
+        board_fid="95",
+        list_title="【自转】【百度网盘+115eD2k】汐梦瑶示例",
+        preferred_link="ed2k",
+        forum_id="sehuatang",
+        attachments_already_tried=True,
+        had_attachments=True,
+        attachment_denied=True,
+    )
+    assert out.verdict == "stub", out.outcome
+    assert "无权限" in out.outcome
+    assert "蓝奏" not in out.outcome
