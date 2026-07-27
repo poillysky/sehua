@@ -310,7 +310,8 @@ SKIP_CLOUD_SHARE_SPECS: tuple[CloudShareSpec, ...] = (
         "夸克网盘",
         RE_QUARK_SHARE,
         re.compile(r"夸\s*克|quark", re.I),
-        try_attachments=False,
+        # True：标题常写 115eD2k/夸克，正文夸克推广链，真 ed2k 在「防失效备用版.txt」
+        try_attachments=True,
     ),
     CloudShareSpec(
         "mega",
@@ -352,7 +353,9 @@ SKIP_CLOUD_SHARE_SPECS: tuple[CloudShareSpec, ...] = (
         "蓝奏云",
         RE_LANZOU_SHARE,
         re.compile(r"蓝奏\s*云|藍奏\s*雲|lanzou", re.I),
-        try_attachments=False,
+        # True：正文常夹带蓝奏「客户端/工具」推广链，真正 115eD2k 在附件 txt；
+        # 与百度/迅雷一致，有附件区时先下附件再决定，避免把 115 帖误标成蓝奏跳过。
+        try_attachments=True,
     ),
     CloudShareSpec(
         "uc",

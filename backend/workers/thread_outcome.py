@@ -93,9 +93,12 @@ def _body_has_multi_structured_targets(link_corpus: str, *, link_kind: str) -> b
     if seed_n >= 2:
         return True
     try:
-        from parsers.content import iter_subresource_title_spans
+        from parsers.content import iter_size_field_spans, iter_subresource_title_spans
 
         if len(iter_subresource_title_spans(text)) >= 2:
+            return True
+        # 2048 国产合集常见：多段【影片大小】+ 多磁力，无【影片名称】标签
+        if len(iter_size_field_spans(text)) >= 2:
             return True
     except Exception:
         pass
@@ -308,11 +311,25 @@ def judge_thread_html(
     # 仍跳过：仅标题写 115 分享、正文无实际链接（见下方 title 分支已移除分享标题硬跳）。
 
     # 各类网盘分享（迅雷/百度/夸克/MEGA/阿里/天翼/123/蓝奏…）：只看楼主语料
+    # 易混淆：标题写 115eD2k/磁力，正文却夹带蓝奏/百度「工具链」或封面链；
+    # 只要有附件区，就先下附件（真链常在 115ED2K.txt），勿按网盘名硬跳过。
     cloud_hit = match_skip_cloud_share_link(link_corpus)
     if cloud_hit is not None and not has_lz_target:
-        if cloud_hit.try_attachments and (
+        title_wants_target = title_implies_resource(
+            title, link_kind
+        ) or title_implies_resource(list_title, link_kind)
+        try_att = cloud_hit.try_attachments or title_wants_target
+        if try_att and (
             not attachments_already_tried and looks_like_attachment_zone(html)
         ):
+            pass
+        elif try_att and attachments_already_tried and (
+            attachment_denied
+            or attachment_login_required
+            or attachment_failed
+            or (looks_like_attachment_zone(html) and not had_attachments)
+        ):
+            # 已按「先附件」试过但无权/失败：勿永久标网盘跳过，落到下方 stub/retry
             pass
         else:
             return ThreadOutcome("skipped", cloud_hit.skip_tip(), link_kind, title)
@@ -338,8 +355,19 @@ def judge_thread_html(
             list_title
         )
         if title_cloud is not None:
-            if title_cloud.try_attachments and (
+            title_wants_target = title_implies_resource(
+                title, link_kind
+            ) or title_implies_resource(list_title, link_kind)
+            try_att = title_cloud.try_attachments or title_wants_target
+            if try_att and (
                 not attachments_already_tried and looks_like_attachment_zone(html)
+            ):
+                pass
+            elif try_att and attachments_already_tried and (
+                attachment_denied
+                or attachment_login_required
+                or attachment_failed
+                or (looks_like_attachment_zone(html) and not had_attachments)
             ):
                 pass
             else:
@@ -502,8 +530,15 @@ def judge_thread_html(
         and looks_like_attachment_zone(html)
     ):
         return ThreadOutcome("stub", "无权限下载附件", link_kind, title)
-    # 附件已下载但抽不出 ed2k/磁力 → 跳过
+    # 附件已下载但抽不出 ed2k/磁力 → 区分 115sha，勿一律「未解析到」
     if had_attachments or attachments_already_tried:
+        if should_skip_as_115sha_only(link_corpus):
+            return ThreadOutcome(
+                "skipped",
+                "115sha 链接（附件，跳过）",
+                link_kind,
+                title,
+            )
         return ThreadOutcome(
             "skipped",
             "未解析到 ed2k/磁力（跳过）",

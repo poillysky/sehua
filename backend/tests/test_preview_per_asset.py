@@ -735,3 +735,33 @@ def test_skip_avatar_qrcode_forum_icons():
     """
     got = extract_preview_images(html, limit=5, base_url="https://www.sehuatang.net/")
     assert got == ["https://cdn.example/real-preview.jpg"]
+
+
+def test_size_then_magnet_splits_without_film_title_labels():
+    """无【影片名称】、多段【影片大小】+多磁力 → 切成多资源（2048 国产合集）。"""
+    from parsers.content import extract_subresource_blocks_ex
+    from parsers.resource_frame import classify_kind
+
+    h1 = "A" * 40
+    h2 = "B" * 40
+    html = f"""
+    <html><head><title>★◇精彩の最新國產合集</title></head><body>
+    <div id="postmessage_1">
+      两个人翘着屁股等待大哥後入 【影片大小】：452M
+      magnet:?xt=urn:btih:{h1}
+      阿姨看起来知书达理贤惠人妻 【影片大小】：1.0G
+      magnet:?xt=urn:btih:{h2}
+    </div>
+    </body></html>
+    """
+    blocks, layout = extract_subresource_blocks_ex(
+        html, [h1, h2], fallback_title="★◇精彩の最新國產合集"
+    )
+    assert layout == "size_then_magnet", layout
+    assert len(blocks) == 2
+    titles = {b.infohash: b.title for b in blocks}
+    assert titles[h1] != titles[h2]
+    assert "翘着屁股" in titles[h1] or titles[h1] != "★◇精彩の最新國產合集"
+    assert titles[h2] != "★◇精彩の最新國產合集"
+    kind = classify_kind(n_groups=2, per_group_links=[1, 1])
+    assert kind == "multi_one_link"

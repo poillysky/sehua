@@ -1339,6 +1339,69 @@ def iter_subresource_title_spans(html: str) -> list[tuple[int, int]]:
     return out
 
 
+def iter_size_field_spans(html: str) -> list[tuple[int, int]]:
+    """返回【影片大小】/【资源大小】等容量标签 (start, end)，文档序。
+
+    2048 国产合集常见：无【影片名称】，仅多段【影片大小】+ 多磁力。
+    """
+    blob = html or ""
+    wanted = {normalize_structure_label_key(x) for x in SIZE_FIELD_FORMS}
+    out: list[tuple[int, int]] = []
+    for op, cl in (
+        ("【", "】"),
+        ("［", "］"),
+        ("〖", "〗"),
+        ("「", "」"),
+        ("『", "』"),
+        ("[", "]"),
+    ):
+        pat = re.compile(
+            re.escape(op)
+            + r"([^"
+            + re.escape(cl)
+            + r"\n]{1,40})"
+            + re.escape(cl)
+        )
+        for m in pat.finditer(blob):
+            if normalize_structure_label_key(m.group(1)) in wanted:
+                out.append((m.start(), m.end()))
+    out.sort(key=lambda x: x[0])
+    return out
+
+
+def _name_before_size_label(
+    scope: str,
+    label_start: int,
+    *,
+    thread_title: str = "",
+) -> str:
+    """容量标签前的短文案作子名（国产合集无【影片名称】时）。"""
+    window = scope[max(0, label_start - 240) : label_start]
+    text = re.sub(r"<[^>]+>", " ", window or "")
+    text = re.sub(r"&nbsp;", " ", text, flags=re.I)
+    text = re.sub(r"\s+", " ", text).strip()
+    # 去掉上一结构字段尾巴
+    text = re.sub(
+        r"^.*?(?:【[^】]{1,40}】|［[^］]{1,40}］)\s*[:：]?\s*",
+        "",
+        text,
+    ).strip()
+    # 取末段短句
+    for sep in ("。", "！", "？", "\n", "；", ";"):
+        if sep in text:
+            text = text.rsplit(sep, 1)[-1].strip()
+    text = text.strip(" ，,、·•|-")
+    if len(text) < 4:
+        return ""
+    from parsers.resource_names import clip_subresource_display_name
+
+    name = clip_subresource_display_name(text) or text
+    name = _drop_thread_title_lines(name, thread_title) or name
+    if thread_title and name.strip() == thread_title.strip():
+        return ""
+    return name[:120]
+
+
 def _magnet_positions_in_scope(scope: str, wanted: set[str] | None = None) -> list[tuple[str, int, int]]:
     """兼容旧名：文档序磁力/电驴位置；(hash, start, end)。"""
     return _link_positions_in_scope(scope, wanted)
@@ -1647,9 +1710,11 @@ def extract_subresource_blocks_ex(
 
     layout:
       - no_subtitle
+      - no_subtitle_pack
       - names_then_links
       - title_then_magnet
       - magnet_then_title
+      - size_then_magnet
       - empty
     """
     # 楼主各层（一楼元数据 + 二楼补链）拼成切段语料；路人回帖仍排除
@@ -1675,6 +1740,93 @@ def extract_subresource_blocks_ex(
     out: list[SubresourceBlock] = []
     seen: set[str] = set()
     name_fallback = (fallback_title or "").strip()[:255]
+
+    # 无子标题：多段【影片大小】+ 多链 → 按容量标签切段（2048 国产合集）
+    # 若已有多段【种子名称】，走下方 no_subtitle 种子名路径，勿抢切。
+    if not titles:
+        size_spans = iter_size_field_spans(scope)
+        seed_n = len(
+            re.findall(
+                r"【\s*种子名称|【\s*種子名稱|【\s*种子名稱|【\s*種子名称",
+                scope,
+            )
+        )
+        if len(size_spans) >= 2 and len(link_pos) >= 2 and seed_n < 2:
+            layout_sz = _detect_magnet_title_layout(size_spans, link_pos)
+            for i, (s_start, s_end) in enumerate(size_spans):
+                next_start = (
+                    size_spans[i + 1][0] if i + 1 < len(size_spans) else len(scope)
+                )
+                prev_end = size_spans[i - 1][1] if i > 0 else 0
+                name = _name_before_size_label(
+                    scope, s_start, thread_title=name_fallback
+                )
+                if not name:
+                    # 容量值本身不够当名；用「合集片段 i」避免全并到帖标题
+                    name = f"{name_fallback or '合集'}·{i + 1}"
+                    name = name[:120]
+                if layout_sz == "title_then_magnet":
+                    mag_lo, mag_hi = s_start, next_start
+                else:
+                    mag_lo, mag_hi = prev_end, s_start
+                in_seg = [
+                    (h, s, e)
+                    for h, s, e in link_pos
+                    if mag_lo <= s < mag_hi and h not in seen
+                ]
+                if not in_seg:
+                    continue
+                first_h, _fs, first_end = in_seg[0]
+                seen.add(first_h)
+                out.append(
+                    _assemble_subresource_block(
+                        paired=first_h,
+                        name=name,
+                        scope=scope,
+                        field_lo=s_end,
+                        field_hi=next_start,
+                        kind="film",
+                        lim=lim,
+                        base_url=base_url,
+                    )
+                )
+                for h, _s, _e in in_seg[1:]:
+                    if h in seen:
+                        continue
+                    seen.add(h)
+                    last = out[-1]
+                    out.append(
+                        SubresourceBlock(
+                            infohash=h,
+                            title=last.title,
+                            size=last.size,
+                            format=last.format,
+                            note=last.note,
+                            torrent_name=last.torrent_name,
+                            preview_images=list(last.preview_images),
+                            description=last.description,
+                        )
+                    )
+            if out:
+                # 未配对的尾巴链挂到最后一名
+                last = out[-1]
+                for h, _s, _e in link_pos:
+                    if h in seen:
+                        continue
+                    seen.add(h)
+                    out.append(
+                        SubresourceBlock(
+                            infohash=h,
+                            title=last.title,
+                            size=last.size,
+                            format=last.format,
+                            note=last.note,
+                            torrent_name=last.torrent_name,
+                            preview_images=list(last.preview_images),
+                            description=last.description,
+                        )
+                    )
+                return out, "size_then_magnet"
 
     # 无子标题：多 hash 全部保留；有【种子名称】则作子资源名，否则回落帖标题
     if not titles:

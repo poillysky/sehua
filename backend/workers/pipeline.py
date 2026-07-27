@@ -114,7 +114,18 @@ async def _outcome_from_heavy_attachment(
     attachment_text: str,
 ) -> ThreadOutcome:
     """大包附件：直接 parse(extra_text)，跳过整页注入再判（省一次进程池 judge）。"""
-    from parsers.thread_gates import coalesce_thread_title
+    from parsers.thread_gates import coalesce_thread_title, should_skip_as_115sha_only
+
+    link_kind = prior.link_kind
+    title = prior.title or list_title
+    # 大包全是 115sha 时勿落成「未解析到」（与 pipeline 前置检查 / 轻附件路径对齐）
+    if attachment_text and should_skip_as_115sha_only(attachment_text):
+        return ThreadOutcome(
+            "skipped",
+            "115sha 链接（附件，跳过）",
+            link_kind,
+            title,
+        )
 
     merged = await _parse_dual(
         html,
@@ -124,8 +135,6 @@ async def _outcome_from_heavy_attachment(
         base_url=base_url,
         board_fid=board_fid,
     )
-    link_kind = prior.link_kind
-    title = prior.title or list_title
     if merged.primary_link_kind != "none" and merged.assets:
         display = coalesce_thread_title(list_title, prior.title, merged.title) or (
             prior.title or list_title or merged.title or ""

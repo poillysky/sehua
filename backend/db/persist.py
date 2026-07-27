@@ -15,7 +15,7 @@ from db.repository import (
     sync_board_meta_by_source_url,
     upsert_resource,
 )
-from parsers.ed2k import Ed2kLink
+from parsers.ed2k import Ed2kLink, coerce_file_size
 from parsers.links import DualParseResult, ParsedAsset
 from parsers.magnet import parse_capacity_bytes
 from parsers.resource_frame import build_resource_frame, format_frame_outcome, warnings_from_frame
@@ -380,6 +380,7 @@ def persist_dual_parse(
         if not size:
             for asset in row.members:
                 size = max(size, int(asset.size or 0))
+        size = coerce_file_size(size, uris)
 
         link = Ed2kLink(
             filename=row.filename,

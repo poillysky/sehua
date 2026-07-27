@@ -71,6 +71,39 @@ _ENTITY_PIPE_RE = re.compile(r"&vert;|&#0*124;|&#x0*7c;", re.I)
 
 ARCHIVE_EXTENSIONS = (".zip", ".rar", ".7z", ".cbz", ".cbr")
 
+# 单文件合理上限；超过视为 xl/解析炸档（例：tid=1556002 入库 9 万 GB）
+MAX_REASONABLE_FILE_BYTES = 32 * (1024**4)
+
+_ED2K_SIZE_IN_URI_RE = re.compile(
+    r"ed2k://\|file\|[^|\n]{1,400}\|(\d+)\|[A-Fa-f0-9]{32}\|",
+    re.I,
+)
+
+
+def size_from_ed2k_uri(uri: str | None) -> int:
+    """从 ed2k URI 抽取 size 字段；超上限视为不可信。"""
+    m = _ED2K_SIZE_IN_URI_RE.search(uri or "")
+    if not m:
+        return 0
+    n = int(m.group(1))
+    return n if 0 < n <= MAX_REASONABLE_FILE_BYTES else 0
+
+
+def coerce_file_size(size: int, uris: list[str] | None = None) -> int:
+    """纠正炸档 / 空 size：优先可信链内尺寸。"""
+    n = int(size or 0)
+    uri_sizes = [size_from_ed2k_uri(u) for u in (uris or [])]
+    uri_sizes = [s for s in uri_sizes if s > 0]
+    best_uri = max(uri_sizes) if uri_sizes else 0
+    if n <= 0:
+        return best_uri
+    if n > MAX_REASONABLE_FILE_BYTES:
+        return best_uri
+    # 入库 size 远大于链内 xl（误把其它字段当字节）
+    if best_uri and n > best_uri * 8 and n > best_uri + 2 * (1024**3):
+        return best_uri
+    return n
+
 
 @dataclass(slots=True)
 class Ed2kLink:
@@ -135,6 +168,8 @@ def parse_ed2k_text(text: str) -> list[Ed2kLink]:
     for match in ED2K_RE.finditer(blob):
         filename = match.group(1).strip()
         size = int(match.group(2))
+        if size > MAX_REASONABLE_FILE_BYTES:
+            size = 0
         file_hash = match.group(3).upper()
         if file_hash in seen:
             continue
