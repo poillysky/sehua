@@ -3,8 +3,10 @@ import {
   clearCrawlerActivity,
   fetchCrawlerStatus,
   fetchDiscardedTids,
+  fetchFrameFailTids,
   fetchQueueBrowse,
   recrawlAccountStubs,
+  recrawlFrameFailTids,
   requeueDiscardedTids,
   retryAbnormalQueue,
   runCrawlerOnce,
@@ -27,6 +29,8 @@ const STATUS_LABEL: Record<string, string> = {
   skipped: '跳过',
   pending: '待抓',
   stub: '占位',
+  structure: '结构不合格',
+  capacity: '容量不合格',
 }
 
 const QUEUE_MODAL_META: Record<
@@ -53,7 +57,12 @@ const QUEUE_MODAL_META: Record<
     sub: '需登录 / 无阅读权限 / 无权限下载附件。点「账号重爬」用账号 Cookie 处理',
     reasonLabel: '占位原因',
   },
-}
+    frame_fail: {
+      title: '不合格明细',
+      sub: '填槽验收未过但仍入库。单资源：名可=帖标题；ed2k 看配额、磁力看 V（无口径默认合格）。多资源：名不得=帖标题；另含预览串名/容量等',
+      reasonLabel: '验收原因',
+    },
+  }
 
 function formatWhen(iso?: string | null): string {
   if (!iso) return '—'
@@ -89,6 +98,14 @@ function rowTid(row: QueueBrowseItem): number | null {
 
 function rowStatus(row: QueueBrowseItem, kind: QueueBrowseKind): string {
   if (kind === 'stubs') return 'stub'
+  if (kind === 'frame_fail') {
+    const st = (row.status || '').trim()
+    if (st === 'structure' || st === 'capacity') return st
+    const outcome = (row.import_outcome || '').trim()
+    if (outcome.startsWith('不合格：结构')) return 'structure'
+    if (outcome.startsWith('不合格：容量')) return 'capacity'
+    return 'failed'
+  }
   if (kind === 'ready' || kind === 'abnormal') return 'pending'
   return row.status || '—'
 }
@@ -298,7 +315,9 @@ export function CrawlerPage() {
   const stubWasActive = useRef(false)
   const activitySinceId = useRef(0)
 
-  const [discStatus, setDiscStatus] = useState<'all' | 'failed' | 'skipped'>('failed')
+  const [discStatus, setDiscStatus] = useState<
+    'all' | 'failed' | 'skipped' | 'structure' | 'capacity'
+  >('failed')
   const [discQInput, setDiscQInput] = useState('')
   const [discQ, setDiscQ] = useState('')
   const [discReason, setDiscReason] = useState('')
@@ -306,7 +325,13 @@ export function CrawlerPage() {
   const [discOffset, setDiscOffset] = useState(0)
   const [discItems, setDiscItems] = useState<QueueBrowseItem[]>([])
   const [discTotal, setDiscTotal] = useState(0)
-  const [discCounts, setDiscCounts] = useState({ failed: 0, skipped: 0, total: 0 })
+  const [discCounts, setDiscCounts] = useState({
+    failed: 0,
+    skipped: 0,
+    total: 0,
+    structure: 0,
+    capacity: 0,
+  })
   const [discKindCounts, setDiscKindCounts] = useState<Record<string, number>>({})
   const [discLoading, setDiscLoading] = useState(false)
   const [queueModal, setQueueModal] = useState<QueueBrowseKind | null>(null)
@@ -355,7 +380,10 @@ export function CrawlerPage() {
     try {
       const res = await fetchQueueBrowse({
         kind: queueModal,
-        status: queueModal === 'discarded' ? discStatus : undefined,
+        status:
+          queueModal === 'discarded' || queueModal === 'frame_fail'
+            ? discStatus
+            : undefined,
         q: discQ,
         reason: discReason || undefined,
         limit: DISCARDED_PAGE,
@@ -369,6 +397,8 @@ export function CrawlerPage() {
           failed: Number(res.counts.failed || 0),
           skipped: Number(res.counts.skipped || 0),
           total: Number(res.counts.total || 0),
+          structure: Number(res.counts.structure || 0),
+          capacity: Number(res.counts.capacity || 0),
         })
       }
       if (res.kind_counts) setDiscKindCounts(res.kind_counts)
@@ -437,6 +467,7 @@ export function CrawlerPage() {
     setDiscSelected(new Set())
     setDiscRequeueNote('')
     if (kind === 'discarded') setDiscStatus('failed')
+    if (kind === 'frame_fail') setDiscStatus('all')
     setQueueModal(kind)
   }
 
@@ -480,6 +511,9 @@ export function CrawlerPage() {
   const discardedTotal = Number(
     metrics?.discarded_total ?? status?.discarded?.total ?? discardedFailed + discardedSkipped,
   )
+  const frameFailTotal = Number(metrics?.frame_fail_total ?? 0)
+  const frameFailStructure = Number(discCounts.structure ?? 0)
+  const frameFailCapacity = Number(discCounts.capacity ?? 0)
   const discPageStart = discTotal === 0 ? 0 : discOffset + 1
   const discPageEnd = Math.min(discOffset + discItems.length, discTotal)
   const discHasPrev = discOffset > 0
@@ -489,9 +523,11 @@ export function CrawlerPage() {
   const searchPlaceholder =
     queueModal === 'stubs'
       ? 'hash / 标题 / 原因…'
-      : queueModal === 'ready' || queueModal === 'abnormal'
-        ? 'tid / 标题 / 错误…'
-        : '标题…'
+      : queueModal === 'frame_fail'
+        ? 'tid / 标题 / 验收原因…'
+        : queueModal === 'ready' || queueModal === 'abnormal'
+          ? 'tid / 标题 / 错误…'
+          : '标题…'
   const idColLabel = queueModal === 'stubs' ? 'hash' : 'tid'
   const rnd = status?.random_progress
   const randomActive = !!rnd?.active || (looping && loopKind === 'random_tid')
@@ -771,7 +807,7 @@ export function CrawlerPage() {
     }
   }
 
-  const canSelectDiscarded = queueModal === 'discarded'
+  const canSelectDiscarded = queueModal === 'discarded' || queueModal === 'frame_fail'
   const pageSelectableTids = canSelectDiscarded
     ? discItems.map(rowTid).filter((t): t is number => t != null)
     : []
@@ -809,20 +845,44 @@ export function CrawlerPage() {
     }
     setDiscSelectAllBusy(true)
     try {
-      const res = await fetchDiscardedTids({
-        status: discStatus,
-        q: discQ || undefined,
-        reason: discReason || undefined,
-        limit: 2000,
-      })
-      const tids = (res.tids || []).filter((t) => Number.isFinite(t) && t > 0)
-      setDiscSelected(new Set(tids))
-      if (!tids.length) {
-        toast.info('当前筛选下没有有效 tid')
-      } else if (res.truncated) {
-        toast.info(`已选前 ${tids.length} 条（共 ${res.total}，单次上限 ${res.limit}）`)
+      if (queueModal === 'frame_fail') {
+        const res = await fetchFrameFailTids({
+          status:
+            discStatus === 'structure' || discStatus === 'capacity' || discStatus === 'all'
+              ? discStatus
+              : 'all',
+          q: discQ || undefined,
+          reason: discReason || undefined,
+          limit: 2000,
+        })
+        const tids = (res.tids || []).filter((t) => Number.isFinite(t) && t > 0)
+        setDiscSelected(new Set(tids))
+        if (!tids.length) {
+          toast.info('当前筛选下没有有效 tid')
+        } else if (res.truncated) {
+          toast.info(`已选前 ${tids.length} 条（共 ${res.total}，单次上限 ${res.limit}）`)
+        } else {
+          toast.success(`已全选当前筛选 ${tids.length} 条`)
+        }
       } else {
-        toast.success(`已全选当前筛选 ${tids.length} 条`)
+        const res = await fetchDiscardedTids({
+          status:
+            discStatus === 'failed' || discStatus === 'skipped' || discStatus === 'all'
+              ? discStatus
+              : 'all',
+          q: discQ || undefined,
+          reason: discReason || undefined,
+          limit: 2000,
+        })
+        const tids = (res.tids || []).filter((t) => Number.isFinite(t) && t > 0)
+        setDiscSelected(new Set(tids))
+        if (!tids.length) {
+          toast.info('当前筛选下没有有效 tid')
+        } else if (res.truncated) {
+          toast.info(`已选前 ${tids.length} 条（共 ${res.total}，单次上限 ${res.limit}）`)
+        } else {
+          toast.success(`已全选当前筛选 ${tids.length} 条`)
+        }
       }
     } catch (err) {
       toast.error(err instanceof Error ? err.message : '全选筛选失败')
@@ -838,23 +898,38 @@ export function CrawlerPage() {
       toast.info('请先勾选要重爬的帖')
       return
     }
+    const isFrameFail = queueModal === 'frame_fail'
     const ok = await confirmDialog({
-      title: '批量重爬',
-      message: `将直接重爬选中的 ${tids.length} 条失败/跳过帖（不依赖当前板队列）。连续调度开启时仅入队。确定？`,
+      title: isFrameFail ? '不合格批量重爬' : '批量重爬',
+      message: isFrameFail
+        ? `将按已入库路径重爬选中的 ${tids.length} 条不合格帖（同帖覆盖写入）。连续调度开启时仅入队。确定？`
+        : `将直接重爬选中的 ${tids.length} 条失败/跳过帖（不依赖当前板队列）。连续调度开启时仅入队。确定？`,
       confirmText: '重爬选中',
     })
     if (!ok) return
     setDiscRequeueBusy(true)
     setDiscRequeueNote('重爬进行中…')
     try {
-      const res = await requeueDiscardedTids({ tids })
-      const line = res.note || `已重新入队 ${res.requeued} 条`
-      setRunHint(line)
-      setDiscRequeueNote(line)
-      if ((res.imports ?? 0) > 0 || (res.crawled ?? 0) > 0 || res.requeued > 0) {
-        toast.success(line)
+      if (isFrameFail) {
+        const res = await recrawlFrameFailTids({ tids })
+        const line = res.note || `已启动不合格重爬 ${res.matched ?? tids.length} 条`
+        setRunHint(line)
+        setDiscRequeueNote(line)
+        if ((res.imported ?? 0) > 0 || (res.queued ?? 0) > 0 || res.message === 'started') {
+          toast.success(line)
+        } else {
+          toast.info(line)
+        }
       } else {
-        toast.info(line)
+        const res = await requeueDiscardedTids({ tids })
+        const line = res.note || `已重新入队 ${res.requeued} 条`
+        setRunHint(line)
+        setDiscRequeueNote(line)
+        if ((res.imports ?? 0) > 0 || (res.crawled ?? 0) > 0 || res.requeued > 0) {
+          toast.success(line)
+        } else {
+          toast.info(line)
+        }
       }
       setDiscSelected(new Set())
       await refresh()
@@ -1114,6 +1189,17 @@ export function CrawlerPage() {
                     </span>
                     <span className="metric-lbl">未处理</span>
                   </button>
+                  <button
+                    type="button"
+                    className="metric-pill metric-pill-btn"
+                    title="填槽验收不合格但仍入库（结构/容量）。点此查看明细与判定标准"
+                    onClick={() => openQueueModal('frame_fail')}
+                  >
+                    <span className={`metric-val${frameFailTotal > 0 ? ' stat-failed' : ''}`}>
+                      {frameFailTotal}
+                    </span>
+                    <span className="metric-lbl">不合格</span>
+                  </button>
                   <span
                     className={`metric-pill${randomActive ? ' metric-pill-random' : ''}`}
                     title={
@@ -1274,6 +1360,39 @@ export function CrawlerPage() {
                     ))}
                   </div>
                 ) : null}
+                {queueModal === 'frame_fail' ? (
+                  <div className="crawler-discarded-tabs" role="tablist" aria-label="不合格筛选">
+                    {(
+                      [
+                        [
+                          'all',
+                          `全部 ${
+                            frameFailStructure + frameFailCapacity > 0
+                              ? frameFailStructure + frameFailCapacity
+                              : discTotal || frameFailTotal
+                          }`,
+                        ],
+                        ['structure', `结构 ${frameFailStructure}`],
+                        ['capacity', `容量 ${frameFailCapacity}`],
+                      ] as const
+                    ).map(([id, label]) => (
+                      <button
+                        key={id}
+                        type="button"
+                        role="tab"
+                        aria-selected={discStatus === id}
+                        className={`crawler-discarded-tab${discStatus === id ? ' active' : ''}`}
+                        onClick={() => {
+                          setDiscStatus(id)
+                          setDiscReason('')
+                          setDiscOffset(0)
+                        }}
+                      >
+                        {label}
+                      </button>
+                    ))}
+                  </div>
+                ) : null}
                 <div className="crawler-discarded-tools-row">
                   <input
                     type="search"
@@ -1296,7 +1415,9 @@ export function CrawlerPage() {
                         }
                         title={
                           discTotal > 0
-                            ? `按当前筛选（状态/搜索/原因）全选全部页，共约 ${discTotal} 条`
+                            ? queueModal === 'frame_fail'
+                              ? `按当前筛选（结构/容量/搜索/原因）全选全部页，共约 ${discTotal} 条`
+                              : `按当前筛选（状态/搜索/原因）全选全部页，共约 ${discTotal} 条`
                             : '当前筛选无记录'
                         }
                         onClick={() => void onSelectAllFiltered()}
@@ -1383,7 +1504,7 @@ export function CrawlerPage() {
                       <th>板块</th>
                       <th>{idColLabel}</th>
                       <th>标题</th>
-                      {queueModal === 'stubs' ? null : <th>重试</th>}
+                      {queueModal === 'stubs' || queueModal === 'frame_fail' ? null : <th>重试</th>}
                       <th>{modalMeta.reasonLabel}</th>
                     </tr>
                   </thead>
@@ -1435,7 +1556,7 @@ export function CrawlerPage() {
                             <td>
                               <span
                                 className={`crawler-discarded-badge ${
-                                  st === 'failed'
+                                  st === 'failed' || st === 'structure' || st === 'capacity'
                                     ? 'is-failed'
                                     : st === 'pending' || st === 'stub'
                                       ? 'is-skipped'
@@ -1460,7 +1581,7 @@ export function CrawlerPage() {
                             <td className="crawler-discarded-title-cell" title={title}>
                               {title}
                             </td>
-                            {queueModal === 'stubs' ? null : (
+                            {queueModal === 'stubs' || queueModal === 'frame_fail' ? null : (
                               <td className="mono">{row.fetch_fail_count ?? 0}</td>
                             )}
                             <td className="crawler-discarded-reason" title={reason}>
@@ -1473,7 +1594,8 @@ export function CrawlerPage() {
                       <tr>
                         <td
                           colSpan={
-                            (queueModal === 'stubs' ? 6 : 7) + (canSelectDiscarded ? 1 : 0)
+                            (queueModal === 'stubs' || queueModal === 'frame_fail' ? 6 : 7) +
+                            (canSelectDiscarded ? 1 : 0)
                           }
                           className="crawler-discarded-empty"
                         >
@@ -1530,7 +1652,9 @@ export function CrawlerPage() {
                           ) : null}
                           <span
                             className={`crawler-discarded-badge ${
-                              st === 'failed' ? 'is-failed' : 'is-skipped'
+                              st === 'failed' || st === 'structure' || st === 'capacity'
+                                ? 'is-failed'
+                                : 'is-skipped'
                             }`}
                           >
                             {STATUS_LABEL[st] || st}
@@ -1558,7 +1682,7 @@ export function CrawlerPage() {
                               {idColLabel} {idText}
                             </span>
                           )}
-                          {queueModal === 'stubs' ? null : (
+                          {queueModal === 'stubs' || queueModal === 'frame_fail' ? null : (
                             <span className="crawler-discarded-card-retry">
                               重试 {row.fetch_fail_count ?? 0}
                             </span>

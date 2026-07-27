@@ -6,7 +6,10 @@ import re
 from dataclasses import dataclass
 from urllib.parse import unquote
 
-from parsers.resource_names import context_subresource_title
+from parsers.resource_names import (
+    collapse_cjk_inserted_spaces as _collapse_cjk_inserted_spaces,
+    context_subresource_title,
+)
 
 # BT infohash：40 位 hex（SHA1）/ 32 位 hex（转帖常见短链，如 tid 2758065）/ 32 位 base32
 _INFOHASH = r"(?:[A-Fa-f0-9]{40}|[A-Fa-f0-9]{32}|[a-zA-Z2-7]{32})"
@@ -23,9 +26,24 @@ BTIH_RE = re.compile(
 DN_RE = re.compile(r"(?:^|&)dn=([^&]+)", re.I)
 XL_RE = re.compile(r"(?:^|&)xl=(\d+)", re.I)
 
+# 字段值可能是「13V 66.7GB」「635V/1.3TB」「2.6G/1V」——整段交给 parse_capacity_bytes
+# 语料经 normalize_magnet_corpus 已折叠汉字间空，标签用字面匹配
+def _film_size_label_alt() -> str:
+    from parsers.resource_names import SIZE_FIELD_FORMS, structure_labels_alt
+
+    return structure_labels_alt(SIZE_FIELD_FORMS)
+
+
 _FILM_SIZE_RE = re.compile(
-    r"【\s*(?:影片大小|影片容量|资源大小|資源大小|文件大小|檔案大小|档案大小)\s*】"
-    r"\s*[:：︰]?\s*([0-9.]+)\s*(T|TB|G|GB|M|MB|K|KB)?",
+    rf"【\s*(?:{_film_size_label_alt()})\s*】"
+    r"\s*[:：︰｜|/／·・•‧＝=\-_;；,，〜～﹕→]?\s*([^\n【]{1,96})",
+    re.I,
+)
+
+# 容量数字+单位（排除前面的 13V 片数）
+_CAPACITY_TOKEN_RE = re.compile(
+    r"(?<![A-Za-z0-9.])([0-9]+(?:\.[0-9]+)?)\s*"
+    r"(TB|TIB|GB|GIB|MB|MIB|KB|KIB|T|G|M|K)(?![A-Za-z])",
     re.I,
 )
 
@@ -152,6 +170,8 @@ def bare_infohash_structure_cue_labels() -> tuple[str, ...]:
     for front in _BARE_HASH_FRONT_SHIZHENG:
         for back in (*_BARE_HASH_BACK2, *_BARE_HASH_BACK_FULL, *_BARE_HASH_BACK1_FEATURE):
             labels.append(front + back)
+    # 老含及【验証码】（証）：infohash 短标签；勿加「验证码」（易撞站内验证码文案）
+    labels.extend(("验証码", "驗証碼", "验証碼", "驗証码", "校验码", "校驗碼"))
     for seed in ("种", "種"):
         for code in ("码", "碼"):
             labels.append(f"{seed}子特{code}")
@@ -175,30 +195,27 @@ def bare_infohash_structure_cue_labels() -> tuple[str, ...]:
 
 
 _BARE_HASH_STRUCTURE_CUES = bare_infohash_structure_cue_labels()
-_BARE_HASH_STRUCTURE_ALT = "|".join(re.escape(x) for x in _BARE_HASH_STRUCTURE_CUES)
 
-# 线索与 hash 之间：空白/冒号/括号，以及 2048 实录「哈希校验; HASH; ;」（tid 27433099）
-# 色花「特征码，&nbsp; HASH」（tid 718959）
+# 线索与 hash 之间：空白/冒号/括号/竖线/间隔号等（tid 718959 &nbsp;；竖排冒号︰）
 _BARE_HASH_GAP = (
     r"(?:"
-    r"[\s:：︰\|\[\]【】=\-_;；,，\.．]"
+    r"[\s:：︰\|｜/／\[\]【】=\＝\-_;；,，\.．·・•‧〜～﹕→]"
     r"|哈希校验|哈希值|雜湊校[验驗]|哈希校[验驗]"
     r"|&nbsp;|&amp;nbsp;"
     r"|<[^>\n]{0,120}>"
     r"){0,80}"
 )
 
-# 色花反爬：标签字间插空格「【特 徵 碼 】」（tid 1473899 破坏版）
-_CJK_INSERTED_SPACE_RE = re.compile(
-    r"(?<=[\u4e00-\u9fff])(?:[\s\u3000]+|&nbsp;|&amp;nbsp;)+(?=[\u4e00-\u9fff])"
-)
+# 色花反爬空格折叠：parsers.resource_names.collapse_cjk_inserted_spaces
 
 
-def _collapse_cjk_inserted_spaces(text: str) -> str:
-    """去掉汉字之间的反爬空格/nbsp，便于命中特徵碼等结构标签。"""
-    if not text:
-        return ""
-    return _CJK_INSERTED_SPACE_RE.sub("", text)
+def _bare_hash_structure_alt() -> str:
+    from parsers.resource_names import structure_labels_alt
+
+    return structure_labels_alt(_BARE_HASH_STRUCTURE_CUES)
+
+
+_BARE_HASH_STRUCTURE_ALT = _bare_hash_structure_alt()
 
 _BARE_INFOHASH_CUED_RE = re.compile(
     r"(?:"
@@ -433,15 +450,47 @@ def _size_from_label(raw_num: str, unit: str | None) -> int:
         return 0
     u = (unit or "M").upper()
     mult = 1
-    if u in {"K", "KB"}:
+    if u in {"K", "KB", "KIB"}:
         mult = 1024
-    elif u in {"M", "MB"}:
+    elif u in {"M", "MB", "MIB"}:
         mult = 1024**2
-    elif u in {"G", "GB"}:
+    elif u in {"G", "GB", "GIB"}:
         mult = 1024**3
-    elif u in {"T", "TB"}:
+    elif u in {"T", "TB", "TIB"}:
         mult = 1024**4
     return int(val * mult)
+
+
+def parse_capacity_bytes(text: str | None) -> int:
+    """从「13V 66.7GB」「635V/1.3TB」「2.6G/1V」「【989V/1.5T】」等文本取容量字节。
+
+    忽略纯片数（数字+V）；同段多个容量单位时取最大字节值。
+    """
+    raw = (text or "").strip()
+    if not raw:
+        return 0
+    # 先走结构化【资源大小】字段
+    sm = _FILM_SIZE_RE.search(raw)
+    if sm:
+        got = parse_capacity_bytes(sm.group(1))
+        if got:
+            return got
+    best = 0
+    for m in _CAPACITY_TOKEN_RE.finditer(raw):
+        # 紧贴在 NNNV 后的数字仍要认（13V 66.7GB）；token 本身不会匹配 V
+        n = _size_from_label(m.group(1), m.group(2))
+        if n > best:
+            best = n
+    if best:
+        return best
+    emb = re.search(
+        r"\[\s*(?:MP4|MKV|AVI|WMV|MOV|FLV|TS|ISO)?\s*/\s*([0-9.]+)\s*([KMGT])B?\s*\]",
+        raw,
+        re.I,
+    )
+    if emb:
+        return _size_from_label(emb.group(1), emb.group(2))
+    return 0
 
 
 def _context_name_and_size(blob: str, start: int, end: int) -> tuple[str, int]:
@@ -456,16 +505,10 @@ def _context_name_and_size(blob: str, start: int, end: int) -> tuple[str, int]:
     for window in (after, before):
         sm = _FILM_SIZE_RE.search(window)
         if sm:
-            size = _size_from_label(sm.group(1), sm.group(2))
+            size = parse_capacity_bytes(sm.group(1))
             break
     if not size and name:
-        emb = re.search(
-            r"\[\s*(?:MP4|MKV|AVI|WMV|MOV|FLV|TS|ISO)?\s*/\s*([0-9.]+)\s*([KMGT])B?\s*\]",
-            name,
-            re.I,
-        )
-        if emb:
-            size = _size_from_label(emb.group(1), emb.group(2))
+        size = parse_capacity_bytes(name)
     return name, size
 
 
@@ -500,26 +543,37 @@ def parse_magnet_text(text: str) -> list[MagnetLink]:
     seen: set[str] = set()
     blob = normalize_magnet_corpus(text or "")
 
-    for match in MAGNET_URI_RE.finditer(blob):
+    matches = list(MAGNET_URI_RE.finditer(blob))
+    # 附件大包/纯链清单：无结构片名时跳过逐链上下文取名（900+ 链可省大半解析时间）
+    skip_context = len(matches) >= 48 and not re.search(
+        r"【\s*(?:影片|资源|資源|种子|種子)\s*名称",
+        blob,
+    )
+
+    for match in matches:
         parsed = _parse_magnet_uri(match.group(0))
         if not parsed or parsed.infohash in seen:
             continue
-        ctx_name, ctx_size = _context_name_and_size(blob, match.start(), match.end())
-        # 子资源名 = 帖内【影片名称】/【资源名称】，优先于 dn= 链内名
-        if ctx_name:
-            parsed = MagnetLink(
-                infohash=parsed.infohash,
-                filename=ctx_name[:255],
-                size=parsed.size or ctx_size,
-                link=parsed.link,
-            )
-        elif ctx_size and not parsed.size:
-            parsed = MagnetLink(
-                infohash=parsed.infohash,
-                filename=parsed.filename,
-                size=ctx_size,
-                link=parsed.link,
-            )
+        if not skip_context:
+            ctx_name, ctx_size = _context_name_and_size(blob, match.start(), match.end())
+            # 子资源名 = 帖内【影片名称】/【资源名称】，优先于 dn= 链内名
+            if ctx_name:
+                from parsers.resource_names import clip_subresource_display_name
+
+                clean_name = clip_subresource_display_name(ctx_name) or ctx_name
+                parsed = MagnetLink(
+                    infohash=parsed.infohash,
+                    filename=clean_name[:255],
+                    size=parsed.size or ctx_size,
+                    link=parsed.link,
+                )
+            elif ctx_size and not parsed.size:
+                parsed = MagnetLink(
+                    infohash=parsed.infohash,
+                    filename=parsed.filename,
+                    size=ctx_size,
+                    link=parsed.link,
+                )
         seen.add(parsed.infohash)
         results.append(parsed)
 
@@ -533,3 +587,43 @@ def pick_primary_magnet(links: list[MagnetLink]) -> MagnetLink | None:
     if sized:
         return max(sized, key=lambda item: item.size)
     return links[0]
+
+
+def has_abnormal_download_link(text: str) -> bool:
+    """结构标签 / 半截 magnet / 残缺 ed2k 后出现非法长度 hash → 异常下载链接。
+
+    合法：infohash 32/40 hex；ed2k MD4 恰好 32 hex。
+    例：tid 3027518 【特徵全碼】仅 31 位 hex。
+    """
+    raw = text or ""
+    if not raw or not re.search(r"[A-Fa-f0-9]{20,}", raw):
+        return False
+    blob = normalize_magnet_corpus(raw)
+    # magnet:?xt=urn:btih: + 非 32/40 的 hex 串
+    for m in re.finditer(
+        r"magnet:\s*\?\s*xt\s*=\s*urn\s*:\s*btih\s*:\s*([A-Fa-f0-9]{8,64})",
+        blob,
+        re.I,
+    ):
+        if len(m.group(1)) not in (32, 40):
+            return True
+    # 【特征全码】等线索后的近合法但长度不对的 hex
+    for m in re.finditer(
+        rf"(?:{_BARE_HASH_STRUCTURE_ALT})"
+        rf"{_BARE_HASH_GAP}"
+        rf"([A-Fa-f0-9]{{20,64}})"
+        r"(?![A-Fa-f0-9])",
+        blob,
+        re.I,
+    ):
+        if len(m.group(1)) not in (32, 40):
+            return True
+    # ed2k 链 hash 非 32
+    for m in re.finditer(
+        r"ed2k://\|file\|[^|\n]{1,400}\|\d+\|([A-Fa-f0-9]+)\|",
+        blob,
+        re.I,
+    ):
+        if len(m.group(1)) != 32:
+            return True
+    return False

@@ -9,17 +9,148 @@ from typing import Any, Optional
 from crawler.fetcher import Fetcher
 from crawler.list_urls import site_root
 from crawler.session import BASE_URL, SessionManager
-from parsers.links import DualParseResult, parse_thread_dual
+from parsers.links import DualParseResult
 from parsers.thread_gates import looks_like_attachment_zone, should_skip_as_115sha_only
+from workers.cpu_jobs import (
+    job_judge_thread_html,
+    job_judge_with_attachment,
+    job_parse_thread_dual,
+)
+from workers.cpu_pool import run_parse_job
 from workers.session_factory import (
     bootstrap_probe_for_forum,
     resolve_forum_entry_urls,
     fetcher_from_config,
     session_from_config,
 )
-from workers.thread_outcome import ThreadOutcome, judge_thread_html
+from workers.thread_outcome import ThreadOutcome
 
 log = logging.getLogger(__name__)
+
+
+async def _judge_html(
+    html: str,
+    *,
+    board_fid: str | int,
+    list_title: str,
+    base_url: str,
+    preferred_link: str,
+    forum_id: str,
+    tid: int,
+    soft_browser_retried: bool = False,
+    attachments_already_tried: bool = False,
+    attachment_denied: bool = False,
+    attachment_login_required: bool = False,
+    attachment_failed: bool = False,
+    had_attachments: bool = False,
+    attachment_text: str = "",
+) -> ThreadOutcome:
+    """大附件/大页走进程池，避免 GIL 卡死管理端。"""
+    payload: dict[str, Any] = {
+        "html": html,
+        "board_fid": board_fid,
+        "list_title": list_title,
+        "base_url": base_url,
+        "soft_browser_retried": soft_browser_retried,
+        "attachments_already_tried": attachments_already_tried,
+        "attachment_denied": attachment_denied,
+        "attachment_login_required": attachment_login_required,
+        "attachment_failed": attachment_failed,
+        "had_attachments": had_attachments,
+        "preferred_link": preferred_link,
+        "forum_id": forum_id,
+        "tid": tid,
+    }
+    if attachment_text:
+        payload["attachment_text"] = attachment_text
+        return await run_parse_job(
+            job_judge_with_attachment,
+            payload,
+            html=html,
+            extra=attachment_text,
+        )
+    return await run_parse_job(
+        job_judge_thread_html,
+        payload,
+        html=html,
+        extra="",
+    )
+
+
+async def _parse_dual(
+    html: str,
+    *,
+    tid: int,
+    preferred_link: str,
+    extra_text: str,
+    base_url: str,
+    board_fid: str | int,
+) -> DualParseResult:
+    payload = {
+        "html": html,
+        "tid": tid,
+        "preferred_link": preferred_link,
+        "extra_text": extra_text or "",
+        "base_url": base_url,
+        "board_fid": str(board_fid or ""),
+    }
+    return await run_parse_job(
+        job_parse_thread_dual,
+        payload,
+        html=html,
+        extra=extra_text or "",
+    )
+
+
+async def _outcome_from_heavy_attachment(
+    html: str,
+    *,
+    tid: int,
+    list_title: str,
+    prior: ThreadOutcome,
+    preferred_link: str,
+    base_url: str,
+    board_fid: str | int,
+    attachment_text: str,
+) -> ThreadOutcome:
+    """大包附件：直接 parse(extra_text)，跳过整页注入再判（省一次进程池 judge）。"""
+    from parsers.thread_gates import coalesce_thread_title
+
+    merged = await _parse_dual(
+        html,
+        tid=tid,
+        preferred_link=preferred_link,
+        extra_text=attachment_text,
+        base_url=base_url,
+        board_fid=board_fid,
+    )
+    link_kind = prior.link_kind
+    title = prior.title or list_title
+    if merged.primary_link_kind != "none" and merged.assets:
+        display = coalesce_thread_title(list_title, prior.title, merged.title) or (
+            prior.title or list_title or merged.title or ""
+        )
+        if display and not coalesce_thread_title(merged.title):
+            merged.title = display
+        tip = (
+            "成功：附件含115分享码"
+            if merged.primary_link_kind == "115share"
+            else "成功：附件解析出目标链接"
+        )
+        return ThreadOutcome(
+            "import",
+            tip,
+            merged.primary_link_kind,
+            display,
+            parsed=merged,
+        )
+    return ThreadOutcome(
+        "skipped",
+        "未解析到 ed2k/磁力（跳过）",
+        link_kind,
+        title,
+        parsed=merged,
+    )
 
 
 async def fetch_and_parse_thread(
@@ -61,9 +192,14 @@ async def fetch_and_parse_thread(
         fetcher.set_referer(list_url)
         html = await fetcher.get_thread_html(thread_url, retries=retries)
 
-        result = parse_thread_dual(
-            html, tid=tid, preferred_link=preferred, board_fid=board_fid
-        )  # type: ignore[arg-type]
+        result = await _parse_dual(
+            html,
+            tid=tid,
+            preferred_link=preferred,
+            extra_text="",
+            base_url=thread_url,
+            board_fid=board_fid,
+        )
         if adapter.engine == "phpwind":
             detail = parse_thread_phpwind(html, tid=tid)
             if detail.title and not (result.title or "").strip():
@@ -202,9 +338,9 @@ async def process_thread(
             )
             policy = adapter.get_board_policy(board_fid)
 
-        # CPU 重：大合集 HTML 勿堵爬虫事件循环（管理端同进程）
-        outcome = await asyncio.to_thread(
-            judge_thread_html,
+        # 首判：普通帖页走线程池（勿因 ~80KB HTML 挤进唯一进程池 worker）。
+        # 仅附件大语料 / 超大页 / 正文海量链 才进 cpu pool。
+        outcome = await _judge_html(
             html,
             board_fid=board_fid,
             list_title=list_title,
@@ -255,8 +391,7 @@ async def process_thread(
                     fallback_name=persist_board_name,
                 )
                 policy = adapter.get_board_policy(board_fid)
-            outcome = await asyncio.to_thread(
-                judge_thread_html,
+            outcome = await _judge_html(
                 html,
                 board_fid=board_fid,
                 list_title=list_title,
@@ -307,26 +442,49 @@ async def process_thread(
                     outcome.title or list_title,
                 )
             else:
-                if attachment_text:
-                    html = inject_attachment_text(html, attachment_text)
-                outcome = await asyncio.to_thread(
-                    judge_thread_html,
-                    html,
-                    board_fid=board_fid,
-                    list_title=list_title,
-                    base_url=thread_url,
-                    soft_browser_retried=soft_browser_retried,
-                    attachments_already_tried=True,
-                    attachment_denied=attach_res.denied,
-                    attachment_login_required=bool(
-                        getattr(attach_res, "login_required", False)
-                    ),
-                    attachment_failed=attach_res.failed and not attach_res.downloaded,
-                    had_attachments=attach_res.downloaded or bool(attachment_text),
-                    preferred_link=link_pref,
-                    forum_id=forum_id,
-                    tid=tid,
-                )
+                # 轻附件主进程注入再判；大包（≥24KB）直接 parse，跳过整页注入+judge
+                heavy_attach = len(attachment_text) >= 24_000
+                login_req = bool(getattr(attach_res, "login_required", False))
+                if (
+                    heavy_attach
+                    and attachment_text
+                    and not attach_res.denied
+                    and not login_req
+                ):
+                    log.info(
+                        "tid=%s heavy attachment fast-path chars=%s (skip re-judge)",
+                        tid,
+                        len(attachment_text),
+                    )
+                    outcome = await _outcome_from_heavy_attachment(
+                        html,
+                        tid=tid,
+                        list_title=list_title,
+                        prior=outcome,
+                        preferred_link=link_pref,
+                        base_url=thread_url,
+                        board_fid=board_fid,
+                        attachment_text=attachment_text,
+                    )
+                else:
+                    if attachment_text and not heavy_attach:
+                        html = inject_attachment_text(html, attachment_text)
+                    outcome = await _judge_html(
+                        html,
+                        board_fid=board_fid,
+                        list_title=list_title,
+                        base_url=thread_url,
+                        soft_browser_retried=soft_browser_retried,
+                        attachments_already_tried=True,
+                        attachment_denied=attach_res.denied,
+                        attachment_login_required=login_req,
+                        attachment_failed=attach_res.failed and not attach_res.downloaded,
+                        had_attachments=attach_res.downloaded or bool(attachment_text),
+                        preferred_link=link_pref,
+                        forum_id=forum_id,
+                        tid=tid,
+                        attachment_text=attachment_text if heavy_attach else "",
+                    )
                 # 电驴板：txt/zip/excel 无果再试种子；磁力/双链：种子无果再试 txt/excel
                 # stub/无权/需登录不再二轮（已能判定）；仅 retry/failed 等才回退
                 if (
@@ -362,38 +520,62 @@ async def process_thread(
                         )
                     elif attach_res2.text:
                         attachment_text = (attachment_text + "\n" + attach_res2.text).strip()
-                        html = inject_attachment_text(html, attachment_text)
-                        outcome = await asyncio.to_thread(
-                            judge_thread_html,
-                            html,
-                            board_fid=board_fid,
-                            list_title=list_title,
-                            base_url=thread_url,
-                            soft_browser_retried=soft_browser_retried,
-                            attachments_already_tried=True,
-                            attachment_denied=attach_res.denied or attach_res2.denied,
-                            attachment_login_required=bool(
-                                getattr(attach_res, "login_required", False)
-                                or getattr(attach_res2, "login_required", False)
-                            ),
-                            attachment_failed=(
-                                (attach_res.failed and not attach_res.downloaded)
-                                or (attach_res2.failed and not attach_res2.downloaded)
-                            ),
-                            had_attachments=True,
-                            preferred_link=link_pref,
-                            forum_id=forum_id,
-                            tid=tid,
+                        heavy2 = len(attachment_text) >= 24_000
+                        login2 = bool(
+                            getattr(attach_res, "login_required", False)
+                            or getattr(attach_res2, "login_required", False)
                         )
+                        if (
+                            heavy2
+                            and attachment_text
+                            and not (attach_res.denied or attach_res2.denied)
+                            and not login2
+                        ):
+                            log.info(
+                                "tid=%s heavy attachment fast-path (fallback) chars=%s",
+                                tid,
+                                len(attachment_text),
+                            )
+                            outcome = await _outcome_from_heavy_attachment(
+                                html,
+                                tid=tid,
+                                list_title=list_title,
+                                prior=outcome,
+                                preferred_link=link_pref,
+                                base_url=thread_url,
+                                board_fid=board_fid,
+                                attachment_text=attachment_text,
+                            )
+                        else:
+                            if not heavy2:
+                                html = inject_attachment_text(html, attachment_text)
+                            outcome = await _judge_html(
+                                html,
+                                board_fid=board_fid,
+                                list_title=list_title,
+                                base_url=thread_url,
+                                soft_browser_retried=soft_browser_retried,
+                                attachments_already_tried=True,
+                                attachment_denied=attach_res.denied or attach_res2.denied,
+                                attachment_login_required=login2,
+                                attachment_failed=(
+                                    (attach_res.failed and not attach_res.downloaded)
+                                    or (attach_res2.failed and not attach_res2.downloaded)
+                                ),
+                                had_attachments=True,
+                                preferred_link=link_pref,
+                                forum_id=forum_id,
+                                tid=tid,
+                                attachment_text=attachment_text if heavy2 else "",
+                            )
                     attachment_kind = f"{attachment_kind}+{next_kind}"
                 # 附件语料可能已含链但 judge 走了非 import：再双解析一次补全
                 # skipped（含 115sha）不再抬升为 import
                 if outcome.verdict not in {"import", "skipped"} and attachment_text:
-                    merged = await asyncio.to_thread(
-                        parse_thread_dual,
+                    merged = await _parse_dual(
                         html,
                         tid=tid,
-                        preferred_link=link_pref,  # type: ignore[arg-type]
+                        preferred_link=link_pref,
                         extra_text=attachment_text,
                         base_url=thread_url,
                         board_fid=board_fid,
@@ -416,16 +598,24 @@ async def process_thread(
 
         if outcome.parsed is not None:
             parsed = outcome.parsed
+            log.info(
+                "tid=%s reuse judge.parsed assets=%s (skip 2nd parse)",
+                tid,
+                len(parsed.assets),
+            )
         else:
-            parsed = await asyncio.to_thread(
-                parse_thread_dual,
+            parsed = await _parse_dual(
                 html,
                 tid=tid,
-                preferred_link=link_pref,  # type: ignore[arg-type]
+                preferred_link=link_pref,
                 extra_text=attachment_text,
                 base_url=thread_url,
                 board_fid=board_fid,
             )
+        if attach_tried and attachment_text:
+            parsed.had_attachments = True
+        if outcome.verdict == "import" and "附件" in str(outcome.outcome or ""):
+            parsed.had_attachments = True
         if adapter.engine == "phpwind":
             from crawler.parser_phpwind import parse_thread_phpwind
 
@@ -443,7 +633,8 @@ async def process_thread(
         # 确保描述按本板结构卡片重算（含 outcome.parsed 来自 judge 的路径）
         from parsers.content import build_structured_description
 
-        parsed.description = build_structured_description(
+        parsed.description = await asyncio.to_thread(
+            build_structured_description,
             parsed.metadata,
             extract_password=parsed.extract_password,
             title=parsed.title,
@@ -547,6 +738,14 @@ async def process_thread(
 
                 # 同步写库放到线程，避免堵住 FastAPI 事件循环导致管理端假死
                 result["persisted"] = await asyncio.to_thread(_persist_sync)
+                # 对外 outcome 以入库验收为准，禁止「成功」假象盖住不合格
+                persisted = result.get("persisted") or {}
+                final_out = str(persisted.get("import_outcome") or "").strip()
+                if final_out:
+                    result["outcome"] = final_out
+                pv = str(persisted.get("verdict") or "")
+                if pv in {"structure_fail", "content_gap"}:
+                    result["structure_verdict"] = pv
         elif persist and outcome.verdict == "failed":
             result["persisted"] = {"count": 0, "stub": False, "link_kind": "failed"}
 

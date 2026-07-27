@@ -144,9 +144,17 @@ def test_persist_multi_and_single_naming(monkeypatch):
     from parsers.links import DualParseResult, ParsedAsset
     from db import persist as persist_mod
 
+    class _Conn:
+        def commit(self):
+            return None
+
+        def rollback(self):
+            return None
+
     calls: list[dict] = []
     monkeypatch.setattr(persist_mod, "ensure_source", lambda *a, **k: 1)
     monkeypatch.setattr(persist_mod, "delete_stub_by_source_url", lambda *a, **k: False)
+    monkeypatch.setattr(persist_mod, "sync_board_meta_by_source_url", lambda *a, **k: 0)
 
     def fake_upsert(conn, link, source_id, **kwargs):
         calls.append(
@@ -189,7 +197,7 @@ def test_persist_multi_and_single_naming(monkeypatch):
         primary_link_kind="magnet",
     )
     out = persist_mod.persist_dual_parse(
-        object(), parsed, source_url="https://x/thread-1-1-1.html"
+        _Conn(), parsed, source_url="https://x/thread-1-1-1.html"
     )
     assert out["count"] == 2
     assert calls[0]["title"] == "合集标题"
@@ -217,8 +225,62 @@ def test_persist_multi_and_single_naming(monkeypatch):
         primary_link_kind="ed2k",
     )
     persist_mod.persist_dual_parse(
-        object(), parsed2, source_url="https://x/thread-2-1-1.html"
+        _Conn(), parsed2, source_url="https://x/thread-2-1-1.html"
     )
     assert calls[0]["title"] == "单资源帖"
     # ed2k 链内名不是子资源名 → 退回主标题
     assert calls[0]["filename"] == "单资源帖"
+
+
+def test_resolve_rejects_html_bbcode_and_intro_tail():
+    from parsers.resource_names import (
+        clip_subresource_display_name,
+        is_dirty_filename,
+        resolve_sub_filename,
+    )
+
+    htmlish = (
+        '[url]www.98T.la@CLA96-Ai.mp4[/" target="_blank">'
+        '<span class="__cf_email__" data-cfemail="abc">x</span></a>'
+    )
+    assert is_dirty_filename(htmlish)
+    assert (
+        resolve_sub_filename(
+            inner_name=htmlish,
+            title="【整理】cla合集标题",
+            hash_value="A" * 40,
+        )
+        == "【整理】cla合集标题"
+    )
+
+    intro = (
+        "《一半海水一半火焰》 【资源介绍】：看这部片子之前，我被朋友郑重告诫，"
+        + ("很长正文" * 40)
+    )
+    clipped = clip_subresource_display_name(intro)
+    assert clipped == "《一半海水一半火焰》"
+    assert "资源介绍" not in clipped
+
+    attach_ui = (
+        "20e90e4390086.gif (1.63 MB, 下载次数: 0) 下载附件 2024-08-04 18:32 上传 "
+        "c2ce21c5e77f2.gif (1.48 MB, 下载次数: 0)"
+    )
+    assert (
+        resolve_sub_filename(
+            inner_name=attach_ui,
+            title="果冻传媒-性感女外教",
+            hash_value="B" * 40,
+        )
+        == "果冻传媒-性感女外教"
+    )
+
+    jp = (
+        "BD-M01 中出世界 EXCITE【AI增强】 中出しワールド EXCITE "
+        "主演女優: 星優乃・浜崎ひめ スタジオ: ムゲン "
+        + ("カテゴリで探す:完全無修正" * 8)
+    )
+    got = resolve_sub_filename(inner_name=jp, title="BD二部", hash_value="C" * 40)
+    assert "主演女優" not in got
+    assert "カテゴリ" not in got
+    assert len(got) <= 200
+    assert got.startswith("BD-M01")

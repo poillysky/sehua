@@ -29,7 +29,8 @@ def test_upsert_resource_strips_nul(monkeypatch):
             calls.append((sql, params))
 
         def fetchone(self):
-            return (1,)
+            # 占用检查：无已有行
+            return None
 
     class _Conn:
         def cursor(self):
@@ -56,7 +57,9 @@ def test_upsert_resource_strips_nul(monkeypatch):
         import_outcome="ok\x00",
         commit=False,
     )
-    # first INSERT into ed2k_resources
-    params = calls[0][1]
+    # ownership SELECT then INSERT into ed2k_resources
+    insert_calls = [c for c in calls if c[1] and len(c[1]) == 5 and "ed2k_resources" in (c[0] or "")]
+    assert insert_calls
+    params = insert_calls[0][1]
     assert "\x00" not in str(params)
     assert params[1] == "file"

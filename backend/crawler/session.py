@@ -100,13 +100,28 @@ class SessionManager:
             return False
 
     def save(self) -> None:
+        """落盘 Cookie；短时节流，避免每帖连写三次拖 IO。"""
+        import time
+
+        now = time.monotonic()
+        last = float(getattr(self, "_last_save_mono", 0) or 0)
+        if now - last < 8.0 and self.cookie_file.is_file():
+            self._save_pending = True
+            return
         self.cookie_file.parent.mkdir(parents=True, exist_ok=True)
         self.cookies.setdefault("safe", "1")
         self.cookie_file.write_text(
             json.dumps(self.cookies, ensure_ascii=False, indent=2),
             encoding="utf-8",
         )
+        self._last_save_mono = now
+        self._save_pending = False
         log.info("Saved cookies to %s", self.cookie_file)
+
+    def flush_save(self) -> None:
+        """强制落盘（会话关闭时调用）。"""
+        self._last_save_mono = 0.0
+        self.save()
 
     def update(self, cookies: dict[str, str]) -> None:
         for key, value in cookies.items():
@@ -358,6 +373,11 @@ class SessionManager:
         await run_on_pw_loop(self._close_on_loop())
 
     async def _close_on_loop(self) -> None:
+        try:
+            if getattr(self, "_save_pending", False):
+                self.flush_save()
+        except Exception:
+            log.debug("flush cookies on close failed", exc_info=True)
         self._ready = False
         for obj in (self._page, self._context, self._browser):
             if obj is None:

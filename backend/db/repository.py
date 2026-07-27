@@ -120,6 +120,12 @@ def thread_stub_hash(source_url: str) -> str:
     return hashlib.sha256(source_url.encode("utf-8")).hexdigest()[:32].upper()
 
 
+def name_row_hash(source_url: str, resource_name: str) -> str:
+    """同帖同资源名的稳定行键（真链 hash 已被其它帖占用时用）。"""
+    raw = f"{(source_url or '').strip()}\n{(resource_name or '').strip()}"
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:40].upper()
+
+
 def infer_resource_link_kind(ed2k_link: str | None) -> str:
     link = (ed2k_link or "").strip().lower()
     if link.startswith(STUB_LINK_PREFIX.lower()):
@@ -147,6 +153,8 @@ def _ensure_resource_schema(conn: Any) -> None:
         "board_name",
         "forum_id",
         "description",
+        "parse_tags",
+        "parse_warnings",
     )
     with conn.cursor() as cur:
         cur.execute("SELECT to_regclass('public.resource_sources')")
@@ -175,6 +183,10 @@ def _ensure_resource_schema(conn: Any) -> None:
             elif col == "ed2k_links":
                 cur.execute(
                     "ALTER TABLE resource_sources ADD COLUMN IF NOT EXISTS ed2k_links TEXT[]"
+                )
+            elif col in ("parse_tags", "parse_warnings"):
+                cur.execute(
+                    f"ALTER TABLE resource_sources ADD COLUMN IF NOT EXISTS {col} TEXT[]"
                 )
             else:
                 cur.execute(
@@ -229,6 +241,8 @@ def upsert_resource(
     board_name: str | None = None,
     forum_id: str | None = None,
     import_outcome: str | None = None,
+    parse_tags: list[str] | None = None,
+    parse_warnings: list[str] | None = None,
     *,
     commit: bool = True,
 ) -> bool:
@@ -243,6 +257,8 @@ def upsert_resource(
     board_fid = strip_nul(board_fid) or None
     preview_images = strip_nul_list(preview_images) or None
     ed2k_links = strip_nul_list(ed2k_links) or None
+    parse_tags = strip_nul_list(parse_tags) or None
+    parse_warnings = strip_nul_list(parse_warnings) or None
     # link fields may carry binary-scanned noise
     link = Ed2kLink(
         filename=strip_nul(link.filename) or link.hash,
@@ -257,7 +273,25 @@ def upsert_resource(
         extract_password or "",
     )
 
+    incoming_url = (source_url or "").strip()
     with conn.cursor() as cur:
+        # 行键已被其它帖占用：整单拒写，避免污染 ed2k_resources.filename/size
+        if incoming_url and link.hash:
+            cur.execute(
+                """
+                SELECT source_url FROM resource_sources
+                WHERE upper(hash) = upper(%s) LIMIT 1
+                """,
+                (link.hash,),
+            )
+            owned = cur.fetchone()
+            if owned:
+                existing_url = (owned[0] or "").strip()
+                if existing_url and existing_url != incoming_url:
+                    if commit:
+                        conn.commit()
+                    return False
+
         cur.execute(
             """
             INSERT INTO ed2k_resources (hash, filename, size, ed2k_link, search_string)
@@ -282,38 +316,133 @@ def upsert_resource(
             """
             INSERT INTO resource_sources (
               hash, source_id, source_url, title, description, preview_images,
-              ed2k_links, extract_password, board_fid, board_name, forum_id, import_outcome
+              ed2k_links, extract_password, board_fid, board_name, forum_id, import_outcome,
+              parse_tags, parse_warnings
             )
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             ON CONFLICT (hash) DO UPDATE SET
-              source_id = EXCLUDED.source_id,
-              source_url = COALESCE(EXCLUDED.source_url, resource_sources.source_url),
-              title = COALESCE(EXCLUDED.title, resource_sources.title),
-              description = COALESCE(NULLIF(EXCLUDED.description, ''), resource_sources.description),
+              source_id = CASE
+                WHEN coalesce(btrim(resource_sources.source_url), '') <> ''
+                 AND coalesce(btrim(EXCLUDED.source_url), '') <> ''
+                 AND btrim(resource_sources.source_url)
+                     IS DISTINCT FROM btrim(EXCLUDED.source_url)
+                THEN resource_sources.source_id
+                ELSE EXCLUDED.source_id
+              END,
+              -- 禁止后帖用同一 hash 改写其它帖的行（合集主 hash 常重复）
+              source_url = CASE
+                WHEN coalesce(btrim(resource_sources.source_url), '') <> ''
+                 AND coalesce(btrim(EXCLUDED.source_url), '') <> ''
+                 AND btrim(resource_sources.source_url)
+                     IS DISTINCT FROM btrim(EXCLUDED.source_url)
+                THEN resource_sources.source_url
+                ELSE COALESCE(EXCLUDED.source_url, resource_sources.source_url)
+              END,
+              title = CASE
+                WHEN coalesce(btrim(resource_sources.source_url), '') <> ''
+                 AND coalesce(btrim(EXCLUDED.source_url), '') <> ''
+                 AND btrim(resource_sources.source_url)
+                     IS DISTINCT FROM btrim(EXCLUDED.source_url)
+                THEN resource_sources.title
+                ELSE COALESCE(EXCLUDED.title, resource_sources.title)
+              END,
+              description = CASE
+                WHEN coalesce(btrim(resource_sources.source_url), '') <> ''
+                 AND coalesce(btrim(EXCLUDED.source_url), '') <> ''
+                 AND btrim(resource_sources.source_url)
+                     IS DISTINCT FROM btrim(EXCLUDED.source_url)
+                THEN resource_sources.description
+                ELSE COALESCE(NULLIF(EXCLUDED.description, ''), resource_sources.description)
+              END,
               preview_images = CASE
+                WHEN coalesce(btrim(resource_sources.source_url), '') <> ''
+                 AND coalesce(btrim(EXCLUDED.source_url), '') <> ''
+                 AND btrim(resource_sources.source_url)
+                     IS DISTINCT FROM btrim(EXCLUDED.source_url)
+                THEN resource_sources.preview_images
                 WHEN coalesce(array_length(EXCLUDED.preview_images, 1), 0) > 0
                   THEN EXCLUDED.preview_images
                 ELSE resource_sources.preview_images
               END,
               ed2k_links = CASE
+                WHEN coalesce(btrim(resource_sources.source_url), '') <> ''
+                 AND coalesce(btrim(EXCLUDED.source_url), '') <> ''
+                 AND btrim(resource_sources.source_url)
+                     IS DISTINCT FROM btrim(EXCLUDED.source_url)
+                THEN resource_sources.ed2k_links
                 WHEN coalesce(array_length(EXCLUDED.ed2k_links, 1), 0) > 0
                   THEN EXCLUDED.ed2k_links
                 ELSE resource_sources.ed2k_links
               END,
-              extract_password = COALESCE(
+              extract_password = CASE
+                WHEN coalesce(btrim(resource_sources.source_url), '') <> ''
+                 AND coalesce(btrim(EXCLUDED.source_url), '') <> ''
+                 AND btrim(resource_sources.source_url)
+                     IS DISTINCT FROM btrim(EXCLUDED.source_url)
+                THEN resource_sources.extract_password
+                ELSE COALESCE(
                 NULLIF(EXCLUDED.extract_password, ''),
                 resource_sources.extract_password
-              ),
-              board_fid = COALESCE(EXCLUDED.board_fid, resource_sources.board_fid),
-              board_name = COALESCE(
+              )
+              END,
+              board_fid = CASE
+                WHEN coalesce(btrim(resource_sources.source_url), '') <> ''
+                 AND coalesce(btrim(EXCLUDED.source_url), '') <> ''
+                 AND btrim(resource_sources.source_url)
+                     IS DISTINCT FROM btrim(EXCLUDED.source_url)
+                THEN resource_sources.board_fid
+                ELSE COALESCE(EXCLUDED.board_fid, resource_sources.board_fid)
+              END,
+              board_name = CASE
+                WHEN coalesce(btrim(resource_sources.source_url), '') <> ''
+                 AND coalesce(btrim(EXCLUDED.source_url), '') <> ''
+                 AND btrim(resource_sources.source_url)
+                     IS DISTINCT FROM btrim(EXCLUDED.source_url)
+                THEN resource_sources.board_name
+                ELSE COALESCE(
                 NULLIF(EXCLUDED.board_name, ''),
                 resource_sources.board_name
-              ),
-              forum_id = COALESCE(EXCLUDED.forum_id, resource_sources.forum_id),
-              import_outcome = COALESCE(
-                NULLIF(EXCLUDED.import_outcome, ''),
-                resource_sources.import_outcome
               )
+              END,
+              forum_id = CASE
+                WHEN coalesce(btrim(resource_sources.source_url), '') <> ''
+                 AND coalesce(btrim(EXCLUDED.source_url), '') <> ''
+                 AND btrim(resource_sources.source_url)
+                     IS DISTINCT FROM btrim(EXCLUDED.source_url)
+                THEN resource_sources.forum_id
+                ELSE COALESCE(EXCLUDED.forum_id, resource_sources.forum_id)
+              END,
+              import_outcome = CASE
+                WHEN coalesce(btrim(resource_sources.source_url), '') <> ''
+                 AND coalesce(btrim(EXCLUDED.source_url), '') <> ''
+                 AND btrim(resource_sources.source_url)
+                     IS DISTINCT FROM btrim(EXCLUDED.source_url)
+                THEN resource_sources.import_outcome
+                ELSE COALESCE(
+                  NULLIF(EXCLUDED.import_outcome, ''),
+                  resource_sources.import_outcome
+                )
+              END,
+              parse_tags = CASE
+                WHEN coalesce(btrim(resource_sources.source_url), '') <> ''
+                 AND coalesce(btrim(EXCLUDED.source_url), '') <> ''
+                 AND btrim(resource_sources.source_url)
+                     IS DISTINCT FROM btrim(EXCLUDED.source_url)
+                THEN resource_sources.parse_tags
+                WHEN coalesce(array_length(EXCLUDED.parse_tags, 1), 0) > 0
+                  THEN EXCLUDED.parse_tags
+                ELSE resource_sources.parse_tags
+              END,
+              parse_warnings = CASE
+                WHEN coalesce(btrim(resource_sources.source_url), '') <> ''
+                 AND coalesce(btrim(EXCLUDED.source_url), '') <> ''
+                 AND btrim(resource_sources.source_url)
+                     IS DISTINCT FROM btrim(EXCLUDED.source_url)
+                THEN resource_sources.parse_warnings
+                WHEN coalesce(array_length(EXCLUDED.parse_warnings, 1), 0) > 0
+                  THEN EXCLUDED.parse_warnings
+                ELSE resource_sources.parse_warnings
+              END
             """,
             (
                 link.hash,
@@ -328,6 +457,8 @@ def upsert_resource(
                 board_name,
                 forum_id,
                 (import_outcome or "").strip() or None,
+                parse_tags,
+                parse_warnings,
             ),
         )
 
@@ -1018,6 +1149,277 @@ def count_priority_account_stubs_q(
         )
         row = cur.fetchone()
         return int(row[0] or 0) if row else 0
+
+
+# 填槽验收不合格（仍入库）：import_outcome 以「不合格」开头
+FRAME_FAIL_REASON_SQL = """
+CASE
+  WHEN rs.import_outcome LIKE '不合格：结构%%' THEN '不合格：结构'
+  WHEN rs.import_outcome LIKE '不合格：容量%%' THEN '不合格：容量'
+  ELSE split_part(COALESCE(rs.import_outcome, ''), ' · ', 1)
+END
+"""
+
+
+def _frame_fail_where(
+    *,
+    status: str | None = "all",
+    forum_id: str | None = None,
+) -> tuple[str, list[Any]]:
+    """按帖聚合前的 WHERE（resource_sources rs）。"""
+    clauses = [
+        "NULLIF(BTRIM(COALESCE(rs.source_url, '')), '') IS NOT NULL",
+        "rs.import_outcome LIKE %s",
+    ]
+    params: list[Any] = ["不合格%"]
+    st = (status or "all").strip().lower()
+    if st in {"structure", "结构"}:
+        clauses.append("rs.import_outcome LIKE %s")
+        params.append("不合格：结构%")
+    elif st in {"capacity", "容量"}:
+        clauses.append("rs.import_outcome LIKE %s")
+        params.append("不合格：容量%")
+    forum = (forum_id or "").strip()
+    if forum:
+        clauses.append("COALESCE(NULLIF(BTRIM(rs.forum_id), ''), 'sehuatang') = %s")
+        params.append(forum)
+    return " AND ".join(clauses), params
+
+
+def count_frame_fail_posts(
+    conn: Any,
+    *,
+    status: str | None = "all",
+    forum_id: str | None = None,
+    q: str | None = None,
+    reason: str | None = None,
+) -> dict[str, int]:
+    """验收不合格帖数（按 source_url 去重）。"""
+    _ensure_resource_schema(conn)
+    text = (q or "").strip()
+    q_sql = ""
+    q_params: list[Any] = []
+    if text:
+        like = f"%{text}%"
+        q_sql = """
+          AND (
+            COALESCE(rs.source_url, '') ILIKE %s
+            OR COALESCE(rs.title, '') ILIKE %s
+            OR COALESCE(rs.import_outcome, '') ILIKE %s
+            OR COALESCE(rs.board_name, '') ILIKE %s
+            OR COALESCE(rs.board_fid, '') ILIKE %s
+          )
+        """
+        q_params = [like, like, like, like, like]
+    reason_text = (reason or "").strip()
+    reason_sql = ""
+    reason_params: list[Any] = []
+    if reason_text:
+        reason_sql = f"AND ({FRAME_FAIL_REASON_SQL.strip()}) = %s"
+        reason_params = [reason_text]
+
+    def _n(st: str) -> int:
+        where_sql, params = _frame_fail_where(status=st, forum_id=forum_id)
+        with conn.cursor() as cur:
+            cur.execute(
+                f"""
+                SELECT COUNT(DISTINCT BTRIM(rs.source_url))
+                FROM resource_sources rs
+                WHERE {where_sql}
+                  {q_sql}
+                  {reason_sql}
+                """,
+                (*params, *q_params, *reason_params),
+            )
+            row = cur.fetchone()
+            return int(row[0] or 0) if row else 0
+
+    structure = _n("structure")
+    capacity = _n("capacity")
+    st = (status or "all").strip().lower()
+    if st in {"structure", "结构"}:
+        total = structure
+    elif st in {"capacity", "容量"}:
+        total = capacity
+    else:
+        total = _n("all")
+    return {"structure": structure, "capacity": capacity, "total": total}
+
+
+def list_frame_fail_posts(
+    conn: Any,
+    *,
+    status: str | None = "all",
+    forum_id: str | None = None,
+    q: str | None = None,
+    reason: str | None = None,
+    limit: int = 50,
+    offset: int = 0,
+) -> list[dict[str, Any]]:
+    """验收不合格帖明细分页（按 source_url 一行）。"""
+    from db.queue import tid_from_url
+
+    _ensure_resource_schema(conn)
+    n = max(1, min(200, int(limit or 50)))
+    off = max(0, int(offset or 0))
+    where_sql, params = _frame_fail_where(status=status, forum_id=forum_id)
+    text = (q or "").strip()
+    q_sql = ""
+    q_params: list[Any] = []
+    if text:
+        like = f"%{text}%"
+        q_sql = """
+          AND (
+            COALESCE(rs.source_url, '') ILIKE %s
+            OR COALESCE(rs.title, '') ILIKE %s
+            OR COALESCE(rs.import_outcome, '') ILIKE %s
+            OR COALESCE(rs.board_name, '') ILIKE %s
+            OR COALESCE(rs.board_fid, '') ILIKE %s
+          )
+        """
+        q_params = [like, like, like, like, like]
+    reason_text = (reason or "").strip()
+    reason_sql = ""
+    reason_params: list[Any] = []
+    if reason_text:
+        reason_sql = f"AND ({FRAME_FAIL_REASON_SQL.strip()}) = %s"
+        reason_params = [reason_text]
+    with conn.cursor() as cur:
+        cur.execute(
+            f"""
+            SELECT
+              BTRIM(rs.source_url) AS source_url,
+              MAX(COALESCE(rs.title, '')) AS title,
+              MAX(COALESCE(rs.import_outcome, '')) AS import_outcome,
+              MAX(COALESCE(rs.board_fid, '')) AS board_fid,
+              MAX(COALESCE(rs.board_name, '')) AS board_name,
+              MAX(COALESCE(rs.forum_id, '')) AS forum_id,
+              MAX(rs.hash) AS hash,
+              MAX(rs.created_at) AS updated_at
+            FROM resource_sources rs
+            WHERE {where_sql}
+              {q_sql}
+              {reason_sql}
+            GROUP BY BTRIM(rs.source_url)
+            ORDER BY MAX(rs.created_at) DESC NULLS LAST
+            LIMIT %s OFFSET %s
+            """,
+            (*params, *q_params, *reason_params, n, off),
+        )
+        cols = [d[0] for d in cur.description]
+        rows: list[dict[str, Any]] = []
+        for row in cur.fetchall():
+            item = dict(zip(cols, row))
+            val = item.get("updated_at")
+            if hasattr(val, "isoformat"):
+                item["updated_at"] = val.isoformat()
+            url = str(item.get("source_url") or "")
+            item["url"] = url
+            tid = tid_from_url(url)
+            item["tid"] = tid
+            outcome = str(item.get("import_outcome") or "")
+            if outcome.startswith("不合格：结构"):
+                item["status"] = "structure"
+            elif outcome.startswith("不合格：容量"):
+                item["status"] = "capacity"
+            else:
+                item["status"] = "failed"
+            item["thread_title"] = item.get("title") or ""
+            rows.append(item)
+        return rows
+
+
+def list_frame_fail_reasons(
+    conn: Any,
+    *,
+    status: str | None = "all",
+    forum_id: str | None = None,
+    q: str | None = None,
+) -> list[dict[str, Any]]:
+    """不合格原因分组（结构/容量等，按帖去重）。"""
+    _ensure_resource_schema(conn)
+    where_sql, params = _frame_fail_where(status=status, forum_id=forum_id)
+    text = (q or "").strip()
+    q_sql = ""
+    q_params: list[Any] = []
+    if text:
+        like = f"%{text}%"
+        q_sql = """
+          AND (
+            COALESCE(rs.source_url, '') ILIKE %s
+            OR COALESCE(rs.title, '') ILIKE %s
+            OR COALESCE(rs.import_outcome, '') ILIKE %s
+            OR COALESCE(rs.board_name, '') ILIKE %s
+            OR COALESCE(rs.board_fid, '') ILIKE %s
+          )
+        """
+        q_params = [like, like, like, like, like]
+    with conn.cursor() as cur:
+        cur.execute(
+            f"""
+            SELECT reason, COUNT(*) AS cnt
+            FROM (
+              SELECT
+                BTRIM(rs.source_url) AS source_url,
+                ({FRAME_FAIL_REASON_SQL.strip()}) AS reason
+              FROM resource_sources rs
+              WHERE {where_sql}
+                {q_sql}
+                AND COALESCE(NULLIF(TRIM(rs.import_outcome), ''), '') <> ''
+              GROUP BY BTRIM(rs.source_url), ({FRAME_FAIL_REASON_SQL.strip()})
+            ) t
+            WHERE reason <> ''
+            GROUP BY reason
+            ORDER BY cnt DESC, reason ASC
+            LIMIT 80
+            """,
+            (*params, *q_params),
+        )
+        return [
+            {"reason": str(r[0]), "count": int(r[1] or 0)}
+            for r in cur.fetchall()
+            if r and r[0]
+        ]
+
+
+def list_frame_fail_tids(
+    conn: Any,
+    *,
+    status: str | None = "all",
+    forum_id: str | None = None,
+    q: str | None = None,
+    reason: str | None = None,
+    limit: int = 2000,
+) -> list[dict[str, Any]]:
+    """当前筛选下全部不合格帖 tid + 代表 hash（供全选重爬）。"""
+    from db.queue import tid_from_url
+
+    lim = max(1, min(5000, int(limit or 2000)))
+    rows = list_frame_fail_posts(
+        conn,
+        status=status,
+        forum_id=forum_id,
+        q=q,
+        reason=reason,
+        limit=lim,
+        offset=0,
+    )
+    out: list[dict[str, Any]] = []
+    seen: set[int] = set()
+    for row in rows:
+        tid = row.get("tid")
+        if tid is None:
+            tid = tid_from_url(str(row.get("source_url") or ""))
+        try:
+            n = int(tid) if tid is not None else 0
+        except (TypeError, ValueError):
+            n = 0
+        hash_key = str(row.get("hash") or "").strip()
+        if n <= 0 or n in seen or len(hash_key) < 8:
+            continue
+        seen.add(n)
+        out.append({"tid": n, "hash": hash_key, "source_url": row.get("source_url") or ""})
+    return out
 
 
 def _resource_list_where(
@@ -2127,7 +2529,210 @@ def _list_multi_asset_resources(
 
 
 _FACET_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
-_FACET_CACHE_TTL_SEC = 90.0
+_FACET_CACHE_TTL_SEC = 300.0
+_FACET_REFRESHING: set[str] = set()
+
+
+def _facet_snapshot_path():
+    from pathlib import Path
+
+    return Path(__file__).resolve().parents[1] / "data" / "resource_facets_cache.json"
+
+
+def _load_facet_snapshot() -> dict[str, Any] | None:
+    try:
+        path = _facet_snapshot_path()
+        if not path.is_file():
+            return None
+        raw = json.loads(path.read_text(encoding="utf-8"))
+        if isinstance(raw, dict) and isinstance(raw.get("facets"), dict):
+            return raw["facets"]
+    except Exception:
+        logger.debug("load facet snapshot failed", exc_info=True)
+        return None
+
+
+def _save_facet_snapshot(facets: dict[str, Any]) -> None:
+    try:
+        path = _facet_snapshot_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            json.dumps({"saved_at": time.time(), "facets": facets}, ensure_ascii=False),
+            encoding="utf-8",
+        )
+    except Exception:
+        logger.debug("save facet snapshot failed", exc_info=True)
+
+
+def _facet_filter_dim(value: str | None) -> str | None:
+    v = (value or "").strip()
+    return v if v and v != "all" else None
+
+
+def _global_facets_fresh(now: float | None = None) -> dict[str, Any] | None:
+    """内存或磁盘上的无筛选 facets（过期内存则回落快照）。"""
+    ts = time.time() if now is None else now
+    hit = _FACET_CACHE.get("||||")
+    if hit and ts - hit[0] < _FACET_CACHE_TTL_SEC:
+        return hit[1]
+    snap = _load_facet_snapshot()
+    if snap:
+        _FACET_CACHE["||||"] = (ts, snap)
+        return snap
+    if hit:
+        return hit[1]
+    return None
+
+
+def _board_thread_count_from_facets(boards: list[Any], board_name: str) -> int:
+    """与列表 WHERE 一致：整板名 +「主板块 · 子类」。"""
+    name = (board_name or "").strip()
+    if not name:
+        return 0
+    if name in ("未分类", "__empty__"):
+        for b in boards:
+            if str(b.get("name") or "") in ("未分类", ""):
+                return int(b.get("count") or 0)
+        return 0
+    prefix = f"{name} · "
+    total = 0
+    for b in boards:
+        bn = str(b.get("name") or "")
+        if bn == name or bn.startswith(prefix):
+            total += int(b.get("count") or 0)
+    return total
+
+
+def _scale_facet_buckets(
+    base: dict[str, Any], keys: list[str], target_all: int
+) -> dict[str, int]:
+    raw_sum = sum(int(base.get(k) or 0) for k in keys) or 1
+    out = {
+        k: int(round(int(base.get(k) or 0) * target_all / raw_sum)) for k in keys
+    }
+    drift = target_all - sum(out.values())
+    if drift and keys:
+        max_k = max(keys, key=lambda k: out[k])
+        out[max_k] = max(0, out[max_k] + drift)
+    return out
+
+
+def _facet_all_from_global(
+    global_facets: dict[str, Any],
+    *,
+    source_type: str | None = None,
+    board_name: str | None = None,
+    link_kind: str | None = None,
+    forum_id: str | None = None,
+) -> int | None:
+    """单维筛选时从全局快照取帖数；多维或无法解析返回 None。"""
+    st = _facet_filter_dim(source_type)
+    bn = _facet_filter_dim(board_name)
+    lk = _facet_filter_dim(link_kind)
+    fid = _facet_filter_dim(forum_id)
+    if sum(1 for x in (st, bn, lk, fid) if x) != 1:
+        return None
+    sources = global_facets.get("sources") or {}
+    results = global_facets.get("results") or {}
+    if bn:
+        return _board_thread_count_from_facets(global_facets.get("boards") or [], bn)
+    if fid:
+        for f in global_facets.get("forums") or []:
+            if str(f.get("id") or "") == fid:
+                return int(f.get("count") or 0)
+        return 0
+    if st:
+        return int(sources.get(st) or 0)
+    if lk:
+        return int(results.get(lk) or 0)
+    return None
+
+
+def peek_facet_thread_total(
+    *,
+    q: str | None = None,
+    source_type: str | None = None,
+    board_name: str | None = None,
+    link_kind: str | None = None,
+    forum_id: str | None = None,
+) -> int | None:
+    """有筛选帖总数：无搜索词且单维时读侧面栏快照，避免 capped GROUP BY。"""
+    if (q or "").strip():
+        return None
+    global_facets = _global_facets_fresh()
+    if not global_facets:
+        return None
+    return _facet_all_from_global(
+        global_facets,
+        source_type=source_type,
+        board_name=board_name,
+        link_kind=link_kind,
+        forum_id=forum_id,
+    )
+
+
+def _derive_filtered_facets_from_global(
+    global_facets: dict[str, Any],
+    *,
+    source_type: str | None = None,
+    board_name: str | None = None,
+    link_kind: str | None = None,
+    forum_id: str | None = None,
+) -> dict[str, Any] | None:
+    """无搜索词的单维筛选：侧面栏毫秒级派生，不扫库。"""
+    thread_all = _facet_all_from_global(
+        global_facets,
+        source_type=source_type,
+        board_name=board_name,
+        link_kind=link_kind,
+        forum_id=forum_id,
+    )
+    if thread_all is None:
+        return None
+
+    st = _facet_filter_dim(source_type)
+    lk = _facet_filter_dim(link_kind)
+    sources_g = global_facets.get("sources") or {}
+    results_g = global_facets.get("results") or {}
+    boards = list(global_facets.get("boards") or [])
+    forums = list(global_facets.get("forums") or [])
+    src_keys = ["web", "upload", "telegram"]
+    kind_keys = ["magnet", "ed2k", "115share", "stub", "failed"]
+    global_all = max(1, int(results_g.get("all") or sources_g.get("all") or 1))
+    global_multi = int(results_g.get("multi") or 0)
+
+    if st:
+        sources = {k: (thread_all if k == st else 0) for k in src_keys}
+        sources["all"] = thread_all
+        results = _scale_facet_buckets(results_g, kind_keys, thread_all)
+        results["all"] = thread_all
+        results["multi"] = int(round(global_multi * thread_all / global_all))
+    elif lk == "multi":
+        sources = _scale_facet_buckets(sources_g, src_keys, thread_all)
+        sources["all"] = thread_all
+        results = _scale_facet_buckets(results_g, kind_keys, thread_all)
+        results["all"] = thread_all
+        results["multi"] = thread_all
+    elif lk:
+        sources = _scale_facet_buckets(sources_g, src_keys, thread_all)
+        sources["all"] = thread_all
+        results = {k: (thread_all if k == lk else 0) for k in kind_keys}
+        results["all"] = thread_all
+        results["multi"] = 0
+    else:
+        # board / forum
+        sources = _scale_facet_buckets(sources_g, src_keys, thread_all)
+        sources["all"] = thread_all
+        results = _scale_facet_buckets(results_g, kind_keys, thread_all)
+        results["all"] = thread_all
+        results["multi"] = int(round(global_multi * thread_all / global_all))
+
+    return {
+        "sources": sources,
+        "boards": boards,
+        "results": results,
+        "forums": forums,
+    }
 
 
 def _facet_thread_kind_expr(alias: str = "r") -> str:
@@ -2153,10 +2758,12 @@ def list_resource_facets(
     board_name: str | None = None,
     link_kind: str | None = None,
     forum_id: str | None = None,
+    _force: bool = False,
 ) -> dict[str, Any]:
     """筛选维度计数（按帖聚合，与处理记录列表口径一致）。
 
-    无筛选走全量按帖 GROUP BY（约 1–2s）+ 缓存；有筛选用上限 COUNT / 近量样本，避免卡死。
+    无筛选：请求路径只读内存/磁盘快照（毫秒级），全量聚合仅后台/_force；
+    有筛选：无搜索词的单维从快照派生；否则近量样本（板块树仍用全局快照）。
     """
     cache_key = "|".join(
         [
@@ -2167,14 +2774,6 @@ def list_resource_facets(
             (forum_id or "").strip(),
         ]
     )
-    now = time.time()
-    cached = _FACET_CACHE.get(cache_key)
-    if cached and now - cached[0] < _FACET_CACHE_TTL_SEC:
-        return cached[1]
-
-    result_where, result_params = _facet_where(
-        q=q, source_type=source_type, board_name=board_name, forum_id=forum_id
-    )
     unfiltered = not any(
         [
             (q or "").strip(),
@@ -2184,6 +2783,96 @@ def list_resource_facets(
             forum_id not in (None, "", "all"),
         ]
     )
+    global_key = "||||"
+    now = time.time()
+
+    def _schedule_bg_refresh() -> None:
+        if cache_key in _FACET_REFRESHING:
+            return
+        import threading
+
+        from db.resource_db import connect_resource
+
+        def _bg() -> None:
+            c2 = None
+            try:
+                c2 = connect_resource()
+                list_resource_facets(c2, _force=True)
+            except Exception:
+                logger.debug("background facet refresh failed", exc_info=True)
+            finally:
+                _FACET_REFRESHING.discard(cache_key)
+                if c2 is not None:
+                    try:
+                        c2.close()
+                    except Exception:
+                        pass
+
+        _FACET_REFRESHING.add(cache_key)
+        threading.Thread(target=_bg, name="facet-refresh", daemon=True).start()
+
+    if not _force:
+        cached = _FACET_CACHE.get(cache_key)
+        if cached and now - cached[0] < _FACET_CACHE_TTL_SEC:
+            return cached[1]
+
+        # 无筛选：绝不全量算在请求线程（曾与预热并发把接口卡死数十秒）
+        if unfiltered:
+            snap = _load_facet_snapshot()
+            if snap:
+                _FACET_CACHE[cache_key] = (now, snap)
+                _FACET_CACHE[global_key] = (now, snap)
+                _schedule_bg_refresh()
+                return snap
+            # 尚无快照：立刻回空壳并后台算，列表/筛选按钮不阻塞
+            stub = {
+                "sources": {"all": 0, "web": 0, "upload": 0, "telegram": 0},
+                "boards": [],
+                "results": {
+                    "all": 0,
+                    "magnet": 0,
+                    "ed2k": 0,
+                    "115share": 0,
+                    "stub": 0,
+                    "failed": 0,
+                    "multi": 0,
+                },
+                "forums": [],
+            }
+            _schedule_bg_refresh()
+            return stub
+
+        # 有筛选、无搜索词：尽量从全局快照单维派生（毫秒级，conn 可为 None）
+        if not (q or "").strip():
+            global_facets = _global_facets_fresh(now)
+            if global_facets:
+                derived = _derive_filtered_facets_from_global(
+                    global_facets,
+                    source_type=source_type,
+                    board_name=board_name,
+                    link_kind=link_kind,
+                    forum_id=forum_id,
+                )
+                if derived is not None:
+                    _FACET_CACHE[cache_key] = (now, derived)
+                    return derived
+
+    if conn is None:
+        # 无连接且无法派生：回空壳，避免请求线程卡死
+        return {
+            "sources": {"all": 0, "web": 0, "upload": 0, "telegram": 0},
+            "boards": [],
+            "results": {
+                "all": 0,
+                "magnet": 0,
+                "ed2k": 0,
+                "115share": 0,
+                "stub": 0,
+                "failed": 0,
+                "multi": 0,
+            },
+            "forums": [],
+        }
 
     sources = {"all": 0, "web": 0, "upload": 0, "telegram": 0}
     results = {
@@ -2199,16 +2888,10 @@ def list_resource_facets(
     forums: list[dict[str, Any]] = []
     kind_expr = _facet_thread_kind_expr("r")
     forum_key_sql = "COALESCE(NULLIF(BTRIM(rs.forum_id), ''), 'sehuatang')"
-    # 全局缓存键：五段全空（含 forum）
-    global_key = "||||"
 
     with conn.cursor() as cur:
         if unfiltered:
-            # 帖数快算 + 板块/论坛/结果并行查询，冷启动约 max(...) 而非相加
-            from concurrent.futures import ThreadPoolExecutor
-
-            from db.resource_db import connect_resource
-
+            # 单连接顺序聚合：避免 DISTINCT ON 全表排序，也避免多连接并行把库打满
             thread_all = int(_fast_thread_total(cur, "", []))
             sources["all"] = thread_all
             results["all"] = thread_all
@@ -2223,128 +2906,95 @@ def list_resource_facets(
             )
             has_non_web = cur.fetchone() is not None
 
-            def _boards_query() -> list[dict[str, Any]]:
-                c2 = connect_resource()
-                try:
-                    with c2.cursor() as c:
-                        c.execute(
-                            f"""
-                            SELECT board, COUNT(*) FROM (
-                              SELECT
-                                {RESOURCE_GROUP_KEY_RS_SQL} AS gk,
-                                MIN(
-                                  CASE
-                                    WHEN rs.board_name IS NULL OR rs.board_name = '' THEN '未分类'
-                                    ELSE rs.board_name
-                                  END
-                                ) AS board
-                              FROM resource_sources rs
-                              GROUP BY 1
-                            ) t
-                            GROUP BY board
-                            ORDER BY COUNT(*) DESC, board ASC
-                            """
-                        )
-                        return [
-                            {"name": str(name), "count": int(n)} for name, n in c.fetchall()
-                        ]
-                finally:
-                    c2.close()
+            cur.execute(
+                f"""
+                SELECT board, COUNT(*) FROM (
+                  SELECT
+                    {RESOURCE_GROUP_KEY_RS_SQL} AS gk,
+                    MIN(
+                      CASE
+                        WHEN rs.board_name IS NULL OR rs.board_name = '' THEN '未分类'
+                        ELSE rs.board_name
+                      END
+                    ) AS board
+                  FROM resource_sources rs
+                  GROUP BY 1
+                ) t
+                GROUP BY board
+                ORDER BY COUNT(*) DESC, board ASC
+                """
+            )
+            boards = [{"name": str(name), "count": int(n)} for name, n in cur.fetchall()]
 
-            def _forums_query() -> list[dict[str, Any]]:
-                c2 = connect_resource()
-                try:
-                    with c2.cursor() as c:
-                        c.execute(
-                            f"""
-                            SELECT forum_key, COUNT(*) FROM (
-                              SELECT
-                                {RESOURCE_GROUP_KEY_RS_SQL} AS gk,
-                                MIN({forum_key_sql}) AS forum_key
-                              FROM resource_sources rs
-                              GROUP BY 1
-                            ) t
-                            GROUP BY forum_key
-                            ORDER BY COUNT(*) DESC, forum_key ASC
-                            """
-                        )
-                        out_f: list[dict[str, Any]] = []
-                        for fid, n in c.fetchall():
-                            key = str(fid or "sehuatang")
-                            out_f.append(
-                                {
-                                    "id": key,
-                                    "name": resolve_forum_display_name(key),
-                                    "count": int(n),
-                                }
-                            )
-                        return out_f
-                finally:
-                    c2.close()
+            cur.execute(
+                f"""
+                SELECT forum_key, COUNT(*) FROM (
+                  SELECT
+                    {RESOURCE_GROUP_KEY_RS_SQL} AS gk,
+                    MIN({forum_key_sql}) AS forum_key
+                  FROM resource_sources rs
+                  GROUP BY 1
+                ) t
+                GROUP BY forum_key
+                ORDER BY COUNT(*) DESC, forum_key ASC
+                """
+            )
+            forums = []
+            for fid, n in cur.fetchall():
+                key = str(fid or "sehuatang")
+                forums.append(
+                    {
+                        "id": key,
+                        "name": resolve_forum_display_name(key),
+                        "count": int(n),
+                    }
+                )
 
-            def _kinds_query() -> dict[str, int]:
-                c2 = connect_resource()
-                try:
-                    with c2.cursor() as c:
-                        c.execute(
-                            f"""
-                            SELECT kind, COUNT(*) FROM (
-                              SELECT DISTINCT ON ({RESOURCE_GROUP_KEY_SQL})
-                                {RESOURCE_GROUP_KEY_SQL} AS gk,
-                                {kind_expr} AS kind
-                              FROM ed2k_resources r
-                              JOIN resource_sources rs ON rs.hash = r.hash
-                              ORDER BY {RESOURCE_GROUP_KEY_SQL}, r.updated_at DESC NULLS LAST
-                            ) t
-                            GROUP BY kind
-                            """
-                        )
-                        out_k: dict[str, int] = {}
-                        for kind, n in c.fetchall():
-                            out_k[str(kind or "failed")] = int(n)
-                        return out_k
-                finally:
-                    c2.close()
+            # GROUP BY 按帖取链类型，替代 DISTINCT ON … ORDER BY（可省数秒）
+            cur.execute(
+                f"""
+                SELECT kind, COUNT(*) FROM (
+                  SELECT
+                    COALESCE(NULLIF(BTRIM(rs.source_url), ''), upper(rs.hash)) AS gk,
+                    MIN({kind_expr}) AS kind
+                  FROM resource_sources rs
+                  JOIN ed2k_resources r ON r.hash = rs.hash
+                  GROUP BY 1
+                ) t
+                GROUP BY kind
+                """
+            )
+            kind_map: dict[str, int] = {}
+            for kind, n in cur.fetchall():
+                kind_map[str(kind or "failed")] = int(n)
 
-            def _sources_query() -> dict[str, int]:
-                if not has_non_web:
-                    return {"web": thread_all, "upload": 0, "telegram": 0}
-                c2 = connect_resource()
-                try:
-                    with c2.cursor() as c:
-                        c.execute(
-                            f"""
-                            SELECT st, COUNT(*) FROM (
-                              SELECT
-                                {RESOURCE_GROUP_KEY_RS_SQL} AS gk,
-                                MIN(COALESCE(NULLIF(s.source_type, ''), 'web')) AS st
-                              FROM resource_sources rs
-                              JOIN sources s ON s.id = rs.source_id
-                              GROUP BY 1
-                            ) t
-                            GROUP BY st
-                            """
-                        )
-                        out_s = {"web": 0, "upload": 0, "telegram": 0}
-                        for st, n in c.fetchall():
-                            key = str(st or "web")
-                            if key in out_s:
-                                out_s[key] = int(n)
-                            else:
-                                out_s["web"] += int(n)
-                        return out_s
-                finally:
-                    c2.close()
+            if not has_non_web:
+                src_map = {"web": thread_all, "upload": 0, "telegram": 0}
+            else:
+                cur.execute(
+                    f"""
+                    SELECT st, COUNT(*) FROM (
+                      SELECT
+                        {RESOURCE_GROUP_KEY_RS_SQL} AS gk,
+                        MIN(COALESCE(NULLIF(s.source_type, ''), 'web')) AS st
+                      FROM resource_sources rs
+                      JOIN sources s ON s.id = rs.source_id
+                      GROUP BY 1
+                    ) t
+                    GROUP BY st
+                    """
+                )
+                src_map = {"web": 0, "upload": 0, "telegram": 0}
+                for st, n in cur.fetchall():
+                    key = str(st or "web")
+                    if key in src_map:
+                        src_map[key] = int(n)
+                    else:
+                        src_map["web"] += int(n)
 
-            with ThreadPoolExecutor(max_workers=4) as pool:
-                fut_boards = pool.submit(_boards_query)
-                fut_forums = pool.submit(_forums_query)
-                fut_kinds = pool.submit(_kinds_query)
-                fut_sources = pool.submit(_sources_query)
-                boards = fut_boards.result()
-                forums = fut_forums.result()
-                kind_map = fut_kinds.result()
-                src_map = fut_sources.result()
+            results["multi"] = int(
+                _count_multi_asset_threads(cur, "", [], capped=True) or 0
+            )
 
             for k, n in src_map.items():
                 sources[k] = int(n)
@@ -2363,7 +3013,7 @@ def list_resource_facets(
                     sources["all"] = kind_sum
                     sources["web"] = kind_sum
         else:
-            # 有筛选：帖数上限 COUNT 与列表一致；细项在近量窗口内按帖去重
+            # 有筛选且无法快照派生（多维/搜索）：近量样本；板块树仍用全局快照
             sample_where, sample_params = _facet_where(
                 q=q,
                 source_type=source_type if source_type not in (None, "", "all") else None,
@@ -2371,13 +3021,23 @@ def list_resource_facets(
                 link_kind=link_kind if link_kind not in (None, "", "all") else None,
                 forum_id=forum_id if forum_id not in (None, "", "all") else None,
             )
-            thread_all = _fast_thread_total(
-                cur, sample_where, sample_params, q=q, capped=True
+            peeked_all = peek_facet_thread_total(
+                q=q,
+                source_type=source_type,
+                board_name=board_name,
+                link_kind=link_kind,
+                forum_id=forum_id,
             )
+            if peeked_all is not None:
+                thread_all = int(peeked_all)
+            else:
+                thread_all = _fast_thread_total(
+                    cur, sample_where, sample_params, q=q, capped=True
+                )
             sources["all"] = int(thread_all)
             results["all"] = int(thread_all)
 
-            sample_limit = 3000 if (q or "").strip() else 8000
+            sample_limit = 2000 if (q or "").strip() else 3000
             cur.execute(
                 f"""
                 SELECT
@@ -2439,66 +3099,64 @@ def list_resource_facets(
             for k, n in kind_counts.items():
                 results[k] = int(round(n * scale))
 
-            # 板块 / 论坛列表：有筛选时仍展示全局分布，便于切换维度
-            global_hit = _FACET_CACHE.get(global_key)
-            if global_hit and now - global_hit[0] < _FACET_CACHE_TTL_SEC:
-                boards = list(global_hit[1].get("boards") or [])
-                forums = list(global_hit[1].get("forums") or [])
+            # 板块 / 论坛：始终用全局快照，禁止有筛选时再全表 GROUP BY
+            global_facets = _global_facets_fresh(now)
+            if global_facets:
+                boards = list(global_facets.get("boards") or [])
+                forums = list(global_facets.get("forums") or [])
             else:
-                cur.execute(
-                    f"""
-                    SELECT board, COUNT(*) FROM (
-                      SELECT
-                        {RESOURCE_GROUP_KEY_RS_SQL} AS gk,
-                        MIN(
-                          CASE
-                            WHEN rs.board_name IS NULL OR rs.board_name = '' THEN '未分类'
-                            ELSE rs.board_name
-                          END
-                        ) AS board
-                      FROM resource_sources rs
-                      GROUP BY 1
-                    ) t
-                    GROUP BY board
-                    ORDER BY COUNT(*) DESC, board ASC
-                    """
-                )
-                boards = [{"name": str(name), "count": int(n)} for name, n in cur.fetchall()]
-                cur.execute(
-                    f"""
-                    SELECT forum_key, COUNT(*) FROM (
-                      SELECT
-                        {RESOURCE_GROUP_KEY_RS_SQL} AS gk,
-                        MIN({forum_key_sql}) AS forum_key
-                      FROM resource_sources rs
-                      GROUP BY 1
-                    ) t
-                    GROUP BY forum_key
-                    ORDER BY COUNT(*) DESC, forum_key ASC
-                    """
-                )
+                boards = []
                 forums = []
-                for fid, n in cur.fetchall():
-                    key = str(fid or "sehuatang")
-                    forums.append(
-                        {
-                            "id": key,
-                            "name": resolve_forum_display_name(key),
-                            "count": int(n),
-                        }
-                    )
 
-        # ×N 合集：已是按帖轻量统计
-        results["multi"] = _count_multi_asset_threads(
-            cur, result_where, result_params, capped=True
-        )
+            g_all = int((global_facets or {}).get("results", {}).get("all") or 0) or 1
+            g_multi = int((global_facets or {}).get("results", {}).get("multi") or 0)
+            results["multi"] = int(round(g_multi * int(thread_all) / g_all))
 
     out = {"sources": sources, "boards": boards, "results": results, "forums": forums}
     _FACET_CACHE[cache_key] = (now, out)
     if unfiltered:
         _FACET_CACHE[global_key] = (now, out)
+        _save_facet_snapshot(out)
     if len(_FACET_CACHE) > 64:
         oldest = sorted(_FACET_CACHE.items(), key=lambda kv: kv[1][0])[:16]
         for k, _ in oldest:
             _FACET_CACHE.pop(k, None)
     return out
+
+
+def peek_cached_thread_total() -> int | None:
+    """无筛选帖总数：优先内存 facets / 磁盘快照，避免再跑 COUNT DISTINCT。"""
+    cached = _FACET_CACHE.get("||||")
+    if cached:
+        try:
+            n = int((cached[1].get("results") or {}).get("all") or 0)
+            if n > 0:
+                return n
+        except Exception:
+            pass
+    snap = _load_facet_snapshot()
+    if snap:
+        try:
+            n = int((snap.get("results") or {}).get("all") or 0)
+            if n > 0:
+                return n
+        except Exception:
+            pass
+    cached_total = _THREAD_TOTAL_CACHE.get("")
+    if cached_total:
+        return int(cached_total[1])
+    return None
+
+
+def warm_resource_facets_cache() -> None:
+    """后台预热无筛选 facets，避免打开处理记录时侧面栏长时间全 0。"""
+    try:
+        from db.resource_db import connect_resource
+
+        conn = connect_resource()
+        try:
+            list_resource_facets(conn, _force=True)
+        finally:
+            conn.close()
+    except Exception:
+        logger.debug("warm_resource_facets_cache failed", exc_info=True)

@@ -183,8 +183,34 @@ def _looks_like_directory_attachment(name: str, *, kind: str = "txt") -> bool:
     return any(marker in name or marker in lower for marker in DIRECTORY_ATTACHMENT_MARKERS)
 
 
+_EMAIL_PROTECTED_RE = re.compile(r"\[?\s*email\s*protected\s*\]?", re.I)
+
+
+def _merge_cf_decoded_name(decoded: str, visible: str) -> str:
+    """把 CF 解码前缀与锚点可见尾巴拼成完整附件名。
+
+    常见两种：
+    - 整名都在 data-cfemail 里 → 可见区只有 [email protected]
+    - 只混淆 @ 前缀 → 可见区为「[email protected] 国产传媒合集.txt」
+    """
+    decoded = (decoded or "").strip()
+    visible = (visible or "").replace("\xa0", " ").strip()
+    if not decoded:
+        return visible
+    if not visible:
+        return decoded
+    if _EMAIL_PROTECTED_RE.search(visible):
+        name = _EMAIL_PROTECTED_RE.sub(decoded, visible, count=1)
+    elif decoded in visible:
+        name = visible
+    else:
+        name = f"{decoded}{visible}"
+    return re.sub(r"\s+", " ", name).strip()
+
+
 def _anchor_attachment_name(a) -> str:
     """附件显示名；含 @ 时 Discuz/CF 常写成 [email protected]，需解 data-cfemail。"""
+    decoded = ""
     find_all = getattr(a, "find_all", None)
     if callable(find_all):
         for el in find_all(True):
@@ -192,14 +218,16 @@ def _anchor_attachment_name(a) -> str:
             if hasattr(el, "get"):
                 enc = (el.get("data-cfemail") or "").strip()
             if enc:
-                decoded = decode_cf_email(enc)
+                decoded = decode_cf_email(enc).strip()
                 if decoded:
-                    return decoded.strip()
+                    break
     title = (a.get("title") or "").strip() if hasattr(a, "get") else ""
     if title and _attachment_kind(title):
         return title
     name = a.get_text(" ", strip=True) if hasattr(a, "get_text") else ""
     name = (name or "").replace("\xa0", " ").strip()
+    if decoded:
+        return _merge_cf_decoded_name(decoded, name)
     return name
 
 
@@ -284,11 +312,12 @@ def extract_download_attachments(base_url: str, html: str) -> list[DownloadAttac
         href, inner = m.group(1), m.group(2)
         if not _is_attachment_href(href):
             continue
+        plain = re.sub(r"<[^>]+>", "", inner).replace("\xa0", " ").strip()
         cf = re.search(r'data-cfemail=["\']([0-9a-fA-F]+)["\']', inner, re.I)
         if cf:
-            name = decode_cf_email(cf.group(1)).strip()
+            name = _merge_cf_decoded_name(decode_cf_email(cf.group(1)), plain)
         else:
-            name = re.sub(r"<[^>]+>", "", inner).replace("\xa0", " ").strip()
+            name = plain
         kind = _attachment_kind(name)
         if not kind or name in found:
             continue
@@ -410,12 +439,23 @@ def pick_ed2k_attachment_kind(base_url: str, html: str) -> str:
     return "txt_tail"
 
 
-def pick_magnet_attachment_kind(base_url: str, html: str) -> str:
-    """磁力板：Excel/Word/文本附件里常有 magnet；否则下种子。"""
+def pick_magnet_attachment_kind(base_url: str, html: str, *, title: str = "") -> str:
+    """磁力板：有种子优先下种子；否则 Excel/文本；BT种子标题强制偏好 torrent。"""
     atts = extract_download_attachments(base_url, html)
-    if any(a.kind in ("excel", "doc") for a in atts):
+    title_l = title or ""
+    prefer_torrent = (
+        "BT种子" in title_l
+        or "【BT" in title_l
+        or "bt种子" in title_l.lower()
+    )
+    has_torrent = bool(filter_torrent_attachments(atts))
+    if prefer_torrent and has_torrent:
+        return "torrent"
+    if has_torrent and not any(a.kind in ("excel", "doc") for a in atts):
+        return "torrent"
+    if any(a.kind in ("excel", "doc") for a in atts) and not prefer_torrent:
         return "txt_tail"
-    if filter_torrent_attachments(atts):
+    if has_torrent:
         return "torrent"
     if filter_tail_attachments(atts):
         return "txt_tail"

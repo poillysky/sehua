@@ -203,6 +203,45 @@ def test_parse_bare_infohash_feature_full_code_2048():
     assert has_target_link(raw, "magnet")
 
 
+def test_incomplete_feature_full_code_is_abnormal_skip():
+    """tid 3027518：【特徵全碼】仅 31 hex → 异常下载链接，勿 need_attachments。"""
+    from parsers.magnet import has_abnormal_download_link
+    from workers.thread_outcome import judge_thread_html
+
+    bad = "DEA4FA78748AAD5FEAE404E9F17AA45"  # 31
+    assert len(bad) == 31
+    raw = f"""
+    <html><head><title>测试异常特征码</title></head>
+    <body><div id="postmessage_1" class="t_f">
+    【影片名称】：残缺特征码片子
+    【影片大小】：1.2GB
+    【特徵全碼】：{bad}
+    </div></body></html>
+    """
+    assert has_abnormal_download_link(raw) is True
+    assert has_target_link(raw, "magnet") is False
+    out = judge_thread_html(
+        raw,
+        board_fid=2,
+        list_title="测试异常特征码",
+        preferred_link="magnet",
+        forum_id="sehuatang",
+        tid=3027518,
+    )
+    assert out.verdict == "skipped"
+    assert out.outcome == "异常下载链接"
+    assert out.need_attachments is False
+
+
+def test_complete_feature_code_not_abnormal():
+    from parsers.magnet import has_abnormal_download_link
+
+    h40 = "D83CC2E432A10E0519282017BB68DA4884E135C8"
+    assert has_abnormal_download_link(f"【特徵全碼】：{h40}") is False
+    h32 = "A" * 32
+    assert has_abnormal_download_link(f"【特征编码】：{h32}") is False
+
+
 def test_parse_bare_infohash_typo_shizheng_same_line_as_size():
     """2048 错别字【试证全码】与资源大小同行（tid 27431995）。"""
     h = "6C92A52EF6175D85563AD87644B297CB16C26E86"
@@ -747,6 +786,25 @@ def test_parse_bare_hash_spaced_feature_code_label():
     assert len(links) == 1
     assert links[0].infohash.upper() == h.upper()
     assert has_target_link(raw, "magnet")
+
+
+def test_parse_feature_label_interleaved_dot_and_sep_symbols():
+    """标签字间点号/间隔号 + 标签后特殊分隔符仍认裸 hash。"""
+    from parsers.content import extract_metadata
+
+    h = "da783ddcb70e4e89e198a6b2a002276f458fd303"
+    for raw in (
+        f"【特·徵·碼】：{h}",
+        f"【特.徵.碼】︰{h}",
+        f"【驗 證 編 號】｜{h}",
+        f"【特 徵 全 碼 】→{h}",
+    ):
+        links = parse_magnet_text(raw)
+        assert len(links) == 1 and links[0].infohash.upper() == h.upper(), raw
+        assert has_target_link(raw, "magnet"), raw
+    meta = extract_metadata(f"【影 片 大 小】：4.39G\n【特 徵 碼 】：{h}")
+    assert meta.get("影片大小") == "4.39G" or meta.get("資源大小") == "4.39G" or meta.get("资源大小") == "4.39G"
+    assert any(k.replace(" ", "") in {"特徵碼", "特征码", "特徵码", "特征碼"} for k in meta)
 
 
 def test_parse_magnet_dn_before_xt():

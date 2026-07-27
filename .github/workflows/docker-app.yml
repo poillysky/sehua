@@ -1,9 +1,9 @@
 name: Build sehua-app image
 
 # 仅构建 / 推送主栈 sehua（API+管理），与 search 完全独立
-# 触发：改主栈相关路径，或打标签 v1.2.8（不要用 search-v*）
+# 触发：改主栈相关路径，或打标签 v1.2.9（不要用 search-v*）
 # 手动：Actions → Build sehua-app image → Run workflow
-# version pin: 1.2.8
+# version pin: 1.2.9
 on:
   push:
     branches: [main]

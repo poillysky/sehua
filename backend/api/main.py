@@ -39,6 +39,8 @@ from db.repository import (
     list_resource_boards,
     list_resource_facets,
     list_resource_ids_for_selection,
+    peek_cached_thread_total,
+    peek_facet_thread_total,
     purge_crawl_data,
     purge_resources,
 )
@@ -178,12 +180,40 @@ async def lifespan(_app: FastAPI):
     except Exception:
         logger.debug("startup activity / emergency stop skipped", exc_info=True)
     try:
+        # 预热进程池（spawn 首任务慢），避免首个大合集卡在冷启动
+        try:
+            from workers.cpu_pool import get_cpu_pool
+
+            get_cpu_pool()
+            logger.info("cpu process pool warmed")
+        except Exception:
+            logger.debug("cpu pool warm skipped", exc_info=True)
+        # 预热处理记录侧面栏计数（冷查询数秒；不阻塞启动）
+        try:
+            import threading
+
+            from db.repository import warm_resource_facets_cache
+
+            threading.Thread(
+                target=warm_resource_facets_cache,
+                name="warm-resource-facets",
+                daemon=True,
+            ).start()
+            logger.info("resource facets warm scheduled")
+        except Exception:
+            logger.debug("facets warm skipped", exc_info=True)
         yield
     finally:
         try:
             from workers.emergency_stop_server import stop_emergency_stop_server
 
             stop_emergency_stop_server()
+        except Exception:
+            pass
+        try:
+            from workers.cpu_pool import shutdown_cpu_pool
+
+            shutdown_cpu_pool()
         except Exception:
             pass
         await stop_backup_scheduler()
@@ -653,11 +683,121 @@ def resources_recent(
     want_facets = int(include_facets or 0) != 0
     want_total = int(include_total or 0) != 0
     want_items = int(include_items or 0) != 0
+    has_filter = bool(
+        (query or "").strip()
+        or source_type
+        or board_name
+        or link_kind
+        or forum_id
+    )
+
+    items: list = []
+    total = None
+    facets = None
+    boards: list[str] | None = None
+
+    # 无筛选的侧面栏/总数：先走内存/磁盘快照，不占资源库连接池
+    # （后台全量预热曾占满池，导致处理记录「不加载」）
+    # 注意：勿在本函数内再 `from db.repository import list_resource_facets`
+    # （会把名字变成局部变量，有筛选分支触发 UnboundLocalError → 侧面栏 500）
+    if not has_filter and not want_items:
+        if want_facets:
+            # conn=None：仅读快照/调度后台，不取池连接
+            facets = list_resource_facets(
+                None,
+                q=query,
+                source_type=source_type,
+                board_name=board_name,
+                link_kind=link_kind,
+                forum_id=forum_id,
+            )
+            boards = [
+                b["name"] for b in (facets.get("boards") or []) if b.get("name")
+            ]
+        if want_total:
+            total = peek_cached_thread_total()
+            if total is None and facets:
+                try:
+                    total = int((facets.get("results") or {}).get("all") or 0) or None
+                except Exception:
+                    total = None
+        pages = (
+            max(1, (int(total) + size - 1) // size)
+            if want_total and total
+            else None
+        )
+        return {
+            "items": items,
+            "count": 0,
+            "total": total,
+            "page": page,
+            "page_size": size,
+            "pages": pages,
+            "boards": boards,
+            "facets": facets,
+        }
+
+    # 单维筛选总数：优先侧面栏快照（毫秒），避免 capped GROUP BY 数秒
+    if want_total and not want_items and has_filter:
+        peeked_filter = peek_facet_thread_total(
+            q=query,
+            source_type=source_type,
+            board_name=board_name,
+            link_kind=link_kind,
+            forum_id=forum_id,
+        )
+        if peeked_filter is not None:
+            total = peeked_filter
+            if want_facets:
+                facets = list_resource_facets(
+                    None,
+                    q=query,
+                    source_type=source_type,
+                    board_name=board_name,
+                    link_kind=link_kind,
+                    forum_id=forum_id,
+                )
+                boards = [
+                    b["name"] for b in (facets.get("boards") or []) if b.get("name")
+                ]
+            pages = max(1, (int(total) + size - 1) // size) if total else None
+            return {
+                "items": items,
+                "count": 0,
+                "total": total,
+                "page": page,
+                "page_size": size,
+                "pages": pages,
+                "boards": boards,
+                "facets": facets,
+            }
+
+    # 仅侧面栏：无列表时优先快照/派生，不占资源库连接
+    if want_facets and not want_items and not want_total:
+        facets = list_resource_facets(
+            None,
+            q=query,
+            source_type=source_type,
+            board_name=board_name,
+            link_kind=link_kind,
+            forum_id=forum_id,
+        )
+        boards = [
+            b["name"] for b in (facets.get("boards") or []) if b.get("name")
+        ]
+        return {
+            "items": items,
+            "count": 0,
+            "total": None,
+            "page": page,
+            "page_size": size,
+            "pages": None,
+            "boards": boards,
+            "facets": facets,
+        }
 
     conn = connect_resource()
     try:
-        items: list = []
-        total = None
         if want_items:
             items, total = list_recent_resources(
                 conn,
@@ -674,17 +814,27 @@ def resources_recent(
             # 仅总数：不跑 oversample / 装配
             _ensure_resource_schema(conn)
             if (link_kind or "").strip() == "multi":
-                base_where, params = _resource_list_where(
+                peeked_multi = peek_facet_thread_total(
+                    q=query,
                     source_type=source_type,
                     board_name=board_name,
-                    link_kind=None,
-                    q=query,
+                    link_kind=link_kind,
                     forum_id=forum_id,
                 )
-                with conn.cursor() as cur:
-                    total = _count_multi_asset_threads(
-                        cur, base_where, params, capped=True
+                if peeked_multi is not None:
+                    total = peeked_multi
+                else:
+                    base_where, params = _resource_list_where(
+                        source_type=source_type,
+                        board_name=board_name,
+                        link_kind=None,
+                        q=query,
+                        forum_id=forum_id,
                     )
+                    with conn.cursor() as cur:
+                        total = _count_multi_asset_threads(
+                            cur, base_where, params, capped=True
+                        )
             else:
                 where_sql, params = _resource_list_where(
                     source_type=source_type,
@@ -693,19 +843,30 @@ def resources_recent(
                     q=query,
                     forum_id=forum_id,
                 )
-                has_filter = bool(
-                    (query or "").strip()
-                    or source_type
-                    or board_name
-                    or link_kind
-                    or forum_id
-                )
-                with conn.cursor() as cur:
-                    total = _fast_thread_total(
-                        cur, where_sql, params, q=query, capped=has_filter
+                if not has_filter:
+                    peeked = peek_cached_thread_total()
+                    if peeked is not None:
+                        total = peeked
+                    else:
+                        with conn.cursor() as cur:
+                            total = _fast_thread_total(
+                                cur, where_sql, params, q=query, capped=False
+                            )
+                else:
+                    peeked_filter = peek_facet_thread_total(
+                        q=query,
+                        source_type=source_type,
+                        board_name=board_name,
+                        link_kind=link_kind,
+                        forum_id=forum_id,
                     )
-        facets = None
-        boards: list[str] | None = None
+                    if peeked_filter is not None:
+                        total = peeked_filter
+                    else:
+                        with conn.cursor() as cur:
+                            total = _fast_thread_total(
+                                cur, where_sql, params, q=query, capped=True
+                            )
         if want_facets:
             facets = list_resource_facets(
                 conn,

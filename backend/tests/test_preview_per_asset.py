@@ -412,6 +412,46 @@ def test_no_subtitle_uses_torrent_name_per_magnet():
     assert by_hash[h2].filename == "C0930-ki181220-480p"
 
 
+def test_sanji_photo_torrent_only_after_film_title():
+    """三级写真：末条仅有【种子名称】「油鬼子 torrent」，勿并入上一条/帖标题。"""
+    from parsers.content import (
+        _torrent_name_as_title,
+        extract_subresource_blocks,
+    )
+    from parsers.links import parse_thread_dual
+
+    assert _torrent_name_as_title("油鬼子 torrent") == "油鬼子"
+    assert _torrent_name_as_title("油鬼子.torrent") == "油鬼子"
+
+    h_prev = "E59DC164B2B932A1196311111111111111111111"
+    h_oil = "63B6DB90BEF67F5FF532428E2796D42FC12E4C7B"
+    title = "★●經典の三级写真↗️精彩合集↘️♀[06.12]"
+    html = f"""
+    <html><head><title>{title}</title></head>
+    <body><div id="read_tpc" class="tpc_content">
+      【影片名称】：OAE-264
+      【磁力连接】：magnet:?xt=urn:btih:{h_prev}
+      (2048 hk-137-8692321-4 torrent)油鬼子
+      油鬼子【种子名称】：油鬼子 torrent
+      【磁力连接】：magnet:?xt=urn:btih:{h_oil}
+      【下载网址】：magnet:?xt=urn:btih:{h_oil}
+    </div></body></html>
+    """
+    blocks = {
+        b.infohash: b
+        for b in extract_subresource_blocks(
+            html, [h_prev, h_oil], fallback_title=title
+        )
+    }
+    assert blocks[h_prev].title == "OAE-264"
+    assert blocks[h_oil].title == "油鬼子"
+
+    parsed = parse_thread_dual(html, tid=26719397, preferred_link="magnet")
+    by_hash = {a.hash: a for a in parsed.assets}
+    assert by_hash[h_oil].filename == "油鬼子"
+    assert by_hash[h_oil].filename != title
+
+
 def test_traditional_resource_block_variants():
     """繁体/异写：資源名稱、資源大小、資源類型、種子名稱、磁力連結。"""
     from parsers.content import extract_subresource_blocks

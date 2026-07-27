@@ -11,3 +11,5 @@ data/
 .mypy_cache/
 .ruff_cache/
 .git/
+_tmp_*
+scripts/_tmp_*

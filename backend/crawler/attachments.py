@@ -924,6 +924,20 @@ def _attachment_ui_suffix(attachment: DownloadAttachment) -> str:
     return ".txt"
 
 
+def _thread_tid_key(url: str) -> str:
+    """从帖 URL 抽可比较键（tid= / thread-N）。"""
+    u = (url or "").strip()
+    if not u:
+        return ""
+    m = re.search(r"[?&]tid=(\d+)", u, re.I)
+    if m:
+        return m.group(1)
+    m = re.search(r"thread-(\d+)", u, re.I)
+    if m:
+        return m.group(1)
+    return u.split("?", 1)[0].rstrip("/").lower()
+
+
 class AttachmentDownloader:
     """基于已进站 SessionManager（Playwright 页）下载附件。"""
 
@@ -931,6 +945,35 @@ class AttachmentDownloader:
         self.session = session
 
     async def ensure_thread_page(self, thread_url: str, *, timeout_ms: int = 60000) -> str:
+        """确保浏览器在帖页。已在同一帖且附件区可见则跳过重复 goto（省 1～3s）。"""
+        from parsers.thread_gates import looks_like_attachment_zone
+
+        target_key = _thread_tid_key(thread_url)
+
+        async def _try_reuse(page: Any) -> str | None:
+            cur = (getattr(page, "url", None) or "") or ""
+            if not target_key or _thread_tid_key(cur) != target_key:
+                return None
+            try:
+                html = await page.content()
+            except Exception:
+                return None
+            if html and len(html) > 1000 and looks_like_attachment_zone(html):
+                log.info(
+                    "attachments: already on tid=%s, skip reload (%s chars)",
+                    target_key,
+                    len(html),
+                )
+                return html
+            return None
+
+        try:
+            reused = await self.session.run_on_page(_try_reuse)
+            if reused:
+                return reused
+        except Exception as exc:
+            log.debug("attachments: reuse page check failed: %s", exc)
+
         html = await self.session.fetch_html(thread_url, timeout_ms=timeout_ms)
         return html
 
@@ -1282,23 +1325,37 @@ async def fetch_attachments_for_outcome(
 ) -> AttachmentFetchResult:
     """按判定 kind 下载：txt_tail | torrent；轮询顺序跟板块主链。"""
     downloader = AttachmentDownloader(session)
-    # 附件 UI 点击依赖当前 Playwright 页在帖子上；即使 HTTP HTML 已有附件区也要导航。
-    # （曾跳过导航省时，会导致种子附件「下载失败」：page 仍停在列表/首页）
+    # 附件 UI 点击依赖当前 Playwright 页在帖子上；必须先导航到帖页。
+    # 附件列表也优先用浏览器页 HTML：HTTP 语料常有附件区壳但 aid 与当前页不一致，
+    # 会「找到附件却下失败」（BT种子帖成批「附件下载失败」的常见原因）。
     from parsers.thread_gates import looks_like_attachment_zone
 
-    html_ok = bool(html and len(html) > 8000 and looks_like_attachment_zone(html))
     if not getattr(session, "_ready", False):
         try:
             await session.bootstrap(force=False)
         except Exception as exc:
             log.warning("Bootstrap session for attachments failed: %s", exc)
+
+    page_html = ""
     try:
         page_html = await downloader.ensure_thread_page(thread_url)
-        # 导航只为对齐浏览器页；HTTP 语料已可用则保留 aid/auth
-        if (not html_ok) and page_html and len(page_html) > 1000:
-            html = page_html
     except Exception as exc:
         log.warning("Navigate to thread for attachments failed: %s", exc)
+
+    http_ok = bool(html and len(html) > 8000 and looks_like_attachment_zone(html))
+    page_ok = bool(
+        page_html and len(page_html) > 1000 and looks_like_attachment_zone(page_html)
+    )
+    if page_ok:
+        if html and html is not page_html:
+            log.info(
+                "attachments: use browser HTML for listing (http_zone=%s page_len=%s)",
+                http_ok,
+                len(page_html),
+            )
+        html = page_html
+    elif (not http_ok) and page_html and len(page_html) > 1000:
+        html = page_html
 
     # attachment_kind 仅作缺省主链提示；显式 preferred_link 优先
     link_pref = preferred_link

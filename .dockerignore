@@ -17,5 +17,7 @@ deploy/data/
 !**/.env.example
 backend/data/
 backend/.venv/
+backend/_tmp_*
+backend/scripts/_tmp_*
 *.md
 start.bat

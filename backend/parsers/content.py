@@ -19,6 +19,12 @@ from parsers.resource_names import (
     SUBRESOURCE_TITLE_LABELS,
     SUBRESOURCE_TITLE_MATCH_FORMS,
     TORRENT_FIELD_FORMS,
+    _ANY_STRUCTURE_BRACKET_LABEL_RE,
+    _LABELED_STRUCTURE_FIELD_RE,
+    collapse_structure_label_gaps,
+    detect_structure_bracket_pair,
+    normalize_structure_label_key,
+    structure_labels_alt,
 )
 
 # BT + ED2K board label styles commonly used on sehuatang / 2048（抽样核对）
@@ -270,37 +276,40 @@ def description_profile_for_board(board_fid: str | int | None) -> dict:
         "title_as": "资源名称",
     }
 
-_LABEL_ALT = "|".join(map(re.escape, LABEL_KEYS))
-_STRUCTURE_SEP = r"[:：︰﹒．.]?"
+_LABEL_ALT = structure_labels_alt(LABEL_KEYS)
+# 与 resource_names._STRUCTURE_SEP 对齐（标签→值分隔）
+_STRUCTURE_SEP = r"[:：︰﹒．.｜|/／·・•‧＝=\-_;；,，〜～﹕→]?"
 # 值截到下一个字段标签为止（同行/换行均可）。
-# 「文件大小」等若不在白名单，旧逻辑整页揉在一起会导致解压密码吞到帖尾。
+# 匹配前须 collapse_structure_label_gaps，故标签用字面 alt。
 LABEL_RE = re.compile(
     rf"{STRUCTURE_FIELD_OPEN}\s*({_LABEL_ALT})\s*{STRUCTURE_FIELD_CLOSE}\s*{_STRUCTURE_SEP}\s*"
     rf"(.*?)(?="
     rf"(?:\s*{STRUCTURE_FIELD_OPEN}\s*(?:{_LABEL_ALT})\s*{STRUCTURE_FIELD_CLOSE})"  # 已知字段
-    rf"|(?:\s*{STRUCTURE_FIELD_OPEN}[^】］〗」』\]\n]{{1,40}}{STRUCTURE_FIELD_CLOSE}\s*[:：︰﹒．.])"  # 任意「【标签】：」
+    rf"|(?:{_ANY_STRUCTURE_BRACKET_LABEL_RE.pattern}\s*[:：︰﹒．.｜|/／·・•‧＝=])"  # 任意「开标签闭：」
     rf"|$"
     rf")",
     re.I | re.S,
 )
 
-# 下一个字段边界（截密码/字段尾巴用）
-_NEXT_FIELD_RE = re.compile(
-    rf"\s*{STRUCTURE_FIELD_OPEN}[^】］〗」』\]]{{1,40}}{STRUCTURE_FIELD_CLOSE}"
-)
-# 名称类字段值里常嵌套【自转】【合集】等，只能裁到「已知结构字段」
+# 非片名：遇任意开闭括号标签即截（不问标签文字）
+_NEXT_FIELD_RE = _ANY_STRUCTURE_BRACKET_LABEL_RE
+# 片名：已知结构字段 OR 任意「开…闭+分隔」（装饰【合集】无冒号则仍会切；无分隔保留）
 _KNOWN_NEXT_FIELD_RE = re.compile(
-    rf"\s*{STRUCTURE_FIELD_OPEN}\s*(?:{_LABEL_ALT})\s*{STRUCTURE_FIELD_CLOSE}",
+    rf"(?:"
+    rf"\s*{STRUCTURE_FIELD_OPEN}\s*(?:{_LABEL_ALT})\s*{STRUCTURE_FIELD_CLOSE}"
+    rf"|{_LABELED_STRUCTURE_FIELD_RE.pattern}"
+    rf")",
     re.I,
 )
 # 片名裁剪：简繁/异写均走「仅已知结构字段」边界，避免【午夜寻花】等装饰括号截断
-_TITLE_FIELD_LABELS = frozenset(SUBRESOURCE_TITLE_MATCH_FORMS) | frozenset(
-    SUBRESOURCE_TITLE_LABELS
+_TITLE_FIELD_LABELS = frozenset(
+    normalize_structure_label_key(x)
+    for x in (*SUBRESOURCE_TITLE_MATCH_FORMS, *SUBRESOURCE_TITLE_LABELS)
 )
 
 
 def _is_title_field_label(label: str) -> bool:
-    lab = (label or "").strip()
+    lab = normalize_structure_label_key(label or "")
     return bool(lab) and lab in _TITLE_FIELD_LABELS
 _SIZE_FIELD_LABELS = frozenset(
     {
@@ -728,14 +737,16 @@ def extract_link_corpus_html(html: str, *, limit: int = 5) -> str:
 
     路人回帖默认不参与；仅当标题/楼主明示「求磁力」类、且楼主正文无链时，
     才补入含 magnet/ed2k 的回帖（避免讨论帖/网盘帖被回帖链误入库）。
+
+    已注入附件且附件内含目标链时：链语料以附件为准（正文样例链不并入）。
     """
-    parts: list[str] = list(extract_lz_posts_html(html, limit=limit))
-    if not parts:
+    lz_parts: list[str] = list(extract_lz_posts_html(html, limit=limit))
+    if not lz_parts:
         # PHPWind：#read_tpc / .tpc_content（无 Discuz postmessage_*）
         pw = _phpwind_post_html(html or "")
         if pw:
-            parts.append(pw)
-    # 附件下载后 inject_attachment_text 写入的块（非纯数字楼 id）
+            lz_parts.append(pw)
+    attach_parts: list[str] = []
     for m in re.finditer(
         r'id=["\']postmessage_attach\d+["\'][^>]*>(.*?)</div>',
         html or "",
@@ -743,15 +754,26 @@ def extract_link_corpus_html(html: str, *, limit: int = 5) -> str:
     ):
         body = (m.group(1) or "").strip()
         if body:
-            parts.append(body)
+            attach_parts.append(body)
+
+    def _has_target_link_blob(blob: str) -> bool:
+        low = (blob or "").lower()
+        return (
+            "magnet:" in low
+            or "ed2k://" in low
+            or "/torrent/" in low
+            or "rmdown.com" in low
+        )
+
+    # 附件已注入且含目标链 → 只认附件（正文常夹带预览样例链）
+    if attach_parts and _has_target_link_blob("\n".join(attach_parts)):
+        return "\n".join(attach_parts)
+
+    parts: list[str] = list(lz_parts)
+    parts.extend(attach_parts)
 
     joined = "\n".join(parts).lower()
-    has_body_link = (
-        "magnet:" in joined
-        or "ed2k://" in joined
-        or "/torrent/" in joined
-        or "rmdown.com" in joined
-    )
+    has_body_link = _has_target_link_blob(joined)
     ask_blob = "\n".join(
         [
             extract_title(html or "") or "",
@@ -777,8 +799,7 @@ def extract_link_corpus_html(html: str, *, limit: int = 5) -> str:
             body = src[start:end].strip()
             if not body:
                 continue
-            low = body.lower()
-            if "magnet:" not in low and "ed2k://" not in low:
+            if not _has_target_link_blob(body):
                 continue
             # 跳过已在 parts 中的楼主层
             if any(body[:80] == (p or "")[:80] for p in parts):
@@ -790,6 +811,28 @@ def extract_link_corpus_html(html: str, *, limit: int = 5) -> str:
     return "\n".join(parts)
 
 
+def attachment_corpus_has_target_links(html: str) -> bool:
+    """inject 后的附件块是否已含 magnet/ed2k 等目标链。"""
+    chunks: list[str] = []
+    for m in re.finditer(
+        r'id=["\']postmessage_attach\d+["\'][^>]*>(.*?)</div>',
+        html or "",
+        re.I | re.S,
+    ):
+        body = (m.group(1) or "").strip()
+        if body:
+            chunks.append(body)
+    if not chunks:
+        return False
+    low = "\n".join(chunks).lower()
+    return (
+        "magnet:" in low
+        or "ed2k://" in low
+        or "/torrent/" in low
+        or "rmdown.com" in low
+    )
+
+
 def _clip_field_value(
     value: str,
     *,
@@ -797,7 +840,11 @@ def _clip_field_value(
     short_enum: bool = False,
     label: str = "",
 ) -> str:
-    """裁掉粘在后面的【下一字段】、附件区与楼层噪声。"""
+    """裁掉粘在后面的下一结构标签、附件区与楼层噪声。
+
+    非片名：遇任意开闭括号标签即截（自动识别【】［］[] 等，不问标签文字）。
+    片名：已知结构字段，或「开…闭+分隔」形态（保留无分隔的装饰【合集】）。
+    """
     # 2048/转帖常见：变体选择符、全角冒号前缀
     val = (value or "").replace("\r", "\n")
     val = re.sub(r"[\ufe0e\ufe0f\u200d\u200b\u200c\u200d]", "", val)
@@ -805,7 +852,10 @@ def _clip_field_value(
     val = val.lstrip(":：︰.").strip()
     if not val:
         return ""
-    # 名称可含嵌套装饰【标签】；其它字段遇到任意【…】即截
+    # 片名截断前折叠下一字段标签字间空，便于字面 _LABEL_ALT 命中
+    if _is_title_field_label(label):
+        val = collapse_structure_label_gaps(val)
+    # 名称可含嵌套装饰【标签】；其它字段遇到任意开闭括号标签即截
     next_re = _KNOWN_NEXT_FIELD_RE if _is_title_field_label(label) else _NEXT_FIELD_RE
     m = next_re.search(val)
     if m:
@@ -835,14 +885,18 @@ def _clip_field_value(
         if len(val) > 32:
             val = val[:32].rstrip()
     elif label in _SIZE_FIELD_LABELS or label in SIZE_FIELD_FORMS:
-        # 大小后常跟博主导语 / rmdown URL，只留容量串
+        # 大小后常跟博主导语 / rmdown URL / 【验証码】hash，只留容量串
         m4 = _SIZE_VALUE_RE.match(val)
         if m4:
             val = m4.group(1).strip().strip("/+-\u00d7xX \t")
-        # 仍残留 URL 时截掉
-        m_url = re.search(r"https?://|www\.", val, re.I)
-        if m_url:
-            val = val[: m_url.start()].strip()
+        # 仍残留下一结构字段或 hash 时截掉（开括号不限【）
+        m_next = re.search(
+            rf"\s*(?:{STRUCTURE_FIELD_OPEN}|https?://|www\.|[A-Fa-f0-9]{{32,40}}\b)",
+            val,
+            re.I,
+        )
+        if m_next:
+            val = val[: m_next.start()].strip()
         if len(val) > 48:
             val = val[:48].rstrip()
     elif _is_title_field_label(label):
@@ -864,8 +918,14 @@ def _is_bogus_meta_value(key: str, val: str) -> bool:
     if k in TORRENT_FIELD_FORMS or k in {"种子名称", "種子名稱"}:
         if _BOGUS_TORRENT_NAME_RE.fullmatch(v):
             return True
-        # 欧美合集常见 01.torrent / 02.torrent → 展示名「01」；勿当残片丢掉
-        if len(v) < 4 and not re.fullmatch(r"\d{1,3}", v):
+        # 极短 ASCII 残片才丢；中文短片名（如「油鬼子」3 字）合法
+        if len(v) < 2:
+            return True
+        if (
+            len(v) < 4
+            and not re.search(r"[\u4e00-\u9fffぁ-んァ-ン]", v)
+            and not re.fullmatch(r"\d{1,3}", v)
+        ):
             return True
     if any(h in k for h in ("预览", "預覽", "截图", "截圖")):
         if _BOGUS_PREVIEW_META_RE.search(v):
@@ -981,9 +1041,11 @@ def normalize_metadata_for_board(
 
 
 def extract_metadata(text: str) -> dict[str, str]:
+    # 只折叠括号内标签字间空，保留取值里的「真·名」；再用字面标签匹配。
+    blob = collapse_structure_label_gaps(text or "")
     meta: dict[str, str] = {}
-    for m in LABEL_RE.finditer(text or ""):
-        key = m.group(1).strip()
+    for m in LABEL_RE.finditer(blob):
+        key = normalize_structure_label_key(m.group(1) or "")
         is_pwd = key in _PASSWORD_LABELS
         val = _clip_field_value(
             m.group(2),
@@ -1229,11 +1291,12 @@ def extract_preview_images(html: str, limit: int = 5, *, base_url: str = "") -> 
     return pick[: max(1, int(limit or 5))]
 
 
-# 子标题切分：认 SUBRESOURCE_TITLE_MATCH_FORMS（简繁 影片名称/资源名称；异写括号）
+# 子标题切分：认 SUBRESOURCE_TITLE_MATCH_FORMS；匹配前折叠括号内标签字间空
+_SUBRESOURCE_TITLE_ALT = structure_labels_alt(SUBRESOURCE_TITLE_MATCH_FORMS)
 _SUBRESOURCE_TITLE_RE = re.compile(
     STRUCTURE_FIELD_OPEN
     + r"\s*(?:"
-    + "|".join(map(re.escape, SUBRESOURCE_TITLE_MATCH_FORMS))
+    + _SUBRESOURCE_TITLE_ALT
     + r")\s*"
     + STRUCTURE_FIELD_CLOSE,
     re.I,
@@ -1247,8 +1310,33 @@ _SUBRESOURCE_TITLE_VALUE_RE = re.compile(
 
 
 def iter_subresource_title_spans(html: str) -> list[tuple[int, int]]:
-    """返回每个真正子标题标签的 (start, end) 位置，按文档顺序。"""
-    return [(m.start(), m.end()) for m in _SUBRESOURCE_TITLE_RE.finditer(html or "")]
+    """返回每个真正子标题标签的 (start, end) 位置，按文档顺序。
+
+    用括号扫描 + 归一键比对，避免 flexible 正则，且位置仍落在原文上。
+    """
+    blob = html or ""
+    wanted = {normalize_structure_label_key(x) for x in SUBRESOURCE_TITLE_MATCH_FORMS}
+    out: list[tuple[int, int]] = []
+    for op, cl in (
+        ("【", "】"),
+        ("［", "］"),
+        ("〖", "〗"),
+        ("「", "」"),
+        ("『", "』"),
+        ("[", "]"),
+    ):
+        pat = re.compile(
+            re.escape(op)
+            + r"([^"
+            + re.escape(cl)
+            + r"\n]{1,40})"
+            + re.escape(cl)
+        )
+        for m in pat.finditer(blob):
+            if normalize_structure_label_key(m.group(1)) in wanted:
+                out.append((m.start(), m.end()))
+    out.sort(key=lambda x: x[0])
+    return out
 
 
 def _magnet_positions_in_scope(scope: str, wanted: set[str] | None = None) -> list[tuple[str, int, int]]:
@@ -1334,39 +1422,30 @@ def _is_names_then_links_layout(
 
 
 def _size_from_subresource_block(scope: str, label_end: int, next_start: int) -> int:
-    """从本子标题段内取【影片大小】/【资源大小】或片名里的 [MP4/ 899M]。"""
-    from parsers.magnet import _size_from_label
+    """从本子标题段内取【影片大小】/【资源大小】或片名里的 [MP4/ 899M] / 13V 66.7GB。"""
+    from parsers.magnet import parse_capacity_bytes
 
     chunk = scope[label_end:next_start]
     chunk = re.sub(r"<[^>]+>", " ", chunk or "")
     chunk = re.sub(r"&nbsp;", " ", chunk, flags=re.I)
-    sm = re.search(
-        r"【\s*(?:"
-        + "|".join(map(re.escape, SIZE_FIELD_FORMS))
-        + r")\s*】\s*[:：]?\s*([0-9.]+)\s*(T|TB|G|GB|M|MB|K|KB)?",
-        chunk,
-        re.I,
-    )
-    if sm:
-        return _size_from_label(sm.group(1), sm.group(2))
-    emb = re.search(
-        r"\[\s*(?:MP4|MKV|AVI|WMV|MOV|FLV|TS|ISO)?\s*/\s*([0-9.]+)\s*([KMGT])B?\s*\]",
-        chunk,
-        re.I,
-    )
-    if emb:
-        return _size_from_label(emb.group(1), emb.group(2))
-    return 0
+    return parse_capacity_bytes(chunk)
 
 
 def _block_field(chunk: str, *labels: str) -> str:
     """从子资源块文本取结构字段（不含子标题本身）。"""
     if not chunk or not labels:
         return ""
-    alts = "|".join(re.escape(x) for x in labels)
+    # 折叠括号内标签字间空后用字面标签；保留值区间隔号
+    chunk = collapse_structure_label_gaps(chunk or "")
+    alts = structure_labels_alt(list(labels))
+    if not alts:
+        return ""
     m = re.search(
         rf"{STRUCTURE_FIELD_OPEN}\s*(?:{alts})\s*{STRUCTURE_FIELD_CLOSE}\s*{_STRUCTURE_SEP}\s*"
-        rf"(.+?)(?=\s*{STRUCTURE_FIELD_OPEN}\s*(?:{_LABEL_ALT})\s*{STRUCTURE_FIELD_CLOSE}|\s*magnet:|\s*ed2k:|\s*$)",
+        rf"(.+?)(?="
+        rf"\s*{STRUCTURE_FIELD_OPEN}\s*(?:{_LABEL_ALT})\s*{STRUCTURE_FIELD_CLOSE}"
+        rf"|{_ANY_STRUCTURE_BRACKET_LABEL_RE.pattern}\s*[:：︰﹒．.｜|/／·・•‧＝=]"
+        rf"|\s*magnet:|\s*ed2k:|\s*$)",
         chunk,
         re.I | re.S,
     )
@@ -1380,6 +1459,25 @@ def _block_field(chunk: str, *labels: str) -> str:
     return val[:200]
 
 
+_RE_2048_TORRENT_PAREN = re.compile(
+    r"\(\s*2048[^)]*?torrent\s*\)\s*([^\s【(][^【\n]{0,120})",
+    re.I,
+)
+
+
+def _title_from_2048_torrent_paren(text: str | None) -> str:
+    """`(2048 hk-… torrent)油鬼子` → 油鬼子。"""
+    m = _RE_2048_TORRENT_PAREN.search(text or "")
+    if not m:
+        return ""
+    val = (m.group(1) or "").strip()
+    val = re.split(r"\s*【", val, 1)[0].strip()
+    val = re.sub(r"(?i)(?:\.torrent|\s+torrent)\s*$", "", val).strip()
+    if not val or _is_bogus_meta_value("种子名称", val):
+        return ""
+    return val[:255]
+
+
 def _torrent_name_as_title(raw: str | None) -> str:
     """无【影片名称】时，用可用的【种子名称】作子资源名（去掉 .torrent / 实体）。"""
     val = html_lib.unescape((raw or "").strip())
@@ -1389,11 +1487,16 @@ def _torrent_name_as_title(raw: str | None) -> str:
     # 2048 正文常把「【磁力连接】」/ magnet-box CSS 粘在种子名后
     val = re.split(r"\s*【", val, 1)[0].strip()
     val = re.split(r"\s*\.magnet-", val, 1)[0].strip()
-    m = re.search(r"([^\s【】][^【】]{1,200}?)\.torrent\b", val, re.I)
+    # 偶发整段写成 (2048 … torrent)片名
+    paren = _title_from_2048_torrent_paren(val)
+    if paren:
+        return paren
+    m = re.search(r"([^\s【】][^【】]{0,200}?)\.torrent\b", val, re.I)
     if m:
         val = m.group(1).strip()
     else:
-        val = re.sub(r"\.torrent\s*$", "", val, flags=re.I).strip()
+        # 2048 三级写真常见「油鬼子 torrent」（无点号）
+        val = re.sub(r"(?i)(?:\.torrent|\s+torrent)\s*$", "", val).strip()
     val = re.sub(r"^[:：﹒．.|｜/\\]+", "", val)
     val = re.sub(r"[:：﹒．.|｜/\\]+$", "", val).strip()
     if not val or _is_bogus_meta_value("种子名称", val):
@@ -1416,13 +1519,15 @@ class SubresourceBlock:
 
 
 def _title_label_kind(scope: str, t_start: int, t_end: int) -> str:
-    """子标题标签口径：film | resource（简繁/异写均认）。"""
+    """子标题标签口径：film | resource（简繁/异写均认；字间空格先折叠）。"""
     raw = scope[t_start:t_end] or ""
     m = re.search(r"【\s*([^】]+?)\s*】", raw)
-    lab = re.sub(r"\s+", "", (m.group(1) if m else raw))
-    if lab in RESOURCE_TITLE_FORMS:
+    lab = normalize_structure_label_key(m.group(1) if m else raw)
+    resource_keys = {normalize_structure_label_key(x) for x in RESOURCE_TITLE_FORMS}
+    film_keys = {normalize_structure_label_key(x) for x in FILM_TITLE_FORMS}
+    if lab in resource_keys:
         return "resource"
-    if lab in FILM_TITLE_FORMS:
+    if lab in film_keys:
         return "film"
     # 片名是「影片名称」子串，不能用 contains；仅完整标签兜底
     if any(x in lab for x in ("资源", "資源", "作品")):
@@ -1473,6 +1578,9 @@ def _assemble_subresource_block(
     text_chunk = re.sub(r"&nbsp;", " ", text_chunk, flags=re.I)
     size = _size_from_subresource_block(scope, field_lo, field_hi)
     size_label = _block_field(text_chunk, *SIZE_FIELD_FORMS)
+    if size_label:
+        # 再裁一次：字间插空未折叠 / 未知尾字段时，只留容量串
+        size_label = _clip_field_value(size_label, label="影片大小")
     if not size_label and size > 0:
         emb = re.search(
             r"\[\s*(?:MP4|MKV|AVI|WMV|MOV|FLV|TS|ISO)?\s*/\s*([0-9.]+)\s*([KMGT])B?\s*\]",
@@ -1516,12 +1624,33 @@ def extract_subresource_blocks(
     limit_per: int = 5,
     fallback_title: str = "",
 ) -> list[SubresourceBlock]:
-    """按子标题切段挂资源链。
+    """按子标题切段挂资源链。返回 blocks；布局码见 extract_subresource_blocks_ex。"""
+    blocks, _layout = extract_subresource_blocks_ex(
+        html,
+        infohashes,
+        base_url=base_url,
+        limit_per=limit_per,
+        fallback_title=fallback_title,
+    )
+    return blocks
 
-    规则：
-    - 无子标题：整段主贴归帖标题；同帖多个不同 hash 仍全部入库（如 HD/4K 双码）
-    - 有子标题：名称 i → 名称 i+1 为一段；段内全部 magnet/ed2k 同属该名称，全部入库
-    - 连续 N 个名称后才出现链接：按顺序 1:1 配对；多出的链挂到最后一个名称
+
+def extract_subresource_blocks_ex(
+    html: str,
+    infohashes: list[str] | None = None,
+    *,
+    base_url: str = "",
+    limit_per: int = 5,
+    fallback_title: str = "",
+) -> tuple[list[SubresourceBlock], str]:
+    """同 extract_subresource_blocks，并返回 layout 码。
+
+    layout:
+      - no_subtitle
+      - names_then_links
+      - title_then_magnet
+      - magnet_then_title
+      - empty
     """
     # 楼主各层（一楼元数据 + 二楼补链）拼成切段语料；路人回帖仍排除
     lz_parts = extract_lz_posts_html(html, limit=5)
@@ -1533,13 +1662,13 @@ def extract_subresource_blocks(
     if infohashes is not None:
         wanted = {(h or "").strip().upper() for h in infohashes if (h or "").strip()}
         if not wanted:
-            return []
+            return [], "empty"
 
     link_pos = _link_positions_in_scope(scope, wanted)
     if wanted:
         link_pos = [x for x in link_pos if x[0] in wanted]
     if not link_pos:
-        return []
+        return [], "empty"
 
     titles = iter_subresource_title_spans(scope)
     lim = max(1, int(limit_per or 5))
@@ -1550,7 +1679,37 @@ def extract_subresource_blocks(
     # 无子标题：多 hash 全部保留；有【种子名称】则作子资源名，否则回落帖标题
     if not titles:
         if not name_fallback and not link_pos:
-            return []
+            return [], "empty"
+        # 大合集无子标题：一名共享预览，禁止逐链装配（962 链可从数十秒降到毫秒级）
+        _PACK_FAST_MIN = 48
+        if len(link_pos) >= _PACK_FAST_MIN and name_fallback:
+            pack_size = _size_from_subresource_block(scope, 0, min(len(scope), 8000))
+            previews = extract_preview_images(scope, limit=lim, base_url=base_url)
+            from parsers.resource_names import clip_subresource_display_name
+
+            name = clip_subresource_display_name(name_fallback) or name_fallback
+            name = name[:255]
+            desc = _build_block_description(
+                title=name, size_label="", fmt="", note="", kind="film"
+            )
+            for h, _s, _e in link_pos:
+                if h in seen:
+                    continue
+                seen.add(h)
+                out.append(
+                    SubresourceBlock(
+                        infohash=h,
+                        title=name,
+                        size=pack_size,
+                        format="",
+                        note="",
+                        torrent_name="",
+                        preview_images=list(previews),
+                        description=desc,
+                    )
+                )
+            return out, "no_subtitle_pack"
+
         # 预览布局：图在磁力前（欧美/亚洲验证全码合集） vs 磁力后（测试/部分自拍）
         first_start = link_pos[0][1]
         img_then_magnet = bool(
@@ -1595,7 +1754,7 @@ def extract_subresource_blocks(
                 )
             )
             prev_end = end
-        return out
+        return out, "no_subtitle"
 
     # 连续名称 → 连续链接：1:1
     if _is_names_then_links_layout(titles, link_pos):
@@ -1649,7 +1808,7 @@ def extract_subresource_blocks(
                         description=last.description,
                     )
                 )
-        return out
+        return out, "names_then_links"
 
     layout = _detect_magnet_title_layout(titles, link_pos)
 
@@ -1679,22 +1838,58 @@ def extract_subresource_blocks(
             continue
 
         kind = _title_label_kind(scope, t_start, t_end)
-        # 段内全部链同属该资源名称，一并入库
-        for h, _s, _e in in_seg:
+        # 段内链默认同名；若后续链前另有【种子名称】/（2048…torrent）片名则拆条
+        # （三级写真常见：上一条【影片名称】后夹一条仅种子名的「油鬼子」）
+        first_h, _fs, first_end = in_seg[0]
+        seen.add(first_h)
+        head = _assemble_subresource_block(
+            paired=first_h,
+            name=name,
+            scope=scope,
+            field_lo=field_lo,
+            field_hi=field_hi,
+            kind=kind,
+            lim=lim,
+            base_url=base_url,
+        )
+        out.append(head)
+        prev_end = first_end
+        for h, s, e in in_seg[1:]:
             seen.add(h)
-            out.append(
-                _assemble_subresource_block(
-                    paired=h,
-                    name=name,
-                    scope=scope,
-                    field_lo=field_lo,
-                    field_hi=field_hi,
-                    kind=kind,
-                    lim=lim,
-                    base_url=base_url,
+            gap = scope[prev_end:s]
+            gap_text = re.sub(r"<[^>]+>", " ", gap or "")
+            gap_text = re.sub(r"&nbsp;", " ", gap_text, flags=re.I)
+            alt = _torrent_name_as_title(
+                _block_field(gap_text, *TORRENT_FIELD_FORMS)
+            ) or _title_from_2048_torrent_paren(gap_text)
+            if alt and alt != name:
+                out.append(
+                    _assemble_subresource_block(
+                        paired=h,
+                        name=alt,
+                        scope=scope,
+                        field_lo=prev_end,
+                        field_hi=e,
+                        kind=kind,
+                        lim=lim,
+                        base_url=base_url,
+                    )
                 )
-            )
-    return out
+            else:
+                out.append(
+                    SubresourceBlock(
+                        infohash=h,
+                        title=head.title,
+                        size=head.size,
+                        format=head.format,
+                        note=head.note,
+                        torrent_name=head.torrent_name,
+                        preview_images=list(head.preview_images),
+                        description=head.description,
+                    )
+                )
+            prev_end = e
+    return out, layout
 
 
 def _drop_thread_title_lines(name: str, thread_title: str) -> str:
@@ -1739,6 +1934,7 @@ def _subresource_title_value(
     chunk = re.sub(r"<br\s*/?>", "\n", chunk or "", flags=re.I)
     chunk = re.sub(r"<[^>]+>", " ", chunk)
     chunk = re.sub(r"&nbsp;", " ", chunk, flags=re.I)
+    chunk = collapse_structure_label_gaps(chunk)
     m = _SUBRESOURCE_TITLE_VALUE_RE.match(chunk.strip())
     if not m:
         return ""

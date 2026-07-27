@@ -7,11 +7,13 @@ from typing import Literal
 
 from parsers.content import (
     ThreadContent,
+    attachment_corpus_has_target_links,
     build_structured_description,
     extract_blockcode_text,
     extract_link_corpus_html,
     extract_password as extract_post_password,
     extract_subresource_blocks,
+    extract_subresource_blocks_ex,
     parse_thread_content,
 )
 from parsers.ed2k import Ed2kLink, parse_ed2k_text, pick_primary_ed2k
@@ -50,6 +52,10 @@ class DualParseResult:
     share115_links: list[Share115Link] = field(default_factory=list)
     assets: list[ParsedAsset] = field(default_factory=list)
     primary_link_kind: PrimaryKind = "none"
+    # 切块布局：no_subtitle / names_then_links / title_then_magnet / magnet_then_title
+    layout: str = ""
+    # 流水线：本帖是否注入过附件文本
+    had_attachments: bool = False
 
     @property
     def search_string(self) -> str:
@@ -194,18 +200,26 @@ def parse_thread_dual(
         content.metadata = normalize_metadata_for_board(content.metadata, board_fid)
     link_html = extract_link_corpus_html(html)
     link_block = extract_blockcode_text(link_html) if link_html else ""
-    corpus = "\n".join(
-        part
-        for part in (
-            link_block,
-            link_html,
-            content.blockcode_text,
-            content.plain_text,
-            content.title,
-            extra_text or "",
+    # 附件已含目标链：抽链不再并入正文 plain/blockcode（避免正文样例链污染）
+    if attachment_corpus_has_target_links(html):
+        corpus = "\n".join(
+            part
+            for part in (link_block, link_html, content.title, extra_text or "")
+            if part
         )
-        if part
-    )
+    else:
+        corpus = "\n".join(
+            part
+            for part in (
+                link_block,
+                link_html,
+                content.blockcode_text,
+                content.plain_text,
+                content.title,
+                extra_text or "",
+            )
+            if part
+        )
 
     magnets, ed2k_links = parse_links_from_text(corpus)
     share115_links = parse_115_share_text(corpus, title=content.title)
@@ -218,48 +232,105 @@ def parse_thread_dual(
     # 子资源：按子标题切段（无子标题则整帖用帖标题）；
     # 一段内多链全部入库；连续名称后接连续链接则 1:1
     hashes = [a.hash for a in assets if a.link_kind in {"magnet", "ed2k"} and a.hash]
+    layout = ""
     if hashes:
-        blocks = extract_subresource_blocks(
-            html,
-            hashes,
-            base_url=base_url,
-            limit_per=5,
-            fallback_title=content.title or "",
-        )
-        if blocks:
-            by_hash = {(a.hash or "").strip().upper(): a for a in assets}
-            ordered: list[ParsedAsset] = []
-            for b in blocks:
-                asset = by_hash.get(b.infohash)
-                if not asset:
-                    continue
-                if b.title:
-                    from parsers.resource_names import clip_subresource_display_name
+        # 附件主导的大合集：正文几乎无子标题时跳过切块（避免对 50 万字×千链做 O(n) 装配）
+        _PACK_ATTACH_FAST = 48
+        skip_blocks = False
+        if len(hashes) >= _PACK_ATTACH_FAST and (
+            attachment_corpus_has_target_links(html) or len(extra_text or "") >= 24_000
+        ):
+            from parsers.content import (
+                extract_first_postmessage_html,
+                iter_subresource_title_spans,
+            )
 
-                    asset.filename = clip_subresource_display_name(b.title)[:255] or b.title[:255]
-                if b.size and b.size > 0:
-                    asset.size = int(b.size)
-                if b.preview_images:
-                    asset.preview_images = list(b.preview_images)
-                if b.description:
-                    asset.description = b.description
-                asset.is_primary = False
-                ordered.append(asset)
-            if ordered:
-                ordered[0].is_primary = True
-                # 切段未覆盖的 hash 仍保留（防御：无子标题/切段漏配）
-                kept = {(a.hash or "").strip().upper() for a in ordered}
-                for asset in assets:
-                    h = (asset.hash or "").strip().upper()
-                    if not h or h in kept:
+            body_only = extract_first_postmessage_html(html) or ""
+            body_titles = iter_subresource_title_spans(body_only)
+            if len(body_titles) <= 1:
+                skip_blocks = True
+                layout = "pack_attach_fast"
+                pack_name = (content.title or "").strip()
+                if pack_name:
+                    from parsers.resource_names import (
+                        clip_subresource_display_name,
+                        is_dirty_filename,
+                        is_hard_dirty_filename,
+                    )
+
+                    cleaned = clip_subresource_display_name(pack_name) or pack_name
+                    if cleaned and not is_dirty_filename(cleaned) and not is_hard_dirty_filename(
+                        cleaned
+                    ):
+                        for asset in assets:
+                            if asset.link_kind in {"magnet", "ed2k"}:
+                                asset.filename = cleaned[:255]
+                # 帖级预览挂到主链资产（其余名共享由 persist/frame 回落）
+                previews = list(content.preview_images or [])[:5]
+                if previews:
+                    for asset in assets:
+                        if asset.is_primary:
+                            asset.preview_images = previews
+                            break
+
+        if not skip_blocks:
+            blocks, layout = extract_subresource_blocks_ex(
+                html,
+                hashes,
+                base_url=base_url,
+                limit_per=5,
+                fallback_title=content.title or "",
+            )
+            if blocks:
+                by_hash = {(a.hash or "").strip().upper(): a for a in assets}
+                ordered: list[ParsedAsset] = []
+                for b in blocks:
+                    asset = by_hash.get(b.infohash)
+                    if not asset:
                         continue
-                    if asset.link_kind not in {"magnet", "ed2k"}:
-                        continue
+                    if b.title:
+                        from parsers.resource_names import (
+                            clip_subresource_display_name,
+                            is_dirty_filename,
+                            is_hard_dirty_filename,
+                        )
+
+                        if is_hard_dirty_filename(b.title):
+                            cleaned = ""
+                        else:
+                            cleaned = clip_subresource_display_name(b.title)
+                        if cleaned and not is_dirty_filename(cleaned):
+                            asset.filename = cleaned[:255]
+                        elif content.title:
+                            # 切段名脏：回退帖标题，勿把 HTML/附件 UI 硬截断入库
+                            fb = clip_subresource_display_name(content.title) or content.title
+                            if fb and not is_dirty_filename(fb) and not is_hard_dirty_filename(
+                                fb
+                            ):
+                                asset.filename = fb[:255]
+                    if b.size and b.size > 0:
+                        asset.size = int(b.size)
+                    if b.preview_images:
+                        asset.preview_images = list(b.preview_images)
+                    if b.description:
+                        asset.description = b.description
                     asset.is_primary = False
                     ordered.append(asset)
-                    kept.add(h)
-                assets = ordered
-                primary_kind = ordered[0].link_kind  # type: ignore[assignment]
+                if ordered:
+                    ordered[0].is_primary = True
+                    # 切段未覆盖的 hash 仍保留（防御：无子标题/切段漏配）
+                    kept = {(a.hash or "").strip().upper() for a in ordered}
+                    for asset in assets:
+                        h = (asset.hash or "").strip().upper()
+                        if not h or h in kept:
+                            continue
+                        if asset.link_kind not in {"magnet", "ed2k"}:
+                            continue
+                        asset.is_primary = False
+                        ordered.append(asset)
+                        kept.add(h)
+                    assets = ordered
+                    primary_kind = ordered[0].link_kind  # type: ignore[assignment]
     extract_password = content.extract_password
     if not extract_password and link_html:
         extract_password = extract_post_password(link_html) or ""
@@ -290,4 +361,5 @@ def parse_thread_dual(
         share115_links=share115_links,
         assets=assets,
         primary_link_kind=primary_kind,
+        layout=layout,
     )

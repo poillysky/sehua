@@ -63,6 +63,25 @@ def test_cf_email_obfuscated_attachment_name():
     assert [a.name for a in tail] == ["www.98T.la@PrivateCasting-X.txt"]
 
 
+def test_cf_email_prefix_plus_sibling_filename():
+    """CF 只混淆 @ 前缀、.txt 名在 span 外时仍应识别（tid=2810669）。"""
+    enc = "750202025b4c4d215b19143547415b44475847405b4544"
+    html = f"""
+    <ignore_js_op>
+      <a href="forum.php?mod=attachment&amp;aid=MTQ3">
+        <span class="__cf_email__" data-cfemail="{enc}">[email&#160;protected]</span>
+        国产传媒合集.txt
+      </a>
+      <a href="forum.php?mod=attachment&amp;aid=IMG">preview.jpg</a>
+    </ignore_js_op>
+    """
+    all_a = extract_download_attachments("https://www.sehuatang.net/", html)
+    assert len(all_a) == 1
+    assert all_a[0].kind == "txt"
+    assert all_a[0].name.endswith("国产传媒合集.txt")
+    assert "www.98T.la@24.12-25.01" in all_a[0].name
+
+
 def test_rar_with_文件夹_in_name_not_skipped():
     """「新建文件夹.rar」是资源包，不能当目录树跳过，否则无权包会反复重试。"""
     html = """
@@ -450,6 +469,15 @@ def test_excel_attachment_kind_and_filter():
     from parsers.attachments import pick_magnet_attachment_kind
 
     assert pick_magnet_attachment_kind("https://www.sehuatang.net/", html) == "txt_tail"
+    # 【BT种子】标题：即使同帖有 excel，也优先种子
+    assert (
+        pick_magnet_attachment_kind(
+            "https://www.sehuatang.net/",
+            html,
+            title="【BT种子】示例片名",
+        )
+        == "torrent"
+    )
 
 
 def test_extract_magnet_from_xlsx_bytes():
@@ -783,6 +811,57 @@ def test_import_outcome_distinguishes_body_vs_attachment():
     )
     assert attached.verdict == "import"
     assert attached.outcome == "成功：附件解析出目标链接"
+
+
+def test_body_link_plus_attachment_prefers_attachment():
+    """正文有样例链 + 有资源附件 → 先 need_attachments；注入后以附件链为准。"""
+    from workers.thread_outcome import judge_thread_html
+
+    html = """
+    <html><head><title>【整理】【115ED2K】合集 - 论坛</title></head>
+    <body>
+      <span id="thread_subject">【整理】【115ED2K】合集【148配额】</span>
+      <div id="postmessage_1">
+        预览样例
+        ed2k://|file|www.98t.la@预览图.rar|1|ABCDEF0123456789ABCDEF0123456789|/
+      </div>
+      <ignore_js_op>
+        <a href="forum.php?mod=attachment&amp;aid=1">www.98t.la@链接.txt</a>
+      </ignore_js_op>
+      Powered by Discuz!
+    </body></html>
+    """
+    html = html + ("<!-- pad -->" * 900)
+    first = judge_thread_html(
+        html,
+        board_fid="95:716",
+        list_title="【整理】【115ED2K】合集【148配额】",
+        preferred_link="ed2k",
+    )
+    assert first.verdict == "need_attachments"
+    assert first.need_attachments is True
+    assert "附件为准" in first.outcome
+
+    attach_text = (
+        "ed2k://|file|www.98t.la@A.mp4|10|11111111111111111111111111111111|/\n"
+        "ed2k://|file|www.98t.la@B.mp4|20|22222222222222222222222222222222|/\n"
+    )
+    merged = inject_attachment_text(html, attach_text)
+    second = judge_thread_html(
+        merged,
+        board_fid="95:716",
+        list_title="【整理】【115ED2K】合集【148配额】",
+        preferred_link="ed2k",
+        attachments_already_tried=True,
+        had_attachments=True,
+    )
+    assert second.verdict == "import"
+    assert second.outcome == "成功：附件解析出目标链接"
+    assert second.parsed is not None
+    assert len(second.parsed.assets) == 2
+    uris = " ".join(a.uri or "" for a in second.parsed.assets)
+    assert "预览图.rar" not in uris
+    assert "A.mp4" in uris and "B.mp4" in uris
 
 
 def test_password_in_attachment_text_fills_field_and_description():

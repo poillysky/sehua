@@ -120,8 +120,88 @@ TORRENT_FIELD_FORMS: tuple[str, ...] = (
 # 结构字段括号（帖内常见全角/半角异写）
 STRUCTURE_FIELD_OPEN = r"[【［〖「『\[]"
 STRUCTURE_FIELD_CLOSE = r"[】］〗」』\]]"
-# 标签与值之间的分隔符（半角/全角冒号、点号）
-_STRUCTURE_SEP = r"[:：︰﹒．.]?"
+# 标签与值之间的分隔符（半角/全角冒号、点号、竖线、间隔号等反爬符号）
+_STRUCTURE_SEP = r"[:：︰﹒．.｜|/／·・•‧＝=\-_;；,，〜～﹕→]?"
+# 标签字间反爬间隙（空格/间隔号/点号等）——仅用于少量局部兜底，勿拼进巨型 alt
+_INTER_LABEL_GAP = (
+    r"(?:[\s\u3000]|[·・•‧.．_\-﹣－/／|｜]|&nbsp;|&amp;nbsp;)*"
+)
+
+# 汉字间反爬空格/间隔号（禁止嵌套 +，否则长空白 ReDoS）
+_CJK_INSERTED_SPACE_RE = re.compile(
+    r"(?<=[\u4e00-\u9fff])"
+    r"(?:"
+    r"[\s\u3000·・•‧.．_\-﹣－/／|｜]"
+    r"|&nbsp;|&amp;nbsp;"
+    r"){1,64}"
+    r"(?=[\u4e00-\u9fff])"
+)
+
+
+def collapse_cjk_inserted_spaces(text: str) -> str:
+    """去掉汉字之间的反爬空格/nbsp/间隔号。"""
+    if not text:
+        return ""
+    return _CJK_INSERTED_SPACE_RE.sub("", text)
+
+
+# 兼容旧名
+_collapse_cjk_inserted_spaces = collapse_cjk_inserted_spaces
+
+
+def normalize_structure_label_key(label: str) -> str:
+    """标签键：折叠字间空/间隔号并去空白。"""
+    key = collapse_cjk_inserted_spaces((label or "").strip())
+    return re.sub(r"\s+", "", key)
+
+
+def collapse_structure_label_gaps(text: str) -> str:
+    """只折叠结构括号内标签字间空，保留字段值里的「真·名」等间隔号。
+
+    匹配前先跑一遍，即可用字面标签 alt，避免数千分支 flexible 正则。
+    """
+    if not text:
+        return ""
+    out = text
+    for op, cl in STRUCTURE_BRACKET_PAIRS:
+        pat = re.compile(
+            re.escape(op)
+            + r"([^"
+            + re.escape(cl)
+            + r"\n]{1,40})"
+            + re.escape(cl)
+        )
+
+        def _repl(m: re.Match[str], _op: str = op, _cl: str = cl) -> str:
+            return f"{_op}{normalize_structure_label_key(m.group(1))}{_cl}"
+
+        out = pat.sub(_repl, out)
+    return out
+
+
+def structure_labels_alt(labels: tuple[str, ...] | list[str]) -> str:
+    """字面标签交替（匹配前须已 collapse_structure_label_gaps / 标签已归一）。"""
+    seen: set[str] = set()
+    parts: list[str] = []
+    for lab in labels:
+        key = normalize_structure_label_key(lab)
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        parts.append(re.escape(key))
+    # 长标签优先，避免「影片名称」被「影片名」抢前缀（字面 | 无该问题，但仍按长度稳妥）
+    parts.sort(key=len, reverse=True)
+    return "|".join(parts)
+
+
+def flexible_structure_label_re(label: str) -> str:
+    """（遗留）字间可插空的单标签片段。新代码请用 collapse + structure_labels_alt。"""
+    chars = [c for c in (label or "") if not c.isspace()]
+    if not chars:
+        return ""
+    if any("\u4e00" <= c <= "\u9fff" for c in chars):
+        return _INTER_LABEL_GAP.join(re.escape(c) for c in chars)
+    return re.escape("".join(chars))
 
 # 片名取值截断边界：仅「已知结构字段」，勿在装饰性【S级泄密】【自转】等处切断
 EXTRA_STRUCTURE_BOUNDARY_FORMS: tuple[str, ...] = (
@@ -157,10 +237,20 @@ EXTRA_STRUCTURE_BOUNDARY_FORMS: tuple[str, ...] = (
     "種子期限",
     "作种期限",
     "作種期限",
+    "做种期限",
+    "做種期限",
     "下载方式",
     "下載方式",
     "下载工具",
     "下載工具",
+    "下载软件",
+    "下載軟件",
+    "下載軟體",
+    "清晰程度",
+    "预览图片",
+    "預覽圖片",
+    "预览圖片",
+    "預覽图片",
     "时间长度",
     "時間長度",
     "影片时间",
@@ -245,6 +335,44 @@ EXTRA_STRUCTURE_BOUNDARY_FORMS: tuple[str, ...] = (
     "有效期",
     "注意事项",  # 套图合集常见解压提示
     "注意事項",
+    "资源介绍",
+    "資源介紹",
+    "资源介紹",
+    "資源介绍",
+    "剧情介绍",
+    "劇情介紹",
+    "剧情簡介",
+    "剧情简介",
+    "外文名",
+    "外 文 名",
+    "类 型",
+    "類 型",
+    "上映时间",
+    "上映時間",
+    "制片地区",
+    "製片地區",
+    "片 长",
+    "片 長",
+    "导 演",
+    "導 演",
+    "主 演",
+    "编剧",
+    "編劇",
+    "主演女優",
+    "主演女优",
+    "カテゴリで探す",
+    "カテゴリ",
+    "シリーズ",
+    "スタジオ",
+    # 老含及等：【验証码】= infohash（証），勿与站内「验证码」混淆但须作字段边界
+    "验証码",
+    "驗証碼",
+    "验証碼",
+    "驗証码",
+    "校验码",
+    "校驗碼",
+    "校验碼",
+    "校驗码",
     "码别",
     "碼別",
     "字幕",
@@ -255,6 +383,76 @@ EXTRA_STRUCTURE_BOUNDARY_FORMS: tuple[str, ...] = (
     "来源",
     "來源",
 )
+
+# 结构字段开闭括号对（识别帖面用哪套，再按「下一开括号=新标签」切）
+STRUCTURE_BRACKET_PAIRS: tuple[tuple[str, str], ...] = (
+    ("【", "】"),
+    ("［", "］"),
+    ("〖", "〗"),
+    ("「", "」"),
+    ("『", "』"),
+    ("[", "]"),
+)
+
+# 标签后常见分隔：有冒号/等号才更像结构字段（片名里装饰【合集】常无此分隔）
+_STRUCTURE_LABEL_SEP_CLASS = r"[:：︰﹒．.｜|/／·・•‧＝=\-_;；,，〜～﹕→]"
+
+
+def detect_structure_bracket_pair(text: str | None) -> tuple[str, str]:
+    """从文本统计「开+短标签+闭+分隔」最常见的一对；默认【】。"""
+    blob = text or ""
+    best: tuple[str, str] = ("【", "】")
+    best_n = 0
+    for op, cl in STRUCTURE_BRACKET_PAIRS:
+        pat = re.compile(
+            re.escape(op)
+            + r"[^"
+            + re.escape(cl)
+            + r"\n]{1,40}"
+            + re.escape(cl)
+            + r"\s*"
+            + _STRUCTURE_LABEL_SEP_CLASS
+        )
+        n = len(pat.findall(blob))
+        if n > best_n:
+            best_n = n
+            best = (op, cl)
+    return best
+
+
+def _bracket_inner_class(close: str) -> str:
+    """闭括号字符类转义（用于 [^】\\n]）。"""
+    return re.escape(close)
+
+
+def any_structure_bracket_label_re() -> re.Pattern[str]:
+    """任意已知括号对的「开…闭」标签（不问标签名）——非片名字段遇此即截。"""
+    alts = "|".join(
+        re.escape(op)
+        + r"[^"
+        + _bracket_inner_class(cl)
+        + r"\n]{1,40}"
+        + re.escape(cl)
+        for op, cl in STRUCTURE_BRACKET_PAIRS
+    )
+    return re.compile(rf"\s*(?:{alts})")
+
+
+def labeled_structure_field_re() -> re.Pattern[str]:
+    """「开…闭」后跟分隔符的结构标签（不问标签名）——片名/文件名用，避免装饰【合集】误切。"""
+    alts = "|".join(
+        re.escape(op)
+        + r"[^"
+        + _bracket_inner_class(cl)
+        + r"\n]{1,40}"
+        + re.escape(cl)
+        for op, cl in STRUCTURE_BRACKET_PAIRS
+    )
+    return re.compile(rf"\s*(?:{alts})\s*{_STRUCTURE_LABEL_SEP_CLASS}")
+
+
+_ANY_STRUCTURE_BRACKET_LABEL_RE = any_structure_bracket_label_re()
+_LABELED_STRUCTURE_FIELD_RE = labeled_structure_field_re()
 
 STRUCTURE_FIELD_BOUNDARY_FORMS: tuple[str, ...] = tuple(
     dict.fromkeys(
@@ -269,22 +467,22 @@ STRUCTURE_FIELD_BOUNDARY_FORMS: tuple[str, ...] = tuple(
     )
 )
 
-_STRUCTURE_BOUNDARY_ALT = "|".join(
-    map(re.escape, STRUCTURE_FIELD_BOUNDARY_FORMS)
-)
+_STRUCTURE_BOUNDARY_ALT = structure_labels_alt(STRUCTURE_FIELD_BOUNDARY_FORMS)
 # 片名可含嵌套装饰括号 / ??※★ 等前缀；只裁到下一已知结构字段 / 磁力 / ed2k
 _TITLE_VALUE_TAIL = (
     rf"(?=\s*{STRUCTURE_FIELD_OPEN}\s*(?:{_STRUCTURE_BOUNDARY_ALT})\s*{STRUCTURE_FIELD_CLOSE}"
     rf"|\s*magnet:|\s*ed2k:|\s*$)"
 )
 
+_SUBRESOURCE_TITLE_ALT = structure_labels_alt(SUBRESOURCE_TITLE_MATCH_FORMS)
 _SUBRESOURCE_NAME_RES = tuple(
     re.compile(
-        rf"{STRUCTURE_FIELD_OPEN}\s*{re.escape(lab)}\s*{STRUCTURE_FIELD_CLOSE}"
+        rf"{STRUCTURE_FIELD_OPEN}\s*{re.escape(normalize_structure_label_key(lab))}\s*{STRUCTURE_FIELD_CLOSE}"
         rf"\s*{_STRUCTURE_SEP}\s*(.+?){_TITLE_VALUE_TAIL}",
         re.I | re.S,
     )
     for lab in SUBRESOURCE_TITLE_MATCH_FORMS
+    if normalize_structure_label_key(lab)
 )
 
 # description 行式：【资源名称】value（亦认异写括号）
@@ -294,9 +492,10 @@ _DESC_LABEL_LINE_RE = re.compile(
     re.M,
 )
 
+_TORRENT_NAME_ALT = structure_labels_alt(TORRENT_FIELD_FORMS)
 _TORRENT_NAME_RE = re.compile(
     rf"{STRUCTURE_FIELD_OPEN}\s*(?:"
-    + "|".join(map(re.escape, TORRENT_FIELD_FORMS))
+    + _TORRENT_NAME_ALT
     + rf")\s*{STRUCTURE_FIELD_CLOSE}\s*{_STRUCTURE_SEP}\s*(.+?){_TITLE_VALUE_TAIL}",
     re.I | re.S,
 )
@@ -319,21 +518,127 @@ def is_missing_filename(filename: str | None, *, hash_value: str = "") -> bool:
 
 def _clean_label_value(raw: str) -> str:
     """清洗标签值；保留片名常见装饰前缀（?? ※ ★ ！！ 等）。"""
-    text = re.sub(r"<[^>]+>", " ", raw or "")
-    text = re.sub(r"&nbsp;", " ", text, flags=re.I)
-    text = re.sub(r"\s+", " ", text).strip()
+    text = sanitize_filename_markup(raw or "")
     # 只剥字段分隔符，勿动 ?？!！*＊ 等装饰
     text = re.sub(r"^[:：﹒．.|｜/\\]+", "", text)
     text = re.sub(r"[:：﹒．.|｜/\\]+$", "", text)
     return text.strip()
 
 
+def sanitize_filename_markup(raw: str | None) -> str:
+    """去掉 HTML / BBCode / CF 邮件壳，压空白。"""
+    import html as html_lib
+
+    text = html_lib.unescape((raw or "").strip())
+    if not text:
+        return ""
+    text = re.sub(r"(?is)<script\b[^>]*>.*?</script>", " ", text)
+    text = re.sub(r"(?is)<style\b[^>]*>.*?</style>", " ", text)
+    text = re.sub(r"<[^>]+>", " ", text)
+    # Discuz / 论坛常见 BBCode
+    text = re.sub(r"\[/?url[^\]]*\]", " ", text, flags=re.I)
+    text = re.sub(r"\[/?backcolor[^\]]*\]", " ", text, flags=re.I)
+    text = re.sub(r"\[/?color[^\]]*\]", " ", text, flags=re.I)
+    text = re.sub(r"\[/?b\]|\[/?i\]|\[/?u\]", " ", text, flags=re.I)
+    text = re.sub(r"&nbsp;", " ", text, flags=re.I)
+    text = re.sub(r"\s+", " ", text).strip()
+    return text
+
+
+# 仍含这些痕迹 → 视为脏名，入库时回退帖标题
+_DIRTY_FILENAME_RE = re.compile(
+    r"(?is)"
+    r"("
+    r"<[^>]+>"
+    r"|</?a\b"
+    r"|target\s*=\s*[\"']?_blank"
+    r"|data-cfemail"
+    r"|\[/?url"
+    r"|\[/?backcolor"
+    r"|htmlspecialchars\s*\("
+    r"|innerHTML\s*="
+    r"|下载次数\s*:"
+    r"|下載次數\s*:"
+    r"|下载附件"
+    r"|下載附件"
+    r"|【资源介绍】"
+    r"|【資源介紹】"
+    r")"
+)
+
+# HTML / BBCode / 附件区 UI：整段不可信（勿只裁掉尾巴留下 gif hash 前缀）
+_HARD_DIRTY_FILENAME_RE = re.compile(
+    r"(?is)"
+    r"("
+    r"<[^>]+>"
+    r"|</?a\b"
+    r"|target\s*=\s*[\"']?_blank"
+    r"|data-cfemail"
+    r"|\[/?url"
+    r"|\[/?backcolor"
+    r"|htmlspecialchars\s*\("
+    r"|innerHTML\s*="
+    r"|下载次数\s*:"
+    r"|下載次數\s*:"
+    r"|下载附件"
+    r"|下載附件"
+    r")"
+)
+
+# 论坛附件区 UI 粘进片名
+_FILENAME_ATTACH_UI_RE = re.compile(
+    r"(?is)"
+    r"("
+    r"\.(?:gif|jpe?g|png|webp|bmp)\s*\([^)]{0,40}(?:MB|KB|GB)"
+    r"|下载次数\s*:"
+    r"|下載次數\s*:"
+    r"|下载附件"
+    r"|下載附件"
+    r"|\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}\s+上传"
+    r")"
+)
+
+# 日文贩卖页元数据尾巴
+_FILENAME_JP_META_TAIL_RE = re.compile(
+    r"(?:"
+    r"主演女優|主演女优|スタジオ|シリーズ|カテゴリで探す|カテゴリ\s*:"
+    r")"
+)
+
+FILENAME_SOFT_MAX = 200
+
+
+def is_dirty_filename(filename: str | None) -> bool:
+    """HTML/BBCode/附件 UI / 资源介绍等粘进片名。"""
+    text = (filename or "").strip()
+    if not text:
+        return False
+    if _DIRTY_FILENAME_RE.search(text):
+        return True
+    if _FILENAME_ATTACH_UI_RE.search(text):
+        return True
+    return False
+
+
+def is_hard_dirty_filename(filename: str | None) -> bool:
+    """整段应丢弃的脏名（HTML/BBCode/附件 UI），不可裁尾保留前缀。"""
+    text = (filename or "").strip()
+    if not text:
+        return False
+    if _HARD_DIRTY_FILENAME_RE.search(text):
+        return True
+    if _FILENAME_ATTACH_UI_RE.search(text):
+        return True
+    return False
+
+
 def pick_subresource_title(window: str, *, prefer_last: bool) -> str:
     """从窗口取真正子标题值；标签优先级见 SUBRESOURCE_TITLE_LABELS。"""
     if not window:
         return ""
+    text = collapse_structure_label_gaps(window)
     for cre in _SUBRESOURCE_NAME_RES:
-        hits = list(cre.finditer(window))
+        hits = list(cre.finditer(text))
         if not hits:
             continue
         m = hits[-1] if prefer_last else hits[0]
@@ -364,28 +669,36 @@ def context_subresource_title(
         name = pick_subresource_title(before, prefer_last=True)
     if not name and allow_torrent_fallback:
         torr = None
-        for m in _TORRENT_NAME_RE.finditer(before):
+        before_n = collapse_structure_label_gaps(before)
+        for m in _TORRENT_NAME_RE.finditer(before_n):
             torr = m
         if torr:
             name = _clean_label_value(torr.group(1))
-    return name
+            # 与 content._torrent_name_as_title 对齐：去 .torrent / 尾部「 torrent」
+            name = re.sub(r"(?i)(?:\.torrent|\s+torrent)\s*$", "", name or "").strip()
+    if name:
+        name = clip_subresource_display_name(name)
+        if is_dirty_filename(name):
+            return ""
+    return name or ""
 
 
 def subtitle_from_description(description: str | None) -> str:
     """从结构化 description 取第一条【资源名称】/【影片名称】（含繁体异写）。"""
-    text = (description or "").strip()
+    text = collapse_structure_label_gaps((description or "").strip())
     if not text:
         return ""
-    wanted = set(SUBRESOURCE_TITLE_MATCH_FORMS)
+    wanted = {normalize_structure_label_key(x) for x in SUBRESOURCE_TITLE_MATCH_FORMS}
     found: dict[str, str] = {}
     for m in _DESC_LABEL_LINE_RE.finditer(text):
-        lab = (m.group(1) or "").strip()
+        lab = normalize_structure_label_key(m.group(1) or "")
         val = _clean_label_value(m.group(2) or "")
         if lab in wanted and val and lab not in found:
             found[lab] = val
     for lab in SUBRESOURCE_TITLE_MATCH_FORMS:
-        if lab in found:
-            return found[lab]
+        key = normalize_structure_label_key(lab)
+        if key in found:
+            return found[key]
     return ""
 
 
@@ -428,8 +741,14 @@ def resolve_sub_filename(
         # 与链内技术名相同 → 不是子资源名
         if link_norm and text.lower() == link_norm:
             return ""
-        # 裁掉粘连的【是否有水印】【目录树】等结构尾巴（独家帖常见）
+        # HTML / 附件 UI：整段丢弃，避免留下 gif hash 前缀
+        if is_hard_dirty_filename(text):
+            return ""
         text = _clip_filename_structure_tail(text)
+        if not text or is_dirty_filename(text) or is_hard_dirty_filename(text):
+            return ""
+        if is_missing_filename(text, hash_value=hash_value):
+            return ""
         return text
 
     for cand in (
@@ -438,12 +757,17 @@ def resolve_sub_filename(
     ):
         got = _usable(cand)
         if got:
-            return got[:255]
+            return got[:FILENAME_SOFT_MAX]
     if main:
-        clipped = _clip_filename_structure_tail(main)
-        return (clipped or main)[:255]
+        clipped = _usable(main)
+        if clipped:
+            return clipped[:FILENAME_SOFT_MAX]
+        soft = sanitize_filename_markup(main)
+        soft = _clip_filename_structure_tail(soft)
+        if soft and not is_dirty_filename(soft):
+            return soft[:FILENAME_SOFT_MAX]
     h = (hash_value or "").strip() or "resource"
-    return h[:255]
+    return h[:FILENAME_SOFT_MAX]
 
 
 _FILENAME_BUY_TIP_RE = re.compile(r"购买本帖|預覽圖\s*:|预览图\s*:")
@@ -463,25 +787,54 @@ def clip_subresource_display_name(text: str | None) -> str:
     return _clip_filename_structure_tail(text)
 
 
-def _clip_filename_structure_tail(text: str | None) -> str:
-    """去掉片名后粘连的结构字段 / 购买提示 / 影讯元数据（长度顶到 255 前先语义截断）。"""
-    import html as html_lib
+def _soft_truncate_filename(val: str, *, limit: int = FILENAME_SOFT_MAX) -> str:
+    """超长时在空格/】处回退截断，避免硬切到 255。"""
+    text = (val or "").strip()
+    if len(text) <= limit:
+        return text
+    cut = text[:limit]
+    for sep in ("】", "）", ")", " ", "　", "/", "／", "-", "·"):
+        idx = cut.rfind(sep)
+        if idx >= max(40, limit // 3):
+            return cut[: idx + (1 if sep in {"】", "）", ")"} else 0)].strip()
+    return cut.strip()
 
-    val = html_lib.unescape((text or "").strip())
+
+def _clip_filename_structure_tail(text: str | None) -> str:
+    """去掉片名后粘连的结构字段 / 购买提示 / 影讯元数据（长度顶到上限前先语义截断）。
+
+    切分不依赖逐个「学会」标签名：已知白名单边界 + 任意「开括号…闭括号+分隔」均截。
+    """
+    val = sanitize_filename_markup(text)
     if not val:
         return ""
     val = _FILENAME_LEADING_DASH_RE.sub("", val).strip()
+    # 折叠括号内标签字间空后用字面边界（避免巨型 flexible alt）
+    val = collapse_structure_label_gaps(val)
+    cut_at: int | None = None
     m = re.search(
         rf"\s*{STRUCTURE_FIELD_OPEN}\s*(?:{_STRUCTURE_BOUNDARY_ALT})\s*{STRUCTURE_FIELD_CLOSE}",
         val,
         re.I,
     )
     if m:
-        val = val[: m.start()].strip()
+        cut_at = m.start()
+    m_gen = _LABELED_STRUCTURE_FIELD_RE.search(val)
+    if m_gen and (cut_at is None or m_gen.start() < cut_at):
+        cut_at = m_gen.start()
+    if cut_at is not None:
+        val = val[:cut_at].strip()
     m2 = _FILENAME_BUY_TIP_RE.search(val)
     if m2:
         val = val[: m2.start()].strip()
     m3 = _FILENAME_CREDIT_TAIL_RE.search(val)
     if m3:
         val = val[: m3.start()].strip()
-    return val.strip()
+    m4 = _FILENAME_ATTACH_UI_RE.search(val)
+    if m4:
+        val = val[: m4.start()].strip()
+    m5 = _FILENAME_JP_META_TAIL_RE.search(val)
+    if m5:
+        val = val[: m5.start()].strip()
+    val = re.sub(r"\s+", " ", val).strip()
+    return _soft_truncate_filename(val)

@@ -105,6 +105,7 @@ export type CrawlerStatus = {
     stub_remaining?: number
     stub_upgraded?: number
     priority_stubs?: number
+    frame_fail_total?: number
     discarded_access_denied_title?: number
     discarded_failed_kind?: number
     account_pass_total?: number
@@ -369,7 +370,47 @@ export function fetchDiscardedTids(params?: {
   return api<DiscardedTidsResult>(`/api/crawler/queue/discarded/tids${qs ? `?${qs}` : ''}`)
 }
 
-export type QueueBrowseKind = 'ready' | 'abnormal' | 'discarded' | 'stubs'
+export type FrameFailTidsResult = DiscardedTidsResult & {
+  hashes: string[]
+  items: Array<{ tid: number; hash: string; source_url?: string }>
+}
+
+export function fetchFrameFailTids(params?: {
+  status?: 'all' | 'structure' | 'capacity'
+  q?: string
+  reason?: string
+  limit?: number
+}) {
+  const sp = new URLSearchParams()
+  if (params?.status) sp.set('status', params.status)
+  if (params?.q) sp.set('q', params.q)
+  if (params?.reason) sp.set('reason', params.reason)
+  if (params?.limit != null) sp.set('limit', String(params.limit))
+  const qs = sp.toString()
+  return api<FrameFailTidsResult>(`/api/crawler/queue/frame-fail/tids${qs ? `?${qs}` : ''}`)
+}
+
+export type FrameFailRecrawlResult = {
+  message: string
+  mode?: string
+  selected?: number
+  matched?: number
+  queued?: number
+  imported?: number
+  note?: string
+}
+
+export function recrawlFrameFailTids(body: { tids: number[]; start_crawl?: boolean }) {
+  return api<FrameFailRecrawlResult>('/api/crawler/queue/frame-fail/recrawl-tids', {
+    method: 'POST',
+    body: JSON.stringify({
+      tids: body.tids,
+      start_crawl: body.start_crawl !== false,
+    }),
+  })
+}
+
+export type QueueBrowseKind = 'ready' | 'abnormal' | 'discarded' | 'stubs' | 'frame_fail'
 
 export type QueueBrowseItem = DiscardedQueueItem & {
   hash?: string | null
@@ -388,7 +429,10 @@ export type QueueBrowseResult = {
   limit: number
   offset: number
   total: number
-  counts?: { failed: number; skipped: number; total: number }
+  counts?: { failed: number; skipped: number; total: number } & {
+    structure?: number
+    capacity?: number
+  }
   kind_counts?: Record<string, number>
   reasons?: Array<{ reason: string; count: number }>
   items: QueueBrowseItem[]
@@ -396,7 +440,7 @@ export type QueueBrowseResult = {
 
 export function fetchQueueBrowse(params: {
   kind: QueueBrowseKind
-  status?: 'all' | 'failed' | 'skipped'
+  status?: 'all' | 'failed' | 'skipped' | 'structure' | 'capacity'
   q?: string
   reason?: string
   limit?: number

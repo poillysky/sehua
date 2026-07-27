@@ -312,6 +312,31 @@ def judge_thread_html(
 
     # Body has target link? 仅认楼主语料（与 parse_thread_dual 一致）
     # 回帖/侧栏误检到的链不走进「有链但无主资源」失败。
+    # 正文有链 + 有可解析资源附件：以附件为准，先下附件再解析（附件无果仍回落正文）。
+    if (
+        has_lz_target
+        and not attachments_already_tried
+        and looks_like_attachment_zone(html)
+    ):
+        if link_kind in {"magnet", "both"}:
+            from parsers.attachments import pick_magnet_attachment_kind
+
+            attach_kind = pick_magnet_attachment_kind(
+                base_url or "", html, title=title or ""
+            )
+        else:
+            from parsers.attachments import pick_ed2k_attachment_kind
+
+            attach_kind = pick_ed2k_attachment_kind(base_url or "", html)
+        return ThreadOutcome(
+            "need_attachments",
+            "正文有链且有附件，以附件为准",
+            link_kind,
+            title,
+            need_attachments=True,
+            attachment_kind=attach_kind,
+        )
+
     if has_lz_target:
         parsed = parse_thread_dual(
             html,
@@ -368,12 +393,23 @@ def judge_thread_html(
     if not has_lz_target and is_free_purchase_post(html):
         return ThreadOutcome("stub", "0元购买贴", link_kind, title)
 
+    # 正文已写出下载链形态但 hash/URI 残缺（如特徵全碼 31 位）→ 跳过，勿盲下附件
+    if not has_lz_target:
+        from parsers.magnet import has_abnormal_download_link
+
+        if has_abnormal_download_link(link_corpus) or has_abnormal_download_link(
+            post_text(html) or ""
+        ):
+            return ThreadOutcome("skipped", "异常下载链接", link_kind, title)
+
     # No usable body link yet — attachment strategy (ed2k-aligned)
     if not attachments_already_tried and looks_like_attachment_zone(html):
         if link_kind in {"magnet", "both"}:
             from parsers.attachments import pick_magnet_attachment_kind
 
-            attach_kind = pick_magnet_attachment_kind(base_url or "", html)
+            attach_kind = pick_magnet_attachment_kind(
+                base_url or "", html, title=title or ""
+            )
             return ThreadOutcome(
                 "need_attachments",
                 (

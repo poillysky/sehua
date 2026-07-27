@@ -188,8 +188,9 @@ def get_crawler_status(
         conn.close()
 
     priority_stubs = 0
+    frame_fail_total = 0
     try:
-        from db.repository import count_priority_account_stubs
+        from db.repository import count_frame_fail_posts, count_priority_account_stubs
         from db.resource_db import connect_resource
 
         rconn = connect_resource()
@@ -197,10 +198,14 @@ def get_crawler_status(
             priority_stubs = int(
                 count_priority_account_stubs(rconn, forum_id=active) or 0
             )
+            frame_fail_total = int(
+                (count_frame_fail_posts(rconn, forum_id=active) or {}).get("total") or 0
+            )
         finally:
             rconn.close()
     except Exception:
         priority_stubs = 0
+        frame_fail_total = 0
 
     adapter = get_site_adapter(cfg_forum_id)
     policies = adapter.board_policies()
@@ -297,6 +302,7 @@ def get_crawler_status(
         "stub_remaining": stub_prog.get("remaining") or stub_prog.get("budget") or 0,
         "stub_upgraded": stub_prog.get("upgraded") or 0,
         "priority_stubs": priority_stubs,
+        "frame_fail_total": frame_fail_total,
         "discarded_access_denied_title": discarded_access_denied,
         "discarded_failed_kind": discarded_failed_kind,
         "account_pass_total": (
@@ -661,16 +667,77 @@ def get_queue_browse(
     reason: str = "",
     _user: dict = Depends(require_permission("crawler.view")),
 ) -> dict:
-    """队列/占位明细分页：ready | abnormal | discarded | stubs。"""
+    """队列/占位明细分页：ready | abnormal | discarded | stubs | frame_fail。"""
     from parsers.boards import enabled_queue_board_keys, queue_board_keys
 
     key = (kind or "ready").strip().lower()
-    if key not in {"ready", "abnormal", "discarded", "stubs"}:
-        raise HTTPException(status_code=400, detail="kind 仅支持 ready / abnormal / discarded / stubs")
+    if key not in {"ready", "abnormal", "discarded", "stubs", "frame_fail"}:
+        raise HTTPException(
+            status_code=400,
+            detail="kind 仅支持 ready / abnormal / discarded / stubs / frame_fail",
+        )
     lim = max(1, min(200, int(limit or 50)))
     off = max(0, int(offset or 0))
     query = (q or "").strip()
     reason_key = (reason or "").strip()
+
+    if key == "frame_fail":
+        from db.repository import (
+            count_frame_fail_posts,
+            list_frame_fail_posts,
+            list_frame_fail_reasons,
+        )
+        from db.resource_db import connect_resource
+
+        st = (status or "all").strip().lower()
+        if st not in {"all", "structure", "capacity"}:
+            raise HTTPException(
+                status_code=400, detail="status 仅支持 all / structure / capacity"
+            )
+        focus = _resolve_crawler_forum_id()
+        rconn = connect_resource()
+        try:
+            counts = count_frame_fail_posts(
+                rconn, status=st, q=query, forum_id=focus
+            )
+            total = (
+                count_frame_fail_posts(
+                    rconn,
+                    status=st,
+                    q=query,
+                    reason=reason_key,
+                    forum_id=focus,
+                )["total"]
+                if reason_key
+                else int(counts.get("total") or 0)
+            )
+            items = list_frame_fail_posts(
+                rconn,
+                status=st,
+                q=query,
+                reason=reason_key or None,
+                limit=lim,
+                offset=off,
+                forum_id=focus,
+            )
+            reasons = list_frame_fail_reasons(
+                rconn, status=st, q=query, forum_id=focus
+            )
+        finally:
+            rconn.close()
+        return {
+            "kind": key,
+            "status": st,
+            "q": query,
+            "reason": reason_key,
+            "forum_id": focus,
+            "limit": lim,
+            "offset": off,
+            "total": int(total),
+            "counts": counts,
+            "reasons": reasons,
+            "items": items,
+        }
 
     if key == "discarded":
         st = (status or "all").strip().lower()
@@ -890,6 +957,197 @@ def get_discarded_tids(
         "count": len(tids),
         "truncated": total > len(tids),
         "tids": tids,
+    }
+
+
+@router.get("/queue/frame-fail/tids")
+def get_frame_fail_tids(
+    status: str = "all",
+    q: str = "",
+    reason: str = "",
+    limit: int = 2000,
+    _user: dict = Depends(require_permission("crawler.view")),
+) -> dict:
+    """不合格明细当前筛选下全部 tid（跨页全选重爬）。"""
+    from db.repository import count_frame_fail_posts, list_frame_fail_tids
+    from db.resource_db import connect_resource
+
+    st = (status or "all").strip().lower()
+    if st not in {"all", "structure", "capacity"}:
+        raise HTTPException(status_code=400, detail="status 仅支持 all / structure / capacity")
+    lim = max(1, min(5000, int(limit or 2000)))
+    query = (q or "").strip()
+    reason_key = (reason or "").strip()
+    focus = _resolve_crawler_forum_id()
+    rconn = connect_resource()
+    try:
+        total = int(
+            count_frame_fail_posts(
+                rconn, status=st, q=query, reason=reason_key or None, forum_id=focus
+            ).get("total")
+            or 0
+        )
+        items = list_frame_fail_tids(
+            rconn,
+            status=st,
+            q=query,
+            reason=reason_key or None,
+            limit=lim,
+            forum_id=focus,
+        )
+    finally:
+        rconn.close()
+    tids = [int(x["tid"]) for x in items if int(x.get("tid") or 0) > 0]
+    hashes = [str(x["hash"]) for x in items if str(x.get("hash") or "").strip()]
+    return {
+        "status": st,
+        "q": query,
+        "reason": reason_key,
+        "forum_id": focus,
+        "total": total,
+        "limit": lim,
+        "count": len(tids),
+        "truncated": total > len(tids),
+        "tids": tids,
+        "hashes": hashes,
+        "items": items,
+    }
+
+
+class FrameFailRecrawlTidsBody(BaseModel):
+    tids: list[int] = Field(default_factory=list)
+    start_crawl: bool = True
+
+
+@router.post("/queue/frame-fail/recrawl-tids")
+async def post_frame_fail_recrawl_tids(
+    body: FrameFailRecrawlTidsBody,
+    _user: dict = Depends(require_permission("crawl.run")),
+) -> dict:
+    """勾选的不合格帖：按代表 hash 走已入库重爬（空闲后台抓；连续调度则入队）。"""
+    from db.queue import tid_from_url
+    from db.repository import list_frame_fail_posts
+    from db.resource_db import connect_resource
+    from workers.recrawl import recrawl_imported_resources
+    from workers.runner import recover_stuck_after_stop
+
+    raw_tids = body.tids or []
+    if len(raw_tids) > 2000:
+        raise HTTPException(status_code=400, detail="一次最多选择 2000 条")
+    want: list[int] = []
+    seen: set[int] = set()
+    for raw in raw_tids:
+        try:
+            tid = int(raw)
+        except (TypeError, ValueError):
+            continue
+        if tid <= 0 or tid in seen:
+            continue
+        seen.add(tid)
+        want.append(tid)
+    if not want:
+        raise HTTPException(status_code=400, detail="请至少选择一条有效 tid")
+
+    focus = _resolve_crawler_forum_id()
+    want_set = set(want)
+    rconn = connect_resource()
+    try:
+        # 拉足够多的不合格帖，再按 tid 命中（通常不合格量远小于 5000）
+        catalog = list_frame_fail_posts(
+            rconn, status="all", forum_id=focus, limit=5000, offset=0
+        )
+    finally:
+        rconn.close()
+
+    hashes: list[str] = []
+    seen_h: set[str] = set()
+    matched = 0
+    for row in catalog:
+        tid = int(row.get("tid") or tid_from_url(str(row.get("source_url") or "")) or 0)
+        h = str(row.get("hash") or "").strip()
+        if tid not in want_set or len(h) < 8 or h in seen_h:
+            continue
+        seen_h.add(h)
+        hashes.append(h)
+        matched += 1
+    if not hashes:
+        raise HTTPException(
+            status_code=400,
+            detail="所选 tid 均不在不合格列表（可能已重爬合格）",
+        )
+
+    if body.start_crawl is False:
+        result = await await_crawl(
+            recrawl_imported_resources(hashes),
+            name="frame-fail-recrawl-queue",
+        )
+        queued = int(result.get("queued") or 0)
+        return {
+            "message": "ok",
+            "mode": str(result.get("mode") or "queued"),
+            "selected": len(want),
+            "matched": matched,
+            "queued": queued,
+            "imported": int(result.get("imported") or 0),
+            "note": str(result.get("note") or f"已处理 {matched} 条不合格重爬请求"),
+        }
+
+    st = crawl_status()
+    if st.get("looping"):
+        result = await await_crawl(
+            recrawl_imported_resources(hashes),
+            name="frame-fail-recrawl-queue",
+        )
+        queued = int(result.get("queued") or 0)
+        _log_activity(f"不合格批量重爬 · 入队 {queued} 条（连续调度中）")
+        return {
+            "message": "ok",
+            "mode": "queued",
+            "selected": len(want),
+            "matched": matched,
+            "queued": queued,
+            "imported": 0,
+            "note": (
+                f"连续调度中：已入队 {queued} 条不合格帖，由调度依次重爬"
+                if queued
+                else str(result.get("note") or "未能入队")
+            ),
+        }
+
+    recover_stuck_after_stop(activity="不合格批量重爬")
+    st = crawl_status()
+    if st.get("running"):
+        raise HTTPException(
+            status_code=409,
+            detail="爬虫正在处理其他任务，请稍等几秒再重爬",
+        )
+
+    _log_activity(f"不合格批量重爬 · 后台启动 {len(hashes)} 条")
+
+    async def _job() -> None:
+        try:
+            result = await recrawl_imported_resources(hashes)
+            imported = int(result.get("imported") or 0)
+            queued = int(result.get("queued") or 0)
+            failed = int(result.get("failed") or 0)
+            _log_activity(
+                f"不合格批量重爬结束 · 入库 {imported} · 入队 {queued} · 失败 {failed}"
+            )
+        except Exception as exc:
+            import logging
+
+            logging.getLogger(__name__).exception("background frame_fail recrawl")
+            _log_activity(f"不合格批量重爬异常结束 · {exc}")
+
+    spawn_crawl(_job(), name="frame-fail-recrawl")
+    return {
+        "message": "started",
+        "mode": "background",
+        "selected": len(want),
+        "matched": matched,
+        "queued": 0,
+        "imported": 0,
+        "note": f"已在后台重爬选中的 {matched} 条不合格帖，进度见活动日志",
     }
 
 

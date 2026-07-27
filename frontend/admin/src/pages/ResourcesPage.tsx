@@ -47,6 +47,7 @@ export function ResourcesPage() {
   const [items, setItems] = useState<ResourceRow[]>([])
   const [boards, setBoards] = useState<string[]>([])
   const [facets, setFacets] = useState<ResourceFacets>(EMPTY_FACETS)
+  const [facetsReady, setFacetsReady] = useState(false)
   const [total, setTotal] = useState(0)
   const [pages, setPages] = useState(1)
   const [page, setPage] = useState(1)
@@ -96,6 +97,7 @@ export function ResourcesPage() {
       const needFacets = facetsFilterKeyRef.current !== filterKey
       const needTotal =
         !pinnedTotalRef.current || pinnedTotalRef.current.key !== filterKey
+      if (needFacets) setFacetsReady(false)
 
       if (silent) setRefreshing(true)
       else setLoading(true)
@@ -208,7 +210,11 @@ export function ResourcesPage() {
         if (facetsPromise) {
           void facetsPromise
             .then((facData) => {
-              if (seq !== reqSeq.current || !facData.facets) return
+              if (seq !== reqSeq.current) return
+              if (!facData.facets) {
+                setFacetsReady(true)
+                return
+              }
               const nextFacets: ResourceFacets = {
                 sources: { ...EMPTY_FACETS.sources, ...(facData.facets.sources || {}) },
                 boards: facData.facets.boards || [],
@@ -222,12 +228,24 @@ export function ResourcesPage() {
               startTransition(() => {
                 setFacets(nextFacets)
                 setBoards(boardNames)
+                setFacetsReady(true)
               })
               facetsFilterKeyRef.current = filterKey
+              // 快照/空壳先展示后，若 all=0 再补拉一次（后台全量算完）
+              if ((nextFacets.results?.all || 0) <= 0) {
+                window.setTimeout(() => {
+                  if (reqSeq.current !== seq) return
+                  facetsFilterKeyRef.current = ''
+                  void load({ silent: true, pageOverride: pageNo })
+                }, 2500)
+              }
             })
             .catch(() => {
               /* 侧面栏失败不挡列表 */
+              setFacetsReady(true)
             })
+        } else {
+          setFacetsReady(true)
         }
       } catch (err) {
         if (seq !== reqSeq.current) return
@@ -745,6 +763,7 @@ export function ResourcesPage() {
   const sourceCount = facets.sources[source] ?? facets.sources.all ?? 0
   const resultFacets = facets.results || EMPTY_FACETS.results || {}
   const resultCount = resultFacets[result] ?? resultFacets.all ?? 0
+  const fmtCount = (n: number) => (facetsReady ? String(n) : '…')
 
   return (
     <section className={`page page-resources active ${sidebarCollapsed ? 'sidebar-collapsed' : ''}`}>
@@ -768,7 +787,7 @@ export function ResourcesPage() {
                 <span className="dim-caret" aria-hidden />
                 <span>论坛 / 板块</span>
               </span>
-              <span className="dim-count">{forumBoardCount}</span>
+              <span className="dim-count">{fmtCount(forumBoardCount)}</span>
             </button>
             {openDims.forumBoard ? (
               <div className="dim-body">
@@ -778,7 +797,7 @@ export function ResourcesPage() {
                   onClick={() => changeForum('all')}
                 >
                   <span className="dim-item-label">全部</span>
-                  <span className="dim-item-count">{forumTotal || facets.sources.all || 0}</span>
+                  <span className="dim-item-count">{fmtCount(forumTotal || facets.sources.all || 0)}</span>
                 </button>
                 {forumFacets.map((f) => {
                   const forumOpen = expandedForums.has(f.id)
@@ -810,7 +829,7 @@ export function ResourcesPage() {
                           title={`筛选论坛：${f.name}`}
                         >
                           <span className="dim-item-label">{f.name}</span>
-                          <span className="dim-item-count">{f.count}</span>
+                          <span className="dim-item-count">{fmtCount(f.count)}</span>
                         </button>
                       </div>
                       {showBoards ? (
@@ -825,7 +844,7 @@ export function ResourcesPage() {
                             onClick={() => changeBoard('all', f.id)}
                           >
                             <span className="dim-item-label">全部板块</span>
-                            <span className="dim-item-count">{f.count}</span>
+                            <span className="dim-item-count">{fmtCount(f.count)}</span>
                           </button>
                           {boardTree.map((node) => {
                             const parentKey = `${f.id}::${node.parent}`
@@ -888,7 +907,7 @@ export function ResourcesPage() {
                                     }
                                   >
                                     <span className="dim-item-label">{node.parent}</span>
-                                    <span className="dim-item-count">{node.total}</span>
+                                    <span className="dim-item-count">{fmtCount(node.total)}</span>
                                   </button>
                                 </div>
                                 {open && !onlyParent ? (
@@ -904,7 +923,7 @@ export function ResourcesPage() {
                                         onClick={() => changeBoard(node.self!.name, f.id)}
                                       >
                                         <span className="dim-item-label">未分子类</span>
-                                        <span className="dim-item-count">{node.self.count}</span>
+                                        <span className="dim-item-count">{fmtCount(node.self.count)}</span>
                                       </button>
                                     ) : null}
                                     {node.children.map((c) => (
@@ -920,7 +939,7 @@ export function ResourcesPage() {
                                         title={c.name}
                                       >
                                         <span className="dim-item-label">{c.label}</span>
-                                        <span className="dim-item-count">{c.count}</span>
+                                        <span className="dim-item-count">{fmtCount(c.count)}</span>
                                       </button>
                                     ))}
                                   </div>
@@ -948,7 +967,7 @@ export function ResourcesPage() {
                 <span className="dim-caret" aria-hidden />
                 <span>来源</span>
               </span>
-              <span className="dim-count">{sourceCount}</span>
+              <span className="dim-count">{fmtCount(sourceCount)}</span>
             </button>
             {openDims.source ? (
               <div className="dim-body">
@@ -966,7 +985,7 @@ export function ResourcesPage() {
                     onClick={() => changeSource(id)}
                   >
                     <span className="dim-item-label">{label}</span>
-                    <span className="dim-item-count">{facets.sources[id] ?? 0}</span>
+                    <span className="dim-item-count">{fmtCount(facets.sources[id] ?? 0)}</span>
                   </button>
                 ))}
               </div>
@@ -984,7 +1003,7 @@ export function ResourcesPage() {
                 <span className="dim-caret" aria-hidden />
                 <span>最终结果</span>
               </span>
-              <span className="dim-count">{resultCount}</span>
+              <span className="dim-count">{fmtCount(resultCount)}</span>
             </button>
             {openDims.result ? (
               <div className="dim-body">
@@ -1007,7 +1026,7 @@ export function ResourcesPage() {
                     title={id === 'multi' ? '结果列带 ×N 的多子资源合并帖' : undefined}
                   >
                     <span className="dim-item-label">{label}</span>
-                    <span className="dim-item-count">{resultFacets[id] ?? 0}</span>
+                    <span className="dim-item-count">{fmtCount(resultFacets[id] ?? 0)}</span>
                   </button>
                 ))}
               </div>

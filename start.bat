@@ -44,7 +44,7 @@ if not exist "%ADMIN%\node_modules\" (
 )
 
 echo [1/2] 启动后端 API        :8080
-echo       DB  192.168.2.38:5436/ed2k
+echo       DB  192.168.2.38:5433/ed2k
 start "sehua-api" /D "%BACKEND%" cmd /k ".venv\Scripts\python.exe -m uvicorn api.main:app --host 0.0.0.0 --port 8080 --reload"
 
 timeout /t 2 /nobreak >nul
@@ -56,7 +56,7 @@ echo.
 echo ----------------------------------------
 echo  后端健康检查  http://127.0.0.1:8080/health
 echo  管理后台      http://localhost:8081
-echo  数据库        192.168.2.38:5436 / ed2k
+echo  数据库        192.168.2.38:5433 / ed2k
 echo  默认账号      admin / admin123
 echo ----------------------------------------
 echo  窗口：sehua-api / sehua-admin（关闭即停）
