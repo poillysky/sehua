@@ -221,6 +221,11 @@ def _ensure_resource_schema(conn: Any) -> None:
     _schema_ready = True
 
 
+# 热路径缓存：sources.key → id（进程内）。勿在 ensure_source 里每帖 UPDATE 同行，
+# 否则并发入库会在同一行上锁等待数秒（实测普通单资源 persist 几乎全耗在这）。
+_source_id_cache: dict[str, int] = {}
+
+
 def ensure_source(
     conn: Any,
     key: str,
@@ -230,21 +235,39 @@ def ensure_source(
     *,
     commit: bool = True,
 ) -> int:
+    k = (key or "").strip()
+    if not k:
+        raise ValueError("source key required")
+    cached = _source_id_cache.get(k)
+    if cached is not None:
+        return int(cached)
     with conn.cursor() as cur:
+        cur.execute("SELECT id FROM sources WHERE key = %s LIMIT 1", (k,))
+        row = cur.fetchone()
+        if row and row[0] is not None:
+            source_id = int(row[0])
+            _source_id_cache[k] = source_id
+            return source_id
+        # 仅首次缺失时插入；冲突则再读（并发双插）。不做无意义的 UPDATE。
         cur.execute(
             """
             INSERT INTO sources (key, name, source_type, url)
             VALUES (%s, %s, %s, %s)
-            ON CONFLICT (key) DO UPDATE SET
-              name = EXCLUDED.name,
-              source_type = EXCLUDED.source_type,
-              url = COALESCE(EXCLUDED.url, sources.url),
-              updated_at = now()
+            ON CONFLICT (key) DO NOTHING
             RETURNING id
             """,
-            (key, name, source_type, url),
+            (k, name, source_type, url),
         )
-        source_id = cur.fetchone()[0]
+        inserted = cur.fetchone()
+        if inserted and inserted[0] is not None:
+            source_id = int(inserted[0])
+        else:
+            cur.execute("SELECT id FROM sources WHERE key = %s LIMIT 1", (k,))
+            got = cur.fetchone()
+            if not got or got[0] is None:
+                raise RuntimeError(f"ensure_source failed for key={k!r}")
+            source_id = int(got[0])
+    _source_id_cache[k] = source_id
     if commit:
         conn.commit()
     return source_id
@@ -283,10 +306,12 @@ def upsert_resource(
     parse_tags = strip_nul_list(parse_tags) or None
     parse_warnings = strip_nul_list(parse_warnings) or None
     # link fields may carry binary-scanned noise
+    raw_hash = (strip_nul(link.hash) or link.hash or "").strip()
     link = Ed2kLink(
-        filename=strip_nul(link.filename) or link.hash,
+        filename=strip_nul(link.filename) or raw_hash,
         size=int(link.size or 0),
-        hash=strip_nul(link.hash) or link.hash,
+        # 统一大写，便于走 hash 主键/唯一索引（勿对列做 upper() 否则全表扫）
+        hash=raw_hash.upper(),
         link=strip_nul(link.link) or link.link,
     )
     search_string = build_search_string(
@@ -299,11 +324,13 @@ def upsert_resource(
     incoming_url = (source_url or "").strip()
     with conn.cursor() as cur:
         # 行键已被其它帖占用：整单拒写，避免污染 ed2k_resources.filename/size
+        # 必须 hash = %s（或 = upper(%s)）；upper(hash)=… 在 40 万行上会 seq scan，
+        # 新帖找不到行时尤其慢（扫完全表），单资源入库可从 ~1s 拖到数秒～10s+。
         if incoming_url and link.hash:
             cur.execute(
                 """
                 SELECT source_url FROM resource_sources
-                WHERE upper(hash) = upper(%s) LIMIT 1
+                WHERE hash = %s LIMIT 1
                 """,
                 (link.hash,),
             )
