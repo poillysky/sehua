@@ -43,7 +43,8 @@ def format_thread_activity(
         parts.append(label)
 
     if detail and detail not in parts and detail != label and detail not in note:
-        parts.append(detail[:100])
+        # 不合格/成功原因常较长，留足展示（活动日志上限 2000）
+        parts.append(detail[:180])
 
     if kind and kind not in {"", "none", "failed"}:
         parts.append(kind)

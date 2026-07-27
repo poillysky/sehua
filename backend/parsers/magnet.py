@@ -449,6 +449,9 @@ def _size_from_label(raw_num: str, unit: str | None) -> int:
     except (TypeError, ValueError):
         return 0
     u = (unit or "M").upper()
+    # 分辨率「4K/8K/2K」不是千字节容量
+    if u == "K" and val in {1, 2, 4, 8, 10, 12, 16} and float(val).is_integer():
+        return 0
     mult = 1
     if u in {"K", "KB", "KIB"}:
         mult = 1024

@@ -72,13 +72,32 @@ function formatWhen(iso?: string | null): string {
   return `${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`
 }
 
-function discardedReason(row: QueueBrowseItem): string {
-  return (
+function discardedReason(row: QueueBrowseItem, kind?: QueueBrowseKind): string {
+  const full = (
     row.import_outcome ||
     row.outcome ||
     row.last_error ||
     '—'
   ).trim() || '—'
+  // 不合格明细：与下拉「验收原因」同口径，只显示「不合格：结构/容量」
+  if (kind === 'frame_fail') {
+    if (full.startsWith('不合格：结构')) return '不合格：结构'
+    if (full.startsWith('不合格：容量')) return '不合格：容量'
+    const head = full.split(' · ')[0]?.trim()
+    return head || full
+  }
+  return full
+}
+
+function discardedReasonDetail(row: QueueBrowseItem, kind?: QueueBrowseKind): string {
+  const full = (
+    row.import_outcome ||
+    row.outcome ||
+    row.last_error ||
+    ''
+  ).trim()
+  if (kind === 'frame_fail' && full) return full
+  return ''
 }
 
 function rowUrl(row: QueueBrowseItem): string {
@@ -115,6 +134,10 @@ function activityLevelClass(msg: string): string {
   // 「失败 0」只是汇总计数，不当错误
   const failCount = m.match(/失败\s*(\d+)/)
   const zeroFail = failCount ? Number(failCount[1]) === 0 : false
+  // 入库不合格（容量/结构）：琥珀，勿因「正常入库/重爬结束」刷成绿
+  if (m.includes('不合格')) {
+    return 'activity-skip'
+  }
   // 跳过：琥珀（具体原因在文案里）
   if (
     (m.includes('跳过') || m.includes('随机跳过')) &&
@@ -1514,7 +1537,8 @@ export function CrawlerPage() {
                         const url = rowUrl(row)
                         const st = rowStatus(row, queueModal)
                         const title = rowTitle(row)
-                        const reason = discardedReason(row)
+                        const reason = discardedReason(row, queueModal)
+                        const reasonDetail = discardedReasonDetail(row, queueModal)
                         const tid = rowTid(row)
                         const idText =
                           queueModal === 'stubs'
@@ -1584,7 +1608,10 @@ export function CrawlerPage() {
                             {queueModal === 'stubs' || queueModal === 'frame_fail' ? null : (
                               <td className="mono">{row.fetch_fail_count ?? 0}</td>
                             )}
-                            <td className="crawler-discarded-reason" title={reason}>
+                            <td
+                              className="crawler-discarded-reason"
+                              title={reasonDetail || reason}
+                            >
                               {reason}
                             </td>
                           </tr>
@@ -1615,7 +1642,8 @@ export function CrawlerPage() {
                     const url = rowUrl(row)
                     const st = rowStatus(row, queueModal)
                     const title = rowTitle(row)
-                    const reason = discardedReason(row)
+                    const reason = discardedReason(row, queueModal)
+                    const reasonDetail = discardedReasonDetail(row, queueModal)
                     const tid = rowTid(row)
                     const idText =
                       queueModal === 'stubs'
@@ -1688,7 +1716,12 @@ export function CrawlerPage() {
                             </span>
                           )}
                         </div>
-                        <p className="crawler-discarded-card-reason">{reason}</p>
+                        <p
+                          className="crawler-discarded-card-reason"
+                          title={reasonDetail || reason}
+                        >
+                          {reason}
+                        </p>
                       </article>
                     )
                   })

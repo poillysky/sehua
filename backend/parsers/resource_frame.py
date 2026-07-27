@@ -48,16 +48,34 @@ CAUSE_LABEL = {
     "missing": "真没有",
 }
 
+# ×N / xN部；勿把「Sara x Rio x 3P」里的 x 3P（多人玩法）当成资源数
+# 勿把「6部合集」当 ×N：那是包内片数/片名用语，常配 1配额单链
+# 勿把分辨率「1024X576」「2048X1152」当 ×N（数字与 X 相连）
+# 勿把「365天×10次 / 365日×10発」次数用法当 ×N
 _X_COUNT_RE = re.compile(
-    r"[×xX]\s*(\d+)"
+    r"×\s*(\d+)(?!\s*[Pp]\b)(?![Pp])(?!\d)(?!\s*(?:次|发|發|発|回))"
+    r"|(?<![0-9A-Za-z])[xX]\s*(\d+)(?!\s*[Pp]\b)(?![Pp])(?!\d)(?!\s*(?:次|发|發|発|回))"
     r"|(?:共|合计|總計|总计)\s*(\d+)\s*(?:部|个|個|題|题|片)"
-    r"|（\s*(\d+)\s*部\s*）"
-    r"|(\d+)\s*部合集",
+    r"|（\s*(\d+)\s*部\s*）",
     re.I,
 )
+# DB/占位写入的 4KB 等极小 size，不当作真实入库容量
+_PLACEHOLDER_SIZE_MAX = 8 * 1024
 _V_COUNT_RE = re.compile(r"(?<![A-Za-z0-9.])(\d+)\s*V(?![A-Za-z])", re.I)
 # ed2k 合集常见：70.6G/1169V//7配额 · 20.2g/17V/2配额
 _QUOTA_COUNT_RE = re.compile(r"(\d+)\s*配额", re.I)
+# 标题写「115eD2k/夸克/迅雷」时，N配额常含云盘份，不全等于入库 ed2k 链数
+_CLOUD_SHARE_IN_TITLE_RE = re.compile(
+    r"夸克|百度网盘|百度|迅雷|阿里云?盘?|UC云|蓝奏|网盘",
+    re.I,
+)
+# 【影片大小】：MB / 【资源大小】：（空）——有标签无有效数字
+_EMPTY_SIZE_LABEL_RE = re.compile(
+    r"[【［〖「『\[]\s*[^】］〗」』\]]{0,12}(?:大小|容量|尺寸)\s*[】］〗」』\]]"
+    r"\s*[:：︰｜|/／·・•‧＝=\-_;；,，]?\s*"
+    r"(?:MB|GB|TB|M|G|T)?\s*(?=\n|$|[【［])",
+    re.I,
+)
 
 
 @dataclass(slots=True)
@@ -128,6 +146,18 @@ def _blob(*parts: str) -> str:
     return " ".join(p for p in parts if p)
 
 
+def _pack_capacity_bytes(title: str, desc: str = "", meta_size: str = "") -> int:
+    """帖级总容量：标题有明确容量时以标题为准。
+
+    描述【资源大小】常写脏值（tid=2829365：标题 31G，描述却 11G），
+    parse_capacity_bytes 会优先吃【资源大小】字段导致误判。
+    """
+    t = parse_capacity_bytes(title or "")
+    if t > 0:
+        return t
+    return parse_capacity_bytes(_blob(title, desc, meta_size))
+
+
 def _uniq(xs: list[str]) -> list[str]:
     seen: set[str] = set()
     out: list[str] = []
@@ -179,6 +209,53 @@ def _title_expect_count(*texts: str) -> int | None:
     return best
 
 
+def _has_empty_size_label(text: str | None) -> bool:
+    """【影片大小】：MB / 空值 —— 有标签但无有效容量数字。"""
+    raw = (text or "").strip()
+    if not raw:
+        return False
+    if parse_capacity_bytes(raw) > 0:
+        return False
+    return bool(_EMPTY_SIZE_LABEL_RE.search(raw))
+
+
+def _effective_size(n: int | None) -> int:
+    """真实容量；占位/空记 0。"""
+    v = int(n or 0)
+    if v <= 0 or v <= _PLACEHOLDER_SIZE_MAX:
+        return 0
+    return v
+
+
+def _member_size_sum(members: Sequence[ParsedAsset]) -> int:
+    """多链时合计各链 size（ed2k xl）；单链取该值。忽略占位 size。"""
+    pos = [
+        _effective_size(getattr(a, "size", 0))
+        for a in members
+        if _effective_size(getattr(a, "size", 0)) > 0
+    ]
+    if not pos:
+        return 0
+    return int(sum(pos)) if len(pos) > 1 else int(pos[0])
+
+
+def _all_magnet_no_xl(rows: Sequence[FrameRow]) -> bool:
+    """全部为磁力且链上无有效 size（无 xl）——容量无法从 URI 核验。"""
+    any_link = False
+    for r in rows:
+        for a in r.members:
+            any_link = True
+            kind = str(getattr(a, "link_kind", "") or "").strip().lower()
+            if kind and kind not in {"magnet"}:
+                return False
+            if int(getattr(a, "size", 0) or 0) > 0:
+                return False
+            uri = (getattr(a, "uri", None) or "").lower()
+            if uri.startswith("ed2k:"):
+                return False
+    return any_link
+
+
 def _count_matches(actual: int, expect: int) -> bool:
     """标题/描述数量与链数是否可接受。
 
@@ -227,15 +304,20 @@ def _primary_link_kind(parsed: DualParseResult, rows: list[FrameRow]) -> str:
 
 
 def _piece_count_expect(
-    blob: str, *, link_kind: str
+    blob: str, *, link_kind: str, title: str = ""
 ) -> tuple[int | None, str]:
     """按主链类型取「应有链数」口径。
 
-    - ed2k：优先 N配额（片数 V 不当链数）
+    - ed2k：优先 N配额（片数 V 不当链数）；标题有配额时以标题为准
+      （描述【资源大小】常写脏 N配额，勿 max 抬高）
     - magnet：N V
     """
     kind = (link_kind or "").lower()
     if kind in {"ed2k", "115share"}:
+        if title:
+            q_title = _title_quota_count(title)
+            if q_title is not None:
+                return q_title, "配额"
         q = _title_quota_count(blob)
         if q is not None:
             return q, "配额"
@@ -423,19 +505,24 @@ def fill_rows(
                 break
         label_size = 0
         for text in (row_desc, name):
-            label_size = parse_capacity_bytes(text or "")
-            if label_size:
+            got = parse_capacity_bytes(text or "")
+            # 忽略「4K→4KB」类噪声 / 占位级「容量」
+            if got > _PLACEHOLDER_SIZE_MAX:
+                label_size = got
                 break
         if not label_size and n_groups <= 1:
             for text in (desc, title, meta_size, parsed.description or ""):
-                label_size = parse_capacity_bytes(text or "")
-                if label_size:
+                got = parse_capacity_bytes(text or "")
+                if got > _PLACEHOLDER_SIZE_MAX:
+                    label_size = got
                     break
-        asset_size = int(head0.size or 0)
+        asset_size = _member_size_sum(members)
         if not asset_size:
-            for a in members:
-                asset_size = max(asset_size, int(a.size or 0))
+            asset_size = _effective_size(head0.size)
         size = label_size or asset_size
+        # 无文案时丢掉占位 size，避免 4KB 写成 0.0MB 过槽
+        if not label_size:
+            size = _effective_size(size)
 
         slots: list[SlotFill] = []
         slot_errors: list[str] = []
@@ -485,17 +572,26 @@ def fill_rows(
                 SlotFill("previews", True, "0", "missing", "帖面无预览图")
             )
 
-        # 容量槽：D1 必须 >0；D2/D3 允许 0
+        # 容量槽：本行有可解析容量却仍为 0 → 识别错误；空标签/多资源无本行口径 → 允许 0
+        row_has_claim = label_size > 0
+        row_empty_label = (not row_has_claim) and _has_empty_size_label(row_desc)
         if size > 0:
             slots.append(SlotFill("size", True, _fmt_bytes(size)))
         elif cap_class == "D2":
             slots.append(
                 SlotFill("size", True, "0", "missing", "写明容量不详，允许0")
             )
-        elif pack_has_size_text or cap_class == "D1":
+        elif row_empty_label:
+            slots.append(
+                SlotFill("size", True, "0", "missing", "大小标签无有效数值，允许0")
+            )
+        elif row_has_claim:
             msg = "有容量文案但大小为0"
             slots.append(SlotFill("size", False, "0", "parse", msg))
-            # 升 content_gap，不进 structure hard（容量口径）
+        elif n_groups <= 1 and (pack_has_size_text or cap_class == "D1"):
+            # 单资源：帖面总容量有数却未落到本行
+            msg = "有容量文案但大小为0"
+            slots.append(SlotFill("size", False, "0", "parse", msg))
         else:
             slots.append(
                 SlotFill("size", True, "0", "missing", "全文无容量信息，允许0")
@@ -529,8 +625,8 @@ def validate_frame(
     desc = (parsed.description or "").strip()
     meta_size = _meta_size_text(parsed)
     pack_blob = _blob(title, desc, meta_size)
-    pack_size = parse_capacity_bytes(pack_blob)
-    if _pack_size_looks_like_row_echo(pack_size, [r.size for r in rows]):
+    pack_size = _pack_capacity_bytes(title, desc, meta_size)
+    if _pack_size_looks_like_row_echo(pack_size, [_effective_size(r.size) for r in rows]):
         pack_size = 0
     thread_previews = [x for x in (parsed.preview_images or []) if x]
 
@@ -572,11 +668,32 @@ def validate_frame(
 
     for r in rows:
         for e in r.slot_errors:
+            # 预览未分配：多数已分仅少数缺 → 下面按比例降级，先不进 hard
+            if "未分到该资源名下" in e or "帖有预览却未填到资源上" in e:
+                continue
             hard.append(e)
             if "识别错误" in e:
                 tags.append("cause:parse")
             elif "真没有" in e:
                 tags.append("cause:missing")
+
+    preview_slot_miss = [
+        e
+        for r in rows
+        for e in r.slot_errors
+        if ("未分到该资源名下" in e or "帖有预览却未填到资源上" in e)
+    ]
+    if preview_slot_miss:
+        if len(preview_slot_miss) <= 1 and n_groups >= 8:
+            for e in preview_slot_miss:
+                soft.append(e)
+            tags.append("cause:parse")
+            tags.append("warn:preview_unassigned_minor")
+        else:
+            for e in preview_slot_miss:
+                hard.append(e)
+            tags.append("cause:parse")
+            tags.append("flag:preview_fail")
 
     kinds: set[str] = set()
     for r in rows:
@@ -668,14 +785,24 @@ def validate_frame(
         empty_n = sum(1 for r in rows if not r.previews)
         if empty_n > 0:
             if thread_previews:
-                _note(
-                    tags,
-                    hard,
-                    "warn:preview_unassigned",
-                    f"多资源里有{empty_n}/{n_groups}个没有预览图（帖面有图未按名分配）",
-                    cause="parse",
-                )
-                tags.append("flag:preview_fail")
+                # 绝大多数已分到图、仅少数缺 → 软提醒，避免整帖误杀
+                if empty_n <= 1 and n_groups >= 8:
+                    _note(
+                        tags,
+                        soft,
+                        "warn:preview_unassigned_minor",
+                        f"多资源里有{empty_n}/{n_groups}个没有预览图（少数缺图，待核）",
+                        cause="parse",
+                    )
+                else:
+                    _note(
+                        tags,
+                        hard,
+                        "warn:preview_unassigned",
+                        f"多资源里有{empty_n}/{n_groups}个没有预览图（帖面有图未按名分配）",
+                        cause="parse",
+                    )
+                    tags.append("flag:preview_fail")
             elif empty_n > n_groups // 2:
                 _note(
                     tags,
@@ -730,11 +857,11 @@ def validate_frame(
                 cause="parse",
             )
 
-        # 单资源多链接数量：ed2k→配额；磁力→V；无对应口径 → 不强制，默认合格
+        # 单资源多链接数量：ed2k→配额硬校验；磁力→V 仅软提醒（一条磁力常含多 V）
         if spec.kind == "single_multi_link" and member_n >= 1:
             link_kind_a = _primary_link_kind(parsed, rows)
             expect_pieces_a, piece_unit_a = _piece_count_expect(
-                pack_blob, link_kind=link_kind_a
+                pack_blob, link_kind=link_kind_a, title=title
             )
             metrics["piece_link_kind"] = link_kind_a
             metrics["title_piece_expect"] = expect_pieces_a
@@ -748,14 +875,58 @@ def validate_frame(
                 metrics["piece_count_match"] = True
             else:
                 unit = piece_unit_a or "份"
-                _note(
-                    tags,
-                    hard,
-                    "warn:piece_count_mismatch",
+                msg = (
                     f"标题写{expect_pieces_a}{unit}，单资源多链接链数仅{member_n}"
-                    f"（少于口径，疑似漏链）",
-                    cause="parse",
+                    f"（少于口径，疑似漏链）"
                 )
+                if link_kind_a == "magnet":
+                    # 磁力 V≠链数常见（一磁多文件），不升结构不合格
+                    _note(
+                        tags,
+                        soft,
+                        "warn:piece_count_mismatch_magnet",
+                        msg,
+                        cause="parse",
+                    )
+                    tags.append("info:magnet_v_soft")
+                elif _CLOUD_SHARE_IN_TITLE_RE.search(pack_blob or ""):
+                    # 115eD2k/夸克/迅雷 混合：配额常含云盘份，勿硬判漏链
+                    _note(
+                        tags,
+                        soft,
+                        "warn:piece_count_mismatch_cloud",
+                        msg,
+                        cause="parse",
+                    )
+                    tags.append("info:cloud_quota_soft")
+                elif member_n < int(expect_pieces_a):
+                    # 标题配额偏高：无附件可补，或附件已下全仍短（以实链为准）
+                    src_zh = "附件" if spec.source == "attach" else "正文"
+                    why = (
+                        "附件已下，以实链为准"
+                        if spec.source == "attach"
+                        else "无附件可补，以实链为准"
+                    )
+                    soft_msg = (
+                        f"标题写{expect_pieces_a}{unit}，{src_zh}链数仅{member_n}"
+                        f"（标题偏高，{why}）"
+                    )
+                    _note(
+                        tags,
+                        soft,
+                        "warn:piece_count_mismatch_title_over",
+                        soft_msg,
+                        cause="missing",
+                    )
+                    tags.append("info:title_quota_overclaim_soft")
+                else:
+                    _note(
+                        tags,
+                        hard,
+                        "warn:piece_count_mismatch",
+                        msg,
+                        cause="parse",
+                    )
 
     for r in rows:
         for s in r.slots:
@@ -769,9 +940,15 @@ def validate_frame(
                     f"「{r.filename[:40]}」{s.message}",
                     cause="parse",
                 )
-            elif not s.ok and s.cause == "parse":
+            elif (
+                not s.ok
+                and s.cause == "parse"
+                and "warn:preview_unassigned_minor" not in tags
+            ):
                 tags.append("flag:preview_fail")
                 tags.append("cause:parse")
+
+    from collections import Counter
 
     from parsers.resource_names import (
         SUBRESOURCE_TITLE_MATCH_FORMS,
@@ -779,36 +956,48 @@ def validate_frame(
     )
 
     wanted = {normalize_structure_label_key(x) for x in SUBRESOURCE_TITLE_MATCH_FORMS}
-    name_labels = 0
-    for m in re.finditer(r"[【［〖「『\[]\s*([^】］〗」』\]]{1,40})\s*[】］〗」』\]]", desc or ""):
-        if normalize_structure_label_key(m.group(1)) in wanted:
-            name_labels += 1
-    if name_labels >= 2 and n_groups == 1:
+    # 同模板常并列【影片名称】+【资源名称】指同一部；仅当同一标签重复出现才像多资源
+    label_hits: Counter[str] = Counter()
+    for m in re.finditer(
+        r"[【［〖「『\[]\s*([^】］〗」』\]]{1,40})\s*[】］〗」』\]]", desc or ""
+    ):
+        key = normalize_structure_label_key(m.group(1))
+        if key in wanted:
+            label_hits[key] += 1
+    repeated = max(label_hits.values(), default=0)
+    if repeated >= 2 and n_groups == 1:
         _note(
             tags,
             hard,
             "warn:multi_label_but_one_group",
-            f"正文里有{name_labels}个资源名称标签，却只入库成1个资源",
+            f"正文里有{repeated}个重复的资源名称标签，却只入库成1个资源",
             cause="parse",
         )
-        metrics["desc_name_labels"] = name_labels
+        metrics["desc_name_labels"] = int(sum(label_hits.values()))
+        metrics["desc_name_label_max_repeat"] = int(repeated)
 
     v_count = _title_v_count(pack_blob)
-    quota_count = _title_quota_count(pack_blob)
+    # 配额展示口径与 piece expect 一致：标题有则用标题
+    quota_count = _title_quota_count(title) if title else None
+    if quota_count is None:
+        quota_count = _title_quota_count(pack_blob)
     metrics["title_v_count"] = v_count
     metrics["title_quota_count"] = quota_count
     if "piece_link_kind" not in metrics:
         metrics["piece_link_kind"] = _primary_link_kind(parsed, rows)
     if "title_piece_expect" not in metrics:
         metrics["title_piece_expect"] = _piece_count_expect(
-            pack_blob, link_kind=str(metrics.get("piece_link_kind") or "")
+            pack_blob,
+            link_kind=str(metrics.get("piece_link_kind") or ""),
+            title=title,
         )[0]
 
     # ---- 容量验收（D1 必填；D2/D3 允许 0；与帖面总量对照）----
-    group_sizes = [r.size for r in rows]
+    group_sizes = [_effective_size(r.size) for r in rows]
     any_size = any(s > 0 for s in group_sizes)
     content_gap = False
     cap_notes: list[str] = []
+    magnet_no_xl = _all_magnet_no_xl(rows)
 
     def _cap_fail(code: str, zh: str) -> None:
         nonlocal content_gap
@@ -816,46 +1005,86 @@ def validate_frame(
         _note(tags, cap_notes, code, zh, cause="parse")
         tags.append("flag:capacity_fail")
 
+    def _cap_soft(code: str, zh: str) -> None:
+        _note(tags, soft, code, zh, cause="missing")
+        tags.append("info:capacity_unverified")
+
     for r in rows:
         for s in r.slots:
             if s.slot == "size" and not s.ok and s.cause == "parse":
-                _cap_fail(
-                    "warn:d1_size_missing",
-                    f"「{r.filename[:40]}」{s.message or '有容量文案但大小为0'}",
-                )
+                if magnet_no_xl and int(r.size or 0) <= 0:
+                    _cap_soft(
+                        "warn:d1_size_missing_magnet",
+                        f"「{r.filename[:40]}」磁力无尺寸来源，未核容量",
+                    )
+                else:
+                    _cap_fail(
+                        "warn:d1_size_missing",
+                        f"「{r.filename[:40]}」{s.message or '有容量文案但大小为0'}",
+                    )
 
     if spec.capacity == "D2":
         pass
     elif pack_size > 0 or spec.capacity == "D1":
         if shape_ab == "A" and group_sizes:
-            g0 = group_sizes[0]
-            if g0 <= 0:
-                _cap_fail(
-                    "warn:d1_size_missing",
-                    f"有容量文案{_fmt_bytes(pack_size) if pack_size else ''}但入库大小为0（D1）",
-                )
+            g0 = _effective_size(group_sizes[0])
+            xl_sum = _member_size_sum(rows[0].members) if rows else 0
+            # 行 size（常为帖面总容量）优先；占位/空时用各链 xl 合计对照
+            cmp = int(g0 or 0) or int(xl_sum or 0)
+            if xl_sum > 0:
+                metrics["row_xl_sum"] = xl_sum
+            if cmp <= 0:
+                if magnet_no_xl:
+                    _cap_soft(
+                        "warn:d1_size_missing_magnet",
+                        f"有容量文案{_fmt_bytes(pack_size) if pack_size else ''}但磁力无尺寸来源，未核容量",
+                    )
+                else:
+                    _cap_fail(
+                        "warn:d1_size_missing",
+                        f"有容量文案{_fmt_bytes(pack_size) if pack_size else ''}但入库大小为0（D1）",
+                    )
             elif pack_size > 0:
                 slack = max(int(pack_size * 0.15), 200 * 1024 * 1024)
-                if abs(g0 - pack_size) > slack:
+                if abs(cmp - pack_size) > slack:
                     _cap_fail(
                         "warn:size_pack_vs_row_mismatch",
                         f"容量不合规：帖子写{_fmt_bytes(pack_size)}，"
-                        f"入库资源写{_fmt_bytes(g0)}",
+                        f"入库资源写{_fmt_bytes(cmp)}",
                     )
         if shape_ab == "B" and group_sizes:
             known = [s for s in group_sizes if s > 0]
             zero_n = sum(1 for s in group_sizes if s <= 0)
             if zero_n == n_groups and pack_size > 0:
-                _cap_fail(
-                    "warn:size_sub_missing_pack_has",
-                    f"帖子写了总容量{_fmt_bytes(pack_size)}，各子资源大小却都是空的",
-                )
-            elif zero_n > 0 and pack_size > 0:
-                _cap_fail(
-                    "warn:size_sub_incomplete",
-                    f"帖子有总容量{_fmt_bytes(pack_size)}，"
-                    f"但{n_groups}个子资源里只有{len(known)}个写出了大小",
-                )
+                if magnet_no_xl:
+                    _cap_soft(
+                        "warn:size_sub_missing_magnet",
+                        f"帖子写了总容量{_fmt_bytes(pack_size)}，磁力无尺寸来源，未核容量",
+                    )
+                else:
+                    _cap_fail(
+                        "warn:size_sub_missing_pack_has",
+                        f"帖子写了总容量{_fmt_bytes(pack_size)}，各子资源大小却都是空的",
+                    )
+            elif zero_n > 0 and pack_size > 0 and not magnet_no_xl:
+                empty_ok = 0
+                for r in rows:
+                    if int(r.size or 0) > 0:
+                        continue
+                    row_desc = next(
+                        (a.description for a in r.members if getattr(a, "description", None)),
+                        "",
+                    )
+                    if _has_empty_size_label(row_desc):
+                        empty_ok += 1
+                if empty_ok >= zero_n:
+                    tags.append("info:empty_size_label_ok")
+                else:
+                    _cap_fail(
+                        "warn:size_sub_incomplete",
+                        f"帖子有总容量{_fmt_bytes(pack_size)}，"
+                        f"但{n_groups}个子资源里只有{len(known)}个写出了大小",
+                    )
             elif known and len(known) == len(group_sizes) and pack_size > 0:
                 total = sum(known)
                 metrics["sub_size_sum"] = total
@@ -941,12 +1170,14 @@ def build_resource_frame(
     """定型 → 填槽 → 验收，一帖一份框架结果。"""
     title = (post_title or parsed.title or "").strip()
     rows = fill_rows(named_groups, parsed, post_title=title)
-    pack_blob = _blob(title, parsed.description or "", _meta_size_text(parsed))
-    pack_size = parse_capacity_bytes(pack_blob)
+    desc = parsed.description or ""
+    meta_size = _meta_size_text(parsed)
+    pack_blob = _blob(title, desc, meta_size)
+    pack_size = _pack_capacity_bytes(title, desc, meta_size)
     # 多资源：忽略「末块大小误进帖级 metadata」造成的假总容量
-    if _pack_size_looks_like_row_echo(pack_size, [r.size for r in rows]):
+    if _pack_size_looks_like_row_echo(pack_size, [_effective_size(r.size) for r in rows]):
         pack_size = 0
-    any_row_size = any(r.size > 0 for r in rows)
+    any_row_size = any(_effective_size(r.size) > 0 for r in rows)
     per_links = [len(r.links) for r in rows]
     spec = classify_frame(
         n_groups=len(rows),

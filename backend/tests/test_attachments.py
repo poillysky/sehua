@@ -966,6 +966,40 @@ def test_single_magnet_body_still_prefers_attachment():
     assert "附件为准" in out.outcome
 
 
+def test_attach_preferred_denied_stubs_not_body_import():
+    """tid=3395138：以附件为准但无权 → stub，勿用正文残链成功入库。"""
+    from workers.thread_outcome import judge_thread_html
+
+    links = "\n".join(
+        f"ed2k://|file|part{i}.mp4|{10_000_000 + i}|{i:032X}|/" for i in range(5)
+    )
+    html = f"""
+    <html><head><title>【ED2K】熊猫班 11V/11配额</title></head>
+    <body>
+      <span id="thread_subject">【ED2K】熊猫班 11V/11配额</span>
+      <div id="postmessage_1">{links}<br>完整版见附件</div>
+      <div class="tattl">
+        <a href="forum.php?mod=attachment&amp;aid=1">www.98T.la@熊猫班.txt</a>
+      </div>
+      Powered by Discuz!
+    </body></html>
+    """
+    html = html + ("<!-- pad -->" * 900)
+    out = judge_thread_html(
+        html,
+        board_fid="95:716",
+        list_title="【ED2K】熊猫班 11V/11配额",
+        preferred_link="ed2k",
+        forum_id="sehuatang",
+        tid=3395138,
+        attachments_already_tried=True,
+        attachment_denied=True,
+        had_attachments=False,
+    )
+    assert out.verdict == "stub"
+    assert out.outcome == "无权限下载附件"
+
+
 def test_password_in_attachment_text_fills_field_and_description():
     """解压密码只在附件语料：字段与描述都要带上。"""
     html = """
@@ -1067,3 +1101,60 @@ def test_truncated_torrent_extension_torren():
 
     assert looks_like_attachment_zone(html) is True
     assert pick_magnet_attachment_kind(base, html) == "torrent"
+
+
+def test_ss_rar_body_samples_still_prefer_attachment():
+    """盖楼帖正文多段 *_ss.rar 样例链 + 【资源名称】：仍走附件优先（单资源附件结构）。"""
+    from workers.thread_outcome import judge_thread_html
+
+    title = "【自转】【115ed2k】TeenMegaWorld 盖楼帖 Wow【121V/30G/121配额】"
+    html = f"""
+    <html><head><title>{title}</title></head>
+    <body>
+      <span id="thread_subject">{title}</span>
+      <div id="postmessage_1">
+        【资源名称】：Wow-Organsms 子系列
+        【资源大小】：121V/30G/121配额
+        ed2k://|file|WOW-Orgasms.com_ss.rar|19263543|6C9B9192C40D03F7CD3F37CD821D7487|/
+      </div>
+      <div id="postmessage_2">
+        【资源名称】：Beauty4K.com 4k 美女
+        【资源大小】：442.89GB/117V/117配额
+        ed2k://|file|Beauty4K.com_ss.rar|56671233|BE2C3007782CDCD427D7461D1B5B01C0|/
+      </div>
+      <div id="postmessage_3">
+        【资源名称】：NylonsX.com 丝袜
+        ed2k://|file|NylonsX.com_ss.rar|16507691|E198F8659B5C63261750A32AEB7D8ADA|/
+      </div>
+      <ignore_js_op>
+        <a href="forum.php?mod=attachment&amp;aid=1">www.98T.la@WOW-Orgasms.com.ed2k.txt</a>
+      </ignore_js_op>
+      Powered by Discuz!
+    </body></html>
+    """
+    html = html + ("<!-- pad -->" * 900)
+    out = judge_thread_html(
+        html,
+        board_fid="95:716",
+        list_title=title,
+        preferred_link="ed2k",
+    )
+    assert out.verdict == "need_attachments"
+    assert out.need_attachments is True
+    assert "附件为准" in out.outcome
+
+
+def test_count_links_and_quota_from_html():
+    from crawler.attachments import _count_importable_links, _quota_expect_from_html
+
+    html = """
+    <html><head><title>合集【42G/40V/4配额】</title></head>
+    <body><span id="thread_subject">合集【42G/40V/4配额】</span></body></html>
+    """
+    assert _quota_expect_from_html(html) == 4
+    text = (
+        "ed2k://|file|a.rar|1|AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA|/\n"
+        "ed2k://|file|b.rar|1|BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB|/"
+    )
+    assert _count_importable_links(text) == 2
+

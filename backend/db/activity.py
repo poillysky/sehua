@@ -80,6 +80,8 @@ def infer_activity_level(message: str) -> str:
         return "error"
     if any(x in msg for x in ("失败", "异常", "错误", "超时")):
         return "error"
+    if "不合格" in msg:
+        return "warn"
     if any(x in msg for x in ("跳过", "保留重试", "待重试", "需登录", "停板", "取消", "停止")):
         return "warn"
     if any(x in msg for x in ("正常入库", "占位入库", "成功", "进站就绪", "已启动")):

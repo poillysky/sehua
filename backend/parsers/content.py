@@ -935,6 +935,9 @@ def _is_bogus_meta_value(key: str, val: str) -> bool:
         # 极短 ASCII 残片才丢；中文短片名（如「油鬼子」3 字）合法
         if len(v) < 2:
             return True
+        # 目录号合法：OM1 / JP12 / A3 等（勿因 len<4 误杀）
+        if re.fullmatch(r"[A-Za-z]{1,6}\d{1,4}[A-Za-z]?", v):
+            return False
         if (
             len(v) < 4
             and not re.search(r"[\u4e00-\u9fffぁ-んァ-ン]", v)
@@ -1400,12 +1403,22 @@ def _name_before_size_label(
     text = re.sub(r"<[^>]+>", " ", window or "")
     text = re.sub(r"&nbsp;", " ", text, flags=re.I)
     text = re.sub(r"\s+", " ", text).strip()
-    # 去掉上一结构字段尾巴
-    text = re.sub(
-        r"^.*?(?:【[^】]{1,40}】|［[^］]{1,40}］)\s*[:：]?\s*",
-        "",
-        text,
-    ).strip()
+    # 优先：紧邻容量前的最后一段【资源格式】（2048 国产常把简介写进格式当片名）
+    fmt_matches = list(
+        re.finditer(r"【\s*资源格式\s*】\s*[:：]?\s*([^\n【]{4,200})", text)
+    )
+    if fmt_matches:
+        text = fmt_matches[-1].group(1).strip()
+    else:
+        # 取最后一个结构字段后的尾巴（勿停在中间的【下载网址】）
+        last = None
+        for m in re.finditer(
+            r"(?:【[^】]{1,40}】|［[^］]{1,40}］)\s*[:：]?\s*",
+            text,
+        ):
+            last = m
+        if last:
+            text = text[last.end() :].strip()
     # 取末段短句
     for sep in ("。", "！", "？", "\n", "；", ";"):
         if sep in text:
@@ -1583,6 +1596,30 @@ def _torrent_name_as_title(raw: str | None) -> str:
     val = re.sub(r"^[:：﹒．.|｜/\\]+", "", val)
     val = re.sub(r"[:：﹒．.|｜/\\]+$", "", val).strip()
     if not val or _is_bogus_meta_value("种子名称", val):
+        return ""
+    return val[:255]
+
+
+# [欧美无码] OM1 AccidentalGangbang... / [亚洲无码] JP3 ...
+_CATALOG_BRACKET_TITLE_RE = re.compile(
+    r"\[\s*[^\]]{1,24}\s*\]\s*"
+    r"("
+    r"[A-Za-z]{1,6}\d{1,4}\b"  # OM1 / JP12
+    r"[^\n【]{0,160}"
+    r")",
+    re.I,
+)
+
+
+def _title_from_catalog_bracket_line(text: str | None) -> str:
+    """无【影片名称】时，取「[分类] 目录号+片名」整行作子名。"""
+    m = _CATALOG_BRACKET_TITLE_RE.search(text or "")
+    if not m:
+        return ""
+    val = (m.group(1) or "").strip()
+    val = re.sub(r"\[XvX\]\s*$", "", val, flags=re.I).strip()
+    val = re.sub(r"\s+", " ", val).strip()
+    if len(val) < 3:
         return ""
     return val[:255]
 
@@ -1901,7 +1938,11 @@ def extract_subresource_blocks_ex(
             text_chunk = re.sub(r"<[^>]+>", " ", raw_chunk or "")
             text_chunk = re.sub(r"&nbsp;", " ", text_chunk, flags=re.I)
             torr = _block_field(text_chunk, *TORRENT_FIELD_FORMS)
-            name = _torrent_name_as_title(torr) or name_fallback
+            name = (
+                _title_from_catalog_bracket_line(text_chunk)
+                or _torrent_name_as_title(torr)
+                or name_fallback
+            )
             if not name:
                 continue
             from parsers.resource_names import clip_subresource_display_name
@@ -2119,8 +2160,10 @@ def _subresource_title_value(
     if label_start is not None and 0 <= label_start < label_end <= len(scope):
         label_blob = re.sub(r"<[^>]+>", "", scope[label_start:label_end])
     if any(x in label_blob for x in ("代号", "代號", "原文", "原片", "套图", "套圖")):
+        # 截断「真名【营销标签】…」；勿砍掉以「【装饰前缀】」开头的片名
+        # （tid=27268283：【套圖名稱】: 【重磅核弹】阿曼达…）
         cut = re.search(r"\s*【", name)
-        if cut:
+        if cut and cut.start() > 0:
             name = name[: cut.start()].strip()
     return clip_subresource_display_name(name)[:255]
 

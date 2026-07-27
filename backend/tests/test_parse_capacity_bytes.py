@@ -44,3 +44,15 @@ def test_context_prefers_size_field_with_volumes():
     pos = blob.index("magnet:")
     _name, size = _context_name_and_size(blob, pos, pos + 20)
     assert size == int(66.7 * 1024**3)
+
+
+def test_resolution_4k_not_kilobytes():
+    """片名里的 4K/8K 分辨率不是 4KB 容量。"""
+    assert parse_capacity_bytes("蓝光4K&1080p") == 0
+    assert parse_capacity_bytes("4K") == 0
+    assert parse_capacity_bytes("8K HDR") == 0
+    # 仍认真正的 KB
+    assert parse_capacity_bytes("512KB") == 512 * 1024
+    title = "【自转】【ed2k】蓝光4K&1080p英语发音【4V/214G/4配额】"
+    assert parse_capacity_bytes(title) == int(214 * 1024**3)
+

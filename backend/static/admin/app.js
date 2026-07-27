@@ -3072,6 +3072,7 @@ function activityLevelClass(level, message = "") {
   let resolved = level;
   if (!resolved || resolved === "info") {
     if (/失败|异常|错误|超时/.test(msg)) resolved = "error";
+    else if (/不合格/.test(msg)) resolved = "warn";
     else if (/跳过|保留重试|待重试|需登录|停板|取消|停止/.test(msg)) resolved = "warn";
     else if (/正常入库|占位入库|成功|进站就绪|已启动/.test(msg)) resolved = "success";
     else resolved = "info";

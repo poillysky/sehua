@@ -526,7 +526,18 @@ async def _run_one(
     label = outcome.get("verdict_label") or verdict
     if removed:
         label = f"{label} · 已删占位"
-    _log_activity(f"已入库重爬结束 · tid={tid} · {label}")
+    from workers.activity_format import format_thread_activity
+
+    # 与抓帖一致：带上 outcome 明细（成功/不合格/链数），避免只显示「正常入库」
+    _log_activity(
+        format_thread_activity(
+            tid,
+            outcome,
+            prefix="已入库重爬结束",
+            queue_note=("已删占位" if removed else ""),
+            soft_browser=bool(outcome.get("soft_browser_retried")),
+        )
+    )
     return {
         "ok": imported or removed,
         "imported": imported,

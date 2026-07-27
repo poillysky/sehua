@@ -57,3 +57,25 @@ def test_random_prefix_dedupes_label():
     assert msg.startswith("随机跳过 tid=9")
     assert " · 跳过 · " not in msg
     assert "非资源帖" in msg
+
+
+def test_recrawl_end_includes_outcome_detail():
+    msg = format_thread_activity(
+        3570827,
+        {
+            "verdict": "import",
+            "verdict_label": "正常入库",
+            "outcome": "不合格：容量 · 形态:单资源多链接 · 链数:8 · 原因:【识别错误】容量不合规：帖子写14.80GB，入库资源写0.0MB",
+            "primary": "ed2k",
+            "link_kind": "ed2k",
+            "board_name": "原创合集",
+            "title": "红玫瑰 珞言",
+            "magnets": 0,
+            "ed2k": 8,
+        },
+        prefix="已入库重爬结束",
+    )
+    assert msg.startswith("已入库重爬结束 tid=3570827")
+    assert "正常入库" in msg
+    assert "不合格：容量" in msg
+    assert "ed2k×8" in msg

@@ -125,7 +125,7 @@ def test_frame_title_count_structure_fail():
 
 
 def test_frame_d1_content_gap_via_validate():
-    """填槽后 size 仍为 0，但帖面有容量文案 → content_gap。"""
+    """磁力无 xl 时 size=0 不硬判容量；有尺寸来源的缺口见 ed2k 用例。"""
     a = _asset("A" * 40, "片子", size=0, prev=["http://a.jpg"])
     row = FrameRow(
         filename="片子",
@@ -145,16 +145,9 @@ def test_frame_d1_content_gap_via_validate():
     )
     parsed = _parsed("片子", [a], description="【资源大小】：66.7GB")
     verdict = validate_frame(spec, [row], parsed, post_title="片子")
-    assert verdict.status == "content_gap"
-    assert "verdict:content_gap" in verdict.tags
-    from parsers.resource_frame import ResourceFrame, format_frame_outcome
-
-    text = format_frame_outcome(
-        "成功：已提取主链",
-        ResourceFrame(spec=spec, rows=[row], verdict=verdict),
-    )
-    assert text.startswith("不合格：容量")
-    assert not text.startswith("成功")
+    assert verdict.status == "ok"
+    assert "info:capacity_unverified" in verdict.tags
+    assert "flag:capacity_fail" not in verdict.tags
 
 
 def test_kind_multi_multi_link():
@@ -293,16 +286,20 @@ def test_ed2k_no_quota_default_ok():
     assert format_frame_outcome("成功：已提取主链", frame).startswith("成功")
 
 
-def test_magnet_v_mismatch_structure_fail():
-    """磁力：链数明显少于标题 NV → 结构不合格。"""
+def test_magnet_v_mismatch_soft_not_structure_fail():
+    """磁力：链数少于标题 NV → 仅软提醒，不升结构不合格（一磁多文件常见）。"""
     title = "精选合集 20V"
     a = _asset("A" * 40, "独立包名", size=1, prev=["http://a.jpg"])
     b = _asset("B" * 40, "独立包名", size=1)
     groups = [("独立包名", a, [a, b])]
     frame = build_resource_frame(_parsed(title, [a, b]), named_groups=groups)
-    assert frame.verdict.status == "structure_fail"
-    assert any("20V" in e or "漏链" in e for e in frame.verdict.hard_errors)
-    assert format_frame_outcome("成功：已提取主链", frame).startswith("不合格")
+    assert frame.verdict.status == "ok"
+    assert "info:magnet_v_soft" in frame.verdict.tags
+    assert any("20V" in w or "漏链" in w for w in frame.verdict.soft_warnings)
+    assert not frame.verdict.hard_errors
+    out = format_frame_outcome("成功：已提取主链", frame)
+    assert out.startswith("待核")
+    assert not out.startswith("不合格")
 
 
 def test_magnet_v_match_ok_even_name_eq_title():
@@ -332,15 +329,17 @@ def test_magnet_no_v_default_ok():
     assert format_frame_outcome("成功：已提取主链", frame).startswith("成功")
 
 
-def test_single_multi_link_fewer_links_than_v_fail():
-    """单资源多链接：链数明显少于标题 NV → 结构不合格。"""
+def test_single_multi_link_fewer_links_than_v_magnet_soft():
+    """单资源多链接磁力：链数明显少于标题 NV → 软提醒，不结构不合格。"""
     title = "精选合集 5V"
     a = _asset("A" * 40, "独立包名", size=1, prev=["http://a.jpg"])
     b = _asset("B" * 40, "独立包名", size=1)
     groups = [("独立包名", a, [a, b])]
     frame = build_resource_frame(_parsed(title, [a, b]), named_groups=groups)
-    assert frame.verdict.status == "structure_fail"
-    assert any("漏链" in e or "链数" in e or "5V" in e for e in frame.verdict.hard_errors)
+    assert frame.verdict.status == "ok"
+    assert "info:magnet_v_soft" in frame.verdict.tags
+    assert any("漏链" in w or "5V" in w for w in frame.verdict.soft_warnings)
+    assert not format_frame_outcome("成功：已提取主链", frame).startswith("不合格")
 
 
 def test_collapsed_multi_name_not_fake_success():
@@ -443,8 +442,9 @@ def test_multi_resource_name_eq_title_fail():
     assert format_frame_outcome("成功：已提取主链", frame).startswith("不合格")
 
 
-def test_capacity_d1_flag():
-    a = _asset("A" * 40, "合集", size=0, prev=["http://x.jpg"])
+def test_capacity_d1_flag_ed2k():
+    """ed2k 有容量文案但 size=0 → 容量不合格。"""
+    a = _ed2k_asset("A" * 32, "合集", size=0, prev=["http://x.jpg"])
     row = FrameRow(
         filename="合集",
         size=0,
@@ -472,7 +472,18 @@ def test_capacity_d1_flag():
     v = validate_frame(
         spec,
         [row],
-        _parsed("合集【66.7GB】", [a], description="【资源大小】：66.7GB"),
+        DualParseResult(
+            tid=1,
+            title="合集【66.7GB】",
+            description="【资源大小】：66.7GB",
+            metadata={},
+            preview_images=[],
+            extract_password="",
+            assets=[a],
+            primary_link_kind="ed2k",
+            layout="",
+            had_attachments=False,
+        ),
         post_title="合集【66.7GB】",
     )
     assert v.status == "content_gap"
@@ -522,3 +533,234 @@ def test_persist_structure_fail_outcome(monkeypatch):
     assert out["import_outcome"].startswith("不合格")
     assert "verdict:structure_fail" in (out.get("parse_tags") or [])
     assert calls and str(calls[0]["import_outcome"]).startswith("不合格")
+
+
+def test_x3p_not_title_expect_count():
+    """Sara x Rio x 3P 是玩法，不是 ×3 资源。"""
+    from parsers.resource_frame import _title_expect_count
+
+    title = "【搬运】【磁力】FC2PPV 4873635 [花絮] Sara x Rio x 3P，内射【7.22GB/1V】"
+    assert _title_expect_count(title) is None
+    a = _asset("A" * 40, "FC2PPV 4873635", size=int(7.22 * 1024**3), prev=["http://a.jpg"])
+    frame = build_resource_frame(_parsed(title, [a]), named_groups=[(a.filename, a, [a])])
+    assert frame.spec.kind == "single_one_link"
+    assert frame.verdict.status == "ok"
+    assert not any("子名未切开" in e for e in frame.verdict.hard_errors)
+
+
+def test_film_and_resource_name_labels_not_multi():
+    """单包模板并列【影片名称】+【资源名称】≠应收多资源。"""
+    title = "2048独家合集 King8【若涵】第2期 4K 无水印【18.5G/20V】"
+    desc = (
+        "【影片名称】：2048独家合集 King8【若涵】第2期 4K 无水印【18.5G/20V】\n"
+        "【影片大小】：18.5G/20V\n"
+        "【资源名称】：King8【若涵】第2期 4K 无水印\n"
+        "【资源类型】：视频\n"
+    )
+    sz = int(18.5 * 1024**3)
+    a = _asset("A" * 40, title, size=0, prev=["http://a.jpg"])
+    a.description = desc
+    frame = build_resource_frame(
+        _parsed(title, [a], description=desc),
+        named_groups=[(title, a, [a])],
+    )
+    assert frame.verdict.status == "ok"
+    assert not any("资源名称标签" in e for e in frame.verdict.hard_errors)
+    assert frame.rows[0].size == sz
+
+
+def test_repeated_film_name_labels_still_fail():
+    """两个【影片名称】却只入库 1 资源 → 仍结构不合格。"""
+    title = "合集帖"
+    desc = "【影片名称】：甲\n【影片大小】：1G\n【影片名称】：乙\n【影片大小】：2G\n"
+    a = _asset("A" * 40, "甲", size=int(1 * 1024**3), prev=["http://a.jpg"])
+    frame = build_resource_frame(
+        _parsed(title, [a], description=desc),
+        named_groups=[("甲", a, [a])],
+    )
+    assert frame.verdict.status == "structure_fail"
+    assert any("重复的资源名称标签" in e for e in frame.verdict.hard_errors)
+
+
+def test_empty_size_label_allows_zero():
+    """【影片大小】：MB（无数字）→ 允许 size=0，不升容量不合格。"""
+    title = "国产合集 [07.08]"
+    a = _asset("A" * 40, "片子甲", size=int(500 * 1024**2), prev=["http://a.jpg"])
+    b = _asset("B" * 40, "片子乙", size=0, prev=["http://b.jpg"])
+    b.description = "【影片名称】：片子乙\n【影片大小】：MB\n【影片格式】：MP4\n"
+    a.description = "【影片名称】：片子甲\n【影片大小】：500MB\n"
+    frame = build_resource_frame(
+        _parsed(title, [a, b], description=a.description + "\n" + b.description),
+        named_groups=[("片子甲", a, [a]), ("片子乙", b, [b])],
+    )
+    assert frame.verdict.status == "ok"
+    assert not any("大小为0" in (w or "") for w in frame.verdict.soft_warnings)
+    assert frame.rows[1].size == 0
+
+
+def test_magnet_no_xl_skips_capacity_hard_fail():
+    """磁力无 xl 且 size=0：即使标题有容量，也不硬判容量不合格。"""
+    title = "欧美合集【23V 28.1GB】"
+    links = [
+        _asset(("A" * 39 + str(i))[-40:], title, size=0, prev=["http://a.jpg"] if i == 0 else None)
+        for i in range(3)
+    ]
+    from parsers.resource_frame import FrameRow, FrameSpec, SlotFill, validate_frame
+
+    row = FrameRow(
+        filename=title,
+        size=0,
+        previews=["http://a.jpg"],
+        links=[x.uri for x in links],
+        hashes=[x.hash for x in links],
+        head=links[0],
+        members=links,
+        slots=[
+            SlotFill("filename", True, title[:40]),
+            SlotFill("links", True, "3条"),
+            SlotFill("previews", True, "1张"),
+            SlotFill("size", False, "0", "parse", "有容量文案但大小为0"),
+        ],
+    )
+    spec = FrameSpec(
+        shape="A",
+        kind="single_multi_link",
+        capacity="D1",
+        source="body",
+    )
+    v = validate_frame(spec, [row], _parsed(title, links), post_title=title)
+    assert v.status == "ok"
+    assert "info:capacity_unverified" in v.tags
+    assert "flag:capacity_fail" not in v.tags
+
+
+def test_pack_size_prefers_gb_over_v_count():
+    """【337V/640G】容量取 640G，勿把 337V 当 GB。"""
+    from parsers.magnet import parse_capacity_bytes
+
+    title = "【115ED2K】【FootsieBabes 合集】【337V/640G/4配额】"
+    assert parse_capacity_bytes(title) == 640 * 1024**3
+    links = []
+    per = int((640 * 1024**3) / 4)
+    for i in range(4):
+        links.append(
+            _ed2k_asset(
+                ("F" * 31 + str(i))[-32:],
+                title,
+                size=per,
+                prev=["http://a.jpg"] if i == 0 else None,
+            )
+        )
+    frame = build_resource_frame(
+        DualParseResult(
+            tid=2770663,
+            title=title,
+            description="",
+            metadata={},
+            preview_images=[],
+            extract_password="",
+            assets=links,
+            primary_link_kind="ed2k",
+            layout="",
+            had_attachments=False,
+        ),
+        named_groups=[(title, links[0], links)],
+    )
+    assert frame.rows[0].size >= int(640 * 1024**3 * 0.95)
+    assert frame.verdict.status == "ok"
+
+
+def test_minor_missing_preview_soft():
+    """多资源仅 1/≥8 缺预览 → 软提醒，不结构不合格。"""
+    assets = []
+    groups = []
+    for i in range(8):
+        name = f"片子{i}"
+        prev = [] if i == 7 else [f"http://p/{i}.jpg"]
+        a = _asset(("X" * 39 + str(i))[-40:], name, size=1024**3, prev=prev)
+        assets.append(a)
+        groups.append((name, a, [a]))
+    frame = build_resource_frame(
+        _parsed("合集", assets, preview_images=["http://thread.jpg"]),
+        named_groups=groups,
+    )
+    assert frame.verdict.status == "ok"
+    assert "warn:preview_unassigned_minor" in frame.verdict.tags
+    assert not frame.verdict.hard_errors
+    assert not format_frame_outcome("成功：已提取", frame).startswith("不合格")
+
+
+def test_n_bu_heji_not_title_expect_count():
+    """「6部合集」是包内片数/片名，不是 ×6 资源名（常配 1配额单链）。"""
+    from parsers.resource_frame import _title_expect_count
+
+    title = "【自转】【百度/115eD2k】付费6部合集（第1弹）绿帽夫妻【6V/6.8GB/1配额】"
+    assert _title_expect_count(title) is None
+    sz = int(6.8 * 1024**3)
+    a = _asset("A" * 40, "mike412约炮合集", size=sz, prev=["http://a.jpg"])
+    a.link_kind = "ed2k"
+    a.uri = f"ed2k://|file|pack.rar|{sz}|{'AA'*16}|/"
+    frame = build_resource_frame(
+        _parsed(title, [a], had_attachments=True),
+        named_groups=[(a.filename, a, [a])],
+        had_attachments=True,
+    )
+    assert frame.spec.kind == "single_one_link"
+    assert frame.verdict.status == "ok"
+    assert not any("子名未切开" in e for e in frame.verdict.hard_errors)
+
+
+def test_placeholder_size_uses_xl_sum():
+    """入库 size=4KB 占位时，用 ed2k xl 合计对照帖称容量。"""
+    from parsers.ed2k import size_from_ed2k_uri
+
+    title = "【自转】【ed2k】蓝光合集【4V/214G/4配额】"
+    pack = int(214 * 1024**3)
+    xl = pack // 4
+    assets = []
+    for i in range(4):
+        h = f"{i:02x}" * 16
+        a = ParsedAsset(
+            link_kind="ed2k",
+            hash=h,
+            filename="蓝光合集",
+            size=4096,
+            uri=f"ed2k://|file|p{i}.rar|{xl}|{h}|/",
+            preview_images=["http://a.jpg"] if i == 0 else [],
+        )
+        a.size = size_from_ed2k_uri(a.uri) or a.size
+        assets.append(a)
+    parsed = _parsed(title, assets)
+    parsed.primary_link_kind = "ed2k"
+    frame = build_resource_frame(
+        parsed, named_groups=[("蓝光合集", assets[0], assets)]
+    )
+    assert frame.verdict.status == "ok"
+    assert not any("容量不合规" in e for e in frame.verdict.hard_errors)
+    assert not any("容量不合规" in e for e in frame.verdict.soft_warnings)
+
+
+def test_resolution_wxh_not_title_expect_count():
+    """【分辨率】1024X576至2048X1152 不是 ×1152 资源（tid=27124261）。"""
+    from parsers.resource_frame import _title_expect_count
+
+    title = "2048独家合集 91【大汉刘备】（60）坦克【1V/4.37G/36分/2K】"
+    desc = (
+        "【影片名称】：" + title + "\n"
+        "【影片大小】：4.37G\n"
+        "【分辨率】：1024X576至2048X1152\n"
+        "【资源数量】：1\n"
+    )
+    assert _title_expect_count(title) is None
+    assert _title_expect_count(title, desc) is None
+
+
+def test_times_xn_ci_not_title_expect_count():
+    """片名「365天×10次」不是 ×10 资源。"""
+    from parsers.resource_frame import _title_expect_count
+
+    title = (
+        "2048独家合集 MIDV-387 小野六花 365天×10次连续射精的我…【1V/19G/118分/4K】"
+    )
+    assert _title_expect_count(title) is None
+

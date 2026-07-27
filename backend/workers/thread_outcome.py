@@ -11,6 +11,7 @@ Outcomes:
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from typing import Literal
 
@@ -58,11 +59,23 @@ VERDICT_LABELS: dict[str, str] = {
 }
 
 
+def _is_body_sample_ed2k(uri: str, *, size: int = 0) -> bool:
+    """正文里的附件样例链（*_ss.rar / 小体积 rar），不当作「多资源结构化正文」。"""
+    u = uri or ""
+    if re.search(r"_ss\.rar", u, re.I):
+        return True
+    if size > 0 and size < 100 * 1024 * 1024 and re.search(r"\.rar\|", u, re.I):
+        return True
+    if re.search(r"预览|樣例|样例", u):
+        return True
+    return False
+
+
 def _body_has_multi_structured_targets(link_corpus: str, *, link_kind: str) -> bool:
     """仅「多资源结构化正文」可跳过附件优先；单资源仍以附件为准。
 
     触发条件（同时满足）：
-    1. 正文独立目标链 ≥ 2（按 hash 去重）
+    1. 正文独立目标链 ≥ 2（按 hash 去重；忽略 *_ss.rar 等样例链）
     2. 【种子名称】≥ 2 或 子标题（影片/资源名等）≥ 2
 
     不触发则保持「正文有链且有附件 → 以附件为准」。
@@ -80,13 +93,18 @@ def _body_has_multi_structured_targets(link_corpus: str, *, link_kind: str) -> b
         from parsers.ed2k import parse_ed2k_text
 
         try:
-            n_links = max(n_links, len({x.hash for x in parse_ed2k_text(text) if x.hash}))
+            real = []
+            for x in parse_ed2k_text(text):
+                if not x.hash:
+                    continue
+                if _is_body_sample_ed2k(x.link or "", size=int(x.size or 0)):
+                    continue
+                real.append(x.hash)
+            n_links = max(n_links, len(set(real)))
         except Exception:
             pass
     if n_links < 2:
         return False
-    import re
-
     seed_n = len(
         re.findall(r"【\s*种子名称|【\s*種子名稱|【\s*种子名稱|【\s*種子名称", text)
     )
@@ -413,6 +431,20 @@ def judge_thread_html(
         )
 
     if has_lz_target:
+        # 「正文有链且有附件，以附件为准」已试过：附件无权/空 → 占位，勿用正文残链当真入库
+        # （tid=3395138：正文仅部分链，完整链在无权附件里）
+        if (
+            attachments_already_tried
+            and looks_like_attachment_zone(html)
+            and not _body_has_multi_structured_targets(link_corpus, link_kind=link_kind)
+            and (
+                attachment_denied
+                or attachment_login_required
+                or attachment_failed
+                or not had_attachments
+            )
+        ):
+            return ThreadOutcome("stub", "无权限下载附件", link_kind, title)
         parsed = parse_thread_dual(
             html,
             tid=0,
@@ -428,9 +460,9 @@ def judge_thread_html(
             if display_title and not title_recognizable(parsed.title):
                 parsed.title = display_title
             # 附件注入后再判成功：文案标「附件」，避免误成「正文含目标链接」
+            # 仅「已尝试附件」不够：空附件回落正文时仍算正文成功
             from_attach = bool(
-                attachments_already_tried
-                or had_attachments
+                had_attachments
                 or "postmessage_attach" in (html or "")
             )
             if outcome_kind == "115share":

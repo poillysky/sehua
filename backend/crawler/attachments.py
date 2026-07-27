@@ -206,6 +206,42 @@ def _text_has_importable_link(text: str) -> bool:
     return "magnet:" in low or "ed2k://" in low
 
 
+def _count_importable_links(text: str) -> int:
+    """语料中可入库链数（ed2k hash / magnet btih 去重）。"""
+    raw = text or ""
+    if not raw.strip():
+        return 0
+    hashes: set[str] = set()
+    for m in re.finditer(r"ed2k://[^\s\"'<>]+", raw, re.I):
+        hm = re.search(r"\|([A-Fa-f0-9]{32})\|", m.group(0))
+        if hm:
+            hashes.add("e:" + hm.group(1).upper())
+    for m in re.finditer(r"btih:([A-Fa-f0-9]{40})", raw, re.I):
+        hashes.add("m:" + m.group(1).upper())
+    return len(hashes)
+
+
+def _quota_expect_from_html(html: str) -> int | None:
+    """从帖标题/一楼取 N配额，供多 txt 附件合并时对照。"""
+    blob = html or ""
+    parts: list[str] = []
+    for pat in (
+        r'id=["\']thread_subject["\'][^>]*>(.*?)</',
+        r"<title[^>]*>([^<]+)</title>",
+        r'id=["\']postmessage_\d+["\'][^>]*>([\s\S]*?)</div>',
+    ):
+        m = re.search(pat, blob, re.I)
+        if m:
+            parts.append(re.sub(r"<[^>]+>", " ", m.group(1)))
+    try:
+        from parsers.resource_frame import _title_quota_count
+
+        return _title_quota_count("\n".join(parts))
+    except Exception:
+        m = re.search(r"(\d+)\s*配额", "\n".join(parts))
+        return int(m.group(1)) if m else None
+
+
 def _pick_best_archive_texts(chunks: list[str]) -> str:
     """合并多文件语料：有 magnet/ed2k 的优先全保留；否则保留全部非空。"""
     cleaned = [c.strip() for c in chunks if c and c.strip()]
@@ -1209,8 +1245,8 @@ class AttachmentDownloader:
     ) -> AttachmentFetchResult:
         """正文无链：按板块主链频次排序后逐个轮询附件。
 
-        已抽到 magnet/ed2k 即停（判定够用）；115sha 等无目标链仍继续试下一附件。
-        压缩包内同样：成员一旦含目标链即返回。
+        压缩包抽到 magnet/ed2k 即停；多个 txt 若标题 N配额尚未凑齐则继续合并
+        （如 2 个 txt 合计 4 配额，勿在首个 txt 停）。
         """
         if not self.session._ready:
             return AttachmentFetchResult(failed=True)
@@ -1227,11 +1263,12 @@ class AttachmentDownloader:
         if passwords:
             log.info("Archive extract passwords from post: %s", passwords[0])
 
+        quota_expect = _quota_expect_from_html(html)
         chunks: list[str] = []
         any_denied = False
         any_login = False
         any_downloaded = False
-        for attachment in attachments:
+        for idx, attachment in enumerate(attachments):
             try:
                 text, denied, downloaded, login_required = await self._download_one(
                     attachment, timeout, passwords=passwords
@@ -1262,6 +1299,24 @@ class AttachmentDownloader:
                     continue
                 chunks.append(text)
                 if _text_has_importable_link(text):
+                    have = _count_importable_links(_pick_best_archive_texts(chunks))
+                    more_txt = any(
+                        a.kind == "txt" for a in attachments[idx + 1 :]
+                    )
+                    # 多 txt 分卷：配额未齐则继续合并
+                    if (
+                        attachment.kind == "txt"
+                        and more_txt
+                        and quota_expect
+                        and have < int(quota_expect)
+                    ):
+                        log.info(
+                            "Attachment %s → %s links < quota %s — continue txt",
+                            attachment.name,
+                            have,
+                            quota_expect,
+                        )
+                        continue
                     log.info(
                         "Attachment %s (%s) → %s chars with magnet/ed2k — stop polling",
                         attachment.name,

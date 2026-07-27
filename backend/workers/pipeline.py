@@ -623,7 +623,12 @@ async def process_thread(
             )
         if attach_tried and attachment_text:
             parsed.had_attachments = True
-        if outcome.verdict == "import" and "附件" in str(outcome.outcome or ""):
+        # 仅「附件」文案不够：attachments_already_tried 时空附件也会写成「附件解析出…」
+        if (
+            outcome.verdict == "import"
+            and "附件" in str(outcome.outcome or "")
+            and bool(attachment_text)
+        ):
             parsed.had_attachments = True
         if adapter.engine == "phpwind":
             from crawler.parser_phpwind import parse_thread_phpwind
