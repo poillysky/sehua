@@ -516,6 +516,58 @@ def is_missing_filename(filename: str | None, *, hash_value: str = "") -> bool:
     return False
 
 
+def is_acceptable_short_title(text: str | None) -> bool:
+    """短片名是否可保留：1～3 字中文、短目录号（OM1），勿因 len<4 误杀。"""
+    t = (text or "").strip()
+    if not t or len(t) > 80:
+        return False
+    if is_hard_dirty_filename(t) or is_dirty_filename(t):
+        return False
+    if len(t) >= 4:
+        return True
+    # 1～3：含中文即可（「甲」「油鬼子」）
+    if re.search(r"[\u4e00-\u9fff]", t):
+        return True
+    # 2～3：拉丁目录号
+    if len(t) >= 2 and re.fullmatch(r"[A-Za-z]{1,8}\d{0,4}[A-Za-z]?", t):
+        return True
+    return False
+
+
+def salvage_short_subresource_name(raw: str | None) -> str:
+    """clip 过空时抢救短中文/目录号（切块漏名的高发点）。"""
+    # 先取首行，再去 markup（sanitize 会把换行压成空格）
+    text = (raw or "").strip().split("\n", 1)[0].strip()
+    text = sanitize_filename_markup(text)
+    text = re.sub(r"^[:：﹒．.|｜/\\]+", "", text)
+    text = re.sub(r"[:：﹒．.|｜/\\]+$", "", text).strip()
+    text = text.strip(" ，,、·•|-")
+    if is_acceptable_short_title(text):
+        return text[:FILENAME_SOFT_MAX]
+    return ""
+
+
+def is_weak_subresource_name(
+    name: str | None,
+    *,
+    post_title: str = "",
+    hash_value: str = "",
+) -> bool:
+    """弱名：空/占位/回落帖标题/过短垃圾 —— 多资源上视为切块未认出真名。"""
+    if is_missing_filename(name, hash_value=hash_value):
+        return True
+    n = (name or "").strip()
+    t = (post_title or "").strip()
+    if t and n == t:
+        return True
+    if len(n) < 1:
+        return True
+    # 短串：无中文且非目录号 → 弱（如单字母 "A"）
+    if len(n) < 4 and not is_acceptable_short_title(n):
+        return True
+    return False
+
+
 def _clean_label_value(raw: str) -> str:
     """清洗标签值；保留片名常见装饰前缀（?? ※ ★ ！！ 等）。"""
     text = sanitize_filename_markup(raw or "")

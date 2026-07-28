@@ -122,7 +122,7 @@ async def _outcome_from_heavy_attachment(
     if attachment_text and should_skip_as_115sha_only(attachment_text):
         return ThreadOutcome(
             "skipped",
-            "115sha 链接（附件，跳过）",
+            "115sha（跳过）",
             link_kind,
             title,
         )
@@ -155,7 +155,7 @@ async def _outcome_from_heavy_attachment(
         )
     return ThreadOutcome(
         "skipped",
-        "未解析到 ed2k/磁力（跳过）",
+        "未解析到目标链（跳过）",
         link_kind,
         title,
         parsed=merged,
@@ -446,7 +446,7 @@ async def process_thread(
                 log.info("tid=%s attachment has 115sha — skip", tid)
                 outcome = ThreadOutcome(
                     "skipped",
-                    "115sha 链接（附件，跳过）",
+                    "115sha（跳过）",
                     outcome.link_kind,
                     outcome.title or list_title,
                 )
@@ -523,7 +523,7 @@ async def process_thread(
                         attachment_text = (attachment_text + "\n" + attach_res2.text).strip()
                         outcome = ThreadOutcome(
                             "skipped",
-                            "115sha 链接（附件，跳过）",
+                            "115sha（跳过）",
                             outcome.link_kind,
                             outcome.title or list_title,
                         )
@@ -654,6 +654,107 @@ async def process_thread(
             title=parsed.title,
             board_fid=board_fid,
         )
+
+        # 正文有链已判 import，但填槽会不合格，且尚未下附件 → 再下附件复判后入库
+        if (
+            persist
+            and outcome.verdict == "import"
+            and not attach_tried
+            and looks_like_attachment_zone(html)
+            and parsed.assets
+        ):
+            from db.persist import preview_frame_outcome
+
+            body_preview = preview_frame_outcome(
+                parsed, import_outcome=str(outcome.outcome or "")
+            )
+            if body_preview.startswith("不合格"):
+                from crawler.attachments import fetch_attachments_for_outcome
+                from parsers.attachments import (
+                    inject_attachment_text,
+                    pick_ed2k_attachment_kind,
+                    pick_magnet_attachment_kind,
+                )
+
+                retry_kind = (attachment_kind or "").strip()
+                if not retry_kind:
+                    if link_pref == "ed2k":
+                        retry_kind = pick_ed2k_attachment_kind(thread_url, html)
+                    else:
+                        retry_kind = pick_magnet_attachment_kind(
+                            thread_url, html, title=str(outcome.title or list_title or "")
+                        )
+                log.info(
+                    "tid=%s body import unqualified (%s) — attachment rejudge kind=%s",
+                    tid,
+                    body_preview.split(" · ", 1)[0],
+                    retry_kind or "?",
+                )
+                if retry_kind:
+                    attach_timeout = float(cfg.get("web_crawler_timeout") or 45)
+                    attach_res = await fetch_attachments_for_outcome(
+                        session,
+                        html=html,
+                        thread_url=thread_url,
+                        attachment_kind=retry_kind,
+                        timeout=max(15.0, attach_timeout),
+                        preferred_link=link_pref,
+                    )
+                    attach_tried = True
+                    attachment_text = attach_res.text or ""
+                    attachment_kind = retry_kind
+                    if attachment_text and not should_skip_as_115sha_only(
+                        attachment_text
+                    ):
+                        heavy = len(attachment_text) >= 24_000
+                        if not heavy:
+                            html = inject_attachment_text(html, attachment_text)
+                        merged = await _parse_dual(
+                            html,
+                            tid=tid,
+                            preferred_link=link_pref,
+                            extra_text=attachment_text,
+                            base_url=thread_url,
+                            board_fid=board_fid,
+                        )
+                        if merged.assets:
+                            from parsers.thread_gates import coalesce_thread_title
+
+                            display = coalesce_thread_title(
+                                list_title, outcome.title, merged.title
+                            ) or (outcome.title or list_title or merged.title or "")
+                            if display and not coalesce_thread_title(merged.title):
+                                merged.title = display
+                            parsed = merged
+                            parsed.had_attachments = True
+                            parsed.description = await asyncio.to_thread(
+                                build_structured_description,
+                                parsed.metadata,
+                                extract_password=parsed.extract_password,
+                                title=parsed.title,
+                                board_fid=board_fid,
+                            )
+                            outcome = ThreadOutcome(
+                                "import",
+                                "成功：附件复判目标链接",
+                                outcome.link_kind,
+                                display,
+                                parsed=parsed,
+                            )
+                            attach_preview = preview_frame_outcome(
+                                parsed, import_outcome=str(outcome.outcome or "")
+                            )
+                            log.info(
+                                "tid=%s attachment rejudge → %s",
+                                tid,
+                                (attach_preview or "成功").split(" · ", 1)[0],
+                            )
+                    elif attachment_text and should_skip_as_115sha_only(attachment_text):
+                        log.info(
+                            "tid=%s attachment rejudge hit 115sha — keep body import",
+                            tid,
+                        )
+
         # 附件无权占位：把附件名写入描述，便于账号重爬识别
         if outcome.verdict == "stub" and "附件" in str(outcome.outcome or ""):
             from parsers.attachments import extract_download_attachments

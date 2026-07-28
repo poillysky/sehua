@@ -1,13 +1,27 @@
-"""资源形态填槽框架：先定型 → 按槽位填 → 结构/容量验收。
+"""资源形态填槽框架：先定型 → 按槽位填 → 验收。
 
 与 docs/资源入库模型.md 对齐。不合格仍可写入，但 outcome 不得以「成功」开头。
 
-形态细类（看帖先判）：
-  single_one_link   单资源单链接
-  single_multi_link 单资源多链接（合集包）
-  multi_one_link    多资源且每名一条链
-  multi_multi_link  多资源且至少一名多链
-  no_link           无可用下载链（F）
+模型（一句话）：
+  单资源 = 只有 1 个资源名的「多资源」（同一套切名/挂链；名数=1）。
+  多资源 = 资源名数 ≥2。
+  核心：名数=1 时别漏链；名数≥2 时别漏资源名。
+
+帖子结构只有两种：
+  single  单资源（一名；链数记在 metrics / 链数:N）
+  multi   多资源（多名）
+  no_link 无可用下载链（F）
+
+硬门前缀见 unqual_outcomes：
+  资源名 — 多资源漏名/切错/不可区分
+  链接   — 漏链或链未进组
+  预览   — 多资源分图失败（漏名旁证）
+  容量   — 多资源标题 vs 子资源文案合计（漏名旁证）；单资源不硬判
+  待核   — 名数=1 时配额≠实链等软存疑
+
+名数=1：资源名可=标题；不用 V；不做 ×N/标签切开硬判（标题×N≠漏切）；
+正文同名标签≥2 却只认出 1 名 → 多资源漏切成单名，归「资源名」硬门报警。
+名数≥2：弱名（过短/占位/=标题）与漏名一并硬判。
 
 填不上时归因：
   cause:parse   识别错误（帖面有线索却没填对）
@@ -34,13 +48,16 @@ SHAPE_LABEL = {
     "F": "无下载链",
 }
 
-# 细类：单/多资源 × 单/多链
+# 帖子结构只有两种（+无链）
 KIND_LABEL = {
-    "single_one_link": "单资源单链接",
-    "single_multi_link": "单资源多链接",
-    "multi_one_link": "多资源单链接",
-    "multi_multi_link": "多资源多链接",
+    "single": "单资源",
+    "multi": "多资源",
     "no_link": "无下载链",
+    # 旧细类兼容读库/旧 outcome
+    "single_one_link": "单资源",
+    "single_multi_link": "单资源",
+    "multi_one_link": "多资源",
+    "multi_multi_link": "多资源",
 }
 
 CAUSE_LABEL = {
@@ -81,7 +98,7 @@ _EMPTY_SIZE_LABEL_RE = re.compile(
 @dataclass(slots=True)
 class FrameSpec:
     shape: str  # A|B|C|F
-    kind: str  # single_one_link | … | no_link
+    kind: str  # single | multi | no_link
     capacity: str  # D1|D2|D3|ok
     source: str  # body|attach
     layout: str = ""
@@ -112,6 +129,8 @@ class FrameRow:
     members: list[ParsedAsset]
     slot_errors: list[str] = field(default_factory=list)
     slots: list[SlotFill] = field(default_factory=list)
+    # 该资源块文案解析出的容量（【影片大小】等）；0=文案无明确数字（不从链接算）
+    label_size: int = 0
 
 
 @dataclass(slots=True)
@@ -156,6 +175,35 @@ def _pack_capacity_bytes(title: str, desc: str = "", meta_size: str = "") -> int
     if t > 0:
         return t
     return parse_capacity_bytes(_blob(title, desc, meta_size))
+
+
+def _title_capacity_bytes(title: str) -> int:
+    """仅标题文案容量（不含正文）。"""
+    got = parse_capacity_bytes(title or "")
+    return got if got > _PLACEHOLDER_SIZE_MAX else 0
+
+
+def _body_capacity_bytes(desc: str = "", meta_size: str = "") -> int:
+    """仅正文/元数据文案容量（不含标题；不从链接 xl 计算）。
+
+    优先【资源大小】/metadata，避免多资源帖里先扫到单部【影片大小】。
+    """
+    if meta_size:
+        got = parse_capacity_bytes(meta_size)
+        if got > _PLACEHOLDER_SIZE_MAX:
+            return got
+    raw = desc or ""
+    m = re.search(
+        r"【\s*资源大小\s*】\s*[:：︰｜|/／·・•‧＝=\-_;；,，]?\s*([^\n【]{1,96})",
+        raw,
+        re.I,
+    )
+    if m:
+        got = parse_capacity_bytes(m.group(1))
+        if got > _PLACEHOLDER_SIZE_MAX:
+            return got
+    got = parse_capacity_bytes(raw)
+    return got if got > _PLACEHOLDER_SIZE_MAX else 0
 
 
 def _uniq(xs: list[str]) -> list[str]:
@@ -304,27 +352,23 @@ def _primary_link_kind(parsed: DualParseResult, rows: list[FrameRow]) -> str:
 
 
 def _piece_count_expect(
-    blob: str, *, link_kind: str, title: str = ""
+    blob: str, *, link_kind: str = "", title: str = ""
 ) -> tuple[int | None, str]:
-    """按主链类型取「应有链数」口径。
+    """取「应有链数」口径：只认 N配额；不用 V（V 极不准）。
 
-    - ed2k：优先 N配额（片数 V 不当链数）；标题有配额时以标题为准
-      （描述【资源大小】常写脏 N配额，勿 max 抬高）
-    - magnet：N V
+    - 标题有配额 → 以标题为准（描述【资源大小】常写脏配额，勿抬高）
+    - 标题无、正文/blob 有 → 用 blob
+    - 无配额 → None（不做强制链数判断；magnet/ed2k 相同）
+    link_kind 保留兼容调用方，不参与口径选择。
     """
-    kind = (link_kind or "").lower()
-    if kind in {"ed2k", "115share"}:
-        if title:
-            q_title = _title_quota_count(title)
-            if q_title is not None:
-                return q_title, "配额"
-        q = _title_quota_count(blob)
-        if q is not None:
-            return q, "配额"
-        return None, ""
-    v = _title_v_count(blob)
-    if v is not None:
-        return v, "V"
+    del link_kind  # 配额口径与主链类型无关
+    if title:
+        q_title = _title_quota_count(title)
+        if q_title is not None:
+            return q_title, "配额"
+    q = _title_quota_count(blob)
+    if q is not None:
+        return q, "配额"
     return None, ""
 
 
@@ -402,14 +446,13 @@ def _recog_hashes(
 
 
 def classify_kind(*, n_groups: int, per_group_links: Sequence[int]) -> str:
-    """看分组结果判定细类。"""
+    """帖子结构：单资源 / 多资源（链数多少不另分形态）。"""
+    del per_group_links  # 链数进 metrics / outcome「链数:N」，不进 kind
     if n_groups <= 0:
         return "no_link"
-    total = sum(int(x) for x in per_group_links)
-    max_per = max((int(x) for x in per_group_links), default=0)
     if n_groups == 1:
-        return "single_multi_link" if total > 1 else "single_one_link"
-    return "multi_multi_link" if max_per > 1 else "multi_one_link"
+        return "single"
+    return "multi"
 
 
 def classify_frame(
@@ -468,7 +511,6 @@ def fill_rows(
     n_groups = len(named_groups)
     thread_previews = [x for x in (parsed.preview_images or []) if x]
     pack_blob = _blob(title, desc, meta_size)
-    pack_has_size_text = parse_capacity_bytes(pack_blob) > 0
     cap_class = _capacity_class(pack_blob)
     rows: list[FrameRow] = []
 
@@ -572,9 +614,8 @@ def fill_rows(
                 SlotFill("previews", True, "0", "missing", "帖面无预览图")
             )
 
-        # 容量槽：本行有可解析容量却仍为 0 → 识别错误；空标签/多资源无本行口径 → 允许 0
-        row_has_claim = label_size > 0
-        row_empty_label = (not row_has_claim) and _has_empty_size_label(row_desc)
+        # 容量槽：只展示；size=0 一律允许（不再因「有文案却为0」自抓回填 bug）
+        row_empty_label = (label_size <= 0) and _has_empty_size_label(row_desc)
         if size > 0:
             slots.append(SlotFill("size", True, _fmt_bytes(size)))
         elif cap_class == "D2":
@@ -585,16 +626,9 @@ def fill_rows(
             slots.append(
                 SlotFill("size", True, "0", "missing", "大小标签无有效数值，允许0")
             )
-        elif row_has_claim:
-            msg = "有容量文案但大小为0"
-            slots.append(SlotFill("size", False, "0", "parse", msg))
-        elif n_groups <= 1 and (pack_has_size_text or cap_class == "D1"):
-            # 单资源：帖面总容量有数却未落到本行
-            msg = "有容量文案但大小为0"
-            slots.append(SlotFill("size", False, "0", "parse", msg))
         else:
             slots.append(
-                SlotFill("size", True, "0", "missing", "全文无容量信息，允许0")
+                SlotFill("size", True, "0", "missing", "未用链上容量核验，允许0")
             )
 
         rows.append(
@@ -608,6 +642,7 @@ def fill_rows(
                 members=list(members),
                 slot_errors=slot_errors,
                 slots=slots,
+                label_size=int(label_size or 0),
             )
         )
     return rows
@@ -666,10 +701,12 @@ def validate_frame(
     else:
         tags.append("cap:D3")
 
+    # 槽位硬错：预览/容量交给后面统一入口，避免同因多条
     for r in rows:
         for e in r.slot_errors:
-            # 预览未分配：多数已分仅少数缺 → 下面按比例降级，先不进 hard
             if "未分到该资源名下" in e or "帖有预览却未填到资源上" in e:
+                continue
+            if "容量" in e or "大小为0" in e:
                 continue
             hard.append(e)
             if "识别错误" in e:
@@ -677,23 +714,12 @@ def validate_frame(
             elif "真没有" in e:
                 tags.append("cause:missing")
 
-    preview_slot_miss = [
-        e
+    preview_slot_miss_n = sum(
+        1
         for r in rows
         for e in r.slot_errors
         if ("未分到该资源名下" in e or "帖有预览却未填到资源上" in e)
-    ]
-    if preview_slot_miss:
-        if len(preview_slot_miss) <= 1 and n_groups >= 8:
-            for e in preview_slot_miss:
-                soft.append(e)
-            tags.append("cause:parse")
-            tags.append("warn:preview_unassigned_minor")
-        else:
-            for e in preview_slot_miss:
-                hard.append(e)
-            tags.append("cause:parse")
-            tags.append("flag:preview_fail")
+    )
 
     kinds: set[str] = set()
     for r in rows:
@@ -746,18 +772,78 @@ def validate_frame(
     metrics["title_expect_n"] = expect_n
     shape_ab = "A" if spec.shape in ("A", "C") else spec.shape
 
+    # 正文名称类标签次数（多资源第一判断用；单资源只记 metrics）
+    from collections import Counter
+
+    from parsers.resource_names import (
+        SUBRESOURCE_TITLE_MATCH_FORMS,
+        normalize_structure_label_key,
+    )
+
+    wanted_labels = {
+        normalize_structure_label_key(x) for x in SUBRESOURCE_TITLE_MATCH_FORMS
+    }
+    label_hits: Counter[str] = Counter()
+    for m in re.finditer(
+        r"[【［〖「『\[]\s*([^】］〗」』\]]{1,40})\s*[】］〗」』\]]", desc or ""
+    ):
+        key = normalize_structure_label_key(m.group(1))
+        if key in wanted_labels:
+            label_hits[key] += 1
+    label_repeat = max(label_hits.values(), default=0)
+    if label_repeat >= 2:
+        metrics["desc_name_labels"] = int(sum(label_hits.values()))
+        metrics["desc_name_label_max_repeat"] = int(label_repeat)
+
     if shape_ab == "B" and n_groups >= 2:
+        # ---------- 多资源第一判断：别漏资源名 ----------
+        name_split_noted = False
+        # 1) 标题 ×N 与入库名数
+        if expect_n is not None and n_groups != expect_n:
+            _note(
+                tags,
+                hard,
+                "warn:title_count_mismatch",
+                f"标题写×{expect_n}个资源，实际入库{n_groups}个资源名（漏资源名）",
+                cause="parse",
+            )
+            name_split_noted = True
+        # 2) 正文同名标签次数 > 入库名数 → 漏名
+        if label_repeat >= 2 and n_groups < int(label_repeat):
+            _note(
+                tags,
+                hard,
+                "warn:multi_label_under_split",
+                f"正文有{label_repeat}个重复的资源名称标签，"
+                f"实际只入库{n_groups}个资源名（漏资源名）",
+                cause="parse",
+            )
+            name_split_noted = True
+        # 3) 每个资源名下须有链（有名无链也算该名未立住）
+        empty_link_n = sum(1 for r in rows if not r.links)
+        if empty_link_n > 0:
+            _note(
+                tags,
+                hard,
+                "warn:multi_resource_missing_link",
+                f"多资源里有{empty_link_n}/{n_groups}个资源名下没有下载链（漏资源名/未立住）",
+                cause="parse",
+            )
+            name_split_noted = True
+        # 4) 子名可区分：不重复、≠帖标题；弱名（过短/占位）= 未认出真名
+        from parsers.resource_names import is_weak_subresource_name
+
         names = [r.filename for r in rows]
         if len(set(names)) < len(names):
             _note(
                 tags,
                 hard,
                 "warn:dup_resource_name",
-                "多资源存在重复资源名（一名一行违规）",
+                "多资源存在重复资源名（一名一行违规，漏区分）",
                 cause="parse",
             )
+            name_split_noted = True
         if title:
-            # 多资源：标题与资源名理论应区分；任一名=帖标题 → 结构不合格
             same_title = sum(1 for r in rows if (r.filename or "").strip() == title)
             if same_title > 0:
                 _note(
@@ -765,71 +851,149 @@ def validate_frame(
                     hard,
                     "warn:filename_fallback_title",
                     f"多资源有{same_title}/{n_groups}个资源名等于帖标题，"
-                    "标题与子名应区分（可能没识别出真正片名）",
+                    "标题与子名应区分（漏识别真正片名）",
                     cause="parse",
                 )
+                name_split_noted = True
+        weak_n = sum(
+            1
+            for r in rows
+            if is_weak_subresource_name(
+                r.filename,
+                post_title=title,
+                hash_value=(r.hashes[0] if r.hashes else ""),
+            )
+        )
+        if weak_n > 0:
+            _note(
+                tags,
+                hard,
+                "warn:weak_subresource_name",
+                f"多资源有{weak_n}/{n_groups}个资源名过短或占位（切块未认出真名）",
+                cause="parse",
+            )
+            name_split_noted = True
+        metrics["name_split_noted"] = name_split_noted
+        if not name_split_noted:
+            tags.append("info:multi_resources_recognized")
 
+        # ---------- 旁证：分图 / 文案大小（服务于别漏资源名）----------
         nonempty = [
             _preview_tuple(r.previews) for r in rows if _preview_tuple(r.previews)
         ]
+        empty_n = sum(1 for r in rows if not r.previews)
         if nonempty and len({p for p in nonempty}) <= 1:
             _note(
                 tags,
                 hard,
                 "warn:shared_preview",
-                "多资源预览图完全相同，可能没按片名分开配图",
+                "多资源预览图完全相同，未按资源名分开配图（漏资源名旁证）",
                 cause="parse",
             )
             tags.append("flag:preview_fail")
-
-        empty_n = sum(1 for r in rows if not r.previews)
-        if empty_n > 0:
-            if thread_previews:
-                # 绝大多数已分到图、仅少数缺 → 软提醒，避免整帖误杀
-                if empty_n <= 1 and n_groups >= 8:
-                    _note(
-                        tags,
-                        soft,
-                        "warn:preview_unassigned_minor",
-                        f"多资源里有{empty_n}/{n_groups}个没有预览图（少数缺图，待核）",
-                        cause="parse",
-                    )
-                else:
-                    _note(
-                        tags,
-                        hard,
-                        "warn:preview_unassigned",
-                        f"多资源里有{empty_n}/{n_groups}个没有预览图（帖面有图未按名分配）",
-                        cause="parse",
-                    )
-                    tags.append("flag:preview_fail")
-            elif empty_n > n_groups // 2:
+        elif empty_n > 0 and thread_previews:
+            if empty_n <= 1 and n_groups >= 8:
                 _note(
                     tags,
                     soft,
-                    "warn:many_empty_preview",
-                    f"多资源里有{empty_n}/{n_groups}个没有预览图（帖面也无图，属真没有）",
-                    cause="missing",
+                    "warn:preview_unassigned_minor",
+                    f"多资源里有{empty_n}/{n_groups}个没有预览图（少数缺图，待核）",
+                    cause="parse",
                 )
-
-        if expect_n is not None and n_groups != expect_n:
+            else:
+                _note(
+                    tags,
+                    hard,
+                    "warn:preview_unassigned",
+                    f"多资源里有{empty_n}/{n_groups}个没有预览图"
+                    "（未按资源名分配，漏资源名旁证）",
+                    cause="parse",
+                )
+                tags.append("flag:preview_fail")
+        elif empty_n > n_groups // 2 and not thread_previews:
             _note(
                 tags,
-                hard,
-                "warn:title_count_mismatch",
-                f"标题写×{expect_n}个资源，实际入库{n_groups}个资源名",
-                cause="parse",
+                soft,
+                "warn:many_empty_preview",
+                f"多资源里有{empty_n}/{n_groups}个没有预览图（帖面也无图，属真没有）",
+                cause="missing",
             )
+
+        # 每资源文案容量：部分有部分无 / 与文案不一致 → 漏名旁证
+        label_sizes = [int(getattr(r, "label_size", 0) or 0) for r in rows]
+        has_label_n = sum(1 for s in label_sizes if s > 0)
+        metrics["row_label_sizes"] = label_sizes
+        if has_label_n > 0:
+            mismatch_n = 0
+            for r, lab in zip(rows, label_sizes):
+                if lab <= 0:
+                    continue
+                got = _effective_size(r.size)
+                slack = max(int(lab * 0.15), 200 * 1024 * 1024)
+                if got <= 0 or abs(got - lab) > slack:
+                    mismatch_n += 1
+            if mismatch_n > 0:
+                _note(
+                    tags,
+                    hard,
+                    "warn:row_size_vs_label",
+                    f"多资源有{mismatch_n}/{has_label_n}个资源大小与该资源文案不一致（漏资源名旁证）",
+                    cause="parse",
+                )
+            missing_label_n = n_groups - has_label_n
+            if missing_label_n > 0 and has_label_n >= 1:
+                empty_ok = 0
+                for r, lab in zip(rows, label_sizes):
+                    if lab > 0:
+                        continue
+                    row_desc = next(
+                        (
+                            a.description
+                            for a in r.members
+                            if getattr(a, "description", None)
+                        ),
+                        "",
+                    )
+                    if _has_empty_size_label(row_desc):
+                        empty_ok += 1
+                if empty_ok < missing_label_n:
+                    _note(
+                        tags,
+                        hard,
+                        "warn:row_label_size_incomplete",
+                        f"多资源里有{missing_label_n}/{n_groups}个资源文案未写出大小"
+                        f"（漏资源名旁证）",
+                        cause="parse",
+                    )
+
+        # 标题容量 vs 子资源文案合计（闭合，旁证漏名）
+        title_cap_multi = _title_capacity_bytes(title)
+        if title_cap_multi > 0 and has_label_n == n_groups and n_groups >= 2:
+            sub_sum = sum(label_sizes)
+            metrics["sub_label_size_sum"] = sub_sum
+            slack = max(int(max(title_cap_multi, sub_sum) * 0.15), 200 * 1024 * 1024)
+            if abs(sub_sum - title_cap_multi) > slack:
+                _note(
+                    tags,
+                    hard,
+                    "warn:title_vs_sub_label_capacity",
+                    f"标题容量{_fmt_bytes(title_cap_multi)}，"
+                    f"各子资源文案合计{_fmt_bytes(sub_sum)}（不一致，漏资源名旁证）",
+                    cause="parse",
+                )
+            else:
+                tags.append("info:title_sub_label_capacity_match")
 
     elif shape_ab == "A" and n_groups == 1:
         r0 = rows[0]
         member_n = len(r0.members)
-        if len(r0.previews) > 5:
+        # 预览：单资源一条入口（槽位 miss 不另打）
+        if not r0.previews and thread_previews and preview_slot_miss_n > 0:
             _note(
                 tags,
                 hard,
-                "warn:preview_gt5",
-                f"单资源预览超过5张（{len(r0.previews)}），模板上限5",
+                "warn:preview_unassigned",
+                "帖有预览却未填到资源上",
                 cause="parse",
             )
             tags.append("flag:preview_fail")
@@ -842,91 +1006,51 @@ def validate_frame(
                 cause="missing",
             )
 
-        # 单资源：资源名可以等于帖标题
+        # 单资源：资源名可以等于帖标题；不做 ×N / 重复名称标签切开硬判
         name_eq_title = bool(title) and (r0.filename or "").strip() == title
         if name_eq_title:
             tags.append("info:pack_name_is_title")
-
-        # 标题×N 却只填出 1 名单链 → 仍结构不合格（子名未切开）
-        if expect_n is not None and expect_n >= 2 and spec.kind == "single_one_link":
+        if label_repeat >= 2:
+            tags.append("info:multi_label_skip_single")
+            # 正文同名标签≥2 却只认出 1 名 = 多资源漏切成单名
+            # 归多资源「别漏资源名」硬门（不合格：资源名），不是单资源待核
+            # 标题 ×N 常表示包内片数，不作漏切线索
             _note(
                 tags,
                 hard,
-                "warn:title_xn_but_shape_A",
-                f"标题写×{expect_n}个资源，却只填出1名单链（子名未切开）",
+                "warn:split_collapse_suspect",
+                f"正文重复名称标签×{label_repeat}，却只认出1个资源名"
+                "（多资源漏切成单名）",
                 cause="parse",
             )
 
-        # 单资源多链接数量：ed2k→配额硬校验；磁力→V 仅软提醒（一条磁力常含多 V）
-        if spec.kind == "single_multi_link" and member_n >= 1:
-            link_kind_a = _primary_link_kind(parsed, rows)
-            expect_pieces_a, piece_unit_a = _piece_count_expect(
-                pack_blob, link_kind=link_kind_a, title=title
+        # 单资源核心：别漏链 —— 有 N配额才对照链数（单链/多链都核；无配额不强制；不用 V）
+        link_kind_a = _primary_link_kind(parsed, rows)
+        expect_pieces_a, piece_unit_a = _piece_count_expect(
+            pack_blob, link_kind=link_kind_a, title=title
+        )
+        metrics["piece_link_kind"] = link_kind_a
+        metrics["title_piece_expect"] = expect_pieces_a
+        if expect_pieces_a is None:
+            tags.append("info:no_quota_skip_count")
+        elif _count_matches(member_n, expect_pieces_a):
+            tags.append("info:piece_count_match")
+            metrics["piece_count_match"] = True
+        else:
+            unit = piece_unit_a or "配额"
+            src_zh = "附件" if spec.source == "attach" else "正文"
+            msg = (
+                f"标题写{expect_pieces_a}{unit}，{src_zh}链数仅{member_n}"
+                f"（漏链，待核）"
             )
-            metrics["piece_link_kind"] = link_kind_a
-            metrics["title_piece_expect"] = expect_pieces_a
-            if expect_pieces_a is None:
-                if link_kind_a in {"ed2k", "115share"}:
-                    tags.append("info:no_quota_skip_count")
-                else:
-                    tags.append("info:no_v_skip_count")
-            elif _count_matches(member_n, expect_pieces_a):
-                tags.append("info:piece_count_match")
-                metrics["piece_count_match"] = True
-            else:
-                unit = piece_unit_a or "份"
-                msg = (
-                    f"标题写{expect_pieces_a}{unit}，单资源多链接链数仅{member_n}"
-                    f"（少于口径，疑似漏链）"
-                )
-                if link_kind_a == "magnet":
-                    # 磁力 V≠链数常见（一磁多文件），不升结构不合格
-                    _note(
-                        tags,
-                        soft,
-                        "warn:piece_count_mismatch_magnet",
-                        msg,
-                        cause="parse",
-                    )
-                    tags.append("info:magnet_v_soft")
-                elif _CLOUD_SHARE_IN_TITLE_RE.search(pack_blob or ""):
-                    # 115eD2k/夸克/迅雷 混合：配额常含云盘份，勿硬判漏链
-                    _note(
-                        tags,
-                        soft,
-                        "warn:piece_count_mismatch_cloud",
-                        msg,
-                        cause="parse",
-                    )
-                    tags.append("info:cloud_quota_soft")
-                elif member_n < int(expect_pieces_a):
-                    # 标题配额偏高：无附件可补，或附件已下全仍短（以实链为准）
-                    src_zh = "附件" if spec.source == "attach" else "正文"
-                    why = (
-                        "附件已下，以实链为准"
-                        if spec.source == "attach"
-                        else "无附件可补，以实链为准"
-                    )
-                    soft_msg = (
-                        f"标题写{expect_pieces_a}{unit}，{src_zh}链数仅{member_n}"
-                        f"（标题偏高，{why}）"
-                    )
-                    _note(
-                        tags,
-                        soft,
-                        "warn:piece_count_mismatch_title_over",
-                        soft_msg,
-                        cause="missing",
-                    )
-                    tags.append("info:title_quota_overclaim_soft")
-                else:
-                    _note(
-                        tags,
-                        hard,
-                        "warn:piece_count_mismatch",
-                        msg,
-                        cause="parse",
-                    )
+            code = "warn:piece_count_mismatch_soft"
+            if _CLOUD_SHARE_IN_TITLE_RE.search(pack_blob or ""):
+                code = "warn:piece_count_mismatch_cloud"
+                tags.append("info:cloud_quota_soft")
+            elif member_n < int(expect_pieces_a):
+                code = "warn:piece_count_mismatch_title_over"
+                tags.append("info:title_quota_overclaim_soft")
+            _note(tags, soft, code, msg, cause="parse")
 
     for r in rows:
         for s in r.slots:
@@ -943,38 +1067,12 @@ def validate_frame(
             elif (
                 not s.ok
                 and s.cause == "parse"
+                and "warn:preview_unassigned" not in tags
                 and "warn:preview_unassigned_minor" not in tags
+                and "warn:shared_preview" not in tags
             ):
                 tags.append("flag:preview_fail")
                 tags.append("cause:parse")
-
-    from collections import Counter
-
-    from parsers.resource_names import (
-        SUBRESOURCE_TITLE_MATCH_FORMS,
-        normalize_structure_label_key,
-    )
-
-    wanted = {normalize_structure_label_key(x) for x in SUBRESOURCE_TITLE_MATCH_FORMS}
-    # 同模板常并列【影片名称】+【资源名称】指同一部；仅当同一标签重复出现才像多资源
-    label_hits: Counter[str] = Counter()
-    for m in re.finditer(
-        r"[【［〖「『\[]\s*([^】］〗」』\]]{1,40})\s*[】］〗」』\]]", desc or ""
-    ):
-        key = normalize_structure_label_key(m.group(1))
-        if key in wanted:
-            label_hits[key] += 1
-    repeated = max(label_hits.values(), default=0)
-    if repeated >= 2 and n_groups == 1:
-        _note(
-            tags,
-            hard,
-            "warn:multi_label_but_one_group",
-            f"正文里有{repeated}个重复的资源名称标签，却只入库成1个资源",
-            cause="parse",
-        )
-        metrics["desc_name_labels"] = int(sum(label_hits.values()))
-        metrics["desc_name_label_max_repeat"] = int(repeated)
 
     v_count = _title_v_count(pack_blob)
     # 配额展示口径与 piece expect 一致：标题有则用标题
@@ -992,139 +1090,34 @@ def validate_frame(
             title=title,
         )[0]
 
-    # ---- 容量验收（D1 必填；D2/D3 允许 0；与帖面总量对照）----
+    # ---- 容量：多资源已在上面用「子资源文案合计 vs 标题」做漏识别闭合；此处不再用链 xl ----
     group_sizes = [_effective_size(r.size) for r in rows]
     any_size = any(s > 0 for s in group_sizes)
+    title_cap = _title_capacity_bytes(title)
+    body_cap = _body_capacity_bytes(desc, meta_size)
+    metrics["title_capacity"] = title_cap or None
+    metrics["body_capacity"] = body_cap or None
     content_gap = False
-    cap_notes: list[str] = []
-    magnet_no_xl = _all_magnet_no_xl(rows)
-
-    def _cap_fail(code: str, zh: str) -> None:
-        nonlocal content_gap
-        content_gap = True
-        _note(tags, cap_notes, code, zh, cause="parse")
-        tags.append("flag:capacity_fail")
-
-    def _cap_soft(code: str, zh: str) -> None:
-        _note(tags, soft, code, zh, cause="missing")
-        tags.append("info:capacity_unverified")
-
-    for r in rows:
-        for s in r.slots:
-            if s.slot == "size" and not s.ok and s.cause == "parse":
-                if magnet_no_xl and int(r.size or 0) <= 0:
-                    _cap_soft(
-                        "warn:d1_size_missing_magnet",
-                        f"「{r.filename[:40]}」磁力无尺寸来源，未核容量",
-                    )
-                else:
-                    _cap_fail(
-                        "warn:d1_size_missing",
-                        f"「{r.filename[:40]}」{s.message or '有容量文案但大小为0'}",
-                    )
-
-    if spec.capacity == "D2":
-        pass
-    elif pack_size > 0 or spec.capacity == "D1":
-        if shape_ab == "A" and group_sizes:
-            g0 = _effective_size(group_sizes[0])
-            xl_sum = _member_size_sum(rows[0].members) if rows else 0
-            # 行 size（常为帖面总容量）优先；占位/空时用各链 xl 合计对照
-            cmp = int(g0 or 0) or int(xl_sum or 0)
-            if xl_sum > 0:
-                metrics["row_xl_sum"] = xl_sum
-            if cmp <= 0:
-                if magnet_no_xl:
-                    _cap_soft(
-                        "warn:d1_size_missing_magnet",
-                        f"有容量文案{_fmt_bytes(pack_size) if pack_size else ''}但磁力无尺寸来源，未核容量",
-                    )
-                else:
-                    _cap_fail(
-                        "warn:d1_size_missing",
-                        f"有容量文案{_fmt_bytes(pack_size) if pack_size else ''}但入库大小为0（D1）",
-                    )
-            elif pack_size > 0:
-                slack = max(int(pack_size * 0.15), 200 * 1024 * 1024)
-                if abs(cmp - pack_size) > slack:
-                    _cap_fail(
-                        "warn:size_pack_vs_row_mismatch",
-                        f"容量不合规：帖子写{_fmt_bytes(pack_size)}，"
-                        f"入库资源写{_fmt_bytes(cmp)}",
-                    )
-        if shape_ab == "B" and group_sizes:
-            known = [s for s in group_sizes if s > 0]
-            zero_n = sum(1 for s in group_sizes if s <= 0)
-            if zero_n == n_groups and pack_size > 0:
-                if magnet_no_xl:
-                    _cap_soft(
-                        "warn:size_sub_missing_magnet",
-                        f"帖子写了总容量{_fmt_bytes(pack_size)}，磁力无尺寸来源，未核容量",
-                    )
-                else:
-                    _cap_fail(
-                        "warn:size_sub_missing_pack_has",
-                        f"帖子写了总容量{_fmt_bytes(pack_size)}，各子资源大小却都是空的",
-                    )
-            elif zero_n > 0 and pack_size > 0 and not magnet_no_xl:
-                empty_ok = 0
-                for r in rows:
-                    if int(r.size or 0) > 0:
-                        continue
-                    row_desc = next(
-                        (a.description for a in r.members if getattr(a, "description", None)),
-                        "",
-                    )
-                    if _has_empty_size_label(row_desc):
-                        empty_ok += 1
-                if empty_ok >= zero_n:
-                    tags.append("info:empty_size_label_ok")
-                else:
-                    _cap_fail(
-                        "warn:size_sub_incomplete",
-                        f"帖子有总容量{_fmt_bytes(pack_size)}，"
-                        f"但{n_groups}个子资源里只有{len(known)}个写出了大小",
-                    )
-            elif known and len(known) == len(group_sizes) and pack_size > 0:
-                total = sum(known)
-                metrics["sub_size_sum"] = total
-                slack = max(int(pack_size * 0.2), 500 * 1024 * 1024)
-                if abs(total - pack_size) > slack:
-                    _cap_fail(
-                        "warn:size_sum_mismatch",
-                        f"容量不合规：帖子总容量{_fmt_bytes(pack_size)}，"
-                        f"各子资源合计{_fmt_bytes(total)}",
-                    )
-    elif not any_size:
+    # 多资源容量闭合已进 hard（漏识别）；不再单独 content_gap 打「不合格：容量」
+    if shape_ab != "B" and not any_size:
         _note(
             tags,
             soft,
             "warn:size_missing_ok",
-            "全文无容量信息，大小为0（属真没有，允许）",
+            "全文无容量信息或未核链上容量，大小为0（允许）",
+            cause="missing",
+        )
+    elif shape_ab == "B" and not any_size and not metrics.get("row_label_sizes"):
+        _note(
+            tags,
+            soft,
+            "warn:size_missing_ok",
+            "多资源文案未写出容量（允许；有标题容量时已在识别门核对）",
             cause="missing",
         )
 
-    for msg in cap_notes:
-        soft.append(msg)
-    if content_gap and "cap:D1" not in tags and (pack_size > 0 or spec.capacity == "D1"):
-        tags.extend(["cap:D1", "cap:text_present"])
-
-    if spec.kind == "single_one_link" and uri_sum > 1:
-        _note(
-            tags,
-            hard,
-            "warn:kind_template_mismatch",
-            "定型为单资源单链接，但填出多条链",
-            cause="parse",
-        )
-    if spec.kind == "multi_one_link" and any(len(r.links) > 1 for r in rows):
-        _note(
-            tags,
-            hard,
-            "warn:kind_template_mismatch",
-            "定型为多资源单链接，但有资源名下出现多链",
-            cause="parse",
-        )
+    # 定型与名数一致性已由 single/multi 表达；链数多少不再单独打「细类不符」
+    # （单资源可多名链；多资源可每名多链）
 
     hard = _uniq(hard)
     soft = _uniq(soft)
@@ -1144,7 +1137,7 @@ def validate_frame(
         tags.append("verdict:ok")
         if soft:
             tags.append("flag:needs_rule")
-            # 软提醒里的识别错误：outcome 用「待核」，tags 标 review，便于与干净成功分开筛
+            # 软提醒里的识别错误：outcome「不合格：待核」，tags 标 review
             if any(str(w).startswith("【识别错误】") for w in soft):
                 tags.append("verdict:review")
 
@@ -1203,7 +1196,9 @@ def build_resource_frame(
 
 
 def format_frame_outcome(base_tip: str, frame: ResourceFrame) -> str:
-    """拼 import_outcome：不合格不得以「成功」开头；展示细类形态。"""
+    """拼 import_outcome：不合格不得以「成功」开头；种类为资源名/链接/预览/容量。"""
+    from parsers.unqual_outcomes import classify_unqual_kind
+
     v = frame.verdict
     label = KIND_LABEL.get(frame.spec.kind) or SHAPE_LABEL.get(
         frame.spec.shape, frame.spec.shape
@@ -1220,7 +1215,8 @@ def format_frame_outcome(base_tip: str, frame: ResourceFrame) -> str:
     tip = (base_tip or "").strip()
     if v.status == "structure_fail":
         reasons = v.hard_errors[:2]
-        parts = ["不合格：结构", f"形态:{label}"]
+        kind = classify_unqual_kind(status=v.status, errors=list(v.hard_errors or []))
+        parts = [kind, f"形态:{label}"]
         if link_part:
             parts.append(link_part)
         if reasons:
@@ -1228,15 +1224,20 @@ def format_frame_outcome(base_tip: str, frame: ResourceFrame) -> str:
         elif tip and not tip.startswith("成功") and not tip.startswith("待核"):
             parts.append(tip)
     elif v.status == "content_gap":
-        parts = ["不合格：容量", f"形态:{label}"]
+        kind = classify_unqual_kind(
+            status=v.status,
+            errors=list(v.hard_errors or []) or list(v.soft_warnings or []),
+        )
+        parts = [kind, f"形态:{label}"]
         if link_part:
             parts.append(link_part)
-        # content_gap 的原因在 soft_warnings / hard 均可
         reasons = (v.hard_errors or [])[:2] or (v.soft_warnings or [])[:2]
         if reasons:
             parts.append("原因:" + "；".join(reasons))
     else:
-        # 结构过硬门，但软提醒含【识别错误】→ 待核（勿与干净「成功」混在一起大海捞针）
+        # 软提醒含【识别错误】→ 不合格：待核（兜底，非 100% 确认）
+        from parsers.unqual_outcomes import UNQUAL_REVIEW
+
         parse_soft = [
             w for w in (v.soft_warnings or []) if str(w).startswith("【识别错误】")
         ]
@@ -1244,20 +1245,14 @@ def format_frame_outcome(base_tip: str, frame: ResourceFrame) -> str:
             w for w in (v.soft_warnings or []) if str(w).startswith("【真没有】")
         ]
         if parse_soft:
-            body = tip
-            for pref in ("成功：", "成功", "待核："):
-                if body.startswith(pref):
-                    body = body[len(pref) :].lstrip("：: ").strip()
-                    break
-            head = f"待核：{body}" if body else "待核：识别存疑"
-            parts = [head, f"形态:{label}"]
+            parts = [UNQUAL_REVIEW, f"形态:{label}"]
             if link_part:
                 parts.append(link_part)
             parts.append("原因:" + "；".join(parse_soft[:2]))
         else:
             if tip.startswith("成功") or not tip:
                 head = tip if tip.startswith("成功") else (tip or "成功：已提取主链")
-            elif tip.startswith("待核"):
+            elif tip.startswith("待核") or tip.startswith("不合格："):
                 head = tip
             else:
                 head = tip if "成功" in tip else f"成功：{tip}"

@@ -47,4 +47,5 @@ def test_title_capacity_beats_desc_dirty_size():
     assert frame.verdict.status == "ok"
     assert not any("容量不合规" in e for e in frame.verdict.hard_errors)
     out = format_frame_outcome("成功：附件解析出目标链接", frame)
-    assert not out.startswith("不合格")
+    assert out.startswith("成功") or out.startswith("不合格：待核")
+    assert not out.startswith("不合格：容量")

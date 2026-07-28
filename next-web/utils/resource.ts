@@ -344,19 +344,16 @@ export function linkMatchesResourceHash(
 }
 
 /**
- * 一 hash 一条资源：只保留属于本 hash 的链接。
- * 合集帖旧数据可能把整帖多链写进 rs.ed2k_links，会盖住正确的 r.ed2k_link。
+ * 入库按资源名称：本行 ed2k_links 即该资源下全部链（可多 hash）。
+ * 主链 fallback 补全；去重保序。不再按 hash 滤掉同资源其它链。
  */
 export function linksForResourceHash(
   hash: string | null | undefined,
   ed2kLinks?: string[] | null,
   fallbackLink?: string | null,
 ): string[] {
-  const h = (hash || "").trim().toUpperCase();
   const primary = (fallbackLink || "").trim();
-  const fromMeta = normalizeEd2kLinks(ed2kLinks, null).filter((link) =>
-    linkMatchesResourceHash(link, h),
-  );
+  const fromMeta = normalizeEd2kLinks(ed2kLinks, null);
 
   const out: string[] = [];
   const push = (link: string) => {
@@ -364,13 +361,9 @@ export function linksForResourceHash(
     if (!isPublicDownloadLink(link) && !link.toLowerCase().startsWith("unavailable://")) {
       return;
     }
-    if (h && isPublicDownloadLink(link) && !linkMatchesResourceHash(link, h)) {
-      return;
-    }
     out.push(link);
   };
 
-  // 以资源表主链为准
   if (primary) push(primary);
   for (const link of fromMeta) push(link);
 

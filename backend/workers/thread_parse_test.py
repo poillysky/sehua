@@ -242,7 +242,7 @@ async def parse_thread_for_admin(
             attachment_text = attach_res.text or ""
             attachment_source = attachment_kind or ""
             if attachment_text and should_skip_as_115sha_only(attachment_text):
-                tip = "115sha 链接（附件，跳过）"
+                tip = "115sha（跳过）"
                 outcome = ThreadOutcome(
                     "skipped",
                     tip,
@@ -295,7 +295,7 @@ async def parse_thread_for_admin(
                     if attach_res2.text and should_skip_as_115sha_only(attach_res2.text):
                         attachment_text = (attachment_text + "\n" + attach_res2.text).strip()
                         attachment_source = f"{attachment_kind}+{next_kind}" if attachment_source else next_kind
-                        tip = "115sha 链接（附件，跳过）"
+                        tip = "115sha（跳过）"
                         outcome = ThreadOutcome(
                             "skipped",
                             tip,

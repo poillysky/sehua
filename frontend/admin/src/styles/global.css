@@ -2265,12 +2265,22 @@ a {
   flex-shrink: 0;
   align-items: flex-start;
   gap: 12px;
-  padding: 14px 16px;
+  padding: 12px 16px;
   background: var(--bg-elevated);
+  border-bottom: 1px solid var(--border);
 }
 
 .crawler-discarded-modal-head .crawler-discarded-title {
   flex: 1;
+  min-width: 0;
+  gap: 6px;
+}
+
+.crawler-discarded-title-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
   min-width: 0;
 }
 
@@ -2278,6 +2288,14 @@ a {
   margin: 0;
   font-size: 15px;
   font-weight: 650;
+  line-height: 1.3;
+}
+
+.crawler-discarded-modal-head .crawler-discarded-sub {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--muted);
 }
 
 .crawler-discarded-modal-body {
@@ -2294,16 +2312,19 @@ a {
   padding: 10px 14px;
   border-bottom: 1px solid var(--border);
   justify-content: flex-start;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
+  align-items: center;
   gap: 8px;
+  overflow-x: auto;
 }
 
 .crawler-discarded-tools-row {
   display: flex;
-  flex: 1 1 220px;
+  flex: 1 1 auto;
   gap: 8px;
   align-items: center;
   min-width: 0;
+  flex-wrap: nowrap;
 }
 
 .crawler-discarded-tools-row .crawler-discarded-search {
@@ -2312,9 +2333,10 @@ a {
 }
 
 .crawler-discarded-reason-filter-bar {
-  flex: 1 1 180px;
+  flex: 0 0 auto;
   min-width: 140px;
-  max-width: 320px;
+  max-width: 240px;
+  width: 13rem;
   height: 34px;
   border-radius: 8px;
   border: 1px solid var(--border);
@@ -2421,7 +2443,7 @@ a {
 .crawler-discarded-title {
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: 4px;
   min-width: 0;
 }
 
@@ -2430,8 +2452,21 @@ a {
   font-weight: 600;
 }
 
+.crawler-discarded-kind-hint {
+  display: inline-block;
+  align-self: flex-start;
+  padding: 2px 8px;
+  border-radius: 6px;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1.35;
+  color: var(--muted);
+  background: color-mix(in srgb, var(--border) 55%, transparent);
+}
+
 .crawler-discarded-sub {
   font-size: 12px;
+  line-height: 1.45;
   color: var(--muted);
 }
 
@@ -2489,17 +2524,21 @@ a {
 }
 
 .crawler-discarded-table {
-  width: 100%;
+  width: max-content;
+  min-width: 100%;
   border-collapse: collapse;
   font-size: 12.5px;
+  table-layout: auto;
 }
 
 .crawler-discarded-table th,
 .crawler-discarded-table td {
-  padding: 8px 10px;
+  padding: 6px 8px;
   border-bottom: 1px solid rgba(255, 255, 255, 0.04);
   text-align: left;
-  vertical-align: top;
+  vertical-align: middle;
+  white-space: nowrap;
+  line-height: 1.35;
 }
 
 .crawler-discarded-table th {
@@ -2509,7 +2548,6 @@ a {
   background: color-mix(in srgb, var(--panel-2) 92%, #000);
   color: var(--muted);
   font-weight: 600;
-  white-space: nowrap;
 }
 
 .crawler-discarded-table .mono {
@@ -2527,16 +2565,22 @@ a {
   text-decoration: underline;
 }
 
-.crawler-discarded-title-cell,
-.crawler-discarded-reason {
-  max-width: 280px;
+.crawler-discarded-board-cell {
+  max-width: 9rem;
   overflow: hidden;
   text-overflow: ellipsis;
-  white-space: nowrap;
+}
+
+.crawler-discarded-title-cell {
+  max-width: 16rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .crawler-discarded-reason {
-  max-width: 360px;
+  max-width: none;
+  overflow: visible;
+  text-overflow: clip;
   color: var(--muted);
 }
 
@@ -2664,6 +2708,12 @@ a {
 .crawler-discarded-badge.is-failed {
   color: var(--danger);
   background: color-mix(in srgb, var(--danger) 16%, transparent);
+}
+
+.crawler-discarded-badge.is-review {
+  color: var(--warn);
+  background: color-mix(in srgb, var(--warn) 12%, transparent);
+  border: 1px dashed color-mix(in srgb, var(--warn) 45%, transparent);
 }
 
 .crawler-discarded-badge.is-skipped {
@@ -5234,6 +5284,10 @@ a {
     min-width: 0;
   }
 
+  .crawler-discarded-title-row {
+    gap: 6px;
+  }
+
   .crawler-discarded-modal-head h3 {
     font-size: 14px;
     line-height: 1.25;
@@ -5249,15 +5303,19 @@ a {
     height: 36px;
   }
 
-  .crawler-discarded-sub {
+  .crawler-discarded-kind-hint {
+    font-size: 10px;
+    padding: 2px 6px;
+  }
+
+  .crawler-discarded-modal-head .crawler-discarded-sub {
     display: -webkit-box;
     -webkit-box-orient: vertical;
     -webkit-line-clamp: 2;
     line-clamp: 2;
     overflow: hidden;
-    margin-top: 2px;
-    font-size: 10px;
-    line-height: 1.3;
+    font-size: 11px;
+    line-height: 1.35;
   }
 
   .crawler-discarded-modal-body .crawler-discarded-tools {
@@ -6056,10 +6114,10 @@ a {
 
   .crawler-discarded-modal-body .crawler-discarded-table th,
   .crawler-discarded-modal-body .crawler-discarded-table td {
-    padding: 3px 5px;
+    padding: 4px 6px;
     white-space: nowrap;
     vertical-align: middle;
-    line-height: 1.2;
+    line-height: 1.25;
   }
 
   .crawler-discarded-modal-body .crawler-discarded-table .mono {
@@ -6069,11 +6127,25 @@ a {
   .crawler-discarded-modal-body .crawler-discarded-badge {
     font-size: 9px;
     padding: 1px 5px;
+    white-space: nowrap;
   }
 
-  .crawler-discarded-modal-body .crawler-discarded-title-cell,
-  .crawler-discarded-modal-body .crawler-discarded-reason {
+  .crawler-discarded-modal-body .crawler-discarded-board-cell {
+    max-width: 7rem;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .crawler-discarded-modal-body .crawler-discarded-title-cell {
     max-width: 10rem;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .crawler-discarded-modal-body .crawler-discarded-reason {
+    max-width: none;
+    overflow: visible;
+    text-overflow: clip;
   }
 
   .crawler-discarded-modal-body .crawler-discarded-empty {

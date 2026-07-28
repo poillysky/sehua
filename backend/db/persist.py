@@ -222,6 +222,73 @@ def _sanitize_stub_outcome(tip: str | None) -> str:
     return t
 
 
+def build_parse_frame(
+    parsed: DualParseResult,
+    *,
+    post_title: str = "",
+) -> Any | None:
+    """按入库相同规则定型填槽（不写库）。无主链返回 None。"""
+    from parsers.thread_gates import coalesce_thread_title
+
+    primary = next((a for a in parsed.assets if a.is_primary), None)
+    if primary is None and parsed.assets:
+        primary = parsed.assets[0]
+    if primary is None:
+        return None
+
+    title = (post_title or "").strip() or (coalesce_thread_title(parsed.title) or "")
+    same_kind = [a for a in parsed.assets if a.link_kind == primary.link_kind] or [
+        primary
+    ]
+    seen: set[str] = set()
+    uniq: list[ParsedAsset] = []
+    for asset in same_kind:
+        h = (asset.hash or "").strip().upper()
+        if not h or h in seen:
+            continue
+        seen.add(h)
+        uniq.append(asset)
+    if not uniq:
+        uniq = [primary]
+
+    raw_groups = _group_assets_by_resource_name(
+        uniq, post_title=title, parsed=parsed
+    )
+    named_groups = _merge_truncated_name_groups(raw_groups)
+    truncated_merged = len(named_groups) < len(raw_groups)
+    return build_resource_frame(
+        parsed,
+        named_groups=named_groups,
+        had_attachments=bool(getattr(parsed, "had_attachments", False)),
+        truncated_merged=truncated_merged,
+        layout=str(getattr(parsed, "layout", "") or ""),
+        post_title=title,
+    )
+
+
+def preview_frame_outcome(
+    parsed: DualParseResult,
+    *,
+    import_outcome: str = "",
+    post_title: str = "",
+) -> str:
+    """试算入库 outcome（含不合格：*），用于正文有链但验收不过时决定是否再下附件。"""
+    from parsers.thread_gates import coalesce_thread_title
+
+    title = (post_title or "").strip() or (coalesce_thread_title(parsed.title) or "")
+    frame = build_parse_frame(parsed, post_title=title)
+    if frame is None:
+        return ""
+    tip = (import_outcome or "").strip()
+    if len(frame.rows) > 1:
+        base_tip = f"成功：已提取 {len(frame.rows)} 条资源"
+    elif tip:
+        base_tip = tip
+    else:
+        base_tip = "成功：已提取主链"
+    return format_frame_outcome(base_tip, frame)
+
+
 def persist_dual_parse(
     conn: Any,
     parsed: DualParseResult,
@@ -292,34 +359,17 @@ def persist_dual_parse(
             "kind": "no_link",
         }
 
-    same_kind = [a for a in parsed.assets if a.link_kind == primary.link_kind] or [
-        primary
-    ]
-    seen: set[str] = set()
-    uniq: list[ParsedAsset] = []
-    for asset in same_kind:
-        h = (asset.hash or "").strip().upper()
-        if not h or h in seen:
-            continue
-        seen.add(h)
-        uniq.append(asset)
-    if not uniq:
-        uniq = [primary]
-
-    raw_groups = _group_assets_by_resource_name(
-        uniq, post_title=post_title, parsed=parsed
-    )
-    named_groups = _merge_truncated_name_groups(raw_groups)
-    truncated_merged = len(named_groups) < len(raw_groups)
-
-    frame = build_resource_frame(
-        parsed,
-        named_groups=named_groups,
-        had_attachments=bool(getattr(parsed, "had_attachments", False)),
-        truncated_merged=truncated_merged,
-        layout=str(getattr(parsed, "layout", "") or ""),
-        post_title=post_title,
-    )
+    frame = build_parse_frame(parsed, post_title=post_title)
+    if frame is None:
+        stub_tip = _sanitize_stub_outcome(import_outcome)
+        return {
+            "count": 0,
+            "stub": False,
+            "hash": None,
+            "link_kind": "failed",
+            "import_outcome": stub_tip or "无主链",
+            "verdict": "failed",
+        }
 
     # 条数 = 资源名称数（入库维），不是磁力数
     tip = (import_outcome or "").strip()

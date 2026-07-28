@@ -25,44 +25,81 @@ import { toast } from '../ui/toast'
 const DISCARDED_PAGE = 30
 
 const STATUS_LABEL: Record<string, string> = {
-  failed: '失败丢弃',
-  skipped: '跳过',
+  failed: '失败（未见正文）',
+  skipped: '跳过（不入库）',
   pending: '待抓',
   stub: '占位',
-  structure: '结构不合格',
+  structure: '结构不合格(旧)',
   capacity: '容量不合格',
+  name: '资源名不合格',
+  link: '链接不合格',
+  preview: '预览不合格',
+  review: '待核（兜底）',
+  single: '单资源',
+  multi: '多资源',
 }
 
 const QUEUE_MODAL_META: Record<
   QueueBrowseKind,
-  { title: string; sub: string; reasonLabel: string }
+  { title: string; kindHint: string; sub: string; reasonLabel: string }
 > = {
   abnormal: {
     title: '异常帖明细',
-    sub: '失败/重试贴（含软文拦截壳）。可点「异常重试」在本队列重爬',
+    kindHint: '仍在队列 · 可异常重试',
+    sub: '队列内失败/重试（含软文拦截壳，尚未出队）。可用「异常重试」在本队列重爬',
     reasonLabel: '错误',
   },
   ready: {
     title: '正常队列明细',
+    kindHint: '待抓 · 尚未失败',
     sub: '启用子板尚未失败的待抓帖',
     reasonLabel: '备注',
   },
   discarded: {
-    title: '未正常处理明细',
-    sub: '失败丢弃 / 跳过。「失败」与「无阅读权限跳过」请用「账号重爬」处理',
+    title: '未入库明细',
+    kindHint: '未入库 = 未见正文失败 + 跳过；≠ 不合格',
+    sub: '失败＝根本没看见正文；跳过＝已见正文、故意不入库。与「不合格」（已入库质检）不同',
     reasonLabel: '原因',
   },
   stubs: {
     title: '优先占位明细',
+    kindHint: '需账号 Cookie · 账号重爬',
     sub: '需登录 / 无阅读权限 / 无权限下载附件。点「账号重爬」用账号 Cookie 处理',
     reasonLabel: '占位原因',
   },
-    frame_fail: {
-      title: '不合格明细',
-      sub: '填槽验收未过但仍入库。单资源：名可=帖标题；ed2k 看配额、磁力看 V（无口径默认合格）。多资源：名不得=帖标题；另含预览串名/容量等',
-      reasonLabel: '验收原因',
-    },
+  frame_fail: {
+    title: '不合格明细',
+    kindHint: '已入库',
+    sub: '质检未过：资源名 / 链接 / 预览 / 容量 / 待核',
+    reasonLabel: '不合格原因',
+  },
+}
+
+function queueModalEmptyText(
+  kind: QueueBrowseKind,
+  status: string,
+  loading: boolean,
+): string {
+  if (loading) return '加载中…'
+  if (kind === 'discarded') {
+    if (status === 'failed') return '暂无「未见正文」失败帖'
+    if (status === 'skipped') return '暂无跳过帖（见正文不入库）'
+    return '暂无未入库记录'
   }
+  if (kind === 'frame_fail') {
+    return '暂无不合格记录'
+  }
+  if (kind === 'abnormal') return '暂无异常帖'
+  if (kind === 'ready') return '暂无待抓帖'
+  if (kind === 'stubs') return '暂无优先占位'
+  return '暂无记录'
+}
+
+function queueStatusColLabel(kind: QueueBrowseKind): string {
+  if (kind === 'discarded') return '类型'
+  if (kind === 'frame_fail') return '形态'
+  return '状态'
+}
 
 function formatWhen(iso?: string | null): string {
   if (!iso) return '—'
@@ -72,31 +109,160 @@ function formatWhen(iso?: string | null): string {
   return `${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`
 }
 
-function discardedReason(row: QueueBrowseItem, kind?: QueueBrowseKind): string {
-  const full = (
-    row.import_outcome ||
-    row.outcome ||
-    row.last_error ||
-    '—'
-  ).trim() || '—'
-  // 不合格明细：与下拉「验收原因」同口径，只显示「不合格：结构/容量」
-  if (kind === 'frame_fail') {
-    if (full.startsWith('不合格：结构')) return '不合格：结构'
-    if (full.startsWith('不合格：容量')) return '不合格：容量'
-    const head = full.split(' · ')[0]?.trim()
-    return head || full
+function normalizeDiscardedKind(full: string): string {
+  const r = full.trim()
+  if (!r || r === '—') return r
+  // 网盘按具体盘名；标题/链接变体 →「{盘名}（跳过）」
+  const cloudLabels = [
+    'PikPak网盘',
+    'Google网盘',
+    '迅雷云盘',
+    '百度网盘',
+    '夸克网盘',
+    'MEGA网盘',
+    '阿里云盘',
+    '天翼云盘',
+    '123云盘',
+    '城通网盘',
+    'UC网盘',
+    '蓝奏云',
+    '微云',
+    'OneDrive',
+    'Dropbox',
+    'MediaFire',
+    'Terabox',
+  ]
+  for (const lab of cloudLabels) {
+    if (r.startsWith(lab)) return `${lab}（跳过）`
   }
+  const legacy = r.match(/^网盘（跳过）[:：]\s*(.+)$/)
+  if (legacy?.[1]) {
+    const name = legacy[1].trim()
+    for (const lab of cloudLabels) {
+      if (name === lab || name.includes(lab)) return `${lab}（跳过）`
+    }
+  }
+  if (/115sha/i.test(r)) return '115sha（跳过）'
+  if (/^未满.+天（跳过）/.test(r)) return '未满 N 天（跳过）'
+  if (r.includes('未解析') || /未发现.+ed2k/i.test(r) || r.includes('有链但无主资源') || r.includes('解析入库失败')) {
+    return '未解析到目标链（跳过）'
+  }
+  if (/^非资源|^非ED2K|^非情色|^异常下载/.test(r)) return '非资源（跳过）'
+  if (/^重试/.test(r) && (r.includes('仍失败') || r.includes('耗尽'))) return '抓取失败（未见正文）'
+  if (r === 'failed') return '抓取失败（未见正文）'
+  if (r.includes('帖子不存在')) return '帖子不存在（跳过）'
+  if (r.includes('作者已禁止')) return '作者已禁止（跳过）'
+  if (r.includes('版主屏蔽')) return '版主屏蔽（跳过）'
+  if (r.includes('版务') || r.includes('广告帖')) return '版务/广告帖（跳过）'
+  if (r.includes('无阅读权限')) return '无阅读权限（跳过）'
+  if (r.includes('需购买')) return '需购买贴（跳过）'
+  if (r.includes('需论坛登录') || r.includes('需登录')) return '需登录（无有效标题，跳过）'
+  return r
+}
+
+/** 旧四细类文案 → 仅单资源/多资源两种。 */
+function normalizeMorphologyText(text: string): string {
+  return (text || "")
+    .replace(/形态:单资源(?:单链接|多链接)/g, "形态:单资源")
+    .replace(/形态:多资源(?:单链接|多链接)/g, "形态:多资源")
+    .replace(/单资源(?:单链接|多链接)/g, "单资源")
+    .replace(/多资源(?:单链接|多链接)/g, "多资源")
+}
+
+function frameFailKindLabel(full: string, row?: QueueBrowseItem): string {
+  const fromApi = (row?.reason_kind || '').trim()
+  if (fromApi.startsWith('不合格：') || fromApi.startsWith('待核')) return fromApi
+  if (full.startsWith('不合格：链接')) return '不合格：链接'
+  if (full.startsWith('不合格：预览')) return '不合格：预览'
+  if (full.startsWith('不合格：容量')) return '不合格：容量'
+  if (full.startsWith('不合格：待核') || full.startsWith('待核：') || full.startsWith('待核:'))
+    return '不合格：待核'
+  if (full.startsWith('不合格：资源名')) return '不合格：资源名'
+  if (full.startsWith('不合格：结构')) {
+    if (/预览|配图|首图/.test(full)) return '不合格：预览'
+    if (/链数|漏链|未进组|配额/.test(full)) return '不合格：链接'
+    return '不合格：资源名'
+  }
+  const head = full.split(/\s*·\s*/)[0]?.trim()
+  return head || ''
+}
+
+/** 多段原因时优先【识别错误】主因，与筛选项大类对齐；丢开旁路【真没有】软提醒。 */
+function pickFrameFailPrimaryDetail(detail: string, kindLabel: string): string {
+  const parts = detail
+    .split(/；|;/)
+    .map((s) => s.trim())
+    .filter(Boolean)
+  if (parts.length <= 1) return detail.trim()
+  const hard = parts.filter((p) => p.startsWith('【识别错误】'))
+  const soft = parts.filter((p) => p.startsWith('【真没有】'))
+  const pool = hard.length ? hard : parts
+  if (kindLabel.includes('容量')) {
+    const hit = pool.find((p) => /容量|大小|不合规|GB|MB|TB/.test(p))
+    if (hit) return hit
+  }
+  if (kindLabel.includes('预览')) {
+    const hit = pool.find((p) => /预览|配图|首图/.test(p))
+    if (hit) return hit
+  }
+  if (kindLabel.includes('链接')) {
+    const hit = pool.find((p) => /链|配额|未进组/.test(p))
+    if (hit) return hit
+  }
+  if (kindLabel.includes('资源名') || kindLabel.includes('结构')) {
+    const hit = pool.find((p) => /资源名|片名|漏切|切开|标题|标签/.test(p))
+    if (hit) return hit
+  }
+  if (kindLabel.includes('待核')) {
+    const hit = pool.find((p) => /待核|配额|截断|漏链/.test(p))
+    if (hit) return hit
+  }
+  if (hard[0]) return hard[0]
+  if (soft[0] && !hard.length) return soft[0]
+  return parts[0]
+}
+
+function discardedReason(row: QueueBrowseItem, kind?: QueueBrowseKind): string {
+  const full = normalizeMorphologyText(
+    (
+      row.import_outcome ||
+      row.outcome ||
+      row.last_error ||
+      '—'
+    ).trim() || '—',
+  )
+  // 不合格明细：筛选项是大类；单元格 = 大类 · 主因（与下拉对应）
+  if (kind === 'frame_fail') {
+    const kindLabel = frameFailKindLabel(full, row)
+    const reasonMatch = full.match(/(?:原因[:：])\s*(.+)$/)
+    const rawDetail = reasonMatch?.[1]?.trim() || ''
+    const detail = rawDetail
+      ? pickFrameFailPrimaryDetail(rawDetail, kindLabel)
+      : ''
+    if (kindLabel && detail) {
+      if (detail.startsWith(kindLabel)) return detail
+      return `${kindLabel} · ${detail}`
+    }
+    return kindLabel || detail || full
+  }
+  if (kind === 'discarded') return normalizeDiscardedKind(full)
   return full
 }
 
 function discardedReasonDetail(row: QueueBrowseItem, kind?: QueueBrowseKind): string {
-  const full = (
-    row.import_outcome ||
-    row.outcome ||
-    row.last_error ||
-    ''
-  ).trim()
+  const full = normalizeMorphologyText(
+    (
+      row.import_outcome ||
+      row.outcome ||
+      row.last_error ||
+      ''
+    ).trim(),
+  )
   if (kind === 'frame_fail' && full) return full
+  if (kind === 'discarded' && full) {
+    const k = normalizeDiscardedKind(full)
+    return k !== full ? full : ''
+  }
   return ''
 }
 
@@ -118,12 +284,12 @@ function rowTid(row: QueueBrowseItem): number | null {
 function rowStatus(row: QueueBrowseItem, kind: QueueBrowseKind): string {
   if (kind === 'stubs') return 'stub'
   if (kind === 'frame_fail') {
-    const st = (row.status || '').trim()
-    if (st === 'structure' || st === 'capacity') return st
-    const outcome = (row.import_outcome || '').trim()
-    if (outcome.startsWith('不合格：结构')) return 'structure'
-    if (outcome.startsWith('不合格：容量')) return 'capacity'
-    return 'failed'
+    const rk = (row.resource_kind || '').trim()
+    if (rk === 'single' || rk === 'multi') return rk
+    const outcome = (row.import_outcome || row.outcome || '').trim()
+    if (outcome.includes('形态:多资源')) return 'multi'
+    if (outcome.includes('形态:单资源')) return 'single'
+    return ''
   }
   if (kind === 'ready' || kind === 'abnormal') return 'pending'
   return row.status || '—'
@@ -339,7 +505,15 @@ export function CrawlerPage() {
   const activitySinceId = useRef(0)
 
   const [discStatus, setDiscStatus] = useState<
-    'all' | 'failed' | 'skipped' | 'structure' | 'capacity'
+    | 'all'
+    | 'failed'
+    | 'skipped'
+    | 'structure'
+    | 'capacity'
+    | 'name'
+    | 'link'
+    | 'preview'
+    | 'review'
   >('failed')
   const [discQInput, setDiscQInput] = useState('')
   const [discQ, setDiscQ] = useState('')
@@ -354,13 +528,16 @@ export function CrawlerPage() {
     total: 0,
     structure: 0,
     capacity: 0,
+    name: 0,
+    link: 0,
+    preview: 0,
+    review: 0,
   })
   const [discKindCounts, setDiscKindCounts] = useState<Record<string, number>>({})
   const [discLoading, setDiscLoading] = useState(false)
   const [queueModal, setQueueModal] = useState<QueueBrowseKind | null>(null)
   const [discSelected, setDiscSelected] = useState<Set<number>>(() => new Set())
   const [discRequeueBusy, setDiscRequeueBusy] = useState(false)
-  const [discRequeueNote, setDiscRequeueNote] = useState('')
   const [discSelectAllBusy, setDiscSelectAllBusy] = useState(false)
 
   const refresh = useCallback(async () => {
@@ -422,6 +599,10 @@ export function CrawlerPage() {
           total: Number(res.counts.total || 0),
           structure: Number(res.counts.structure || 0),
           capacity: Number(res.counts.capacity || 0),
+          name: Number(res.counts.name || 0),
+          link: Number(res.counts.link || 0),
+          preview: Number(res.counts.preview || 0),
+          review: Number(res.counts.review || 0),
         })
       }
       if (res.kind_counts) setDiscKindCounts(res.kind_counts)
@@ -488,9 +669,7 @@ export function CrawlerPage() {
     setDiscReasons([])
     setDiscOffset(0)
     setDiscSelected(new Set())
-    setDiscRequeueNote('')
-    if (kind === 'discarded') setDiscStatus('failed')
-    if (kind === 'frame_fail') setDiscStatus('all')
+    if (kind === 'discarded' || kind === 'frame_fail') setDiscStatus('all')
     setQueueModal(kind)
   }
 
@@ -535,19 +714,16 @@ export function CrawlerPage() {
     metrics?.discarded_total ?? status?.discarded?.total ?? discardedFailed + discardedSkipped,
   )
   const frameFailTotal = Number(metrics?.frame_fail_total ?? 0)
-  const frameFailStructure = Number(discCounts.structure ?? 0)
-  const frameFailCapacity = Number(discCounts.capacity ?? 0)
   const discPageStart = discTotal === 0 ? 0 : discOffset + 1
   const discPageEnd = Math.min(discOffset + discItems.length, discTotal)
   const discHasPrev = discOffset > 0
   const discHasNext = discOffset + DISCARDED_PAGE < discTotal
   const modalMeta = queueModal ? QUEUE_MODAL_META[queueModal] : null
-  const discActivity = (status?.activity || []).slice(0, 40)
   const searchPlaceholder =
     queueModal === 'stubs'
       ? 'hash / 标题 / 原因…'
       : queueModal === 'frame_fail'
-        ? 'tid / 标题 / 验收原因…'
+        ? 'tid / 标题 / 不合格原因…'
         : queueModal === 'ready' || queueModal === 'abnormal'
           ? 'tid / 标题 / 错误…'
           : '标题…'
@@ -871,7 +1047,13 @@ export function CrawlerPage() {
       if (queueModal === 'frame_fail') {
         const res = await fetchFrameFailTids({
           status:
-            discStatus === 'structure' || discStatus === 'capacity' || discStatus === 'all'
+            discStatus === 'name' ||
+            discStatus === 'link' ||
+            discStatus === 'preview' ||
+            discStatus === 'capacity' ||
+            discStatus === 'review' ||
+            discStatus === 'structure' ||
+            discStatus === 'all'
               ? discStatus
               : 'all',
           q: discQ || undefined,
@@ -926,18 +1108,16 @@ export function CrawlerPage() {
       title: isFrameFail ? '不合格批量重爬' : '批量重爬',
       message: isFrameFail
         ? `将按已入库路径重爬选中的 ${tids.length} 条不合格帖（同帖覆盖写入）。连续调度开启时仅入队。确定？`
-        : `将直接重爬选中的 ${tids.length} 条失败/跳过帖（不依赖当前板队列）。连续调度开启时仅入队。确定？`,
+        : `将直接重爬选中的 ${tids.length} 条未入库帖（失败＝未见正文 / 跳过＝见正文不入库）。连续调度开启时仅入队。确定？`,
       confirmText: '重爬选中',
     })
     if (!ok) return
     setDiscRequeueBusy(true)
-    setDiscRequeueNote('重爬进行中…')
     try {
       if (isFrameFail) {
         const res = await recrawlFrameFailTids({ tids })
         const line = res.note || `已启动不合格重爬 ${res.matched ?? tids.length} 条`
         setRunHint(line)
-        setDiscRequeueNote(line)
         if ((res.imported ?? 0) > 0 || (res.queued ?? 0) > 0 || res.message === 'started') {
           toast.success(line)
         } else {
@@ -947,7 +1127,6 @@ export function CrawlerPage() {
         const res = await requeueDiscardedTids({ tids })
         const line = res.note || `已重新入队 ${res.requeued} 条`
         setRunHint(line)
-        setDiscRequeueNote(line)
         if ((res.imports ?? 0) > 0 || (res.crawled ?? 0) > 0 || res.requeued > 0) {
           toast.success(line)
         } else {
@@ -959,7 +1138,6 @@ export function CrawlerPage() {
       await loadDiscarded()
     } catch (err) {
       const msg = err instanceof Error ? err.message : '批量重爬失败'
-      setDiscRequeueNote(msg)
       toast.error(msg)
     } finally {
       setDiscRequeueBusy(false)
@@ -988,8 +1166,8 @@ export function CrawlerPage() {
     const ok = await confirmDialog({
       title: '账号重爬',
       message:
-        `用账号 Cookie 依次处理：① 未处理「失败」${discardedFailedKindCount} 条；` +
-        `② 未处理「无阅读权限」跳过 ${accessDeniedTitleCount} 条；` +
+        `用账号 Cookie 依次处理：① 未入库「未见正文」${discardedFailedKindCount} 条；` +
+        `② 未入库「无阅读权限」跳过 ${accessDeniedTitleCount} 条；` +
         `③ 资源库优先占位 ${priorityStubCount} 条（合计 ${accountPassTotal}）。` +
         `不限数量直至跑完。升级成功会删旧占位；登录后需回复/需购买则跳过并删占位。需先配置账号 Cookie。确定？`,
       confirmText: '开始重爬',
@@ -1008,16 +1186,16 @@ export function CrawlerPage() {
         const total = Number(res.remaining ?? res.budget ?? stubs + disc)
         const line =
           `账号重爬进行中：已处理 0 · 库内剩余 ${total}` +
-          (disc > 0 ? `（含未处理失败/无权跳过 ${disc}）` : '')
+          (disc > 0 ? `（含未入库·未见正文/无权跳过 ${disc}）` : '')
         setRunHint(line)
         toast.success(
           `账号重爬已开始 · 共 ${total}` +
-            (disc > 0 ? ` · 未处理 ${disc}` : '') +
+            (disc > 0 ? ` · 未入库 ${disc}` : '') +
             (stubs > 0 && disc > 0 ? ` · 占位 ${stubs}` : ''),
         )
       } else {
         stubWasActive.current = false
-        const line = res.note || res.message || '无优先占位 / 未处理失败·无权跳过可处理'
+        const line = res.note || res.message || '无优先占位 / 未入库·未见正文·无权跳过可处理'
         setRunHint(line)
         toast.info(line)
       }
@@ -1139,8 +1317,8 @@ export function CrawlerPage() {
                         : running || stopping
                           ? '本轮仍在执行，请稍候'
                           : accountPassTotal > 0
-                            ? `用账号 Cookie：失败 ${discardedFailedKindCount} + 无阅读权限跳过 ${accessDeniedTitleCount} + 优先占位 ${priorityStubCount} = ${accountPassTotal}；请先配置账号 Cookie`
-                            : '用账号 Cookie 重爬未处理失败、无阅读权限跳过与优先占位；登录后需回复/需购买会跳过。请先配置账号 Cookie'
+                            ? `用账号 Cookie：未见正文 ${discardedFailedKindCount} + 无阅读权限跳过 ${accessDeniedTitleCount} + 优先占位 ${priorityStubCount} = ${accountPassTotal}；请先配置账号 Cookie`
+                            : '用账号 Cookie 重爬未入库（未见正文、无阅读权限跳过）与优先占位；登录后需回复/需购买会跳过。请先配置账号 Cookie'
                     }
                     onClick={() => void onRecrawlStubs()}
                   >
@@ -1186,7 +1364,7 @@ export function CrawlerPage() {
                   <button
                     type="button"
                     className="metric-pill metric-pill-btn"
-                    title="失败/重试贴（含软文拦截壳）。点此查看明细；也可用「异常重试」重爬"
+                    title="仍在队列的失败/重试帖（含软文拦截壳，尚未出队）。点此查看明细；可用「异常重试」重爬"
                     onClick={() => openQueueModal('abnormal')}
                   >
                     <span className="metric-val stat-warn">{abnormal}</span>
@@ -1195,7 +1373,7 @@ export function CrawlerPage() {
                   <button
                     type="button"
                     className="metric-pill metric-pill-btn"
-                    title="启用子板全部「尚未失败」的待抓帖合计。点此查看明细"
+                    title="待抓帖（尚未失败）。点此查看明细"
                     onClick={() => openQueueModal('ready')}
                   >
                     <span className="metric-val">{readyQueue}</span>
@@ -1204,18 +1382,18 @@ export function CrawlerPage() {
                   <button
                     type="button"
                     className="metric-pill metric-pill-btn"
-                    title="入队后最终失败或跳过（非入库/占位）。点此查看明细"
+                    title="未见正文失败 + 已见正文跳过（均未入库）。点此查看明细；与「不合格」不同"
                     onClick={() => openQueueModal('discarded')}
                   >
                     <span className={`metric-val${discardedTotal > 0 ? ' stat-failed' : ''}`}>
                       {discardedTotal}
                     </span>
-                    <span className="metric-lbl">未处理</span>
+                    <span className="metric-lbl">未入库</span>
                   </button>
                   <button
                     type="button"
                     className="metric-pill metric-pill-btn"
-                    title="填槽验收不合格但仍入库（结构/容量）。点此查看明细与判定标准"
+                    title="已入库质检未过（可确认四类 + 待核兜底）。点此查看明细"
                     onClick={() => openQueueModal('frame_fail')}
                   >
                     <span className={`metric-val${frameFailTotal > 0 ? ' stat-failed' : ''}`}>
@@ -1242,7 +1420,7 @@ export function CrawlerPage() {
                     title={
                       stubActive
                         ? `账号重爬进行中：已处理 ${stubDone} · 库内剩余 ${stubRemaining} · 升级 ${stubUpgraded} · 仍占位 ${stubStill} · 失败 ${stubFailed}`
-                        : `合计 ${accountPassTotal}（失败 ${discardedFailedKindCount} + 无阅读权限跳过 ${accessDeniedTitleCount} + 优先占位 ${priorityStubCount}）。点此查看占位明细`
+                        : `需账号 Cookie。合计 ${accountPassTotal}（未见正文 ${discardedFailedKindCount} + 无阅读权限跳过 ${accessDeniedTitleCount} + 优先占位 ${priorityStubCount}）。点此查看占位明细`
                     }
                     onClick={() => openQueueModal('stubs')}
                   >
@@ -1340,8 +1518,13 @@ export function CrawlerPage() {
           >
             <div className="modal-head crawler-discarded-modal-head">
               <div className="crawler-discarded-title">
-                <h3 id="crawler-queue-modal-title">{modalMeta.title}</h3>
-                <span className="crawler-discarded-sub">{modalMeta.sub}</span>
+                <div className="crawler-discarded-title-row">
+                  <h3 id="crawler-queue-modal-title">{modalMeta.title}</h3>
+                  <span className="crawler-discarded-kind-hint">{modalMeta.kindHint}</span>
+                </div>
+                {modalMeta.sub ? (
+                  <p className="crawler-discarded-sub">{modalMeta.sub}</p>
+                ) : null}
               </div>
               <button
                 type="button"
@@ -1358,45 +1541,12 @@ export function CrawlerPage() {
             <div className="crawler-discarded-modal-body">
               <div className="crawler-discarded-tools">
                 {queueModal === 'discarded' ? (
-                  <div className="crawler-discarded-tabs" role="tablist" aria-label="未处理筛选">
+                  <div className="crawler-discarded-tabs" role="tablist" aria-label="未入库筛选">
                     {(
                       [
-                        ['failed', `失败 ${discardedFailed}`],
+                        ['failed', `未见正文 ${discardedFailed}`],
                         ['skipped', `跳过 ${discardedSkipped}`],
                         ['all', `全部 ${discardedTotal}`],
-                      ] as const
-                    ).map(([id, label]) => (
-                      <button
-                        key={id}
-                        type="button"
-                        role="tab"
-                        aria-selected={discStatus === id}
-                        className={`crawler-discarded-tab${discStatus === id ? ' active' : ''}`}
-                        onClick={() => {
-                          setDiscStatus(id)
-                          setDiscReason('')
-                          setDiscOffset(0)
-                        }}
-                      >
-                        {label}
-                      </button>
-                    ))}
-                  </div>
-                ) : null}
-                {queueModal === 'frame_fail' ? (
-                  <div className="crawler-discarded-tabs" role="tablist" aria-label="不合格筛选">
-                    {(
-                      [
-                        [
-                          'all',
-                          `全部 ${
-                            frameFailStructure + frameFailCapacity > 0
-                              ? frameFailStructure + frameFailCapacity
-                              : discTotal || frameFailTotal
-                          }`,
-                        ],
-                        ['structure', `结构 ${frameFailStructure}`],
-                        ['capacity', `容量 ${frameFailCapacity}`],
                       ] as const
                     ).map(([id, label]) => (
                       <button
@@ -1438,9 +1588,7 @@ export function CrawlerPage() {
                         }
                         title={
                           discTotal > 0
-                            ? queueModal === 'frame_fail'
-                              ? `按当前筛选（结构/容量/搜索/原因）全选全部页，共约 ${discTotal} 条`
-                              : `按当前筛选（状态/搜索/原因）全选全部页，共约 ${discTotal} 条`
+                            ? `按当前筛选（类型/搜索/${modalMeta.reasonLabel}）全选全部页，共约 ${discTotal} 条`
                             : '当前筛选无记录'
                         }
                         onClick={() => void onSelectAllFiltered()}
@@ -1457,7 +1605,9 @@ export function CrawlerPage() {
                         disabled={discRequeueBusy || discSelected.size === 0}
                         title={
                           discSelected.size
-                            ? `重爬已勾选 ${discSelected.size} 条`
+                            ? queueModal === 'frame_fail'
+                              ? `重爬不合格已勾选 ${discSelected.size} 条`
+                              : `重爬未入库已勾选 ${discSelected.size} 条`
                             : '先勾选要重爬的帖'
                         }
                         onClick={() => void onBatchRequeueSelected()}
@@ -1465,8 +1615,10 @@ export function CrawlerPage() {
                         {discRequeueBusy
                           ? '重爬中…'
                           : discSelected.size
-                            ? `重爬选中 ${discSelected.size}`
-                            : '重爬选中'}
+                            ? `${queueModal === 'frame_fail' ? '重爬不合格' : '重爬未入库'} ${discSelected.size}`
+                            : queueModal === 'frame_fail'
+                              ? '重爬不合格'
+                              : '重爬未入库'}
                       </button>
                     </>
                   ) : null}
@@ -1523,7 +1675,7 @@ export function CrawlerPage() {
                         </th>
                       ) : null}
                       <th>时间</th>
-                      <th>状态</th>
+                      <th>{queueStatusColLabel(queueModal)}</th>
                       <th>板块</th>
                       <th>{idColLabel}</th>
                       <th>标题</th>
@@ -1580,17 +1732,31 @@ export function CrawlerPage() {
                             <td>
                               <span
                                 className={`crawler-discarded-badge ${
-                                  st === 'failed' || st === 'structure' || st === 'capacity'
+                                  st === 'multi'
                                     ? 'is-failed'
-                                    : st === 'pending' || st === 'stub'
+                                    : st === 'single'
                                       ? 'is-skipped'
-                                      : 'is-skipped'
+                                      : st === 'review'
+                                        ? 'is-review'
+                                        : st === 'failed' ||
+                                            st === 'structure' ||
+                                            st === 'capacity' ||
+                                            st === 'name' ||
+                                            st === 'link' ||
+                                            st === 'preview'
+                                          ? 'is-failed'
+                                          : st === 'pending' || st === 'stub'
+                                            ? 'is-skipped'
+                                            : 'is-skipped'
                                 }`}
                               >
-                                {STATUS_LABEL[st] || st}
+                                {STATUS_LABEL[st] || st || '—'}
                               </span>
                             </td>
-                            <td title={row.board_fid || ''}>
+                            <td
+                              className="crawler-discarded-board-cell"
+                              title={row.board_name || row.board_fid || ''}
+                            >
                               {row.board_name || row.board_fid || '—'}
                             </td>
                             <td className="mono">
@@ -1626,7 +1792,7 @@ export function CrawlerPage() {
                           }
                           className="crawler-discarded-empty"
                         >
-                          {discLoading ? '加载中…' : '暂无记录'}
+                          {queueModalEmptyText(queueModal, discStatus, discLoading)}
                         </td>
                       </tr>
                     )}
@@ -1680,12 +1846,23 @@ export function CrawlerPage() {
                           ) : null}
                           <span
                             className={`crawler-discarded-badge ${
-                              st === 'failed' || st === 'structure' || st === 'capacity'
+                              st === 'multi'
                                 ? 'is-failed'
-                                : 'is-skipped'
+                                : st === 'single'
+                                  ? 'is-skipped'
+                                  : st === 'review'
+                                    ? 'is-review'
+                                    : st === 'failed' ||
+                                        st === 'structure' ||
+                                        st === 'capacity' ||
+                                        st === 'name' ||
+                                        st === 'link' ||
+                                        st === 'preview'
+                                      ? 'is-failed'
+                                      : 'is-skipped'
                             }`}
                           >
-                            {STATUS_LABEL[st] || st}
+                            {STATUS_LABEL[st] || st || '—'}
                           </span>
                           <time className="mono crawler-discarded-card-time">
                             {formatWhen(row.crawled_at || row.updated_at)}
@@ -1727,48 +1904,10 @@ export function CrawlerPage() {
                   })
                 ) : (
                   <div className="crawler-discarded-empty">
-                    {discLoading ? '加载中…' : '暂无记录'}
+                    {queueModalEmptyText(queueModal, discStatus, discLoading)}
                   </div>
                 )}
               </div>
-
-              {canSelectDiscarded ? (
-                <div className="crawler-discarded-log">
-                  {discRequeueNote ? (
-                    <p className="crawler-discarded-log-note">{discRequeueNote}</p>
-                  ) : null}
-                  <div className="crawler-discarded-log-head">重爬日志</div>
-                  <div className="crawler-discarded-log-body activity-log">
-                    {discActivity.length ? (
-                      discActivity.map((a, i) => (
-                        <div
-                          key={`disc-${a.t}-${i}-${a.msg}`}
-                          className={`activity-row ${activityLevelClass(a.msg)}`}
-                        >
-                          <span className="activity-time">{a.t || '—'}</span>
-                          <span className="activity-msg">
-                            <ActivityMsg
-                              msg={a.msg}
-                              forumId={
-                                status?.focus_forum_id || status?.forum_id || status?.active_forum_id
-                              }
-                              threadRoot={status?.thread_root}
-                              preferredEntryUrl={status?.preferred_entry_url}
-                              webCrawlUrls={status?.web_crawl_urls}
-                            />
-                          </span>
-                        </div>
-                      ))
-                    ) : (
-                      <div className="activity-empty">
-                        {discRequeueBusy
-                          ? '重爬进行中，日志稍后出现…'
-                          : '暂无活动日志 · 勾选后点「重爬选中」，进度会显示在这里'}
-                      </div>
-                    )}
-                  </div>
-                </div>
-              ) : null}
 
               <div className="crawler-discarded-foot">
                 <span className="toolbar-meta">

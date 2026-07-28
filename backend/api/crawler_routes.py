@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import threading
+import time
+from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
@@ -47,6 +50,32 @@ from workers.crawl_executor import await_crawl, spawn_crawl
 from workers.random_tid import run_random_tid_batch, start_random_tid_loop
 
 router = APIRouter(prefix="/api/crawler", tags=["crawler"])
+
+# 不合格/占位计数很重；状态轮询 5s 一次，短缓存避免拖死连接池
+_STATUS_HEAVY_TTL_SEC = 20.0
+_STATUS_HEAVY_LOCK = threading.Lock()
+_STATUS_HEAVY_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
+
+
+def _status_cache_get(key: str) -> dict[str, Any] | None:
+    now = time.monotonic()
+    with _STATUS_HEAVY_LOCK:
+        hit = _STATUS_HEAVY_CACHE.get(key)
+        if not hit:
+            return None
+        expires, payload = hit
+        if now >= expires:
+            _STATUS_HEAVY_CACHE.pop(key, None)
+            return None
+        return dict(payload)
+
+
+def _status_cache_set(key: str, payload: dict[str, Any]) -> None:
+    with _STATUS_HEAVY_LOCK:
+        _STATUS_HEAVY_CACHE[key] = (
+            time.monotonic() + _STATUS_HEAVY_TTL_SEC,
+            dict(payload),
+        )
 
 
 class EnabledBody(BaseModel):
@@ -193,16 +222,36 @@ def get_crawler_status(
         from db.repository import count_frame_fail_posts, count_priority_account_stubs
         from db.resource_db import connect_resource
 
-        rconn = connect_resource()
-        try:
-            priority_stubs = int(
-                count_priority_account_stubs(rconn, forum_id=active) or 0
+        cache_key = f"status_heavy:{active}"
+        cached = _status_cache_get(cache_key)
+        if cached is not None:
+            priority_stubs = int(cached.get("priority_stubs") or 0)
+            frame_fail_total = int(cached.get("frame_fail_total") or 0)
+        else:
+            rconn = connect_resource()
+            try:
+                priority_stubs = int(
+                    count_priority_account_stubs(rconn, forum_id=active) or 0
+                )
+                # 状态面板只要不合格总数，勿拆 7 桶（原先可达分钟级）
+                frame_fail_total = int(
+                    (
+                        count_frame_fail_posts(
+                            rconn, forum_id=active, breakdown=False
+                        )
+                        or {}
+                    ).get("total")
+                    or 0
+                )
+            finally:
+                rconn.close()
+            _status_cache_set(
+                cache_key,
+                {
+                    "priority_stubs": priority_stubs,
+                    "frame_fail_total": frame_fail_total,
+                },
             )
-            frame_fail_total = int(
-                (count_frame_fail_posts(rconn, forum_id=active) or {}).get("total") or 0
-            )
-        finally:
-            rconn.close()
     except Exception:
         priority_stubs = 0
         frame_fail_total = 0
@@ -690,9 +739,10 @@ def get_queue_browse(
         from db.resource_db import connect_resource
 
         st = (status or "all").strip().lower()
-        if st not in {"all", "structure", "capacity"}:
+        if st not in {"all", "name", "link", "preview", "capacity", "review", "structure", "资源名", "链接", "预览", "容量", "待核", "结构"}:
             raise HTTPException(
-                status_code=400, detail="status 仅支持 all / structure / capacity"
+                status_code=400,
+                detail="status 仅支持 all / name / link / preview / capacity / review",
             )
         focus = _resolve_crawler_forum_id()
         rconn = connect_resource()
@@ -973,8 +1023,10 @@ def get_frame_fail_tids(
     from db.resource_db import connect_resource
 
     st = (status or "all").strip().lower()
-    if st not in {"all", "structure", "capacity"}:
-        raise HTTPException(status_code=400, detail="status 仅支持 all / structure / capacity")
+    if st not in {"all", "name", "link", "preview", "capacity", "review", "structure", "资源名", "链接", "预览", "容量", "待核", "结构"}:
+        raise HTTPException(
+            status_code=400, detail="status 仅支持 all / name / link / preview / capacity / review"
+        )
     lim = max(1, min(5000, int(limit or 2000)))
     query = (q or "").strip()
     reason_key = (reason or "").strip()

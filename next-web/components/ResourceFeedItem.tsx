@@ -21,6 +21,7 @@ import {
   getExtractPassword,
 } from "@/utils/resource";
 import { Ed2kCopyButton } from "@/components/ResourceMeta";
+import { Ed2kResourceDetailList } from "@/components/Ed2kResourceDetailList";
 import { P115SaveButton } from "@/components/P115SaveButton";
 import { PreviewImage } from "@/components/PreviewImage";
 import { saveDetailReturnUrl } from "@/components/DetailBackButton";
@@ -31,6 +32,8 @@ type ResourceFeedItemProps = {
   keywords?: string | string[];
   compact?: boolean;
   showPreview?: boolean;
+  /** 在卡片内列出该资源名称下全部下载链（search 用） */
+  showLinks?: boolean;
 };
 
 const cardShellClass =
@@ -248,11 +251,32 @@ function ResourceCardFooter({ item }: { item: Ed2kResourceProps }) {
   );
 }
 
+function ResourceLinksBlock({ item }: { item: Ed2kResourceProps }) {
+  const stopCardPress = (event: MouseEvent | KeyboardEvent) => {
+    event.stopPropagation();
+  };
+
+  return (
+    <>
+      <div className={cardDividerClass} />
+      <div
+        className={`${cardBodyClass} max-h-72 overflow-y-auto py-2`}
+        onClick={stopCardPress}
+        onKeyDown={stopCardPress}
+        role="presentation"
+      >
+        <Ed2kResourceDetailList item={item} />
+      </div>
+    </>
+  );
+}
+
 export function ResourceFeedItem({
   item,
   keywords = [],
   compact = true,
   showPreview = true,
+  showLinks = false,
 }: ResourceFeedItemProps) {
   const t = useTranslations();
   const router = useRouter();
@@ -267,6 +291,7 @@ export function ResourceFeedItem({
   const resourceAmount = getDescriptionField(item.description, "资源数量");
   const extractPassword = getExtractPassword(item);
   const dense = !showPreview;
+  const linksBlock = showLinks ? <ResourceLinksBlock item={item} /> : null;
 
   useEffect(() => {
     setNavigating(false);
@@ -323,6 +348,7 @@ export function ResourceFeedItem({
             </div>
           </>
         )}
+        {linksBlock}
         <div className={cardDividerClass} />
         <ResourceCardFooter item={item} />
       </>,
@@ -378,6 +404,7 @@ export function ResourceFeedItem({
           </div>
         )}
       </div>
+      {linksBlock}
       <div className={cardDividerClass} />
       <ResourceCardFooter item={item} />
     </>,

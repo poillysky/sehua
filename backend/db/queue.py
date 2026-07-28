@@ -858,9 +858,44 @@ PENDING_REASON_EXPR = (
 
 
 def _exact_reason_clause(expr: str, reason: str | None) -> tuple[str, list[Any]]:
+    """原因筛选：种类头匹配新旧文案（如「百度网盘（跳过）」含旧「…标题（无 ed2k…）」）。"""
     text = (reason or "").strip()
     if not text:
         return "", []
+    try:
+        from parsers.skip_outcomes import (
+            SKIP_115SHA,
+            SKIP_NO_TARGET,
+            SKIP_NON_RESOURCE,
+            _cloud_label_from_reason,
+            cloud_skip_tip,
+            normalize_skip_reason_kind,
+        )
+    except Exception:
+        return f"AND {expr} = %s", [text]
+
+    kind = normalize_skip_reason_kind(text)
+    cloud_lab = _cloud_label_from_reason(text) or _cloud_label_from_reason(kind)
+    if cloud_lab:
+        tip = cloud_skip_tip(cloud_lab)
+        return (
+            f"AND ({expr} = %s OR {expr} ILIKE %s OR {expr} = %s)",
+            [tip, f"{cloud_lab}%跳过%", f"网盘（跳过）：{cloud_lab}"],
+        )
+    if kind == SKIP_115SHA or text == SKIP_115SHA:
+        return f"AND {expr} ILIKE %s", ["%115sha%"]
+    if kind == SKIP_NO_TARGET or text == SKIP_NO_TARGET:
+        return (
+            f"AND ({expr} ILIKE %s OR {expr} ILIKE %s OR {expr} = %s)",
+            ["%未解析%", "%未发现%ed2k%", SKIP_NO_TARGET],
+        )
+    if kind == SKIP_NON_RESOURCE or text == SKIP_NON_RESOURCE:
+        return (
+            f"AND ({expr} ILIKE %s OR {expr} ILIKE %s OR {expr} ILIKE %s OR {expr} ILIKE %s)",
+            ["非资源%", "非ED2K%", "非情色%", "异常下载%"],
+        )
+    if text.startswith("未满") or kind == "未满 N 天（跳过）":
+        return f"AND {expr} ILIKE %s", ["未满%天（跳过）"]
     return f"AND {expr} = %s", [text]
 
 
@@ -915,7 +950,11 @@ def list_discarded_reasons(
     forum_id: str | None = None,
     q: str | None = None,
 ) -> list[dict[str, Any]]:
-    """未处理明细的原因分组（供下拉筛选，不含当前 reason 过滤）。"""
+    """未处理明细的原因分组（相近 outcome 归并成种类，供下拉筛选）。"""
+    from collections import Counter
+
+    from parsers.skip_outcomes import normalize_skip_reason_kind
+
     cur = conn.cursor()
     st_sql, st_params = _discarded_status_clause(status)
     forum = (forum_id or "").strip()
@@ -933,11 +972,20 @@ def list_discarded_reasons(
           AND {DISCARDED_REASON_EXPR} <> ''
         GROUP BY 1
         ORDER BY cnt DESC, reason ASC
-        LIMIT 80
+        LIMIT 400
         """,
         [*st_params, *forum_params, *q_params] or None,
     )
-    return [{"reason": str(r[0]), "count": int(r[1] or 0)} for r in cur.fetchall() if r and r[0]]
+    merged: Counter[str] = Counter()
+    for row in cur.fetchall():
+        if not row or not row[0]:
+            continue
+        kind = normalize_skip_reason_kind(str(row[0]))
+        merged[kind] += int(row[1] or 0)
+    return [
+        {"reason": reason, "count": cnt}
+        for reason, cnt in sorted(merged.items(), key=lambda x: (-x[1], x[0]))[:80]
+    ]
 
 
 def list_discarded(

@@ -1405,7 +1405,7 @@ def _name_before_size_label(
     text = re.sub(r"\s+", " ", text).strip()
     # 优先：紧邻容量前的最后一段【资源格式】（2048 国产常把简介写进格式当片名）
     fmt_matches = list(
-        re.finditer(r"【\s*资源格式\s*】\s*[:：]?\s*([^\n【]{4,200})", text)
+        re.finditer(r"【\s*资源格式\s*】\s*[:：]?\s*([^\n【]{2,200})", text)
     )
     if fmt_matches:
         text = fmt_matches[-1].group(1).strip()
@@ -1424,11 +1424,20 @@ def _name_before_size_label(
         if sep in text:
             text = text.rsplit(sep, 1)[-1].strip()
     text = text.strip(" ，,、·•|-")
-    if len(text) < 4:
-        return ""
-    from parsers.resource_names import clip_subresource_display_name
+    # 允许 2～3 字中文短片名（如「油鬼子」）；勿一律 len<4 丢弃
+    from parsers.resource_names import (
+        clip_subresource_display_name,
+        is_acceptable_short_title,
+        salvage_short_subresource_name,
+    )
 
+    if not is_acceptable_short_title(text) and len(text) < 4:
+        return ""
     name = clip_subresource_display_name(text) or text
+    if not name:
+        name = salvage_short_subresource_name(text)
+    if not name:
+        return ""
     name = _drop_thread_title_lines(name, thread_title) or name
     if thread_title and name.strip() == thread_title.strip():
         return ""
@@ -2140,7 +2149,10 @@ def _subresource_title_value(
     thread_title: str = "",
 ) -> str:
     """取【影片名称】/【资源名称】/【影片名称代号】标签后的片名。"""
-    from parsers.resource_names import clip_subresource_display_name
+    from parsers.resource_names import (
+        clip_subresource_display_name,
+        salvage_short_subresource_name,
+    )
 
     chunk = scope[label_end:next_start]
     # 保留换行，便于去掉「帖标题\n真片名」双行污染
@@ -2152,6 +2164,7 @@ def _subresource_title_value(
     if not m:
         return ""
     name = (m.group(1) or "").strip()
+    raw_name = name
     name = re.sub(r"^[:：﹒．.|｜/\\]+", "", name)
     name = re.sub(r"[:：﹒．.|｜/\\]+$", "", name)
     name = _drop_thread_title_lines(name, thread_title)
@@ -2165,7 +2178,14 @@ def _subresource_title_value(
         cut = re.search(r"\s*【", name)
         if cut and cut.start() > 0:
             name = name[: cut.start()].strip()
-    return clip_subresource_display_name(name)[:255]
+    clipped = clip_subresource_display_name(name)
+    if clipped:
+        return clipped[:255]
+    # clip 过空：抢救短中文/目录号，避免整段资源因「长度不足」被 continue 丢掉
+    saved = salvage_short_subresource_name(name) or salvage_short_subresource_name(
+        raw_name
+    )
+    return (saved or "")[:255]
 
 
 def pair_magnet_to_subresource_title(

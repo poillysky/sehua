@@ -1,0 +1,66 @@
+# -*- coding: utf-8 -*-
+"""短目录号种子名 / [分类] 目录行命名（tid=27377735）。"""
+
+from parsers.content import (
+    _is_bogus_meta_value,
+    _title_from_catalog_bracket_line,
+    _torrent_name_as_title,
+    extract_subresource_blocks_ex,
+)
+
+
+def test_short_catalog_torrent_name_not_bogus():
+    """OM1/OM9 长度<4 不得当残片丢掉（否则只剩 OM10+）。"""
+    assert _is_bogus_meta_value("种子名称", "OM1") is False
+    assert _is_bogus_meta_value("种子名称", "OM9") is False
+    assert _is_bogus_meta_value("种子名称", "JP3") is False
+    assert _torrent_name_as_title("OM1.torrent") == "OM1"
+    assert _torrent_name_as_title("OM9.torrent") == "OM9"
+    assert _torrent_name_as_title("OM10.torrent") == "OM10"
+    # 仍丢真正残片
+    assert _is_bogus_meta_value("种子名称", "]ent") is True
+    assert _is_bogus_meta_value("种子名称", "ab") is True
+
+
+def test_catalog_bracket_line_title():
+    chunk = (
+        "[欧美无码] OM1 AccidentalGangbang.24.06.20.XXX.720p[XvX]\n"
+        "【影片格式】：MP4\n"
+        "【种子名称】：OM1.torrent\n"
+    )
+    assert _title_from_catalog_bracket_line(chunk).startswith("OM1 Accidental")
+
+
+def test_no_subtitle_om_catalog_splits_all():
+    """无【影片名称】时，按 [分类]+种子名 切出 OM1..OM3，勿回落帖标题。"""
+    scope = """
+[欧美无码] OM1 Foo.Bar.XXX
+【影片格式】：MP4
+【种子名称】：OM1.torrent
+magnet:?xt=urn:btih:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+-----------------------------------
+[欧美无码] OM2 Baz.Qux.XXX
+【影片格式】：MP4
+【种子名称】：OM2.torrent
+magnet:?xt=urn:btih:BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB
+-----------------------------------
+[欧美无码] OM10 Long.Name.XXX
+【影片格式】：MP4
+【种子名称】：OM10.torrent
+magnet:?xt=urn:btih:CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC
+"""
+    hashes = [
+        "A" * 40,
+        "B" * 40,
+        "C" * 40,
+    ]
+    blocks, layout = extract_subresource_blocks_ex(
+        scope, hashes, fallback_title="★●經典の歐美無碼合集↘♀"
+    )
+    assert layout == "no_subtitle"
+    assert len(blocks) == 3
+    titles = [b.title for b in blocks]
+    assert titles[0].startswith("OM1 ")
+    assert titles[1].startswith("OM2 ")
+    assert titles[2].startswith("OM10 ")
+    assert all("經典" not in t for t in titles)

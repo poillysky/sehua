@@ -179,7 +179,7 @@ export function formatResource(row: Ed2kRow) {
   );
   const rawLink = (row.ed2k_link || "").trim();
   const isStub = rawLink.toLowerCase().startsWith("unavailable://");
-  // 子资源以本 hash 的 r.ed2k_link 为准，过滤合集残留在 rs.ed2k_links 里的其它磁链
+  // 本行 ed2k_links = 该资源名称下全部链（单资源可多 hash）
   const ed2kLinks = linksForResourceHash(row.hash, row.ed2k_links, rawLink);
   const primary =
     (isPublicDownloadLink(rawLink) &&

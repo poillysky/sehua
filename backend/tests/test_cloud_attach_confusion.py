@@ -1,12 +1,59 @@
-"""易混淆误判：标题写 115eD2k，正文夹带蓝奏推广链时，应先试附件。"""
+"""易混淆误判：标题写 115eD2k，正文夹带蓝奏推广链时，勿判网盘跳过。"""
 
 from __future__ import annotations
 
+from parsers.thread_gates import (
+    match_skip_cloud_share_link,
+    match_skip_cloud_share_title,
+    title_has_target_or_115_hint,
+)
 from workers.thread_outcome import judge_thread_html
 
 
 def _pad(html: str) -> str:
     return html + ("<!-- pad -->" * 900)
+
+
+def test_title_only_one_cloud_skips():
+    assert match_skip_cloud_share_title("【夸克网盘】合集") is not None
+    assert match_skip_cloud_share_title("【夸克网盘】合集").key == "quark"
+
+
+def test_title_115_with_baidu_not_cloud():
+    """标题 115+百度并存 → 不判网盘。"""
+    assert match_skip_cloud_share_title("【自转】【百度网盘+115eD2k】示例") is None
+    assert match_skip_cloud_share_title("【百度网盘+115】合集") is None
+    assert title_has_target_or_115_hint("【百度网盘+115eD2k】示例") is True
+
+
+def test_title_115g_capacity_not_115_hint():
+    """容量 115G 不是 115 资源暗示。"""
+    assert title_has_target_or_115_hint("【迅雷云盘】合集【149V/115G】") is False
+    assert match_skip_cloud_share_title("【自转】【迅雷云盘】合集【149V/115G】") is not None
+
+
+def test_title_two_clouds_not_exclusive():
+    assert match_skip_cloud_share_title("【百度网盘+夸克】合集") is None
+
+
+def test_resource_links_only_baidu_skips():
+    assert match_skip_cloud_share_link("见：https://pan.baidu.com/s/1abcXYZ").key == "baidu"
+
+
+def test_resource_115_and_baidu_not_cloud():
+    blob = (
+        "https://115.com/s/abc123\n"
+        "https://pan.baidu.com/s/1abcXYZ\n"
+    )
+    assert match_skip_cloud_share_link(blob) is None
+
+
+def test_resource_ed2k_and_baidu_not_cloud():
+    blob = (
+        "ed2k://|file|a.mkv|1|ABCDEFABCDEFABCDEFABCDEFABCDEFAB|/\n"
+        "https://pan.baidu.com/s/1abcXYZ\n"
+    )
+    assert match_skip_cloud_share_link(blob) is None
 
 
 def test_title_115ed2k_with_lanzou_promo_tries_attachment():
@@ -40,6 +87,36 @@ def test_title_115ed2k_with_lanzou_promo_tries_attachment():
     )
     assert out.verdict == "need_attachments", out.outcome
     assert "蓝奏" not in (out.outcome or "")
+    assert "百度" not in (out.outcome or "")
+
+
+def test_body_lanzou_promo_alone_with_115_title_not_lanzou_skip():
+    """标题有 115，正文只有蓝奏推广链 → 不因正文判蓝奏。"""
+    html = _pad(
+        """
+        <html><head><title>【整理】【115eD2k】示例 - 论坛</title></head>
+        <body>
+        <span id="thread_subject">【整理】【115eD2k】示例</span>
+        <div id="postlist">
+          <div id="post_1">
+            <div class="authi"><em>1#</em><img src="ico_lz.png" alt="楼主"/></div>
+            <div id="postmessage_1">
+              https://wwsx.lanzouw.com/iZq9b35t2p2h
+            </div>
+          </div>
+        </div>
+        Powered by Discuz!
+        </body></html>
+        """
+    )
+    out = judge_thread_html(
+        html,
+        board_fid="95",
+        list_title="【整理】【115eD2k】示例",
+        preferred_link="ed2k",
+        forum_id="sehuatang",
+    )
+    assert "蓝奏" not in (out.outcome or ""), out.outcome
 
 
 def test_attach_115sha_only_not_labeled_unparsed():

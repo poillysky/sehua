@@ -21,6 +21,25 @@ def test_missing_placeholder_magnet():
     assert not is_missing_filename("国产合集.rar")
 
 
+def test_short_title_accept_and_salvage():
+    from parsers.resource_names import (
+        is_acceptable_short_title,
+        is_weak_subresource_name,
+        salvage_short_subresource_name,
+    )
+
+    assert is_acceptable_short_title("油鬼子")
+    assert is_acceptable_short_title("甲")
+    assert is_acceptable_short_title("OM1")
+    assert not is_acceptable_short_title("A")
+    assert not is_acceptable_short_title("")
+    assert salvage_short_subresource_name("  油鬼子  \n垃圾") == "油鬼子"
+    assert salvage_short_subresource_name("A") == ""
+    assert not is_weak_subresource_name("油鬼子", post_title="合集帖")
+    assert is_weak_subresource_name("A", post_title="合集帖")
+    assert is_weak_subresource_name("合集帖", post_title="合集帖")
+
+
 def test_resolve_keeps_subresource_title():
     assert (
         resolve_sub_filename(

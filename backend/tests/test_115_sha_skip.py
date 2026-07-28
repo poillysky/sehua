@@ -180,7 +180,7 @@ def test_judge_skips_115_sha_from_attachment_corpus():
         had_attachments=True,
     )
     assert out.verdict == "skipped"
-    assert "附件" in out.outcome
+    assert "115sha" in out.outcome.lower()
 
 
 def test_title_115sha_only_skips_without_trying_attachments():
@@ -277,7 +277,7 @@ def test_no_ed2k_magnet_after_attach_try_skips():
         had_attachments=False,
     )
     assert out.verdict == "skipped"
-    assert "ed2k" in out.outcome or "磁力" in out.outcome
+    assert "未解析" in out.outcome
 
 
 def test_has_115_share_link_and_import():
@@ -366,7 +366,7 @@ def test_xunlei_cloud_share_skips():
         preferred_link="ed2k",
     )
     assert out.verdict == "skipped"
-    assert "迅雷云盘" in out.outcome
+    assert "迅雷云盘（跳过）" in out.outcome
     assert out.need_attachments is False
 
 
@@ -379,11 +379,12 @@ def test_pikpak_share_skips():
     assert title_is_pikpak_without_ed2k_magnet("【整理】【PIKPAK】合集") is True
     assert title_is_pikpak_without_ed2k_magnet("【115eD2k/PIKPAK】合集") is False
 
+    # 纯 PikPak → 网盘跳过
     html = f"""
-    <html><head><title>【整理】【115eD2k/PIKPAK】合集 - 论坛</title></head>
+    <html><head><title>【整理】【PIKPAK】合集 - 论坛</title></head>
     <body>
-    <span id="thread_subject">【整理】【115eD2k/PIKPAK】合集</span>
-    <div id="postmessage_1">先发pikpak的链接。【资源链接】：{share}</div>
+    <span id="thread_subject">【整理】【PIKPAK】合集</span>
+    <div id="postmessage_1">【资源链接】：{share}</div>
     Powered by Discuz!
     </body></html>
     """
@@ -391,12 +392,32 @@ def test_pikpak_share_skips():
     out = judge_thread_html(
         html,
         board_fid="95:716",
-        list_title="【整理】【115eD2k/PIKPAK】合集",
+        list_title="【整理】【PIKPAK】合集",
         preferred_link="ed2k",
     )
     assert out.verdict == "skipped"
-    assert "PikPak" in out.outcome
+    assert "PikPak网盘（跳过）" in out.outcome
     assert out.need_attachments is False
+
+    # 115 与 PikPak 并存 → 不判网盘跳过
+    html2 = f"""
+    <html><head><title>【整理】【115eD2k/PIKPAK】合集 - 论坛</title></head>
+    <body>
+    <span id="thread_subject">【整理】【115eD2k/PIKPAK】合集</span>
+    <div id="postmessage_1">先发pikpak的链接。【资源链接】：{share}</div>
+    Powered by Discuz!
+    </body></html>
+    """
+    html2 = html2 + ("<!-- pad -->" * 900)
+    out2 = judge_thread_html(
+        html2,
+        board_fid="95:716",
+        list_title="【整理】【115eD2k/PIKPAK】合集",
+        preferred_link="ed2k",
+    )
+    # 115 并存：不得标成 PikPak 网盘跳过 / 非资源
+    assert "PikPak" not in (out2.outcome or "")
+    assert "非资源" not in (out2.outcome or "")
 
 
 def test_baidu_pan_share_skips():
@@ -429,7 +450,7 @@ def test_baidu_pan_share_skips():
         preferred_link="ed2k",
     )
     assert out.verdict == "skipped"
-    assert "百度网盘" in out.outcome
+    assert "百度网盘（跳过）" in out.outcome
     assert out.need_attachments is False
 
 
@@ -463,7 +484,7 @@ def test_quark_pan_share_skips():
         preferred_link="magnet",
     )
     assert out.verdict == "skipped"
-    assert "夸克" in out.outcome
+    assert "夸克网盘（跳过）" in out.outcome
     assert out.need_attachments is False
 
 
@@ -493,7 +514,7 @@ def test_quark_title_with_txt_attach_skips_without_need_attachments():
         preferred_link="magnet",
     )
     assert out.verdict == "skipped"
-    assert "夸克" in out.outcome
+    assert "夸克网盘（跳过）" in out.outcome
     assert out.need_attachments is False
 
 
@@ -535,7 +556,7 @@ def test_mega_and_gdrive_skip_clear_reason():
         preferred_link="magnet",
     )
     assert out.verdict == "skipped"
-    assert "MEGA" in out.outcome
+    assert "MEGA网盘（跳过）" in out.outcome
     assert "非资源" not in out.outcome
 
 
@@ -587,7 +608,7 @@ def test_extra_cloud_shares_skip_clear_reason():
             preferred_link="magnet",
         )
         assert out.verdict == "skipped", (label, out.outcome)
-        assert needle in out.outcome, (label, out.outcome)
+        assert out.outcome == f"{label}（跳过）" or needle in out.outcome, (label, out.outcome)
         assert "非资源" not in out.outcome
 
 
@@ -661,12 +682,13 @@ def test_baidu_op_not_failed_by_reply_magnet():
         preferred_link="ed2k",
     )
     assert out.verdict == "skipped"
-    assert "网盘" in out.outcome or "百度" in out.outcome or "迅雷" in out.outcome
+    # 多种网盘并存 → 归并「非资源（跳过）」，勿失败
+    assert "非资源" in out.outcome or "网盘" in out.outcome
     assert out.outcome != "解析入库失败（有链但无主资源）"
 
 
 def test_incomplete_ed2k_with_baidu_skips_not_failed():
-    """正文半截 ed2k（无 hash）+ 百度网盘 → 网盘跳过，勿失败。"""
+    """正文半截 ed2k（无 hash）+ 百度；标题含 115eD2k → 不判百度网盘，勿失败。"""
     html = """
     <html><head><title>【自转】【百度/115eD2k】示例 - 论坛</title></head>
     <body>
@@ -692,7 +714,7 @@ def test_incomplete_ed2k_with_baidu_skips_not_failed():
         preferred_link="ed2k",
     )
     assert out.verdict == "skipped"
-    assert "百度" in out.outcome or "网盘" in out.outcome
+    assert "百度" not in out.outcome
     assert out.outcome != "解析入库失败（有链但无主资源）"
 
 
@@ -731,7 +753,7 @@ def test_discussion_op_skips_despite_reply_ed2k():
         preferred_link="ed2k",
     )
     assert out.verdict == "skipped"
-    assert "非资源" in out.outcome or "未发现" in out.outcome or "无目标" in out.outcome
+    assert "非资源" in out.outcome or "未解析" in out.outcome
     assert out.outcome != "解析入库失败（有链但无主资源）"
 
 

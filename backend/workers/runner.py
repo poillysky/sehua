@@ -389,7 +389,7 @@ async def run_crawl_once(
 
         _STATE["forum_id"] = forum_id
         _STATE["phase"] = "scheduler"
-        delay = float(cfg.get("web_crawler_request_delay") or 2.0)
+        delay = float(cfg.get("web_crawler_request_delay") or 1.0)
         fail_threshold = int(cfg.get("web_crawler_fetch_failure_threshold") or 5)
         cool_secs = int(cfg.get("web_crawler_fetch_cooldown_seconds") or 45)
         max_cools = int(cfg.get("web_crawler_fetch_max_cooldowns") or 3)

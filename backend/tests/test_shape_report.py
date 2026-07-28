@@ -45,24 +45,27 @@ def test_shape_a_pack_tags():
     assert "links:multi" in rep.tags
 
 
-def test_shape_b_size_sum_mismatch_zh():
+def test_shape_b_title_vs_sub_label_capacity_zh():
+    """多资源：标题容量 vs 各子资源文案合计不一致 → 漏资源名旁证。"""
     a = _asset("A" * 40, "片子甲", size=10 * 1024**3, prev=["http://a.jpg"])
     b = _asset("B" * 40, "片子乙", size=20 * 1024**3, prev=["http://b.jpg"])
+    a.description = "【影片名称】：片子甲\n【影片大小】：10GB\n"
+    b.description = "【影片名称】：片子乙\n【影片大小】：20GB\n"
     groups = [("片子甲", a, [a]), ("片子乙", b, [b])]
     rep = build_shape_report(
         _parsed(
-            "双片合集 ×2",
+            "双片合集 ×2【100GB】",
             [a, b],
-            description="【资源大小】：100GB",
+            description=a.description + b.description,
             layout="names_then_links",
         ),
         named_groups=groups,
         layout="names_then_links",
     )
-    assert "warn:size_sum_mismatch" in rep.tags
-    assert any("容量不合规" in w for w in rep.warnings)
-    assert "flag:capacity_fail" in rep.tags
-    assert rep.verdict == "content_gap"
+    assert "kind:multi" in rep.tags
+    assert "warn:title_vs_sub_label_capacity" in rep.tags
+    assert any("漏资源名" in w or "文案合计" in w for w in rep.warnings)
+    assert rep.verdict == "structure_fail"
     assert "flag:needs_rule" in rep.tags
 
 
@@ -83,6 +86,7 @@ def test_shape_b_ignores_last_block_size_as_pack_total():
         layout="title_then_magnet",
     )
     assert "warn:size_sum_mismatch" not in rep.tags
+    assert "warn:title_vs_sub_label_capacity" not in rep.tags
     assert rep.verdict != "content_gap" or "flag:capacity_fail" not in rep.tags
     assert not any("总容量" in w for w in rep.warnings)
 

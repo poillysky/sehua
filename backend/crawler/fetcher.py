@@ -2,7 +2,7 @@
 
 Mode:
 - list / forumdisplay / forum-*-*.html → HTTP first, browser fallback if shell/invalid
-- thread / viewthread → curl_cffi / browser-API HTTP + soft-shell browser retry
+- thread / viewthread → curl_cffi 优先，失败再 browser-API；软文壳再升整页浏览器
 - unknown entry probes → Playwright (conservative)
 """
 
@@ -289,17 +289,17 @@ class Fetcher:
         if not self.session._ready:
             await self.session.bootstrap()
 
-        # 优先：浏览器上下文内 HTTP（与列表同网络/代理，不整页导航）
-        # 其次：curl_cffi 指纹 HTTP（环境直连正常时）
+        # 优先：curl_cffi 指纹 HTTP（不占 Playwright 页，更快）
+        # 失败再：浏览器上下文内 fetch（与列表同网络/代理）
         html = ""
         try:
-            html = await self._browser_api_get(url)
-        except Exception as api_err:
-            log.warning("Browser API HTTP failed, try curl_cffi: %s", api_err)
+            html = await asyncio.to_thread(self._http_get, url)
+        except Exception as curl_err:
+            log.warning("curl_cffi HTTP failed, try browser API: %s", curl_err)
             try:
-                html = await asyncio.to_thread(self._http_get, url)
-            except Exception as curl_err:
-                raise FetchError(f"HTTP 读帖失败: {curl_err}") from curl_err
+                html = await self._browser_api_get(url)
+            except Exception as api_err:
+                raise FetchError(f"HTTP 读帖失败: {api_err}") from api_err
 
         if self._is_cf_challenge(html):
             log.warning("Cloudflare challenge on thread %s", url)

@@ -3,9 +3,9 @@
 Outcomes:
 - import   正常入库（有板块目标主链）
 - stub     占位入库 unavailable://thread/...
-- skipped  战略跳过，不再处理
-- failed   永久失败（有链但入库 0）
-- retry    保留待重试（本轮不写或可稍后）
+- skipped  已见正文，战略跳过不再入库（网盘/115sha/非资源/无链等）
+- failed   未见到正文就出队（抓取/软文壳/拦截重试耗尽）——不进帖子识别
+- retry    保留待重试（本轮不写或可稍后；含暂时看不见正文）
 - need_attachments  需先下附件再解析（调用方负责下载后重判）
 """
 
@@ -18,6 +18,19 @@ from typing import Literal
 from parsers.boards import DISCUZ_BOARD_FID, parse_board_key
 from parsers.links import DualParseResult, parse_thread_dual
 from parsers.list_dates import extract_thread_posted_at, is_thread_old_enough
+from parsers.skip_outcomes import (
+    SKIP_115SHA,
+    SKIP_AUTHOR_BANNED,
+    SKIP_LOGIN_NO_TITLE,
+    SKIP_META_AD,
+    SKIP_MISSING,
+    SKIP_MOD_BLOCKED,
+    SKIP_NO_ACCESS,
+    SKIP_NO_TARGET,
+    SKIP_NON_RESOURCE,
+    SKIP_PURCHASE,
+    age_skip_tip,
+)
 from parsers.thread_gates import (
     has_115_sha_link,
     has_115_share_link,
@@ -41,6 +54,7 @@ from parsers.thread_gates import (
     post_text,
     should_skip_as_115sha_only,
     thread_typeid_mismatch,
+    title_has_target_or_115_hint,
     title_implies_resource,
     title_is_115sha_without_ed2k_magnet,
     title_recognizable,
@@ -53,7 +67,7 @@ VERDICT_LABELS: dict[str, str] = {
     "import": "正常入库",
     "stub": "占位入库",
     "skipped": "跳过",
-    "failed": "失败",
+    "failed": "失败（未见正文）",
     "retry": "保留重试",
     "need_attachments": "需下附件再解析",
 }
@@ -193,7 +207,7 @@ def judge_thread_html(
             or is_2048_meta_guide_thread(list_title or "", tid)
         ):
             return ThreadOutcome(
-                "skipped", "版务/广告帖（跳过）", link_kind, title or list_title
+                "skipped", SKIP_META_AD, link_kind, title or list_title
             )
 
     # 与 parse_thread_dual 对齐：目标链/网盘/跳过一律只认主贴语料，忽略回帖
@@ -233,7 +247,7 @@ def judge_thread_html(
             return ThreadOutcome("stub", "帖子需论坛登录", link_kind, page_tit)
         return ThreadOutcome(
             "skipped",
-            "帖子需论坛登录（无有效标题）",
+            SKIP_LOGIN_NO_TITLE,
             link_kind,
             list_title or page_tit or title,
         )
@@ -256,16 +270,16 @@ def judge_thread_html(
             need_browser_retry=True,
         )
 
-    # 帖子已删 / tid 无效：明确跳过（勿落成「非资源帖」）
+    # 帖子已删 / tid 无效：明确跳过（勿落成「非资源」）
     if is_missing_thread(html, page_tit):
-        return ThreadOutcome("skipped", "帖子不存在（跳过）", link_kind, title)
+        return ThreadOutcome("skipped", SKIP_MISSING, link_kind, title)
 
     # 版主/管理员屏蔽：内容不可见，直接跳过（不占位、不重试）
     if is_thread_moderator_blocked(html):
-        return ThreadOutcome("skipped", "版主屏蔽（跳过）", link_kind, title)
+        return ThreadOutcome("skipped", SKIP_MOD_BLOCKED, link_kind, title)
     # 作者被禁/删：正文自动屏蔽，直接跳过
     if is_thread_author_banned(html):
-        return ThreadOutcome("skipped", "作者已禁止（跳过）", link_kind, title)
+        return ThreadOutcome("skipped", SKIP_AUTHOR_BANNED, link_kind, title)
 
     if is_thread_access_denied(html):
         # 无权页标题几乎总是「提示信息」：优先用列表标题占位入库
@@ -277,7 +291,7 @@ def judge_thread_html(
             return ThreadOutcome("stub", "无阅读权限 · 占位入库", link_kind, page_tit)
         return ThreadOutcome(
             "skipped",
-            "无阅读权限（无有效标题，跳过）",
+            SKIP_NO_ACCESS,
             link_kind,
             list_title or page_tit or title,
         )
@@ -302,7 +316,7 @@ def judge_thread_html(
         ):
             return ThreadOutcome(
                 "skipped",
-                f"未满 {min_age} 天（跳过）",
+                age_skip_tip(min_age),
                 link_kind,
                 title,
             )
@@ -317,44 +331,28 @@ def judge_thread_html(
                 # 附件已试但未注入（解压失败/空包）：勿把正文 115 目录误标成「附件跳过」
                 pass
             else:
-                tip = (
-                    "115sha 链接（附件，跳过）"
-                    if has_attach_corpus
-                    else "115sha 链接（跳过）"
-                )
-                return ThreadOutcome("skipped", tip, link_kind, title)
+                return ThreadOutcome("skipped", SKIP_115SHA, link_kind, title)
         # 已有目标链：继续走正文导入 / 附件逻辑
 
     # 115 网盘分享页：有分享链则走正文解析入库（见 parse_thread_dual），不再跳过。
     # 仍跳过：仅标题写 115 分享、正文无实际链接（见下方 title 分支已移除分享标题硬跳）。
 
-    # 各类网盘分享（迅雷/百度/夸克/MEGA/阿里/天翼/123/蓝奏…）：只看楼主语料
-    # 易混淆：标题写 115eD2k/磁力，正文却夹带蓝奏/百度「工具链」或封面链；
-    # 只要有附件区，就先下附件（真链常在 115ED2K.txt），勿按网盘名硬跳过。
-    cloud_hit = match_skip_cloud_share_link(link_corpus)
+    # 网盘跳过口径（勿用正文关键字扫）：
+    # 1) 标题只点名一种网盘，且无 115/ed2k/磁力；
+    # 2) 资源链只含一种网盘 URL，且无 ed2k/磁力/115。
+    # 标题或链上 115 与百度等并存 → 不判网盘；有附件区可先试附件。
+    title_blocks_cloud = title_has_target_or_115_hint(title) or title_has_target_or_115_hint(
+        list_title
+    )
+    cloud_hit = None if title_blocks_cloud else match_skip_cloud_share_link(link_corpus)
     if cloud_hit is not None and not has_lz_target:
-        title_wants_target = title_implies_resource(
-            title, link_kind
-        ) or title_implies_resource(list_title, link_kind)
-        try_att = cloud_hit.try_attachments or title_wants_target
-        if try_att and (
-            not attachments_already_tried and looks_like_attachment_zone(html)
-        ):
-            pass
-        elif try_att and attachments_already_tried and (
-            attachment_denied
-            or attachment_login_required
-            or attachment_failed
-            or (looks_like_attachment_zone(html) and not had_attachments)
-        ):
-            # 已按「先附件」试过但无权/失败：勿永久标网盘跳过，落到下方 stub/retry
-            pass
-        else:
-            return ThreadOutcome("skipped", cloud_hit.skip_tip(), link_kind, title)
+        # 纯网盘（标题/链均无 115·ed2k·磁力）直接跳过；不再「先下附件」
+        # （115 与网盘并存已由 title_blocks_cloud / 链上 115 排除）
+        return ThreadOutcome("skipped", cloud_hit.skip_tip(), link_kind, title)
 
     # 标题仅 115sha / 各类网盘、且正文无目标链：
     # 115sha 标题若带附件区，先下附件（常见：标题写 115sha1，rar 内实为 ed2k）
-    # （正文已有 115cdn 分享 / ed2k / 磁力时不因标题里的「百度」等字样硬跳）
+    # （标题含 115/ed2k/磁力时不因「百度」等字样硬跳）
     if title_is_115sha_without_ed2k_magnet(title) or title_is_115sha_without_ed2k_magnet(
         list_title
     ):
@@ -366,42 +364,27 @@ def judge_thread_html(
         elif not attachments_already_tried and looks_like_attachment_zone(html):
             pass
         else:
-            return ThreadOutcome("skipped", "115sha 标题（无 ed2k/磁力，跳过）", link_kind, title)
+            return ThreadOutcome("skipped", SKIP_115SHA, link_kind, title)
     _has_body_target = has_lz_target
-    if not _has_body_target:
+    if not _has_body_target and not title_blocks_cloud:
         title_cloud = match_skip_cloud_share_title(title) or match_skip_cloud_share_title(
             list_title
         )
         if title_cloud is not None:
-            title_wants_target = title_implies_resource(
-                title, link_kind
-            ) or title_implies_resource(list_title, link_kind)
-            try_att = title_cloud.try_attachments or title_wants_target
-            if try_att and (
-                not attachments_already_tried and looks_like_attachment_zone(html)
-            ):
-                pass
-            elif try_att and attachments_already_tried and (
-                attachment_denied
-                or attachment_login_required
-                or attachment_failed
-                or (looks_like_attachment_zone(html) and not had_attachments)
-            ):
-                pass
-            else:
-                return ThreadOutcome(
-                    "skipped", title_cloud.skip_tip(from_title=True), link_kind, title
-                )
+            # 标题独占一种网盘 → 直接跳过（有附件也不先下）
+            return ThreadOutcome(
+                "skipped", title_cloud.skip_tip(from_title=True), link_kind, title
+            )
 
     # 需回复：满龄（或非龄期板）→ 占位显示；未满龄已在上一步跳过
     if is_reply_required_post(html):
         return ThreadOutcome("stub", "需回复贴", link_kind, title)
     # 付费购买：跳过（不占位）；0 元由调用方先解锁，仍无链时在下方 stub
     if is_purchase_required_post(html):
-        return ThreadOutcome("skipped", "需购买贴（付费，跳过）", link_kind, title)
+        return ThreadOutcome("skipped", SKIP_PURCHASE, link_kind, title)
 
     # Body has target link? 仅认楼主语料（与 parse_thread_dual 一致）
-    # 回帖/侧栏误检到的链不走进「有链但无主资源」失败。
+    # 回帖/侧栏误检到的链不走进「有链无主资源」误杀。
     # 正文有链 + 有可解析资源附件：默认以附件为准（正文常为样例/残链）。
     # 例外：正文已有 ≥2 条带【种子名称】/子标题的独立链 → 直接解析正文，
     # 避免附件只下到其中一条把合集压成单资源（2048 三级写真 tid=26719397）。
@@ -485,16 +468,16 @@ def judge_thread_html(
                 parsed=parsed,
             )
         # 楼主语料检出目标链形态但解析无主资源：
-        # 实为网盘 → 跳过；有附件区 → 继续下附件；否则失败。
+        # 实为网盘 → 跳过；有附件区 → 继续下附件；否则已见正文、链落不成 → 跳过（勿标 failed）
         if not attachments_already_tried and not looks_like_attachment_zone(html):
             if is_non_target_cloud_share(link_kind=link_kind, text=link_corpus):
                 return ThreadOutcome(
-                    "skipped", "非ED2K资源（网盘分享）", link_kind, title
+                    "skipped", SKIP_NON_RESOURCE, link_kind, title
                 )
             cloud_fail = match_skip_cloud_share_link(link_corpus)
             if cloud_fail is not None:
                 return ThreadOutcome("skipped", cloud_fail.skip_tip(), link_kind, title)
-            return ThreadOutcome("failed", "解析入库失败（有链但无主资源）", link_kind, title)
+            return ThreadOutcome("skipped", SKIP_NO_TARGET, link_kind, title)
 
     # 0 元购买仍无链（未登录/未解锁）：占位，留给账号爬；勿再走附件/无磁力跳过
     if not has_lz_target and is_free_purchase_post(html):
@@ -507,7 +490,7 @@ def judge_thread_html(
         if has_abnormal_download_link(link_corpus) or has_abnormal_download_link(
             post_text(html) or ""
         ):
-            return ThreadOutcome("skipped", "异常下载链接", link_kind, title)
+            return ThreadOutcome("skipped", SKIP_NON_RESOURCE, link_kind, title)
 
     # No usable body link yet — attachment strategy (ed2k-aligned)
     if not attachments_already_tried and looks_like_attachment_zone(html):
@@ -567,13 +550,13 @@ def judge_thread_html(
         if should_skip_as_115sha_only(link_corpus):
             return ThreadOutcome(
                 "skipped",
-                "115sha 链接（附件，跳过）",
+                SKIP_115SHA,
                 link_kind,
                 title,
             )
         return ThreadOutcome(
             "skipped",
-            "未解析到 ed2k/磁力（跳过）",
+            SKIP_NO_TARGET,
             link_kind,
             title,
         )
@@ -581,7 +564,7 @@ def judge_thread_html(
     if is_non_target_cloud_share(link_kind=link_kind, text=link_corpus) and not title_implies_resource(
         title, link_kind
     ):
-        return ThreadOutcome("skipped", "非ED2K资源（网盘分享）", link_kind, title)
+        return ThreadOutcome("skipped", SKIP_NON_RESOURCE, link_kind, title)
 
     wrong_typeid = bool(
         required_typeid
@@ -589,19 +572,14 @@ def judge_thread_html(
         and thread_typeid_mismatch(html, str(fid), required_typeid)
     )
     if is_genuine_non_resource(html=html, title=title, link_kind=link_kind, text=link_corpus):
-        outcome = (
-            "非情色分享分类"
-            if wrong_typeid
-            else "非资源帖（无目标链接）"
-        )
-        return ThreadOutcome("skipped", outcome, link_kind, title)
+        return ThreadOutcome("skipped", SKIP_NON_RESOURCE, link_kind, title)
 
     if wrong_typeid:
         return ThreadOutcome("retry", "非情色分享分类，待复核", link_kind, title)
     # 正文/附件均无 ed2k、magnet → 跳过（含标题暗示资源）
     if title_implies_resource(title, link_kind):
-        return ThreadOutcome("skipped", "未解析到 ed2k/磁力（跳过）", link_kind, title)
+        return ThreadOutcome("skipped", SKIP_NO_TARGET, link_kind, title)
     if len(html or "") < 8000:
         return ThreadOutcome("retry", "页面过短/未正常加载", link_kind, title)
 
-    return ThreadOutcome("skipped", "未发现 ed2k/磁力链接（跳过）", link_kind, title)
+    return ThreadOutcome("skipped", SKIP_NO_TARGET, link_kind, title)

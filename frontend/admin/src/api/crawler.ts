@@ -376,7 +376,7 @@ export type FrameFailTidsResult = DiscardedTidsResult & {
 }
 
 export function fetchFrameFailTids(params?: {
-  status?: 'all' | 'structure' | 'capacity'
+  status?: 'all' | 'structure' | 'capacity' | 'name' | 'link' | 'preview' | 'review'
   q?: string
   reason?: string
   limit?: number
@@ -419,6 +419,10 @@ export type QueueBrowseItem = DiscardedQueueItem & {
   import_outcome?: string | null
   ed2k_link?: string | null
   retry_after?: string | null
+  /** 不合格明细：single | multi */
+  resource_kind?: 'single' | 'multi' | string | null
+  /** 不合格大类，如 不合格：容量 */
+  reason_kind?: string | null
 }
 
 export type QueueBrowseResult = {
@@ -432,6 +436,10 @@ export type QueueBrowseResult = {
   counts?: { failed: number; skipped: number; total: number } & {
     structure?: number
     capacity?: number
+    name?: number
+    link?: number
+    preview?: number
+    review?: number
   }
   kind_counts?: Record<string, number>
   reasons?: Array<{ reason: string; count: number }>
@@ -440,7 +448,7 @@ export type QueueBrowseResult = {
 
 export function fetchQueueBrowse(params: {
   kind: QueueBrowseKind
-  status?: 'all' | 'failed' | 'skipped' | 'structure' | 'capacity'
+  status?: 'all' | 'failed' | 'skipped' | 'structure' | 'capacity' | 'name' | 'link' | 'preview' | 'review'
   q?: string
   reason?: string
   limit?: number

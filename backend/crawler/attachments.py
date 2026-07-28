@@ -253,6 +253,48 @@ def _pick_best_archive_texts(chunks: list[str]) -> str:
     return "\n\n".join(cleaned)
 
 
+def _attach_merge_still_unqualified(
+    html: str,
+    attach_text: str,
+    *,
+    preferred_link: str | None = None,
+    base_url: str = "",
+) -> bool:
+    """试算合并附件后的入库 outcome：仍「不合格*」或无法定型 → True（应继续下后面附件）。
+
+    合格（成功/占位等）→ False，可停轮。预览异常时 False，避免异常拖成扫完全部附件。
+    """
+    if not (attach_text or "").strip():
+        return True
+    try:
+        from db.persist import preview_frame_outcome
+        from parsers.attachments import inject_attachment_text
+        from parsers.links import parse_thread_dual
+
+        pref = (preferred_link or "both").strip().lower()
+        if pref not in {"magnet", "ed2k", "both"}:
+            pref = "both"
+        html2 = inject_attachment_text(html or "", attach_text)
+        parsed = parse_thread_dual(
+            html2,
+            preferred_link=pref,  # type: ignore[arg-type]
+            extra_text=attach_text,
+            base_url=base_url or "",
+        )
+        if not parsed.assets:
+            return True
+        parsed.had_attachments = True
+        out = preview_frame_outcome(
+            parsed, import_outcome="成功：附件目标链接"
+        )
+        if not out:
+            return True
+        return out.startswith("不合格")
+    except Exception as exc:
+        log.debug("attach merge preview failed: %s", exc)
+        return False
+
+
 def _push_member_text(member_texts: list[str], text: str) -> str | None:
     """追加成员语料；已含 magnet/ed2k 则返回合并结果供提前结束。"""
     if not (text or "").strip():
@@ -1245,8 +1287,8 @@ class AttachmentDownloader:
     ) -> AttachmentFetchResult:
         """正文无链：按板块主链频次排序后逐个轮询附件。
 
-        压缩包抽到 magnet/ed2k 即停；多个 txt 若标题 N配额尚未凑齐则继续合并
-        （如 2 个 txt 合计 4 配额，勿在首个 txt 停）。
+        压缩包抽到 magnet/ed2k 后试算入库：合格则停；不合格则继续合并后面附件。
+        多个 txt 若标题 N配额尚未凑齐也继续合并（如 2 个 txt 合计 4 配额）。
         """
         if not self.session._ready:
             return AttachmentFetchResult(failed=True)
@@ -1299,10 +1341,10 @@ class AttachmentDownloader:
                     continue
                 chunks.append(text)
                 if _text_has_importable_link(text):
-                    have = _count_importable_links(_pick_best_archive_texts(chunks))
-                    more_txt = any(
-                        a.kind == "txt" for a in attachments[idx + 1 :]
-                    )
+                    merged = _pick_best_archive_texts(chunks)
+                    have = _count_importable_links(merged)
+                    rest = attachments[idx + 1 :]
+                    more_txt = any(a.kind == "txt" for a in rest)
                     # 多 txt 分卷：配额未齐则继续合并
                     if (
                         attachment.kind == "txt"
@@ -1315,6 +1357,20 @@ class AttachmentDownloader:
                             attachment.name,
                             have,
                             quota_expect,
+                        )
+                        continue
+                    # 已有链但入库试算仍不合格 → 合并后面附件再试
+                    if rest and _attach_merge_still_unqualified(
+                        html,
+                        merged,
+                        preferred_link=preferred_link,
+                        base_url=base_url,
+                    ):
+                        log.info(
+                            "Attachment %s (%s) → merge still 不合格 — continue next (%s left)",
+                            attachment.name,
+                            attachment.kind,
+                            len(rest),
                         )
                         continue
                     log.info(

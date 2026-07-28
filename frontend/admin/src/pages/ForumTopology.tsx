@@ -701,7 +701,7 @@ function StepDetail({
           </Branch>
         </Junction>
         <ArrowDown />
-        <Process text="回写队列状态" sub="入库/占位出队 · 跳过结束 · 重试挂起 · 满 3 次→失败丢弃" />
+        <Process text="回写队列状态" sub="入库/占位出队 · 跳过结束 · 重试挂起 · 满 3 次→失败（未见正文）" />
         <ArrowDown />
         {target > 0 ? (
           <>

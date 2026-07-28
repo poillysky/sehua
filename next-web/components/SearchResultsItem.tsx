@@ -10,5 +10,12 @@ export default function SearchResultsItem({
   item: Ed2kResourceProps;
   keywords: string | string[];
 }) {
-  return <ResourceFeedItem item={item} keywords={keywords} showPreview={false} />;
+  return (
+    <ResourceFeedItem
+      item={item}
+      keywords={keywords}
+      showLinks
+      showPreview={false}
+    />
+  );
 }

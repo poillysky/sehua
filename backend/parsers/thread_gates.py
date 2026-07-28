@@ -260,15 +260,24 @@ RE_TERABOX_SHARE = re.compile(
     re.I,
 )
 
+# 标题含目标资源暗示：有 115 / ed2k / 磁力时，不因「百度」等字样判网盘跳过。
+# 注意：勿把容量「115G / 115GB」误认成 115 资源暗示。
 _TITLE_HAS_TARGET_HINT_RE = re.compile(
-    r"ed2k|magnet|磁力|电驴|种子|torrent",
+    r"ed2k|magnet|磁力|电驴|种子|torrent|"
+    r"(?<![0-9.])115(?!(?:\.\d+)?\s*[GMTgmt][Bb]?\b)",
     re.I,
 )
 
 
 @dataclass(frozen=True, slots=True)
 class CloudShareSpec:
-    """磁力板应跳过的网盘分享（非 115 分享码入库类）。"""
+    """应跳过的网盘分享（非 115 分享码入库类）。
+
+    判定口径（勿用正文关键词扫）：
+    1) 标题只点名这一种网盘，且无 115/ed2k/磁力；
+    2) 解析到的资源链只含这一种网盘 URL，且无 ed2k/磁力/115。
+    115 与百度等并存 → 不判网盘资源。
+    """
 
     key: str
     label: str
@@ -277,9 +286,11 @@ class CloudShareSpec:
     try_attachments: bool = False
 
     def skip_tip(self, *, from_title: bool = False) -> str:
-        if from_title:
-            return f"{self.label}标题（无 ed2k/磁力，跳过）"
-        return f"{self.label}（跳过）"
+        from parsers.skip_outcomes import cloud_skip_tip
+
+        # from_title 仅语义区分，落库统一为「{盘名}（跳过）」
+        _ = from_title
+        return cloud_skip_tip(self.label)
 
 
 # 顺序即匹配优先级；新增网盘只加条目即可
@@ -409,25 +420,77 @@ SKIP_CLOUD_SHARE_SPECS: tuple[CloudShareSpec, ...] = (
 )
 
 
-def match_skip_cloud_share_link(text: str) -> CloudShareSpec | None:
-    """正文/楼主语料命中应跳过的网盘分享链（不含 115 分享码）。"""
+def title_has_target_or_115_hint(title: str) -> bool:
+    """标题是否含 115 / ed2k / 磁力等目标资源暗示（与网盘并存时勿判网盘）。"""
+    t = (title or "").strip()
+    return bool(t and _TITLE_HAS_TARGET_HINT_RE.search(t))
+
+
+def _cloud_specs_in_title(title: str) -> list[CloudShareSpec]:
+    t = (title or "").strip()
+    if not t:
+        return []
+    return [
+        spec
+        for spec in SKIP_CLOUD_SHARE_SPECS
+        if spec.title_re is not None and spec.title_re.search(t)
+    ]
+
+
+def _cloud_specs_in_resource_links(text: str) -> list[CloudShareSpec]:
+    """只认网盘分享 URL（资源链），不认正文里的网盘关键字。"""
     blob = text or ""
     if not blob:
-        return None
+        return []
+    hits: list[CloudShareSpec] = []
+    seen: set[str] = set()
     for spec in SKIP_CLOUD_SHARE_SPECS:
+        if spec.key in seen:
+            continue
         if spec.url_re.search(blob):
-            return spec
+            hits.append(spec)
+            seen.add(spec.key)
+    return hits
+
+
+def _resource_has_target_or_115(text: str) -> bool:
+    """资源链语料是否含 ed2k / 磁力 / 115 分享页 / 115sha。"""
+    blob = text or ""
+    if not blob:
+        return False
+    if ED2K_RE.search(blob) or MAGNET_RE.search(blob):
+        return True
+    if RE_115_SHARE.search(blob) or has_115_sha_link(blob):
+        return True
+    return False
+
+
+def match_skip_cloud_share_link(text: str) -> CloudShareSpec | None:
+    """资源链「仅一种跳过网盘 URL、且无 ed2k/磁力/115」→ 可跳过。
+
+    115 与百度等同时出现、或多种网盘并存 → 不判网盘跳过。
+    不再用「正文里出现任意一条网盘链」硬跳。
+    """
+    blob = text or ""
+    if not blob or _resource_has_target_or_115(blob):
+        return None
+    hits = _cloud_specs_in_resource_links(blob)
+    if len(hits) == 1:
+        return hits[0]
     return None
 
 
 def match_skip_cloud_share_title(title: str) -> CloudShareSpec | None:
-    """标题标明网盘且未暗示 ed2k/磁力 → 应跳过。"""
+    """标题「只点名一种网盘、且无 115/ed2k/磁力」→ 可跳过。
+
+    【百度网盘+115eD2k】/【百度+夸克】这类并存 → 不判。
+    """
     t = (title or "").strip()
-    if not t or _TITLE_HAS_TARGET_HINT_RE.search(t):
+    if not t or title_has_target_or_115_hint(t):
         return None
-    for spec in SKIP_CLOUD_SHARE_SPECS:
-        if spec.title_re is not None and spec.title_re.search(t):
-            return spec
+    hits = _cloud_specs_in_title(t)
+    if len(hits) == 1:
+        return hits[0]
     return None
 
 SOFT_AD_TITLE_HINTS = ("名人名言", "佛教谚语", "请稍候", "Just a moment")
@@ -1055,16 +1118,16 @@ def is_free_purchase_post(html: str) -> bool:
 
 
 def is_non_target_cloud_share(*, link_kind: str, text: str) -> bool:
-    """ED2K 板：只有网盘分享、无电驴/磁力/115分享。"""
+    """ED2K 板：资源链只有跳过类网盘 URL（可多种）、无电驴/磁力/115。"""
     if link_kind != "ed2k":
         return False
     from parsers.ed2k import normalize_ed2k_corpus
     from parsers.magnet import normalize_magnet_corpus
 
     blob = normalize_ed2k_corpus(normalize_magnet_corpus(text or ""))
-    if ED2K_RE.search(blob) or MAGNET_RE.search(blob) or RE_115_SHARE.search(blob):
+    if _resource_has_target_or_115(blob):
         return False
-    return bool(CLOUD_SHARE_RE.search(text or ""))
+    return bool(_cloud_specs_in_resource_links(blob))
 
 
 def title_implies_resource(title: str, link_kind: str) -> bool:

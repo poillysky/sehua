@@ -1261,14 +1261,34 @@ def count_priority_account_stubs_q(
         return int(row[0] or 0) if row else 0
 
 
-# 填槽验收不合格（仍入库）：import_outcome 以「不合格」开头
+# 填槽验收不合格（仍入库）：按帖归并为五类；旧「不合格：结构」按文案拆到资源名/链接/预览
 FRAME_FAIL_REASON_SQL = """
 CASE
-  WHEN rs.import_outcome LIKE '不合格：结构%%' THEN '不合格：结构'
-  WHEN rs.import_outcome LIKE '不合格：容量%%' THEN '不合格：容量'
-  ELSE split_part(COALESCE(rs.import_outcome, ''), ' · ', 1)
+  WHEN {col} LIKE '不合格：资源名%%' THEN '不合格：资源名'
+  WHEN {col} LIKE '不合格：链接%%' THEN '不合格：链接'
+  WHEN {col} LIKE '不合格：预览%%' THEN '不合格：预览'
+  WHEN {col} LIKE '不合格：容量%%' THEN '不合格：容量'
+  WHEN {col} LIKE '不合格：待核%%'
+    OR {col} LIKE '待核：%%'
+    OR {col} LIKE '待核:%%' THEN '不合格：待核'
+  WHEN {col} LIKE '不合格：结构%%'
+    AND {col} ILIKE '%%预览%%' THEN '不合格：预览'
+  WHEN {col} LIKE '不合格：结构%%'
+    AND (
+      {col} ILIKE '%%链数%%'
+      OR {col} ILIKE '%%漏链%%'
+      OR {col} ILIKE '%%未进组%%'
+      OR {col} ILIKE '%%配额%%'
+    ) THEN '不合格：链接'
+  WHEN {col} LIKE '不合格：结构%%' THEN '不合格：资源名'
+  ELSE split_part(COALESCE({col}, ''), ' · ', 1)
 END
 """
+
+
+def _frame_fail_reason_expr(col: str = "rs.import_outcome") -> str:
+    """不合格大类 SQL（与下拉 / 筛选同一口径）。"""
+    return FRAME_FAIL_REASON_SQL.format(col=col)
 
 
 def _frame_fail_where(
@@ -1279,16 +1299,66 @@ def _frame_fail_where(
     """按帖聚合前的 WHERE（resource_sources rs）。"""
     clauses = [
         "NULLIF(BTRIM(COALESCE(rs.source_url, '')), '') IS NOT NULL",
-        "rs.import_outcome LIKE %s",
+        # 新不合格前缀 + 旧「待核：」归入不合格明细
+        "(rs.import_outcome LIKE %s OR rs.import_outcome LIKE %s OR rs.import_outcome LIKE %s)",
     ]
-    params: list[Any] = ["不合格%"]
+    params: list[Any] = ["不合格%", "待核：%", "待核:%"]
     st = (status or "all").strip().lower()
-    if st in {"structure", "结构"}:
-        clauses.append("rs.import_outcome LIKE %s")
-        params.append("不合格：结构%")
+    # 五类 + 旧结构兼容
+    if st in {"name", "资源名"}:
+        clauses.append(
+            "(rs.import_outcome LIKE %s OR "
+            "(rs.import_outcome LIKE %s AND NOT ("
+            "rs.import_outcome ILIKE %s OR rs.import_outcome ILIKE %s OR "
+            "rs.import_outcome ILIKE %s OR rs.import_outcome ILIKE %s)))"
+        )
+        params.extend(
+            [
+                "不合格：资源名%",
+                "不合格：结构%",
+                "%链数%",
+                "%漏链%",
+                "%未进组%",
+                "%预览%",
+            ]
+        )
+    elif st in {"link", "链接"}:
+        clauses.append(
+            "(rs.import_outcome LIKE %s OR "
+            "(rs.import_outcome LIKE %s AND ("
+            "rs.import_outcome ILIKE %s OR rs.import_outcome ILIKE %s OR rs.import_outcome ILIKE %s)))"
+        )
+        params.extend(
+            [
+                "不合格：链接%",
+                "不合格：结构%",
+                "%链数%",
+                "%漏链%",
+                "%未进组%",
+            ]
+        )
+    elif st in {"preview", "预览"}:
+        clauses.append(
+            "(rs.import_outcome LIKE %s OR "
+            "(rs.import_outcome LIKE %s AND rs.import_outcome ILIKE %s))"
+        )
+        params.extend(["不合格：预览%", "不合格：结构%", "%预览%"])
     elif st in {"capacity", "容量"}:
         clauses.append("rs.import_outcome LIKE %s")
         params.append("不合格：容量%")
+    elif st in {"review", "待核"}:
+        clauses.append(
+            "(rs.import_outcome LIKE %s OR rs.import_outcome LIKE %s OR rs.import_outcome LIKE %s)"
+        )
+        params.extend(["不合格：待核%", "待核：%", "待核:%"])
+    elif st in {"structure", "结构"}:
+        clauses.append(
+            "(rs.import_outcome LIKE %s OR rs.import_outcome LIKE %s "
+            "OR rs.import_outcome LIKE %s OR rs.import_outcome LIKE %s)"
+        )
+        params.extend(
+            ["不合格：结构%", "不合格：资源名%", "不合格：链接%", "不合格：预览%"]
+        )
     forum = (forum_id or "").strip()
     if forum:
         clauses.append("COALESCE(NULLIF(BTRIM(rs.forum_id), ''), 'sehuatang') = %s")
@@ -1303,8 +1373,13 @@ def count_frame_fail_posts(
     forum_id: str | None = None,
     q: str | None = None,
     reason: str | None = None,
+    breakdown: bool = True,
 ) -> dict[str, int]:
-    """验收不合格帖数（按 source_url 去重）。"""
+    """验收不合格帖数（按 source_url 去重）。
+
+    breakdown=False 时只算 total（爬虫状态面板用，避免 7 次全表扫描）。
+    无搜索/原因筛选时用单次扫描 + FILTER 聚合。
+    """
     _ensure_resource_schema(conn)
     text = (q or "").strip()
     q_sql = ""
@@ -1322,11 +1397,171 @@ def count_frame_fail_posts(
         """
         q_params = [like, like, like, like, like]
     reason_text = (reason or "").strip()
-    reason_sql = ""
-    reason_params: list[Any] = []
+    reason_kind = ""
     if reason_text:
-        reason_sql = f"AND ({FRAME_FAIL_REASON_SQL.strip()}) = %s"
-        reason_params = [reason_text]
+        from parsers.unqual_outcomes import normalize_unqual_reason_kind
+
+        reason_kind = normalize_unqual_reason_kind(reason_text) or reason_text
+
+    empty = {
+        "name": 0,
+        "link": 0,
+        "preview": 0,
+        "capacity": 0,
+        "review": 0,
+        "structure": 0,
+        "total": 0,
+    }
+
+    # 按不合格大类筛：与下拉同一口径（每帖 MAX(outcome) 归类后计数）
+    if reason_kind:
+        where_sql, params = _frame_fail_where(
+            status=status or "all", forum_id=forum_id
+        )
+        having_kind = _frame_fail_reason_expr(
+            "MAX(COALESCE(rs.import_outcome, ''))"
+        )
+        with conn.cursor() as cur:
+            cur.execute(
+                f"""
+                SELECT COUNT(*) FROM (
+                  SELECT BTRIM(rs.source_url) AS source_url
+                  FROM resource_sources rs
+                  WHERE {where_sql}
+                    {q_sql}
+                  GROUP BY BTRIM(rs.source_url)
+                  HAVING {having_kind} = %s
+                ) t
+                """,
+                (*params, *q_params, reason_kind),
+            )
+            row = cur.fetchone()
+            empty["total"] = int(row[0] or 0) if row else 0
+        return empty
+
+    # 状态面板：只要总数
+    if not breakdown and not text:
+        where_sql, params = _frame_fail_where(status="all", forum_id=forum_id)
+        with conn.cursor() as cur:
+            cur.execute(
+                f"""
+                SELECT COUNT(DISTINCT BTRIM(rs.source_url))
+                FROM resource_sources rs
+                WHERE {where_sql}
+                """,
+                tuple(params),
+            )
+            row = cur.fetchone()
+            empty["total"] = int(row[0] or 0) if row else 0
+        return empty
+
+    # 无搜索/原因：单次扫描算出各桶 + total（原先 7～8 次 COUNT 会卡死状态接口）
+    if not text and not reason_text:
+        where_sql, params = _frame_fail_where(status="all", forum_id=forum_id)
+        with conn.cursor() as cur:
+            cur.execute(
+                f"""
+                SELECT
+                  COUNT(DISTINCT BTRIM(rs.source_url)) FILTER (
+                    WHERE rs.import_outcome LIKE %s
+                       OR (
+                         rs.import_outcome LIKE %s
+                         AND NOT (
+                           rs.import_outcome ILIKE %s OR rs.import_outcome ILIKE %s
+                           OR rs.import_outcome ILIKE %s OR rs.import_outcome ILIKE %s
+                         )
+                       )
+                  ) AS name_n,
+                  COUNT(DISTINCT BTRIM(rs.source_url)) FILTER (
+                    WHERE rs.import_outcome LIKE %s
+                       OR (
+                         rs.import_outcome LIKE %s
+                         AND (
+                           rs.import_outcome ILIKE %s OR rs.import_outcome ILIKE %s
+                           OR rs.import_outcome ILIKE %s
+                         )
+                       )
+                  ) AS link_n,
+                  COUNT(DISTINCT BTRIM(rs.source_url)) FILTER (
+                    WHERE rs.import_outcome LIKE %s
+                       OR (rs.import_outcome LIKE %s AND rs.import_outcome ILIKE %s)
+                  ) AS preview_n,
+                  COUNT(DISTINCT BTRIM(rs.source_url)) FILTER (
+                    WHERE rs.import_outcome LIKE %s
+                  ) AS capacity_n,
+                  COUNT(DISTINCT BTRIM(rs.source_url)) FILTER (
+                    WHERE rs.import_outcome LIKE %s
+                       OR rs.import_outcome LIKE %s
+                       OR rs.import_outcome LIKE %s
+                  ) AS review_n,
+                  COUNT(DISTINCT BTRIM(rs.source_url)) FILTER (
+                    WHERE rs.import_outcome LIKE %s
+                       OR rs.import_outcome LIKE %s
+                       OR rs.import_outcome LIKE %s
+                       OR rs.import_outcome LIKE %s
+                  ) AS structure_n,
+                  COUNT(DISTINCT BTRIM(rs.source_url)) AS total_n
+                FROM resource_sources rs
+                WHERE {where_sql}
+                """,
+                (
+                    "不合格：资源名%",
+                    "不合格：结构%",
+                    "%链数%",
+                    "%漏链%",
+                    "%未进组%",
+                    "%预览%",
+                    "不合格：链接%",
+                    "不合格：结构%",
+                    "%链数%",
+                    "%漏链%",
+                    "%未进组%",
+                    "不合格：预览%",
+                    "不合格：结构%",
+                    "%预览%",
+                    "不合格：容量%",
+                    "不合格：待核%",
+                    "待核：%",
+                    "待核:%",
+                    "不合格：结构%",
+                    "不合格：资源名%",
+                    "不合格：链接%",
+                    "不合格：预览%",
+                    *params,
+                ),
+            )
+            row = cur.fetchone() or (0, 0, 0, 0, 0, 0, 0)
+        name_n, link_n, preview_n, capacity, review_n, structure, total = (
+            int(row[0] or 0),
+            int(row[1] or 0),
+            int(row[2] or 0),
+            int(row[3] or 0),
+            int(row[4] or 0),
+            int(row[5] or 0),
+            int(row[6] or 0),
+        )
+        st = (status or "all").strip().lower()
+        if st in {"name", "资源名"}:
+            total = name_n
+        elif st in {"link", "链接"}:
+            total = link_n
+        elif st in {"preview", "预览"}:
+            total = preview_n
+        elif st in {"capacity", "容量"}:
+            total = capacity
+        elif st in {"review", "待核"}:
+            total = review_n
+        elif st in {"structure", "结构"}:
+            total = structure
+        return {
+            "name": name_n,
+            "link": link_n,
+            "preview": preview_n,
+            "capacity": capacity,
+            "review": review_n,
+            "structure": structure,
+            "total": total,
+        }
 
     def _n(st: str) -> int:
         where_sql, params = _frame_fail_where(status=st, forum_id=forum_id)
@@ -1337,24 +1572,43 @@ def count_frame_fail_posts(
                 FROM resource_sources rs
                 WHERE {where_sql}
                   {q_sql}
-                  {reason_sql}
                 """,
-                (*params, *q_params, *reason_params),
+                (*params, *q_params),
             )
             row = cur.fetchone()
             return int(row[0] or 0) if row else 0
 
-    structure = _n("structure")
-    capacity = _n("capacity")
+    name_n = _n("name") if breakdown else 0
+    link_n = _n("link") if breakdown else 0
+    preview_n = _n("preview") if breakdown else 0
+    capacity = _n("capacity") if breakdown else 0
+    review_n = _n("review") if breakdown else 0
+    # 旧字段兼容
+    structure = _n("structure") if breakdown else 0
     st = (status or "all").strip().lower()
-    if st in {"structure", "结构"}:
-        total = structure
+    if st in {"name", "资源名"}:
+        total = name_n if breakdown else _n("name")
+    elif st in {"link", "链接"}:
+        total = link_n if breakdown else _n("link")
+    elif st in {"preview", "预览"}:
+        total = preview_n if breakdown else _n("preview")
     elif st in {"capacity", "容量"}:
-        total = capacity
+        total = capacity if breakdown else _n("capacity")
+    elif st in {"review", "待核"}:
+        total = review_n if breakdown else _n("review")
+    elif st in {"structure", "结构"}:
+        total = structure if breakdown else _n("structure")
     else:
         total = _n("all")
-    return {"structure": structure, "capacity": capacity, "total": total}
-
+    return {
+        "name": name_n,
+        "link": link_n,
+        "preview": preview_n,
+        "capacity": capacity,
+        "review": review_n,
+        "structure": structure,
+        "total": total,
+    }
 
 def list_frame_fail_posts(
     conn: Any,
@@ -1389,11 +1643,18 @@ def list_frame_fail_posts(
         """
         q_params = [like, like, like, like, like]
     reason_text = (reason or "").strip()
-    reason_sql = ""
+    reason_having = ""
     reason_params: list[Any] = []
     if reason_text:
-        reason_sql = f"AND ({FRAME_FAIL_REASON_SQL.strip()}) = %s"
-        reason_params = [reason_text]
+        from parsers.unqual_outcomes import normalize_unqual_reason_kind
+
+        reason_kind = normalize_unqual_reason_kind(reason_text) or reason_text
+        reason_having = (
+            "HAVING "
+            + _frame_fail_reason_expr("MAX(COALESCE(rs.import_outcome, ''))")
+            + " = %s"
+        )
+        reason_params = [reason_kind]
     with conn.cursor() as cur:
         cur.execute(
             f"""
@@ -1405,12 +1666,28 @@ def list_frame_fail_posts(
               MAX(COALESCE(rs.board_name, '')) AS board_name,
               MAX(COALESCE(rs.forum_id, '')) AS forum_id,
               MAX(rs.hash) AS hash,
-              MAX(rs.created_at) AS updated_at
+              MAX(rs.created_at) AS updated_at,
+              BOOL_OR(
+                COALESCE(rs.parse_tags, ARRAY[]::text[])
+                && ARRAY[
+                  'kind:multi',
+                  'kind:multi_one_link',
+                  'kind:multi_multi_link'
+                ]::text[]
+              ) AS tag_multi,
+              BOOL_OR(
+                COALESCE(rs.parse_tags, ARRAY[]::text[])
+                && ARRAY[
+                  'kind:single',
+                  'kind:single_one_link',
+                  'kind:single_multi_link'
+                ]::text[]
+              ) AS tag_single
             FROM resource_sources rs
             WHERE {where_sql}
               {q_sql}
-              {reason_sql}
             GROUP BY BTRIM(rs.source_url)
+            {reason_having}
             ORDER BY MAX(rs.created_at) DESC NULLS LAST
             LIMIT %s OFFSET %s
             """,
@@ -1428,12 +1705,27 @@ def list_frame_fail_posts(
             tid = tid_from_url(url)
             item["tid"] = tid
             outcome = str(item.get("import_outcome") or "")
-            if outcome.startswith("不合格：结构"):
-                item["status"] = "structure"
-            elif outcome.startswith("不合格：容量"):
-                item["status"] = "capacity"
+            tag_multi = bool(item.pop("tag_multi", False))
+            tag_single = bool(item.pop("tag_single", False))
+            if tag_multi or "形态:多资源" in outcome:
+                item["resource_kind"] = "multi"
+            elif tag_single or "形态:单资源" in outcome:
+                item["resource_kind"] = "single"
             else:
-                item["status"] = "failed"
+                item["resource_kind"] = ""
+            try:
+                from parsers.unqual_outcomes import KIND_TO_STATUS, normalize_unqual_reason_kind
+
+                kind = normalize_unqual_reason_kind(outcome)
+                item["status"] = KIND_TO_STATUS.get(kind, "failed")
+                item["reason_kind"] = kind
+            except Exception:
+                if outcome.startswith("不合格：容量"):
+                    item["status"] = "capacity"
+                elif outcome.startswith("不合格："):
+                    item["status"] = "name"
+                else:
+                    item["status"] = "failed"
             item["thread_title"] = item.get("title") or ""
             rows.append(item)
         return rows
@@ -1446,7 +1738,7 @@ def list_frame_fail_reasons(
     forum_id: str | None = None,
     q: str | None = None,
 ) -> list[dict[str, Any]]:
-    """不合格原因分组（结构/容量等，按帖去重）。"""
+    """不合格原因分组（资源名/链接/预览/容量/待核，按帖去重；与筛选同口径）。"""
     _ensure_resource_schema(conn)
     where_sql, params = _frame_fail_where(status=status, forum_id=forum_id)
     text = (q or "").strip()
@@ -1467,28 +1759,28 @@ def list_frame_fail_reasons(
     with conn.cursor() as cur:
         cur.execute(
             f"""
-            SELECT reason, COUNT(*) AS cnt
+            SELECT kind, COUNT(*) AS cnt
             FROM (
               SELECT
                 BTRIM(rs.source_url) AS source_url,
-                ({FRAME_FAIL_REASON_SQL.strip()}) AS reason
+                {_frame_fail_reason_expr("MAX(COALESCE(rs.import_outcome, ''))")} AS kind
               FROM resource_sources rs
               WHERE {where_sql}
                 {q_sql}
                 AND COALESCE(NULLIF(TRIM(rs.import_outcome), ''), '') <> ''
-              GROUP BY BTRIM(rs.source_url), ({FRAME_FAIL_REASON_SQL.strip()})
+              GROUP BY BTRIM(rs.source_url)
             ) t
-            WHERE reason <> ''
-            GROUP BY reason
-            ORDER BY cnt DESC, reason ASC
+            WHERE kind <> ''
+            GROUP BY kind
+            ORDER BY cnt DESC, kind ASC
             LIMIT 80
             """,
             (*params, *q_params),
         )
         return [
-            {"reason": str(r[0]), "count": int(r[1] or 0)}
-            for r in cur.fetchall()
-            if r and r[0]
+            {"reason": str(row[0]), "count": int(row[1] or 0)}
+            for row in cur.fetchall()
+            if row and row[0]
         ]
 
 

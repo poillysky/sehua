@@ -202,12 +202,12 @@ export function BasicForumConfigModal({
                       </div>
                     </div>
                     <div className="settings-grid-3 forum-config-grid">
-                      <Field label="请求延迟（秒）" hint="每次请求前后等待，默认 2 秒">
+                      <Field label="请求延迟（秒）" hint="每帖间隔，默认 1 秒；连续成功可再降到一半">
                         <input
                           type="number"
-                          min={0.5}
+                          min={0.3}
                           max={60}
-                          step={0.5}
+                          step={0.1}
                           value={draft.web_crawler_request_delay}
                           onChange={(e) => setNum('web_crawler_request_delay', e.target.value)}
                         />
@@ -1194,8 +1194,8 @@ function ConfigTab({
             <Field label="轮间间隔" hint="固定为 0，一轮完立刻下一轮">
               <input type="number" min={0} max={0} value={0} readOnly disabled />
             </Field>
-            <Field label="请求延迟（秒）" hint="每抓一帖前后先等一会儿，默认 2 秒">
-              <input type="number" min={0.5} max={60} step={0.5} value={draft.web_crawler_request_delay} onChange={(e) => setNum('web_crawler_request_delay', e.target.value)} />
+            <Field label="请求延迟（秒）" hint="每抓一帖先等一会儿，默认 1 秒；连续成功可再降到一半">
+              <input type="number" min={0.3} max={60} step={0.1} value={draft.web_crawler_request_delay} onChange={(e) => setNum('web_crawler_request_delay', e.target.value)} />
             </Field>
             <Field label="目标入库数" hint="本轮最多入库几条；填 0 表示不限制">
               <input type="number" min={0} max={10000} value={draft.web_crawler_target_imports} onChange={(e) => setNum('web_crawler_target_imports', e.target.value)} />

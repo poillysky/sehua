@@ -42,14 +42,14 @@ def test_cloud_mixed_quota_mismatch_is_soft():
         named_groups=[("三部合集", a, [a, b])],
         had_attachments=True,
     )
-    assert frame.spec.kind == "single_multi_link"
+    assert frame.spec.kind == "single"
     assert frame.verdict.status == "ok"
     assert "info:cloud_quota_soft" in frame.verdict.tags
     assert not any("漏链" in e for e in frame.verdict.hard_errors)
     out = format_frame_outcome("成功：附件解析出目标链接", frame)
-    # 与 magnet_v_soft 同口径：结构过门，软提醒 → 待核（非不合格）
-    assert out.startswith("待核")
-    assert not out.startswith("不合格")
+    # 结构过门，软提醒 → 不合格：待核（兜底，非硬确认四类）
+    assert out.startswith("不合格：待核")
+    assert not out.startswith("不合格：链接")
 
 
 def test_pure_ed2k_quota_mismatch_still_hard():

@@ -764,4 +764,4 @@ def test_size_then_magnet_splits_without_film_title_labels():
     assert "翘着屁股" in titles[h1] or titles[h1] != "★◇精彩の最新國產合集"
     assert titles[h2] != "★◇精彩の最新國產合集"
     kind = classify_kind(n_groups=2, per_group_links=[1, 1])
-    assert kind == "multi_one_link"
+    assert kind == "multi"

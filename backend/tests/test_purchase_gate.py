@@ -104,7 +104,7 @@ def test_extract_buy_url():
 def test_judge_paid_skips_not_stub():
     out = judge_thread_html(_PAID_PW, board_fid="4", forum_id="2048", preferred_link="magnet")
     assert out.verdict == "skipped"
-    assert "付费" in out.outcome
+    assert "需购买" in out.outcome
 
 
 def test_judge_free_stubs_for_account_crawl():

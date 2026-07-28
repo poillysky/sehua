@@ -60,7 +60,7 @@ FORUM_CRAWLER_DEFAULTS: dict[str, Any] = {
     "web_crawler_list_known_stop_pages": 2,
     "web_crawler_board_refresh_hours": 12,
     "web_crawler_max_threads_per_run": 0,
-    "web_crawler_request_delay": 2.0,
+    "web_crawler_request_delay": 1.0,
     "web_crawler_fetch_failure_threshold": 5,
     "web_crawler_fetch_cooldown_seconds": 45,
     "web_crawler_fetch_max_cooldowns": 3,
