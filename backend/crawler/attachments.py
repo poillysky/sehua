@@ -28,6 +28,7 @@ from parsers.attachments import (
     filter_tail_attachments,
     filter_torrent_attachments,
     is_attachment_denied,
+    is_attachment_download_limited,
     is_attachment_login_required,
 )
 from parsers.torrent import parse_torrent_bytes
@@ -1057,10 +1058,13 @@ class AttachmentDownloader:
 
     async def _fetch_bytes_via_page(
         self, url: str
-    ) -> tuple[bytes | None, bool, bool]:
-        """返回 (bytes, denied, login_required)。"""
+    ) -> tuple[bytes | None, bool, bool, bool, bool]:
+        """返回 (bytes, denied, login_required, daily_limited, empty_file)。
 
-        async def _on_page(page: Any) -> tuple[bytes | None, bool, bool]:
+        empty_file：HTTP 200 + 附件头/octet-stream 但 body 长度为 0（空壳种子常见）。
+        """
+
+        async def _on_page(page: Any) -> tuple[bytes | None, bool, bool, bool, bool]:
             try:
                 # Content-Length / 实际体积超限则不 btoa，避免 2～3× 峰值
                 result = await page.evaluate(
@@ -1068,6 +1072,7 @@ class AttachmentDownloader:
                     async ({ targetUrl, maxBytes }) => {
                         const resp = await fetch(targetUrl, { credentials: 'include' });
                         const contentType = resp.headers.get('content-type') || '';
+                        const disposition = resp.headers.get('content-disposition') || '';
                         const cl = resp.headers.get('content-length');
                         if (cl) {
                             const n = parseInt(cl, 10);
@@ -1075,6 +1080,7 @@ class AttachmentDownloader:
                                 return {
                                     status: resp.status,
                                     contentType,
+                                    disposition,
                                     body: '',
                                     skipped: 'too_large',
                                     size: n,
@@ -1086,6 +1092,7 @@ class AttachmentDownloader:
                             return {
                                 status: resp.status,
                                 contentType,
+                                disposition,
                                 body: '',
                                 skipped: 'too_large',
                                 size: buf.byteLength,
@@ -1100,6 +1107,7 @@ class AttachmentDownloader:
                         return {
                             status: resp.status,
                             contentType,
+                            disposition,
                             body: btoa(binary),
                             size: bytes.length,
                         };
@@ -1109,10 +1117,10 @@ class AttachmentDownloader:
                 )
             except Exception as exc:
                 log.debug("Attachment page fetch failed %s: %s", url, exc)
-                return None, False, False
+                return None, False, False, False, False
 
             if not result or result.get("status") != 200:
-                return None, False, False
+                return None, False, False, False, False
 
             if result.get("skipped") == "too_large":
                 log.info(
@@ -1120,26 +1128,40 @@ class AttachmentDownloader:
                     url,
                     result.get("size"),
                 )
-                return None, False, False
+                return None, False, False, False, False
 
             content_type = (result.get("contentType") or "").lower()
+            disposition = (result.get("disposition") or "").lower()
             data = base64.b64decode(result.get("body") or "")
             if not data:
-                return None, False, False
+                # 200 + 下载头/二进制类型 + 0 字节 → 空文件（非网络失败）
+                looks_attach = (
+                    "attachment" in disposition
+                    or "filename" in disposition
+                    or "octet-stream" in content_type
+                    or "bittorrent" in content_type
+                )
+                if looks_attach:
+                    log.info("Attachment empty file (0 bytes): %s", url)
+                    return None, False, False, False, True
+                return None, False, False, False, False
             if _skip_oversized(url, len(data)):
-                return None, False, False
+                return None, False, False, False, False
 
             if "text/html" in content_type or data.startswith(b"<!DOCTYPE") or data.startswith(b"<html"):
                 # 提示页导航很长，登录/日限文案常在 8KB+；勿只看前 4KB
                 html = _decode_bytes(data[:65536])
                 if is_attachment_login_required(html):
                     log.info("Attachment login required: %s", url)
-                    return None, False, True
+                    return None, False, True, False, False
+                if is_attachment_download_limited(html):
+                    log.info("Attachment daily limited: %s", url)
+                    return None, True, False, True, False
                 if is_attachment_denied(html):
                     log.info("Attachment denied: %s", url)
-                    return None, True, False
-                return None, False, False
-            return data, False, False
+                    return None, True, False, False, False
+                return None, False, False, False, False
+            return data, False, False, False, False
 
         return await self.session.run_on_page(_on_page)
 
@@ -1149,10 +1171,10 @@ class AttachmentDownloader:
         timeout: float,
         *,
         suffix: str,
-    ) -> tuple[bytes | None, bool, bool]:
-        """返回 (bytes, denied, login_required)。"""
+    ) -> tuple[bytes | None, bool, bool, bool, bool]:
+        """返回 (bytes, denied, login_required, daily_limited, empty_file)。"""
 
-        async def _on_page(page: Any) -> tuple[bytes | None, bool, bool]:
+        async def _on_page(page: Any) -> tuple[bytes | None, bool, bool, bool, bool]:
             from urllib.parse import parse_qs, unquote, urlparse
 
             locator = page.locator("a", has_text=attachment.name).first
@@ -1168,7 +1190,7 @@ class AttachmentDownloader:
                     needle = aid[:24] if len(aid) > 24 else aid
                     locator = page.locator(f"a[href*='attachment'][href*='{needle}']").first
             if await locator.count() == 0:
-                return None, False, False
+                return None, False, False, False, False
 
             # 无权弹窗很常见：下载事件常永不触发。先短等下载，再弹窗确认，
             # 避免每个附件空等满 timeout（可达 45–60s）才判无权。
@@ -1182,13 +1204,19 @@ class AttachmentDownloader:
                 await download.save_as(temp_path)
                 try:
                     size = temp_path.stat().st_size
+                    if size == 0:
+                        log.info(
+                            "Attachment UI empty file (0 bytes): %s",
+                            attachment.name,
+                        )
+                        return None, False, False, False, True
                     if _skip_oversized(attachment.name or attachment.url, size):
-                        return None, False, False
+                        return None, False, False, False, False
                     data = temp_path.read_bytes()
                 finally:
                     temp_path.unlink(missing_ok=True)
                 if data:
-                    return data, False, False
+                    return data, False, False, False, False
             except Exception:
                 pass
 
@@ -1201,10 +1229,13 @@ class AttachmentDownloader:
                 html = await popup.content()
                 if is_attachment_login_required(html):
                     log.info("Attachment popup login required: %s", attachment.name)
-                    return None, False, True
+                    return None, False, True, False, False
+                if is_attachment_download_limited(html):
+                    log.info("Attachment popup daily limited: %s", attachment.name)
+                    return None, True, False, True, False
                 if is_attachment_denied(html):
                     log.info("Attachment popup denied: %s", attachment.name)
-                    return None, True, False
+                    return None, True, False, False, False
                 text = _decode_bytes(html.encode("utf-8", errors="ignore"))
                 if suffix == ".torrent":
                     magnet = parse_torrent_bytes(
@@ -1217,7 +1248,7 @@ class AttachmentDownloader:
                 else:
                     payload = text
                 if payload:
-                    return payload.encode("utf-8", errors="ignore"), False, False
+                    return payload.encode("utf-8", errors="ignore"), False, False, False, False
             except Exception as exc:
                 log.debug("Attachment popup failed %s: %s", attachment.name, exc)
             finally:
@@ -1234,7 +1265,7 @@ class AttachmentDownloader:
                 except Exception:
                     pass
 
-            return None, False, False
+            return None, False, False, False, False
 
         return await self.session.run_on_page(_on_page)
 
@@ -1244,37 +1275,61 @@ class AttachmentDownloader:
         timeout: float,
         *,
         passwords: list[str] | None = None,
-    ) -> tuple[str, bool, bool, bool]:
-        """返回 (text, denied, downloaded, login_required)。"""
+    ) -> tuple[str, bool, bool, bool, bool, bool]:
+        """返回 (text, denied, downloaded, login_required, daily_limited, empty_torrent)。"""
         denied = False
         login_required = False
+        daily_limited = False
         downloaded = False
-        data, fetch_denied, fetch_login = await self._fetch_bytes_via_page(attachment.url)
+        empty_torrent = False
+        (
+            data,
+            fetch_denied,
+            fetch_login,
+            fetch_limited,
+            fetch_empty,
+        ) = await self._fetch_bytes_via_page(attachment.url)
         denied = denied or fetch_denied
         login_required = login_required or fetch_login
+        daily_limited = daily_limited or fetch_limited
+        if fetch_empty and attachment.kind == "torrent":
+            empty_torrent = True
         if data:
             downloaded = True
             text = _text_from_attachment_bytes(attachment, data, passwords=passwords)
             if text.strip():
-                return text, denied, downloaded, login_required
+                return text, denied, downloaded, login_required, daily_limited, False
 
-        # 页面直链已明确无权/需登录且无字节：UI 再点一次通常同样失败，省一轮
-        if (fetch_denied or fetch_login) and not data:
-            return "", fetch_denied, downloaded, fetch_login
+        # 页面直链已明确无权/需登录/日限且无字节：UI 再点一次通常同样失败，省一轮
+        if (fetch_denied or fetch_login or fetch_limited) and not data:
+            return "", fetch_denied, downloaded, fetch_login, fetch_limited, empty_torrent
+
+        # 空壳种子：fetch 已确认 0 字节，UI 再点多半同样空，直接返回
+        if empty_torrent and not data:
+            return "", denied, downloaded, login_required, daily_limited, True
 
         suffix = _attachment_ui_suffix(attachment)
-        ui_data, ui_denied, ui_login = await self._download_raw_via_ui(
+        (
+            ui_data,
+            ui_denied,
+            ui_login,
+            ui_limited,
+            ui_empty,
+        ) = await self._download_raw_via_ui(
             attachment, timeout, suffix=suffix
         )
         denied = denied or ui_denied
         login_required = login_required or ui_login
+        daily_limited = daily_limited or ui_limited
+        if ui_empty and attachment.kind == "torrent":
+            empty_torrent = True
         if ui_data:
             downloaded = True
             text = _text_from_attachment_bytes(attachment, ui_data, passwords=passwords)
             if text.strip():
-                return text, denied, downloaded, login_required
+                return text, denied, downloaded, login_required, daily_limited, False
 
-        return "", denied, downloaded, login_required
+        return "", denied, downloaded, login_required, daily_limited, empty_torrent
 
     async def download_tail(
         self,
@@ -1285,7 +1340,7 @@ class AttachmentDownloader:
         timeout: float = 45,
         preferred_link: str | None = None,
     ) -> AttachmentFetchResult:
-        """正文无链 / 正文不合格复判：按 115 文件名优先 + 板块主链频次逐个轮询附件。
+        """正文无链 / 正文不合格复判：按 115 / 「一分也是爱」文件名优先 + 板块主链频次逐个轮询附件。
 
         每下完一个有链附件即试算入库：合格则停；不合格则继续合并后面附件。
         多个 txt 若标题 N配额尚未凑齐也继续合并（如 2 个 txt 合计 4 配额）。
@@ -1310,11 +1365,35 @@ class AttachmentDownloader:
         any_denied = False
         any_login = False
         any_downloaded = False
+        any_daily_limited = False
+        any_empty_torrent = False
         for idx, attachment in enumerate(attachments):
             try:
-                text, denied, downloaded, login_required = await self._download_one(
+                (
+                    text,
+                    denied,
+                    downloaded,
+                    login_required,
+                    daily_limited,
+                    empty_torrent,
+                ) = await self._download_one(
                     attachment, timeout, passwords=passwords
                 )
+                if empty_torrent:
+                    any_empty_torrent = True
+                    log.info(
+                        "Attachment %s empty torrent (0 bytes) — continue next",
+                        attachment.name,
+                    )
+                    continue
+                if daily_limited:
+                    any_daily_limited = True
+                    any_denied = True
+                    log.info(
+                        "Attachment %s daily limited — stop polling",
+                        attachment.name,
+                    )
+                    break
                 if login_required:
                     any_login = True
                     log.info(
@@ -1395,6 +1474,15 @@ class AttachmentDownloader:
             return AttachmentFetchResult(
                 text=result_text, downloaded=True, denied=False, login_required=False
             )
+        # 日限：优先标 daily_limited，供上层入附件队列
+        if any_daily_limited:
+            return AttachmentFetchResult(
+                text=result_text or "",
+                downloaded=any_downloaded or bool(result_text),
+                denied=True,
+                login_required=False,
+                daily_limited=True,
+            )
         # 有文本但无可入库链（如只下到百度口令 txt），且另有 115/目标附件无权：
         # 必须保留 denied，否则会回落成正文「蓝奏/网盘跳过」（tid=3341941）
         if any_login or any_denied:
@@ -1408,6 +1496,9 @@ class AttachmentDownloader:
             return AttachmentFetchResult(text=result_text, downloaded=True)
         if any_downloaded:
             return AttachmentFetchResult(downloaded=True)
+        # 空壳种子（0 字节）：跳过，勿「附件下载失败」重试
+        if any_empty_torrent:
+            return AttachmentFetchResult(empty_torrent=True)
         return AttachmentFetchResult(failed=True)
 
     async def download_torrents(

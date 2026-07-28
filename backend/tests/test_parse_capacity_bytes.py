@@ -56,3 +56,12 @@ def test_resolution_4k_not_kilobytes():
     title = "【自转】【ed2k】蓝光4K&1080p英语发音【4V/214G/4配额】"
     assert parse_capacity_bytes(title) == int(214 * 1024**3)
 
+
+def test_bare_number_in_film_size_assumes_gb():
+    """【影片大小】：1.59 / [MP4/1.59] 漏单位 → 按 GB（tid=26937663）。"""
+    assert parse_capacity_bytes("【影片大小】：1.59") == int(1.59 * 1024**3)
+    assert parse_capacity_bytes("[MP4/1.59] 露脸清纯") == int(1.59 * 1024**3)
+    assert parse_capacity_bytes("[MP4/1.59G]") == int(1.59 * 1024**3)
+    # 过大裸数不瞎猜
+    assert parse_capacity_bytes("【影片大小】：159") == 0
+

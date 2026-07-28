@@ -240,13 +240,16 @@ def build_parse_frame(
     same_kind = [a for a in parsed.assets if a.link_kind == primary.link_kind] or [
         primary
     ]
+    # 按 URI 去重：同 hash 不同文件名仍算多份（配额对照）；完全相同 URI 才并掉
     seen: set[str] = set()
     uniq: list[ParsedAsset] = []
     for asset in same_kind:
+        u = (asset.uri or "").strip()
         h = (asset.hash or "").strip().upper()
-        if not h or h in seen:
+        key = u or h
+        if not key or key in seen:
             continue
-        seen.add(h)
+        seen.add(key)
         uniq.append(asset)
     if not uniq:
         uniq = [primary]

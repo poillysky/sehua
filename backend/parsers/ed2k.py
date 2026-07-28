@@ -162,6 +162,8 @@ def parse_ed2k_text(text: str) -> list[Ed2kLink]:
     from parsers.resource_names import context_subresource_title
 
     results: list[Ed2kLink] = []
+    # 按完整 URI 去重：同 hash 但文件名不同仍保留（配额按「下载份」计，
+    # 如 tid=3524065 末条与首条同 hash、不同名，勿并成漏链）
     seen: set[str] = set()
     blob = normalize_ed2k_corpus(text or "")
 
@@ -171,16 +173,17 @@ def parse_ed2k_text(text: str) -> list[Ed2kLink]:
         if size > MAX_REASONABLE_FILE_BYTES:
             size = 0
         file_hash = match.group(3).upper()
-        if file_hash in seen:
+        link = build_ed2k_link(filename, size, file_hash)
+        if link in seen:
             continue
-        seen.add(file_hash)
+        seen.add(link)
         display = context_subresource_title(blob, match.start(), match.end())
         results.append(
             Ed2kLink(
                 filename=filename,
                 size=size,
                 hash=file_hash,
-                link=build_ed2k_link(filename, size, file_hash),
+                link=link,
                 display_name=(display[:255] if display else ""),
             )
         )

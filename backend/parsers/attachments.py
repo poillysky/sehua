@@ -79,6 +79,10 @@ class AttachmentFetchResult:
     login_required: bool = False
     failed: bool = False
     downloaded: bool = False
+    # 命中「今天下载…请明天再来」等日限提示（与无权同 denied，但可单独入附件队列）
+    daily_limited: bool = False
+    # 种子附件 HTTP 200 但 body=0（空壳种子）→ 跳过「种子大小为0」，勿重试
+    empty_torrent: bool = False
 
 
 def is_attachment_login_required(html: str) -> bool:
@@ -356,9 +360,12 @@ _ATTACH_ORDER_MAGNET = {
 
 
 def _attach_name_priority(name: str) -> int:
-    """文件名含 115（如 115ED2K下载链接.txt）优先试；越小越优先。"""
-    n = (name or "").casefold()
+    """文件名含 115 / 「一分也是爱」优先试；越小越优先。"""
+    raw = name or ""
+    n = raw.casefold()
     if "115" in n:
+        return 0
+    if "一分也是爱" in raw:
         return 0
     return 1
 
@@ -375,7 +382,7 @@ def filter_tail_attachments(
     *,
     limit: int = MAX_ATTACHMENTS_PER_THREAD,
 ) -> list[DownloadAttachment]:
-    """txt / excel / doc / zip / rar：115 文件名优先，再按类型排序逐个轮询。"""
+    """txt / excel / doc / zip / rar：115 / 「一分也是爱」文件名优先，再按类型排序逐个轮询。"""
     candidates = [
         item
         for item in attachments
@@ -415,7 +422,7 @@ def filter_all_link_attachments(
     limit: int = MAX_ATTACHMENTS_PER_THREAD,
     preferred_link: str | None = None,
 ) -> list[DownloadAttachment]:
-    """全部可抽链附件：先 115 文件名，再按板块主链类型，逐个轮询。
+    """全部可抽链附件：先 115 / 「一分也是爱」文件名，再按板块主链类型，逐个轮询。
 
     - 电驴板：txt → zip/rar → excel/doc → torrent
     - 磁力/双链：torrent → excel/doc/txt → zip/rar

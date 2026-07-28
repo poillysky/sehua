@@ -267,6 +267,20 @@ def _has_empty_size_label(text: str | None) -> bool:
     return bool(_EMPTY_SIZE_LABEL_RE.search(raw))
 
 
+def _has_placeholder_only_size_label(text: str | None) -> bool:
+    """有大小类标签，但解析结果仅占位级（如 1.01KB）——文案写了却无效，不当事漏名旁证。"""
+    raw = (text or "").strip()
+    if not raw:
+        return False
+    if not re.search(
+        r"(?:资源大小|影片大小|文件大小|影片容量|(?:资源|影片|文件)?大小|(?:影片)?容量)",
+        raw,
+    ):
+        return False
+    got = parse_capacity_bytes(raw)
+    return 0 < got <= _PLACEHOLDER_SIZE_MAX
+
+
 def _effective_size(n: int | None) -> int:
     """真实容量；占位/空记 0。"""
     v = int(n or 0)
@@ -412,6 +426,14 @@ def _capacity_class(blob: str) -> str:
     return "D3"
 
 
+def _asset_link_key(asset: ParsedAsset) -> str:
+    """链身份：优先完整 URI（同 hash 不同文件名视为不同份），否则 hash。"""
+    u = (getattr(asset, "uri", None) or "").strip()
+    if u:
+        return u
+    return (getattr(asset, "hash", None) or "").strip().upper()
+
+
 def _unique_link_hashes(
     assets: Sequence[ParsedAsset], *, kinds: set[str] | None = None
 ) -> set[str]:
@@ -425,9 +447,41 @@ def _unique_link_hashes(
     return out
 
 
+def _recog_link_keys(
+    parsed: DualParseResult, kinds_in_groups: set[str]
+) -> set[str]:
+    """识别到的下载链集合（ed2k 按 URI；磁力按 hash）。"""
+    kinds = kinds_in_groups or {"magnet", "ed2k"}
+    out: set[str] = set()
+    for a in list(parsed.assets or []):
+        if (a.link_kind or "") not in kinds:
+            continue
+        k = _asset_link_key(a)
+        if k:
+            out.add(k)
+    if "magnet" in kinds:
+        for m in getattr(parsed, "magnets", None) or []:
+            h = (
+                getattr(m, "infohash", None) or getattr(m, "hash", None) or ""
+            ).strip().upper()
+            if h:
+                out.add(h)
+    if "ed2k" in kinds:
+        for e in getattr(parsed, "ed2k_links", None) or []:
+            link = (getattr(e, "link", None) or "").strip()
+            if link:
+                out.add(link)
+                continue
+            h = (getattr(e, "hash", None) or "").strip().upper()
+            if h:
+                out.add(h)
+    return out
+
+
 def _recog_hashes(
     parsed: DualParseResult, kinds_in_groups: set[str]
 ) -> set[str]:
+    """兼容旧调用：仍返回 hash 集合（诊断用）。"""
     kinds = kinds_in_groups or {"magnet", "ed2k"}
     recog = _unique_link_hashes(list(parsed.assets or []), kinds=kinds)
     if "magnet" in kinds:
@@ -594,7 +648,7 @@ def fill_rows(
                         "previews",
                         True,
                         summary,
-                        "parse",
+                        None,
                         f"预览超过5张已截断（原{raw_preview_n}张）",
                     )
                 )
@@ -729,10 +783,17 @@ def validate_frame(
     if not kinds:
         kinds = {"magnet", "ed2k"}
 
-    group_hashes: set[str] = set()
+    group_keys: set[str] = set()
     for r in rows:
-        group_hashes.update(r.hashes)
-    recog = _recog_hashes(parsed, kinds)
+        for a in r.members:
+            k = _asset_link_key(a)
+            if k:
+                group_keys.add(k)
+        for u in r.links:
+            uu = (u or "").strip()
+            if uu:
+                group_keys.add(uu)
+    recog = _recog_link_keys(parsed, kinds)
     recog_n = len(recog)
     member_sum = sum(len(r.members) for r in rows)
     uri_sum = n_links
@@ -753,9 +814,9 @@ def validate_frame(
     }
 
     if recog_n > 0 or member_sum > 0:
-        dropped = sorted(recog - group_hashes)
+        dropped = sorted(recog - group_keys)
         metrics["dropped_hashes"] = dropped[:20]
-        metrics["extra_hashes"] = sorted(group_hashes - recog)[:20]
+        metrics["extra_hashes"] = sorted(group_keys - recog)[:20]
         if recog_n != member_sum or recog_n != uri_sum or bool(dropped):
             _note(
                 tags,
@@ -953,8 +1014,19 @@ def validate_frame(
                             if getattr(a, "description", None)
                         ),
                         "",
-                    )
-                    if _has_empty_size_label(row_desc):
+                    ) or ""
+                    # 明示空标签 / 仅占位 KB → 不当事「漏切资源名」硬旁证
+                    if _has_empty_size_label(row_desc) or _has_placeholder_only_size_label(
+                        row_desc
+                    ):
+                        empty_ok += 1
+                        continue
+                    # 资源名本身已够强：发帖人没写大小 ≠ 漏切资源名
+                    if not is_weak_subresource_name(
+                        r.filename,
+                        post_title=title,
+                        hash_value=(r.hashes[0] if r.hashes else ""),
+                    ):
                         empty_ok += 1
                 if empty_ok < missing_label_n:
                     _note(
@@ -965,6 +1037,9 @@ def validate_frame(
                         f"（漏资源名旁证）",
                         cause="parse",
                     )
+                elif missing_label_n > 0:
+                    # 子名已立住：仅缺大小文案 → info，不进待核/不合格
+                    tags.append("info:row_label_size_omitted")
 
         # 标题容量 vs 子资源文案合计（闭合，旁证漏名）
         title_cap_multi = _title_capacity_bytes(title)
@@ -1056,14 +1131,10 @@ def validate_frame(
         for s in r.slots:
             if s.slot != "previews":
                 continue
-            if s.ok and s.cause == "parse" and s.message and "截断" in s.message:
-                _note(
-                    tags,
-                    soft,
-                    "warn:preview_truncated",
-                    f"「{r.filename[:40]}」{s.message}",
-                    cause="parse",
-                )
+            if s.ok and s.message and "截断" in s.message:
+                # 预览上限 5 张是产品口径，截断本身不算识别错误 / 不合格
+                tags.append("info:preview_truncated")
+                continue
             elif (
                 not s.ok
                 and s.cause == "parse"

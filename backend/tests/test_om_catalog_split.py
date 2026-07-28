@@ -31,6 +31,18 @@ def test_catalog_bracket_line_title():
     assert _title_from_catalog_bracket_line(chunk).startswith("OM1 Accidental")
 
 
+def test_catalog_bracket_numeric_index_title():
+    """[欧美无码] 01 18Lust... 不得只吃到种子名 01（tid=27191175）。"""
+    chunk = (
+        "[欧美无码] 01 18Lust.24.06.19.Juliette.Fucks.Till.Orgasm.XXX.720p[XvX]\n"
+        "【影片格式】：MP4\n"
+        "【种子名称】：01.torrent\n"
+    )
+    got = _title_from_catalog_bracket_line(chunk)
+    assert got.startswith("01 18Lust")
+    assert "Juliette" in got
+
+
 def test_no_subtitle_om_catalog_splits_all():
     """无【影片名称】时，按 [分类]+种子名 切出 OM1..OM3，勿回落帖标题。"""
     scope = """

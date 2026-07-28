@@ -227,9 +227,8 @@ def test_missing_preview_vs_parse_preview():
     assert any("【识别错误】" in e and "预览" in e for e in frame2.verdict.hard_errors)
 
 
-def test_soft_parse_warning_is_review_not_clean_success():
-    """结构过门但有【识别错误】软提醒 → 不合格：待核（兜底）。"""
-    # 预览原图>5 截断为软提醒（硬门只卡截断后仍>5，填槽已截到5）
+def test_preview_truncate_is_info_not_review():
+    """预览>5 截到 5 张是产品上限，不因此标【识别错误】/不合格：待核。"""
     title = "精选合集"
     a = _asset(
         "A" * 40,
@@ -240,11 +239,11 @@ def test_soft_parse_warning_is_review_not_clean_success():
     groups = [("独立包名", a, [a])]
     frame = build_resource_frame(_parsed(title, [a]), named_groups=groups)
     assert frame.verdict.status == "ok"
-    assert any("【识别错误】" in w and "截断" in w for w in frame.verdict.soft_warnings)
+    assert "info:preview_truncated" in frame.verdict.tags
+    assert not any("截断" in w and "【识别错误】" in w for w in frame.verdict.soft_warnings)
     text = format_frame_outcome("成功：已提取主链", frame)
-    assert text.startswith("不合格：待核")
-    assert not text.startswith("成功")
-    assert "verdict:review" in frame.verdict.tags
+    assert text.startswith("成功")
+    assert not text.startswith("不合格")
 
 
 def _ed2k_asset(h: str, name: str, *, size: int = 0, prev: list[str] | None = None) -> ParsedAsset:

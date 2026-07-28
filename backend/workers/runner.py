@@ -353,6 +353,7 @@ async def run_crawl_once(
         "retries": 0,
         "skipped": 0,
         "failed": 0,
+        "attach_queued": 0,
         "soft_browser_retried": 0,
         "fetch_failures": 0,
         "cooldowns": 0,
@@ -834,6 +835,44 @@ async def run_crawl_once(
                                     thread_url,
                                     outcome=str(outcome.get("outcome") or "stub"),
                                 )
+                            elif verdict == "attach_queued":
+                                from workers.attach_queue import (
+                                    ATTACH_QUEUE_OUTCOME,
+                                    forum_uses_attach_daily_queue,
+                                    mark_thread_attach_queue,
+                                )
+
+                                if not forum_uses_attach_daily_queue(forum_id):
+                                    # 非 2048 不应入附件队列；按普通跳过落库
+                                    result["skipped"] += 1
+                                    THROTTLE.record_success()
+                                    mark_thread_skipped(
+                                        conn,
+                                        thread_url,
+                                        str(
+                                            outcome.get("outcome")
+                                            or "附件日限（非2048跳过）"
+                                        ),
+                                    )
+                                    label = str(
+                                        outcome.get("outcome") or "附件日限（非2048跳过）"
+                                    )
+                                else:
+                                    result["attach_queued"] = (
+                                        result.get("attach_queued", 0) + 1
+                                    )
+                                    THROTTLE.record_success()
+                                    mark_thread_attach_queue(
+                                        conn,
+                                        thread_url,
+                                        outcome=str(
+                                            outcome.get("outcome")
+                                            or ATTACH_QUEUE_OUTCOME
+                                        ),
+                                    )
+                                    label = str(
+                                        outcome.get("outcome") or ATTACH_QUEUE_OUTCOME
+                                    )
                             elif verdict == "skipped":
                                 result["skipped"] += 1
                                 THROTTLE.record_success()

@@ -42,6 +42,7 @@ async def _judge_html(
     attachment_denied: bool = False,
     attachment_login_required: bool = False,
     attachment_failed: bool = False,
+    attachment_empty_torrent: bool = False,
     had_attachments: bool = False,
     attachment_text: str = "",
 ) -> ThreadOutcome:
@@ -56,6 +57,7 @@ async def _judge_html(
         "attachment_denied": attachment_denied,
         "attachment_login_required": attachment_login_required,
         "attachment_failed": attachment_failed,
+        "attachment_empty_torrent": attachment_empty_torrent,
         "had_attachments": had_attachments,
         "preferred_link": preferred_link,
         "forum_id": forum_id,
@@ -422,165 +424,269 @@ async def process_thread(
         attachment_kind = outcome.attachment_kind
         attachment_text = ""
         attach_tried = False
+        attach_queued = False
         if outcome.verdict == "need_attachments":
             from crawler.attachments import fetch_attachments_for_outcome
             from parsers.attachments import inject_attachment_text
+            from workers.attach_queue import (
+                ATTACH_QUEUE_OUTCOME,
+                ATTACH_QUEUE_VERDICT,
+                forum_uses_attach_daily_queue,
+                is_attach_daily_limit_hit,
+                mark_attach_daily_limit_hit,
+            )
 
-            log.info(
-                "tid=%s need_attachments kind=%s — download & parse",
-                tid,
-                attachment_kind,
-            )
-            attach_timeout = float(cfg.get("web_crawler_timeout") or 45)
-            attach_res = await fetch_attachments_for_outcome(
-                session,
-                html=html,
-                thread_url=thread_url,
-                attachment_kind=attachment_kind,
-                timeout=max(15.0, attach_timeout),
-                preferred_link=link_pref,
-            )
-            attach_tried = True
-            attachment_text = attach_res.text or ""
-            if attachment_text and should_skip_as_115sha_only(attachment_text):
-                log.info("tid=%s attachment has 115sha — skip", tid)
+            # 2048：当日已触日限则不再试下附件，直接入附件队列等次日
+            if forum_uses_attach_daily_queue(forum_id) and is_attach_daily_limit_hit(
+                str(forum_id or "")
+            ):
+                log.info(
+                    "tid=%s need_attachments but daily limit already hit — queue",
+                    tid,
+                )
+                attach_queued = True
                 outcome = ThreadOutcome(
                     "skipped",
-                    "115sha（跳过）",
+                    ATTACH_QUEUE_OUTCOME,
                     outcome.link_kind,
                     outcome.title or list_title,
                 )
             else:
-                # 轻附件主进程注入再判；大包（≥24KB）直接 parse，跳过整页注入+judge
-                heavy_attach = len(attachment_text) >= 24_000
-                login_req = bool(getattr(attach_res, "login_required", False))
+                log.info(
+                    "tid=%s need_attachments kind=%s — download & parse",
+                    tid,
+                    attachment_kind,
+                )
+                attach_timeout = float(cfg.get("web_crawler_timeout") or 45)
+                attach_res = await fetch_attachments_for_outcome(
+                    session,
+                    html=html,
+                    thread_url=thread_url,
+                    attachment_kind=attachment_kind,
+                    timeout=max(15.0, attach_timeout),
+                    preferred_link=link_pref,
+                )
+                attach_tried = True
+                attachment_text = attach_res.text or ""
                 if (
-                    heavy_attach
-                    and attachment_text
-                    and not attach_res.denied
-                    and not login_req
+                    forum_uses_attach_daily_queue(forum_id)
+                    and getattr(attach_res, "daily_limited", False)
                 ):
-                    log.info(
-                        "tid=%s heavy attachment fast-path chars=%s (skip re-judge)",
-                        tid,
-                        len(attachment_text),
+                    mark_attach_daily_limit_hit(str(forum_id or ""))
+                    log.info("tid=%s attachment daily limited — queue for tomorrow", tid)
+                    attach_queued = True
+                    outcome = ThreadOutcome(
+                        "skipped",
+                        ATTACH_QUEUE_OUTCOME,
+                        outcome.link_kind,
+                        outcome.title or list_title,
                     )
-                    outcome = await _outcome_from_heavy_attachment(
-                        html,
-                        tid=tid,
-                        list_title=list_title,
-                        prior=outcome,
-                        preferred_link=link_pref,
-                        base_url=thread_url,
-                        board_fid=board_fid,
-                        attachment_text=attachment_text,
+                elif attachment_text and should_skip_as_115sha_only(attachment_text):
+                    log.info("tid=%s attachment has 115sha — skip", tid)
+                    outcome = ThreadOutcome(
+                        "skipped",
+                        "115sha（跳过）",
+                        outcome.link_kind,
+                        outcome.title or list_title,
                     )
                 else:
-                    if attachment_text and not heavy_attach:
-                        html = inject_attachment_text(html, attachment_text)
-                    outcome = await _judge_html(
-                        html,
-                        board_fid=board_fid,
-                        list_title=list_title,
-                        base_url=thread_url,
-                        soft_browser_retried=soft_browser_retried,
-                        attachments_already_tried=True,
-                        attachment_denied=attach_res.denied,
-                        attachment_login_required=login_req,
-                        attachment_failed=attach_res.failed and not attach_res.downloaded,
-                        had_attachments=attach_res.downloaded or bool(attachment_text),
-                        preferred_link=link_pref,
-                        forum_id=forum_id,
-                        tid=tid,
-                        attachment_text=attachment_text if heavy_attach else "",
-                    )
-                # 电驴板：txt/zip/excel 无果再试种子；磁力/双链：种子无果再试 txt/excel
-                # stub/无权/需登录不再二轮（已能判定）；仅 retry/failed 等才回退
-                if (
-                    outcome.verdict not in {"import", "skipped", "stub"}
-                    and not attach_res.denied
-                    and not getattr(attach_res, "login_required", False)
-                    and looks_like_attachment_zone(html)
-                    and (
-                        (link_pref == "ed2k" and attachment_kind == "txt_tail")
-                        or (
-                            link_pref in {"magnet", "both"}
-                            and attachment_kind == "torrent"
+                    # 轻附件主进程注入再判；大包（≥24KB）直接 parse，跳过整页注入+judge
+                    heavy_attach = len(attachment_text) >= 24_000
+                    login_req = bool(getattr(attach_res, "login_required", False))
+                    if (
+                        heavy_attach
+                        and attachment_text
+                        and not attach_res.denied
+                        and not login_req
+                    ):
+                        log.info(
+                            "tid=%s heavy attachment fast-path chars=%s (skip re-judge)",
+                            tid,
+                            len(attachment_text),
                         )
-                    )
-                ):
-                    next_kind = "torrent" if attachment_kind == "txt_tail" else "txt_tail"
-                    log.info("tid=%s fallback attachments kind=%s", tid, next_kind)
-                    attach_res2 = await fetch_attachments_for_outcome(
-                        session,
-                        html=html,
-                        thread_url=thread_url,
-                        attachment_kind=next_kind,
-                        timeout=max(15.0, attach_timeout),
-                        preferred_link=link_pref,
-                    )
-                    if attach_res2.text and should_skip_as_115sha_only(attach_res2.text):
-                        attachment_text = (attachment_text + "\n" + attach_res2.text).strip()
-                        outcome = ThreadOutcome(
-                            "skipped",
-                            "115sha（跳过）",
-                            outcome.link_kind,
-                            outcome.title or list_title,
+                        outcome = await _outcome_from_heavy_attachment(
+                            html,
+                            tid=tid,
+                            list_title=list_title,
+                            prior=outcome,
+                            preferred_link=link_pref,
+                            base_url=thread_url,
+                            board_fid=board_fid,
+                            attachment_text=attachment_text,
                         )
-                    elif attach_res2.text:
-                        attachment_text = (attachment_text + "\n" + attach_res2.text).strip()
-                        heavy2 = len(attachment_text) >= 24_000
-                        login2 = bool(
-                            getattr(attach_res, "login_required", False)
-                            or getattr(attach_res2, "login_required", False)
+                    else:
+                        if attachment_text and not heavy_attach:
+                            html = inject_attachment_text(html, attachment_text)
+                        outcome = await _judge_html(
+                            html,
+                            board_fid=board_fid,
+                            list_title=list_title,
+                            base_url=thread_url,
+                            soft_browser_retried=soft_browser_retried,
+                            attachments_already_tried=True,
+                            attachment_denied=attach_res.denied,
+                            attachment_login_required=login_req,
+                            attachment_failed=attach_res.failed
+                            and not attach_res.downloaded
+                            and not getattr(attach_res, "empty_torrent", False),
+                            attachment_empty_torrent=bool(
+                                getattr(attach_res, "empty_torrent", False)
+                            ),
+                            had_attachments=attach_res.downloaded
+                            or bool(attachment_text),
+                            preferred_link=link_pref,
+                            forum_id=forum_id,
+                            tid=tid,
+                            attachment_text=attachment_text if heavy_attach else "",
+                        )
+                    # 电驴板：txt/zip/excel 无果再试种子；磁力/双链：种子无果再试 txt/excel
+                    # stub/无权/需登录不再二轮（已能判定）；仅 retry/failed / 空壳种子 才回退
+                    _empty_tor_skip = (
+                        outcome.verdict == "skipped"
+                        and "种子大小为0" in str(outcome.outcome or "")
+                    )
+                    if (
+                        not attach_queued
+                        and (
+                            outcome.verdict not in {"import", "skipped", "stub"}
+                            or _empty_tor_skip
+                        )
+                        and not attach_res.denied
+                        and not getattr(attach_res, "login_required", False)
+                        and looks_like_attachment_zone(html)
+                        and (
+                            (link_pref == "ed2k" and attachment_kind == "txt_tail")
+                            or (
+                                link_pref in {"magnet", "both"}
+                                and attachment_kind == "torrent"
+                            )
+                        )
+                    ):
+                        next_kind = (
+                            "torrent" if attachment_kind == "txt_tail" else "txt_tail"
+                        )
+                        log.info("tid=%s fallback attachments kind=%s", tid, next_kind)
+                        attach_res2 = await fetch_attachments_for_outcome(
+                            session,
+                            html=html,
+                            thread_url=thread_url,
+                            attachment_kind=next_kind,
+                            timeout=max(15.0, attach_timeout),
+                            preferred_link=link_pref,
                         )
                         if (
-                            heavy2
-                            and attachment_text
-                            and not (attach_res.denied or attach_res2.denied)
-                            and not login2
+                            forum_uses_attach_daily_queue(forum_id)
+                            and getattr(attach_res2, "daily_limited", False)
                         ):
-                            log.info(
-                                "tid=%s heavy attachment fast-path (fallback) chars=%s",
-                                tid,
-                                len(attachment_text),
+                            mark_attach_daily_limit_hit(str(forum_id or ""))
+                            attach_queued = True
+                            outcome = ThreadOutcome(
+                                "skipped",
+                                ATTACH_QUEUE_OUTCOME,
+                                outcome.link_kind,
+                                outcome.title or list_title,
                             )
-                            outcome = await _outcome_from_heavy_attachment(
-                                html,
-                                tid=tid,
-                                list_title=list_title,
-                                prior=outcome,
-                                preferred_link=link_pref,
-                                base_url=thread_url,
-                                board_fid=board_fid,
-                                attachment_text=attachment_text,
+                        elif attach_res2.text and should_skip_as_115sha_only(
+                            attach_res2.text
+                        ):
+                            attachment_text = (
+                                attachment_text + "\n" + attach_res2.text
+                            ).strip()
+                            outcome = ThreadOutcome(
+                                "skipped",
+                                "115sha（跳过）",
+                                outcome.link_kind,
+                                outcome.title or list_title,
                             )
-                        else:
-                            if not heavy2:
-                                html = inject_attachment_text(html, attachment_text)
-                            outcome = await _judge_html(
-                                html,
-                                board_fid=board_fid,
-                                list_title=list_title,
-                                base_url=thread_url,
-                                soft_browser_retried=soft_browser_retried,
-                                attachments_already_tried=True,
-                                attachment_denied=attach_res.denied or attach_res2.denied,
-                                attachment_login_required=login2,
-                                attachment_failed=(
-                                    (attach_res.failed and not attach_res.downloaded)
-                                    or (attach_res2.failed and not attach_res2.downloaded)
-                                ),
-                                had_attachments=True,
-                                preferred_link=link_pref,
-                                forum_id=forum_id,
-                                tid=tid,
-                                attachment_text=attachment_text if heavy2 else "",
+                        elif attach_res2.text:
+                            attachment_text = (
+                                attachment_text + "\n" + attach_res2.text
+                            ).strip()
+                            heavy2 = len(attachment_text) >= 24_000
+                            login2 = bool(
+                                getattr(attach_res, "login_required", False)
+                                or getattr(attach_res2, "login_required", False)
                             )
-                    attachment_kind = f"{attachment_kind}+{next_kind}"
+                            if (
+                                heavy2
+                                and attachment_text
+                                and not (attach_res.denied or attach_res2.denied)
+                                and not login2
+                            ):
+                                log.info(
+                                    "tid=%s heavy attachment fast-path (fallback) chars=%s",
+                                    tid,
+                                    len(attachment_text),
+                                )
+                                outcome = await _outcome_from_heavy_attachment(
+                                    html,
+                                    tid=tid,
+                                    list_title=list_title,
+                                    prior=outcome,
+                                    preferred_link=link_pref,
+                                    base_url=thread_url,
+                                    board_fid=board_fid,
+                                    attachment_text=attachment_text,
+                                )
+                            else:
+                                if not heavy2:
+                                    html = inject_attachment_text(html, attachment_text)
+                                outcome = await _judge_html(
+                                    html,
+                                    board_fid=board_fid,
+                                    list_title=list_title,
+                                    base_url=thread_url,
+                                    soft_browser_retried=soft_browser_retried,
+                                    attachments_already_tried=True,
+                                    attachment_denied=attach_res.denied
+                                    or attach_res2.denied,
+                                    attachment_login_required=login2,
+                                    attachment_failed=(
+                                        (
+                                            (
+                                                attach_res.failed
+                                                and not attach_res.downloaded
+                                                and not getattr(
+                                                    attach_res, "empty_torrent", False
+                                                )
+                                            )
+                                            or (
+                                                attach_res2.failed
+                                                and not attach_res2.downloaded
+                                                and not getattr(
+                                                    attach_res2, "empty_torrent", False
+                                                )
+                                            )
+                                        )
+                                        and not (
+                                            getattr(attach_res, "empty_torrent", False)
+                                            or getattr(
+                                                attach_res2, "empty_torrent", False
+                                            )
+                                        )
+                                    ),
+                                    attachment_empty_torrent=bool(
+                                        getattr(attach_res, "empty_torrent", False)
+                                        or getattr(attach_res2, "empty_torrent", False)
+                                    )
+                                    and not (
+                                        attach_res2.downloaded
+                                        or bool(attachment_text)
+                                    ),
+                                    had_attachments=True,
+                                    preferred_link=link_pref,
+                                    forum_id=forum_id,
+                                    tid=tid,
+                                    attachment_text=attachment_text if heavy2 else "",
+                                )
+                        attachment_kind = f"{attachment_kind}+{next_kind}"
                 # 附件语料可能已含链但 judge 走了非 import：再双解析一次补全
                 # skipped（含 115sha）不再抬升为 import
-                if outcome.verdict not in {"import", "skipped"} and attachment_text:
+                if (
+                    not attach_queued
+                    and outcome.verdict not in {"import", "skipped"}
+                    and attachment_text
+                ):
                     merged = await _parse_dual(
                         html,
                         tid=tid,
@@ -656,7 +762,7 @@ async def process_thread(
         )
 
         # 正文有链已判 import，但填槽会不合格，且尚未下附件 → 再下附件复判
-        # 附件轮询：115 文件名优先；每下一个试算一次，合格即停并正常入库
+        # 附件轮询：115 / 「一分也是爱」文件名优先；每下一个试算一次，合格即停并正常入库
         if (
             persist
             and outcome.verdict == "import"
@@ -676,22 +782,40 @@ async def process_thread(
                     pick_ed2k_attachment_kind,
                     pick_magnet_attachment_kind,
                 )
+                from workers.attach_queue import (
+                    forum_uses_attach_daily_queue,
+                    is_attach_daily_limit_hit,
+                    mark_attach_daily_limit_hit,
+                )
 
-                retry_kind = (attachment_kind or "").strip()
-                if not retry_kind:
+                # 2048 当日已日限：跳过附件复判，保留正文结果（不入附件队列）
+                if forum_uses_attach_daily_queue(forum_id) and is_attach_daily_limit_hit(
+                    str(forum_id or "")
+                ):
+                    log.info(
+                        "tid=%s body unqualified but attach daily limit hit — skip rejudge",
+                        tid,
+                    )
+                    retry_kind = ""
+                else:
+                    retry_kind = (attachment_kind or "").strip()
+                if not retry_kind and not (
+                    forum_uses_attach_daily_queue(forum_id)
+                    and is_attach_daily_limit_hit(str(forum_id or ""))
+                ):
                     if link_pref == "ed2k":
                         retry_kind = pick_ed2k_attachment_kind(thread_url, html)
                     else:
                         retry_kind = pick_magnet_attachment_kind(
                             thread_url, html, title=str(outcome.title or list_title or "")
                         )
-                log.info(
-                    "tid=%s body import unqualified (%s) — attachment rejudge kind=%s",
-                    tid,
-                    body_preview.split(" · ", 1)[0],
-                    retry_kind or "?",
-                )
                 if retry_kind:
+                    log.info(
+                        "tid=%s body import unqualified (%s) — attachment rejudge kind=%s",
+                        tid,
+                        body_preview.split(" · ", 1)[0],
+                        retry_kind or "?",
+                    )
                     attach_timeout = float(cfg.get("web_crawler_timeout") or 45)
                     attach_res = await fetch_attachments_for_outcome(
                         session,
@@ -704,7 +828,16 @@ async def process_thread(
                     attach_tried = True
                     attachment_text = attach_res.text or ""
                     attachment_kind = retry_kind
-                    if attachment_text and not should_skip_as_115sha_only(
+                    if (
+                        forum_uses_attach_daily_queue(forum_id)
+                        and getattr(attach_res, "daily_limited", False)
+                    ):
+                        mark_attach_daily_limit_hit(str(forum_id or ""))
+                        log.info(
+                            "tid=%s attach rejudge hit daily limit — keep body outcome",
+                            tid,
+                        )
+                    elif attachment_text and not should_skip_as_115sha_only(
                         attachment_text
                     ):
                         heavy = len(attachment_text) >= 24_000
@@ -821,6 +954,14 @@ async def process_thread(
             "board_name": persist_board_name,
             "persisted": None,
         }
+        if attach_queued:
+            from workers.attach_queue import ATTACH_QUEUE_OUTCOME, ATTACH_QUEUE_VERDICT
+
+            result["verdict"] = ATTACH_QUEUE_VERDICT
+            result["verdict_label"] = "附件日限队列"
+            result["outcome"] = ATTACH_QUEUE_OUTCOME
+            # 不入库占位，等次日附件队列再抓
+            return result
 
         if persist and outcome.verdict in {"import", "stub"}:
             from db.resource_db import connect_resource

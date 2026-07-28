@@ -159,6 +159,7 @@ def judge_thread_html(
     attachment_denied: bool = False,
     attachment_login_required: bool = False,
     attachment_failed: bool = False,
+    attachment_empty_torrent: bool = False,
     had_attachments: bool = False,
     attachments_already_tried: bool = False,
     soft_browser_retried: bool = False,
@@ -506,6 +507,9 @@ def judge_thread_html(
     # 附件无权 / 下载落到登录提示页：占位「无权限下载附件」（账号可重爬）
     if attachment_denied or attachment_login_required:
         return ThreadOutcome("stub", "无权限下载附件", link_kind, title)
+    # 空壳种子（HTTP 200 但 body=0）：附件本身坏了，跳过勿重试
+    if attachment_empty_torrent:
+        return ThreadOutcome("skipped", "种子大小为0", link_kind, title)
     if attachment_failed:
         return ThreadOutcome("retry", "附件下载失败，待重试", link_kind, title)
     # 有附件区、已试、却没下到任何内容：登录墙常漏检 → 无权占位，勿跳过

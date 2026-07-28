@@ -282,10 +282,18 @@ def parse_thread_dual(
                 fallback_title=content.title or "",
             )
             if blocks:
-                by_hash = {(a.hash or "").strip().upper(): a for a in assets}
+                # 同 hash 可能对应多条不同文件名 URI（配额份）；按 URI 保活，勿 hash 字典压成一条
+                from collections import defaultdict
+
+                by_hash_q: dict[str, list[ParsedAsset]] = defaultdict(list)
+                for a in assets:
+                    h = (a.hash or "").strip().upper()
+                    if h:
+                        by_hash_q[h].append(a)
                 ordered: list[ParsedAsset] = []
                 for b in blocks:
-                    asset = by_hash.get(b.infohash)
+                    q = by_hash_q.get((b.infohash or "").strip().upper()) or []
+                    asset = q.pop(0) if q else None
                     if not asset:
                         continue
                     if b.title:
@@ -318,17 +326,19 @@ def parse_thread_dual(
                     ordered.append(asset)
                 if ordered:
                     ordered[0].is_primary = True
-                    # 切段未覆盖的 hash 仍保留（防御：无子标题/切段漏配）
-                    kept = {(a.hash or "").strip().upper() for a in ordered}
+                    # 切段未覆盖的链仍保留（同 hash 不同文件名也要留，防配额漏计）
+                    kept_uris = {
+                        (a.uri or "").strip() for a in ordered if (a.uri or "").strip()
+                    }
                     for asset in assets:
-                        h = (asset.hash or "").strip().upper()
-                        if not h or h in kept:
+                        u = (asset.uri or "").strip()
+                        if not u or u in kept_uris:
                             continue
                         if asset.link_kind not in {"magnet", "ed2k"}:
                             continue
                         asset.is_primary = False
                         ordered.append(asset)
-                        kept.add(h)
+                        kept_uris.add(u)
                     assets = ordered
                     primary_kind = ordered[0].link_kind  # type: ignore[assignment]
     extract_password = content.extract_password

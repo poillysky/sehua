@@ -137,9 +137,15 @@ async def lifespan(_app: FastAPI):
         )
 
     from workers.backup import start_backup_scheduler, stop_backup_scheduler
+    from workers.attach_queue_runner import (
+        start_attach_queue_scheduler,
+        stop_attach_queue_scheduler,
+    )
 
     start_backup_scheduler()
     logger.info("resource backup scheduler started")
+    start_attach_queue_scheduler()
+    logger.info("attach queue scheduler started")
     try:
         from workers.runner import _log_activity, bind_main_loop, emergency_stop_sync
         from workers.emergency_stop_server import start_emergency_stop_server
@@ -217,6 +223,7 @@ async def lifespan(_app: FastAPI):
         except Exception:
             pass
         await stop_backup_scheduler()
+        await stop_attach_queue_scheduler()
 
 
 app = FastAPI(title="色花堂收集器 API", version="0.2.0", lifespan=lifespan)

@@ -1610,10 +1610,15 @@ def _torrent_name_as_title(raw: str | None) -> str:
 
 
 # [欧美无码] OM1 AccidentalGangbang... / [亚洲无码] JP3 ...
+# 亦见 [欧美无码] 01 18Lust.24.06.19....（两位序号+片名，tid=27191175）
 _CATALOG_BRACKET_TITLE_RE = re.compile(
     r"\[\s*[^\]]{1,24}\s*\]\s*"
     r"("
+    r"(?:"
     r"[A-Za-z]{1,6}\d{1,4}\b"  # OM1 / JP12
+    r"|"
+    r"\d{1,3}(?=\s+\S)"  # 01 + 片名
+    r")"
     r"[^\n【]{0,160}"
     r")",
     re.I,

@@ -237,7 +237,14 @@ async def parse_thread_for_admin(
             attachment_login_required = bool(
                 getattr(attach_res, "login_required", False)
             )
-            attachment_failed = attach_res.failed and not attach_res.downloaded
+            attachment_failed = (
+                attach_res.failed
+                and not attach_res.downloaded
+                and not getattr(attach_res, "empty_torrent", False)
+            )
+            attachment_empty_torrent = bool(
+                getattr(attach_res, "empty_torrent", False)
+            )
             attachment_downloaded = attach_res.downloaded
             attachment_text = attach_res.text or ""
             attachment_source = attachment_kind or ""
@@ -260,12 +267,20 @@ async def parse_thread_for_admin(
                     attachment_denied=attachment_denied,
                     attachment_login_required=attachment_login_required,
                     attachment_failed=attachment_failed,
+                    attachment_empty_torrent=attachment_empty_torrent,
                     had_attachments=attachment_downloaded or bool(attachment_text),
                     preferred_link=preferred_link,
                 )
                 # 双链/磁力：种子失败再试 Excel/文本；电驴板：txt/zip/excel 无果再试种子
+                _empty_tor_skip = (
+                    outcome.verdict == "skipped"
+                    and "种子大小为0" in str(outcome.outcome or "")
+                )
                 if (
-                    outcome.verdict not in {"import", "skipped", "stub"}
+                    (
+                        outcome.verdict not in {"import", "skipped", "stub"}
+                        or _empty_tor_skip
+                    )
                     and not attachment_login_required
                     and not attachment_denied
                     and looks_like_attachment_zone(html)
@@ -290,7 +305,14 @@ async def parse_thread_for_admin(
                     attachment_login_required = attachment_login_required or bool(
                         getattr(attach_res2, "login_required", False)
                     )
-                    attachment_failed = attachment_failed or (attach_res2.failed and not attach_res2.downloaded)
+                    attachment_failed = attachment_failed or (
+                        attach_res2.failed
+                        and not attach_res2.downloaded
+                        and not getattr(attach_res2, "empty_torrent", False)
+                    )
+                    attachment_empty_torrent = attachment_empty_torrent or bool(
+                        getattr(attach_res2, "empty_torrent", False)
+                    )
                     attachment_downloaded = attachment_downloaded or attach_res2.downloaded
                     if attach_res2.text and should_skip_as_115sha_only(attach_res2.text):
                         attachment_text = (attachment_text + "\n" + attach_res2.text).strip()
@@ -314,6 +336,7 @@ async def parse_thread_for_admin(
                             attachment_denied=attachment_denied,
                             attachment_login_required=attachment_login_required,
                             attachment_failed=attachment_failed,
+                            attachment_empty_torrent=False,
                             had_attachments=True,
                             preferred_link=preferred_link,
                         )
@@ -326,6 +349,7 @@ async def parse_thread_for_admin(
                             attachment_denied=attachment_denied,
                             attachment_login_required=attachment_login_required,
                             attachment_failed=attachment_failed,
+                            attachment_empty_torrent=attachment_empty_torrent,
                             had_attachments=attachment_downloaded or bool(attachment_text),
                             preferred_link=preferred_link,
                         )

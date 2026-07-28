@@ -587,6 +587,27 @@ def test_filter_all_link_attachments_prefers_115_name():
     assert names.index("115备份.zip") < names.index("other.zip")
 
 
+def test_filter_all_link_attachments_prefers_yifen_name():
+    """文件名含「一分也是爱」与 115 同档优先。"""
+    from parsers.attachments import filter_all_link_attachments, DownloadAttachment
+
+    atts = [
+        DownloadAttachment("www.98T.la@文件名列表.txt", "u", "txt"),
+        DownloadAttachment("求个评论和免费的赞，一分也是爱.txt", "u", "txt"),
+        DownloadAttachment("防失效备用版.txt", "u", "txt"),
+        DownloadAttachment("115ED2K下载链接.txt", "u", "txt"),
+    ]
+    got = filter_all_link_attachments(atts, preferred_link="ed2k")
+    names = [a.name for a in got]
+    assert names.index("求个评论和免费的赞，一分也是爱.txt") < names.index(
+        "www.98T.la@文件名列表.txt"
+    )
+    assert names.index("115ED2K下载链接.txt") < names.index("防失效备用版.txt")
+    assert names.index("求个评论和免费的赞，一分也是爱.txt") < names.index(
+        "防失效备用版.txt"
+    )
+
+
 def test_filter_all_link_attachments_both_uses_magnet_order():
     from parsers.attachments import filter_all_link_attachments, DownloadAttachment
 

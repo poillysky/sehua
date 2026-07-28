@@ -329,6 +329,12 @@ def get_crawler_status(
         stub_prog = account_stub_progress()
     except Exception:
         stub_prog = {}
+    try:
+        from workers.attach_queue_runner import attach_queue_progress
+
+        attach_prog = attach_queue_progress()
+    except Exception:
+        attach_prog = {}
 
     # 列表扫进行中：内存游标优先（每页已同步落库，这里再叠一层防读库延迟）
     board_cursors = dict(cfg.get("board_list_cursors") or {})
@@ -459,6 +465,7 @@ def get_crawler_status(
         "last_result": last,
         "random_progress": rnd,
         "account_stub_progress": stub_prog,
+        "attach_queue_progress": attach_prog,
         "board_list_cursors": board_cursors,
         "web_crawl_urls": crawl_urls,
         "preferred_entry_url": preferred_entry,
@@ -1604,3 +1611,41 @@ async def post_recrawl_stubs(
         "failed": 0,
         "note": result.get("message") or result.get("error"),
     }
+
+
+class AttachQueueRunBody(BaseModel):
+    forum_id: str | None = None
+    limit: int = Field(default=50, ge=1, le=50)
+
+
+@router.get("/attach-queue/status")
+def get_attach_queue_status(
+    _user: dict = Depends(require_permission("crawler.view")),
+) -> dict:
+    from workers.attach_queue_runner import attach_queue_progress
+
+    return {"message": "ok", **attach_queue_progress()}
+
+
+@router.post("/attach-queue/run")
+async def post_attach_queue_run(
+    body: AttachQueueRunBody | None = None,
+    _user: dict = Depends(require_permission("crawl.run")),
+) -> dict:
+    """手动排空附件日限队列（仅 2048；单日最多 50；再触日限即停）。"""
+    from workers.attach_queue_runner import is_attach_queue_busy, run_attach_queue_once
+    from workers.runner import crawl_status
+
+    body = body or AttachQueueRunBody()
+    if is_attach_queue_busy():
+        raise HTTPException(status_code=409, detail="附件队列正在运行")
+    st = crawl_status()
+    if st.get("looping") or st.get("running"):
+        raise HTTPException(status_code=409, detail="连续调度/爬虫运行中，请先停止再跑附件队列")
+    _log_activity("手动触发附件队列排水")
+    result = await run_attach_queue_once(
+        forum_id=body.forum_id,
+        limit=int(body.limit or 50),
+        trigger="manual",
+    )
+    return {"message": "ok" if result.get("ok") else "failed", "result": result}

@@ -464,6 +464,20 @@ def _size_from_label(raw_num: str, unit: str | None) -> int:
     return int(val * mult)
 
 
+def _bare_number_as_gb(raw: str | None) -> int:
+    """影片大小字段偶发只写「1.59」漏单位：合集语境按 GB（0.05~50）。"""
+    m = re.fullmatch(r"\s*([0-9]+(?:\.[0-9]+)?)\s*", (raw or "").strip())
+    if not m:
+        return 0
+    try:
+        n = float(m.group(1))
+    except ValueError:
+        return 0
+    if 0.05 <= n <= 50:
+        return _size_from_label(m.group(1), "G")
+    return 0
+
+
 def parse_capacity_bytes(text: str | None) -> int:
     """从「13V 66.7GB」「635V/1.3TB」「2.6G/1V」「【989V/1.5T】」等文本取容量字节。
 
@@ -476,6 +490,10 @@ def parse_capacity_bytes(text: str | None) -> int:
     sm = _FILM_SIZE_RE.search(raw)
     if sm:
         got = parse_capacity_bytes(sm.group(1))
+        if got:
+            return got
+        # 【影片大小】：1.59（漏 G）
+        got = _bare_number_as_gb(sm.group(1))
         if got:
             return got
     best = 0
@@ -493,6 +511,16 @@ def parse_capacity_bytes(text: str | None) -> int:
     )
     if emb:
         return _size_from_label(emb.group(1), emb.group(2))
+    # [MP4/1.59] 漏单位 → 按 GB
+    emb_bare = re.search(
+        r"\[\s*(?:MP4|MKV|AVI|WMV|MOV|FLV|TS|ISO)\s*/\s*([0-9.]+)\s*\]",
+        raw,
+        re.I,
+    )
+    if emb_bare:
+        got = _bare_number_as_gb(emb_bare.group(1))
+        if got:
+            return got
     return 0
 
 
