@@ -906,32 +906,49 @@ def count_discarded(
     forum_id: str | None = None,
     q: str | None = None,
     reason: str | None = None,
+    with_requeue_kinds: bool = False,
 ) -> dict[str, int]:
-    """已出队未正常处理：failed / skipped 计数。"""
+    """已出队未正常处理：failed / skipped 计数（单次 FILTER 扫描）。"""
     cur = conn.cursor()
     forum = (forum_id or "").strip()
     forum_sql = "AND forum_id = %s" if forum else ""
     forum_params: list[Any] = [forum] if forum else []
     q_sql, q_params = _discarded_search_clause(q)
     reason_sql, reason_params = _exact_reason_clause(DISCARDED_REASON_EXPR, reason)
+    st_sql, st_params = _discarded_status_clause("all")
 
-    def _n(status_key: str | None) -> int:
-        st_sql, st_params = _discarded_status_clause(status_key)
-        cur.execute(
-            f"""
-            SELECT COUNT(*) FROM crawl_pages
-            WHERE page_type = 'thread'
-              {st_sql}
-              {forum_sql}
-              {q_sql}
-              {reason_sql}
-            """,
-            [*st_params, *forum_params, *q_params, *reason_params] or None,
-        )
-        return int(cur.fetchone()[0])
+    kind_select = ""
+    kind_params: list[Any] = []
+    if with_requeue_kinds:
+        # failed_all ≡ status=failed；无阅读权限 ⊂ skipped
+        kind_select = """
+          ,
+          COUNT(*) FILTER (WHERE status = 'failed') AS failed_all,
+          COUNT(*) FILTER (
+            WHERE status = 'skipped' AND COALESCE(outcome, '') ILIKE %s
+          ) AS access_denied_bad_title
+        """
+        kind_params = ["%无阅读权限%"]
 
-    failed = _n("failed")
-    skipped = _n("skipped")
+    cur.execute(
+        f"""
+        SELECT
+          COUNT(*) FILTER (WHERE status = 'failed') AS failed,
+          COUNT(*) FILTER (WHERE status = 'skipped') AS skipped
+          {kind_select}
+        FROM crawl_pages
+        WHERE page_type = 'thread'
+          {st_sql}
+          {forum_sql}
+          {q_sql}
+          {reason_sql}
+        """,
+        [*kind_params, *st_params, *forum_params, *q_params, *reason_params]
+        or None,
+    )
+    row = cur.fetchone() or (0, 0, 0, 0)
+    failed = int(row[0] or 0)
+    skipped = int(row[1] or 0)
     if status in (None, "", "all"):
         total = failed + skipped
     elif str(status).strip() == "failed":
@@ -939,8 +956,54 @@ def count_discarded(
     elif str(status).strip() == "skipped":
         total = skipped
     else:
-        total = _n(status)
-    return {"failed": failed, "skipped": skipped, "total": total}
+        st_sql2, st_params2 = _discarded_status_clause(status)
+        cur.execute(
+            f"""
+            SELECT COUNT(*) FROM crawl_pages
+            WHERE page_type = 'thread'
+              {st_sql2}
+              {forum_sql}
+              {q_sql}
+              {reason_sql}
+            """,
+            [*st_params2, *forum_params, *q_params, *reason_params] or None,
+        )
+        total = int(cur.fetchone()[0])
+    out: dict[str, int] = {"failed": failed, "skipped": skipped, "total": total}
+    if with_requeue_kinds:
+        out["failed_all"] = int(row[2] or 0) if len(row) > 2 else failed
+        out["access_denied_bad_title"] = int(row[3] or 0) if len(row) > 3 else 0
+    return out
+
+
+def count_discarded_kinds(
+    conn: Any, *, forum_id: str | None = None
+) -> dict[str, int]:
+    """各可重跑类别计数（单次扫描，供未处理面板 kind_counts）。"""
+    forum = (forum_id or "").strip()
+    forum_sql = "AND forum_id = %s" if forum else ""
+    forum_params: list[Any] = [forum] if forum else []
+    # 目前两类：failed_all / access_denied_bad_title
+    cur = conn.cursor()
+    cur.execute(
+        f"""
+        SELECT
+          COUNT(*) FILTER (WHERE status = 'failed') AS failed_all,
+          COUNT(*) FILTER (
+            WHERE status = 'skipped' AND COALESCE(outcome, '') ILIKE %s
+          ) AS access_denied_bad_title
+        FROM crawl_pages
+        WHERE page_type = 'thread'
+          AND status = ANY(%s)
+          {forum_sql}
+        """,
+        ["%无阅读权限%", list(DISCARDED_STATUSES), *forum_params],
+    )
+    row = cur.fetchone() or (0, 0)
+    return {
+        "failed_all": int(row[0] or 0),
+        "access_denied_bad_title": int(row[1] or 0),
+    }
 
 
 def list_discarded_reasons(

@@ -1503,9 +1503,41 @@ def count_frame_fail_posts(
             empty["total"] = int(row[0] or 0) if row else 0
         return empty
 
-    # 无搜索/原因：单次扫描算出各桶 + total（原先 7～8 次 COUNT 会卡死状态接口）
+    # 无搜索/原因：单次扫描算出各待审桶 + total + 已审（勿再拆第二次 COUNT）
     if not text and not reason_text:
-        where_sql, params = _frame_fail_where(status="all", forum_id=forum_id)
+        # 待审 ∪ 已审，用 FILTER 分开；已审 outcome 带前缀，不会误入待审桶
+        clauses = [
+            "NULLIF(BTRIM(COALESCE(rs.source_url, '')), '') IS NOT NULL",
+            """(
+              (rs.import_outcome LIKE %s OR rs.import_outcome LIKE %s OR rs.import_outcome LIKE %s)
+              OR (
+                rs.import_outcome LIKE %s
+                OR %s = ANY(COALESCE(rs.parse_tags, ARRAY[]::text[]))
+              )
+            )""",
+        ]
+        params: list[Any] = [
+            "不合格%",
+            "待核：%",
+            "待核:%",
+            f"{MANUAL_REVIEW_OUTCOME_PREFIX}%",
+            MANUAL_REVIEW_TAG,
+        ]
+        forum = (forum_id or "").strip()
+        if forum:
+            clauses.append(
+                "COALESCE(NULLIF(BTRIM(rs.forum_id), ''), 'sehuatang') = %s"
+            )
+            params.append(forum)
+        where_sql = " AND ".join(clauses)
+        pending_sql = (
+            "(rs.import_outcome LIKE %s OR rs.import_outcome LIKE %s "
+            "OR rs.import_outcome LIKE %s)"
+        )
+        reviewed_sql = (
+            "(rs.import_outcome LIKE %s "
+            "OR %s = ANY(COALESCE(rs.parse_tags, ARRAY[]::text[])))"
+        )
         with conn.cursor() as cur:
             cur.execute(
                 f"""
@@ -1548,7 +1580,12 @@ def count_frame_fail_posts(
                        OR rs.import_outcome LIKE %s
                        OR rs.import_outcome LIKE %s
                   ) AS structure_n,
-                  COUNT(DISTINCT BTRIM(rs.source_url)) AS total_n
+                  COUNT(DISTINCT BTRIM(rs.source_url)) FILTER (
+                    WHERE {pending_sql}
+                  ) AS total_n,
+                  COUNT(DISTINCT BTRIM(rs.source_url)) FILTER (
+                    WHERE {reviewed_sql}
+                  ) AS reviewed_n
                 FROM resource_sources rs
                 WHERE {where_sql}
                 """,
@@ -1575,11 +1612,16 @@ def count_frame_fail_posts(
                     "不合格：资源名%",
                     "不合格：链接%",
                     "不合格：预览%",
+                    "不合格%",
+                    "待核：%",
+                    "待核:%",
+                    f"{MANUAL_REVIEW_OUTCOME_PREFIX}%",
+                    MANUAL_REVIEW_TAG,
                     *params,
                 ),
             )
-            row = cur.fetchone() or (0, 0, 0, 0, 0, 0, 0)
-        name_n, link_n, preview_n, capacity, review_n, structure, total = (
+            row = cur.fetchone() or (0, 0, 0, 0, 0, 0, 0, 0)
+        name_n, link_n, preview_n, capacity, review_n, structure, total, reviewed_n = (
             int(row[0] or 0),
             int(row[1] or 0),
             int(row[2] or 0),
@@ -1587,6 +1629,7 @@ def count_frame_fail_posts(
             int(row[4] or 0),
             int(row[5] or 0),
             int(row[6] or 0),
+            int(row[7] or 0),
         )
         st = (status or "all").strip().lower()
         if st in {"name", "资源名"}:
@@ -1601,23 +1644,8 @@ def count_frame_fail_posts(
             total = review_n
         elif st in {"structure", "结构"}:
             total = structure
-        reviewed_n = 0
-        try:
-            rev_where, rev_params = _frame_fail_where(
-                status="reviewed", forum_id=forum_id
-            )
-            with conn.cursor() as cur:
-                cur.execute(
-                    f"""
-                    SELECT COUNT(DISTINCT BTRIM(rs.source_url))
-                    FROM resource_sources rs
-                    WHERE {rev_where}
-                    """,
-                    tuple(rev_params),
-                )
-                reviewed_n = int((cur.fetchone() or (0,))[0] or 0)
-        except Exception:
-            reviewed_n = 0
+        elif st in {"reviewed", "已审", "manual"}:
+            total = reviewed_n
         return {
             "name": name_n,
             "link": link_n,
@@ -1666,6 +1694,7 @@ def count_frame_fail_posts(
         total = structure if breakdown else _n("structure")
     else:
         total = _n("all")
+    reviewed_n = _n("reviewed") if breakdown else 0
     return {
         "name": name_n,
         "link": link_n,
@@ -1673,6 +1702,7 @@ def count_frame_fail_posts(
         "capacity": capacity,
         "review": review_n,
         "structure": structure,
+        "reviewed": reviewed_n,
         "total": total,
     }
 

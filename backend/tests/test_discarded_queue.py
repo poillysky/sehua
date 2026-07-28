@@ -43,7 +43,7 @@ def test_discarded_search_empty():
 
 
 def test_count_discarded_shape_without_db():
-    """保证 count_discarded 返回结构稳定（mock cursor）。"""
+    """保证 count_discarded 返回结构稳定（mock cursor，单次 FILTER）。"""
 
     class FakeCur:
         def __init__(self):
@@ -53,8 +53,8 @@ def test_count_discarded_shape_without_db():
             self._n += 1
 
         def fetchone(self):
-            # failed=2, skipped=5
-            return (2 if self._n == 1 else 5,)
+            # 单次：failed=2, skipped=5
+            return (2, 5)
 
     class FakeConn:
         def cursor(self):
@@ -64,6 +64,44 @@ def test_count_discarded_shape_without_db():
     assert out["failed"] == 2
     assert out["skipped"] == 5
     assert out["total"] == 7
+
+
+def test_count_discarded_with_requeue_kinds_mock():
+    class FakeCur:
+        def execute(self, *_a, **_k):
+            return None
+
+        def fetchone(self):
+            return (3, 8, 3, 2)
+
+    class FakeConn:
+        def cursor(self):
+            return FakeCur()
+
+    out = count_discarded(FakeConn(), status="all", with_requeue_kinds=True)
+    assert out["failed"] == 3
+    assert out["skipped"] == 8
+    assert out["total"] == 11
+    assert out["failed_all"] == 3
+    assert out["access_denied_bad_title"] == 2
+
+
+def test_count_discarded_kinds_mock():
+    from db.queue import count_discarded_kinds
+
+    class FakeCur:
+        def execute(self, *_a, **_k):
+            return None
+
+        def fetchone(self):
+            return (4, 1)
+
+    class FakeConn:
+        def cursor(self):
+            return FakeCur()
+
+    out = count_discarded_kinds(FakeConn())
+    assert out == {"failed_all": 4, "access_denied_bad_title": 1}
 
 
 def test_discarded_kind_clause_patterns():

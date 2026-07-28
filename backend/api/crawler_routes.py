@@ -25,6 +25,7 @@ from db.queue import (
     DISCARDED_REQUEUE_KINDS,
     count_discarded,
     count_discarded_kind,
+    count_discarded_kinds,
     count_pending,
     count_pending_queue,
     list_discarded,
@@ -187,37 +188,68 @@ def get_crawler_status(
         board_fid = str(cfg.get("active_board_fid") or "")
         enabled_fids = resolve_enabled_board_fids(cfg, forum_id=cfg_forum_id)
 
-        # 正常队列 = 启用子板全部待抓合计（实时），避免切板瞬间显示 0 却仍在入库
+        # 正常队列 = 启用子板全部待抓合计；短缓存避免 5s 轮询反复 COUNT
         queue_keys = enabled_queue_board_keys(enabled_fids)
         if not queue_keys and board_fid:
             queue_keys = queue_board_keys(board_fid)
-        try:
-            qstats = count_pending(conn, board_fid=queue_keys or None)
-        except Exception:
-            qstats = {}
-        try:
-            discarded_stats = count_discarded(conn, status="all", forum_id=active)
-        except Exception:
-            discarded_stats = {}
-        try:
-            discarded_access_denied = count_discarded_kind(
-                conn, "access_denied_bad_title", forum_id=active
+        qk = ",".join(sorted(str(k) for k in (queue_keys or [])))
+        queue_cache_key = f"status_queue:{active}:{board_fid}:{qk}"
+        cached_queue = _status_cache_get(queue_cache_key)
+        if cached_queue is not None:
+            qstats = dict(cached_queue.get("qstats") or {})
+            discarded_stats = dict(cached_queue.get("discarded_stats") or {})
+            discarded_access_denied = int(
+                cached_queue.get("discarded_access_denied") or 0
             )
-        except Exception:
-            discarded_access_denied = 0
-        try:
-            discarded_failed_kind = count_discarded_kind(
-                conn, "failed_all", forum_id=active
+            discarded_failed_kind = int(
+                cached_queue.get("discarded_failed_kind") or 0
             )
-        except Exception:
-            discarded_failed_kind = 0
-        if board_fid:
+            active_ready = int(cached_queue.get("active_ready") or 0)
+        else:
             try:
-                active_ready = int(
-                    count_pending(conn, board_fid=queue_board_keys(board_fid)).get("ready") or 0
-                )
+                qstats = count_pending(conn, board_fid=queue_keys or None)
             except Exception:
-                active_ready = 0
+                qstats = {}
+            try:
+                discarded_bundle = count_discarded(
+                    conn,
+                    status="all",
+                    forum_id=active,
+                    with_requeue_kinds=True,
+                )
+                discarded_stats = {
+                    "failed": int(discarded_bundle.get("failed") or 0),
+                    "skipped": int(discarded_bundle.get("skipped") or 0),
+                    "total": int(discarded_bundle.get("total") or 0),
+                }
+                discarded_access_denied = int(
+                    discarded_bundle.get("access_denied_bad_title") or 0
+                )
+                discarded_failed_kind = int(discarded_bundle.get("failed_all") or 0)
+            except Exception:
+                discarded_stats = {}
+                discarded_access_denied = 0
+                discarded_failed_kind = 0
+            if board_fid:
+                try:
+                    active_ready = int(
+                        count_pending(
+                            conn, board_fid=queue_board_keys(board_fid)
+                        ).get("ready")
+                        or 0
+                    )
+                except Exception:
+                    active_ready = 0
+            _status_cache_set(
+                queue_cache_key,
+                {
+                    "qstats": qstats,
+                    "discarded_stats": discarded_stats,
+                    "discarded_access_denied": discarded_access_denied,
+                    "discarded_failed_kind": discarded_failed_kind,
+                    "active_ready": active_ready,
+                },
+            )
     finally:
         conn.close()
 
@@ -769,45 +801,43 @@ def get_queue_browse(
         focus = _resolve_crawler_forum_id()
         rconn = connect_resource()
         try:
-            # 页签角标始终按「待审全量」breakdown；已审单独计数
+            # 无搜索时一次 FILTER 带齐各桶 + 已审；有搜索仍一次 breakdown（含 reviewed）
             counts = count_frame_fail_posts(
                 rconn, status="all", q=query, forum_id=focus
             )
-            reviewed_n = int(
-                count_frame_fail_posts(
-                    rconn,
-                    status="reviewed",
-                    q=query,
-                    forum_id=focus,
-                    breakdown=False,
-                ).get("total")
-                or 0
-            )
-            counts["reviewed"] = reviewed_n
-            if st in {"reviewed", "已审", "manual"}:
-                total = (
+            reviewed_n = int(counts.get("reviewed") or 0)
+
+            def _tab_total(c: dict, tab: str) -> int:
+                t = (tab or "all").strip().lower()
+                if t in {"reviewed", "已审", "manual"}:
+                    return int(c.get("reviewed") or 0)
+                if t in {"name", "资源名"}:
+                    return int(c.get("name") or 0)
+                if t in {"link", "链接"}:
+                    return int(c.get("link") or 0)
+                if t in {"preview", "预览"}:
+                    return int(c.get("preview") or 0)
+                if t in {"capacity", "容量"}:
+                    return int(c.get("capacity") or 0)
+                if t in {"review", "待核"}:
+                    return int(c.get("review") or 0)
+                if t in {"structure", "结构"}:
+                    return int(c.get("structure") or 0)
+                return int(c.get("total") or 0)
+
+            if reason_key:
+                total = int(
                     count_frame_fail_posts(
                         rconn,
                         status=st,
                         q=query,
                         reason=reason_key,
                         forum_id=focus,
-                    )["total"]
-                    if reason_key
-                    else reviewed_n
+                    ).get("total")
+                    or 0
                 )
             else:
-                total = (
-                    count_frame_fail_posts(
-                        rconn,
-                        status=st,
-                        q=query,
-                        reason=reason_key,
-                        forum_id=focus,
-                    )["total"]
-                    if reason_key
-                    else int(counts.get("total") or 0)
-                )
+                total = _tab_total(counts, st)
             items = list_frame_fail_posts(
                 rconn,
                 status=st,
@@ -831,7 +861,7 @@ def get_queue_browse(
             "limit": lim,
             "offset": off,
             "total": int(total),
-            "counts": counts,
+            "counts": {**counts, "reviewed": reviewed_n},
             "reasons": reasons,
             "items": items,
         }
@@ -861,10 +891,7 @@ def get_queue_browse(
                 forum_id=focus,
             )
             reasons = list_discarded_reasons(conn, status=st, q=query, forum_id=focus)
-            kind_counts = {
-                k: count_discarded_kind(conn, k, forum_id=focus)
-                for k in DISCARDED_REQUEUE_KINDS
-            }
+            kind_counts = count_discarded_kinds(conn, forum_id=focus)
         finally:
             conn.close()
         return {
@@ -987,10 +1014,7 @@ def get_queue_discarded(
         items = list_discarded(
             conn, status=st, q=q, limit=lim, offset=off, forum_id=focus
         )
-        kind_counts = {
-            key: count_discarded_kind(conn, key, forum_id=focus)
-            for key in DISCARDED_REQUEUE_KINDS
-        }
+        kind_counts = count_discarded_kinds(conn, forum_id=focus)
     finally:
         conn.close()
     return {
