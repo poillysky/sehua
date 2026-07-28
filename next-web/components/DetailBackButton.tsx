@@ -37,7 +37,7 @@ export function DetailBackButton() {
       return;
     }
 
-    router.push("/browse");
+    router.push("/");
   };
 
   return (

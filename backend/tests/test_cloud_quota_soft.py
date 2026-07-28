@@ -47,9 +47,40 @@ def test_cloud_mixed_quota_mismatch_is_soft():
     assert "info:cloud_quota_soft" in frame.verdict.tags
     assert not any("漏链" in e for e in frame.verdict.hard_errors)
     out = format_frame_outcome("成功：附件解析出目标链接", frame)
-    # 结构过门，软提醒 → 不合格：待核（兜底，非硬确认四类）
+    # 云盘混合配额差：结构过门 → 成功 + 提醒，勿升格不合格：待核
+    assert out.startswith("成功")
+    assert "提醒:" in out and "配额" in out
+    assert not out.startswith("不合格")
+
+
+def test_pure_115ed2k_tag_quota_mismatch_is_overclaim_not_cloud():
+    """纯【115eD2k】标不是云盘混合：链数不足 → title_overclaim，勿 cloud_soft（tid=3485915）。"""
+    title = "【整理】【115eD2k】斗鱼合集【194GB/182V/182配额】"
+    sz = int(1024**3)
+    assets = [_ed2k(f"{i:032X}", f"v{i}", sz) for i in range(43)]
+    for a in assets[1:]:
+        a.preview_images = []
+    parsed = DualParseResult(
+        tid=3485915,
+        title=title,
+        description="",
+        metadata={},
+        preview_images=["http://a.jpg"],
+        extract_password="",
+        assets=assets,
+        primary_link_kind="ed2k",
+        layout="",
+        had_attachments=True,
+    )
+    frame = build_resource_frame(
+        parsed,
+        named_groups=[("斗鱼合集", assets[0], assets)],
+        had_attachments=True,
+    )
+    assert "info:cloud_quota_soft" not in frame.verdict.tags
+    assert "info:title_quota_overclaim_soft" in frame.verdict.tags
+    out = format_frame_outcome("成功：附件解析出目标链接", frame)
     assert out.startswith("不合格：待核")
-    assert not out.startswith("不合格：链接")
 
 
 def test_pure_ed2k_quota_mismatch_still_hard():

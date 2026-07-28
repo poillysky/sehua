@@ -261,9 +261,10 @@ def _attach_merge_still_unqualified(
     preferred_link: str | None = None,
     base_url: str = "",
 ) -> bool:
-    """试算合并附件后的入库 outcome：仍「不合格*」或无法定型 → True（应继续下后面附件）。
+    """试算合并附件后是否仍不合格 → True 则必须继续下一个附件。
 
-    合格（成功/占位等）→ False，可停轮。预览异常时 False，避免异常拖成扫完全部附件。
+    硬规则：不合格就逐个判完；仅明确合格（outcome 不以「不合格」开头）才可停。
+    无链 / 试算失败 / 异常 → 一律当作仍不合格，继续轮询（勿因预览异常提前停）。
     """
     if not (attach_text or "").strip():
         return True
@@ -292,8 +293,8 @@ def _attach_merge_still_unqualified(
             return True
         return out.startswith("不合格")
     except Exception as exc:
-        log.debug("attach merge preview failed: %s", exc)
-        return False
+        log.warning("attach merge preview failed — treat as 不合格, continue: %s", exc)
+        return True
 
 
 def _push_member_text(member_texts: list[str], text: str) -> str | None:
@@ -1340,10 +1341,13 @@ class AttachmentDownloader:
         timeout: float = 45,
         preferred_link: str | None = None,
     ) -> AttachmentFetchResult:
-        """正文无链 / 正文不合格复判：按 115 / 「一分也是爱」文件名优先 + 板块主链频次逐个轮询附件。
+        """正文无链 / 正文不合格复判：按优先序逐个轮询附件。
 
-        每下完一个有链附件即试算入库：合格则停；不合格则继续合并后面附件。
-        多个 txt 若标题 N配额尚未凑齐也继续合并（如 2 个 txt 合计 4 配额）。
+        硬规则：每下完一个有链附件即试算入库；
+        - 合格 → 可停；
+        - 不合格 → 必须继续下一个，直到附件全部判断完或变为合格。
+        标题 N配额未齐时也继续（防 cloud_soft「成功」误停）。
+        例外：附件日限（今天下载请明天再来）立刻停，入附件队列。
         """
         if not self.session._ready:
             return AttachmentFetchResult(failed=True)
@@ -1419,52 +1423,57 @@ class AttachmentDownloader:
                     )
                     continue
                 chunks.append(text)
-                if _text_has_importable_link(text):
-                    merged = _pick_best_archive_texts(chunks)
-                    have = _count_importable_links(merged)
-                    rest = attachments[idx + 1 :]
-                    more_txt = any(a.kind == "txt" for a in rest)
-                    # 多 txt 分卷：配额未齐则继续合并
-                    if (
-                        attachment.kind == "txt"
-                        and more_txt
-                        and quota_expect
-                        and have < int(quota_expect)
-                    ):
-                        log.info(
-                            "Attachment %s → %s links < quota %s — continue txt",
-                            attachment.name,
-                            have,
-                            quota_expect,
-                        )
-                        continue
-                    # 已有链但入库试算仍不合格 → 合并后面附件再试
-                    if rest and _attach_merge_still_unqualified(
-                        html,
-                        merged,
-                        preferred_link=preferred_link,
-                        base_url=base_url,
-                    ):
-                        log.info(
-                            "Attachment %s (%s) → merge still 不合格 — continue next (%s left)",
-                            attachment.name,
-                            attachment.kind,
-                            len(rest),
-                        )
-                        continue
+                if not _text_has_importable_link(text):
                     log.info(
-                        "Attachment %s (%s) → %s chars with magnet/ed2k — stop polling",
+                        "Attachment %s (%s) → %s chars — continue polling",
                         attachment.name,
                         attachment.kind,
                         len(text),
                     )
+                    continue
+
+                merged = _pick_best_archive_texts(chunks)
+                have = _count_importable_links(merged)
+                rest = attachments[idx + 1 :]
+                if not rest:
+                    log.info(
+                        "Attachment %s (%s) → %s links — last attach, stop",
+                        attachment.name,
+                        attachment.kind,
+                        have,
+                    )
                     break
+
+                # 硬规则：不合格必须继续；配额未齐也继续（即使 cloud_soft 写成「成功」）
+                still_unqual = _attach_merge_still_unqualified(
+                    html,
+                    merged,
+                    preferred_link=preferred_link,
+                    base_url=base_url,
+                )
+                short_quota = bool(quota_expect) and have < int(quota_expect)
+                if still_unqual or short_quota:
+                    why = (
+                        f"不合格"
+                        if still_unqual
+                        else f"链数{have}<配额{quota_expect}"
+                    )
+                    log.info(
+                        "Attachment %s (%s) → %s — continue next (%s left)",
+                        attachment.name,
+                        attachment.kind,
+                        why,
+                        len(rest),
+                    )
+                    continue
+
                 log.info(
-                    "Attachment %s (%s) → %s chars — continue polling",
+                    "Attachment %s (%s) → 合格 (%s links) — stop polling",
                     attachment.name,
                     attachment.kind,
-                    len(text),
+                    have,
                 )
+                break
             except Exception as exc:
                 log.warning("Attachment download failed %s: %s", attachment.name, exc)
 

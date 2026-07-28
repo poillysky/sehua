@@ -13,6 +13,15 @@ async function StatsCard() {
   const t = await getTranslations();
   const data = await getStats();
 
+  if (!data) {
+    return (
+      <div className="text-xs text-foreground-600">
+        <h4 className="font-bold">{t("Stats.title")}</h4>
+        <p>—</p>
+      </div>
+    );
+  }
+
   return (
     <div className="text-xs text-foreground-600">
       <h4 className="font-bold">{t("Stats.title")}</h4>

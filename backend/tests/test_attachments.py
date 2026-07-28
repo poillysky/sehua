@@ -549,9 +549,17 @@ def test_filter_all_link_attachments_order_and_limit():
         DownloadAttachment("p.zip", "u", "zip"),
         DownloadAttachment("links.docx", "u", "doc"),
     ]
-    # 默认 / 电驴：txt → zip/rar → excel/doc → torrent
+    # 默认 / 电驴：txt → zip/rar → excel/doc → torrent；目录类 txt 垫底
     got = filter_all_link_attachments(atts, limit=10, preferred_link="ed2k")
-    assert [a.kind for a in got] == ["txt", "zip", "rar", "excel", "doc", "torrent"]
+    assert [a.kind for a in got] == [
+        "txt",
+        "zip",
+        "rar",
+        "excel",
+        "doc",
+        "torrent",
+        "txt",
+    ]
     assert [a.name for a in got] == [
         "a.txt",
         "p.zip",
@@ -559,12 +567,22 @@ def test_filter_all_link_attachments_order_and_limit():
         "b.xlsx",
         "links.docx",
         "seed.torrent",
+        "目录树.txt",
     ]
 
-    # 磁力：torrent → excel/doc/txt → zip/rar
+    # 磁力：torrent → excel/doc/txt → zip/rar；目录类 txt 仍垫底
     got_m = filter_all_link_attachments(atts, limit=10, preferred_link="magnet")
-    assert [a.kind for a in got_m] == ["torrent", "excel", "doc", "txt", "zip", "rar"]
+    assert [a.kind for a in got_m] == [
+        "torrent",
+        "excel",
+        "doc",
+        "txt",
+        "zip",
+        "rar",
+        "txt",
+    ]
     assert got_m[0].name == "seed.torrent"
+    assert got_m[-1].name == "目录树.txt"
 
 
 def test_filter_all_link_attachments_prefers_115_name():
@@ -588,7 +606,7 @@ def test_filter_all_link_attachments_prefers_115_name():
 
 
 def test_filter_all_link_attachments_prefers_yifen_name():
-    """文件名含「一分也是爱」与 115 同档优先。"""
+    """文件名含「一分也是爱」与 115 / 98 同档优先。"""
     from parsers.attachments import filter_all_link_attachments, DownloadAttachment
 
     atts = [
@@ -599,13 +617,31 @@ def test_filter_all_link_attachments_prefers_yifen_name():
     ]
     got = filter_all_link_attachments(atts, preferred_link="ed2k")
     names = [a.name for a in got]
-    assert names.index("求个评论和免费的赞，一分也是爱.txt") < names.index(
-        "www.98T.la@文件名列表.txt"
-    )
-    assert names.index("115ED2K下载链接.txt") < names.index("防失效备用版.txt")
-    assert names.index("求个评论和免费的赞，一分也是爱.txt") < names.index(
-        "防失效备用版.txt"
-    )
+    # 115 / 98 / 一分也是爱 同档，均先于普通名
+    for vip in (
+        "求个评论和免费的赞，一分也是爱.txt",
+        "115ED2K下载链接.txt",
+        "www.98T.la@文件名列表.txt",
+    ):
+        assert names.index(vip) < names.index("防失效备用版.txt")
+
+
+def test_filter_all_link_attachments_prefers_98_name():
+    """文件名含 98（如 98T.la）优先于同类型其它文件。"""
+    from parsers.attachments import filter_all_link_attachments, DownloadAttachment
+
+    atts = [
+        DownloadAttachment("防失效备用版.txt", "u", "txt"),
+        DownloadAttachment("www.98T.la@Minana呀 录播.txt", "u", "txt"),
+        DownloadAttachment("other.zip", "u", "zip"),
+        DownloadAttachment("98合集.zip", "u", "zip"),
+    ]
+    got = filter_all_link_attachments(atts, preferred_link="ed2k")
+    names = [a.name for a in got]
+    assert names[0] == "www.98T.la@Minana呀 录播.txt"
+    assert names[1] == "98合集.zip"
+    assert names.index("www.98T.la@Minana呀 录播.txt") < names.index("防失效备用版.txt")
+    assert names.index("98合集.zip") < names.index("other.zip")
 
 
 def test_filter_all_link_attachments_both_uses_magnet_order():

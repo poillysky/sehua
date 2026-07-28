@@ -19,7 +19,7 @@ export function BrowsePageToolbar({
 }) {
   const t = useTranslations();
   const hasCount = typeof totalCount === "number" && totalCount > 0;
-  const filtered = Boolean(boardLabel);
+  const title = boardLabel || t("Browse.title");
 
   return (
     <header className="group relative overflow-hidden rounded-2xl border border-default-200/70 bg-content1 shadow-sm dark:border-slate-700/70">
@@ -51,7 +51,7 @@ export function BrowsePageToolbar({
           <div className="min-w-0">
             <div className="flex flex-wrap items-center gap-2">
               <h1 className="text-lg font-semibold tracking-tight text-foreground md:text-xl">
-                {filtered ? boardLabel : t("Browse.title")}
+                {title}
               </h1>
               {hasCount ? (
                 <span className="inline-flex items-center rounded-full border border-default-200/80 bg-background/70 px-2 py-0.5 text-[11px] font-medium tabular-nums text-default-600 backdrop-blur-sm dark:border-slate-600 dark:bg-slate-800/70 dark:text-slate-300">
@@ -60,25 +60,16 @@ export function BrowsePageToolbar({
               ) : null}
             </div>
             <p className="mt-1 truncate text-xs text-default-500 md:text-sm">
-              {filtered ? t("Browse.filtered_subtitle") : t("Browse.subtitle")}
+              {t("Browse.filtered_subtitle")}
             </p>
-            {filtered ? (
-              <div className="mt-2 flex flex-wrap items-center gap-2">
-                <Link
-                  className="text-xs text-primary hover:underline"
-                  href="/boards"
-                >
-                  {t("Boards.back_nav")}
-                </Link>
-                <span className="text-default-300">·</span>
-                <Link
-                  className="text-xs text-default-500 hover:text-primary hover:underline"
-                  href="/browse"
-                >
-                  {t("Browse.clear_filter")}
-                </Link>
-              </div>
-            ) : null}
+            <div className="mt-2 flex flex-wrap items-center gap-2">
+              <Link
+                className="text-xs text-primary hover:underline"
+                href="/"
+              >
+                {t("Boards.back_nav")}
+              </Link>
+            </div>
           </div>
         </div>
 

@@ -9,17 +9,29 @@ import { useTranslations } from "next-intl";
 import clsx from "clsx";
 
 import { SearchIcon, TranslateIcon } from "@/components/icons";
+import {
+  DEFAULT_MATCH_MODE,
+  MatchMode,
+  SEARCH_PARAMS,
+} from "@/config/constant";
+import {
+  getSearchPreferences,
+  saveSearchPreferences,
+} from "@/hooks/useSearchPreferences";
 import { $env, Toast } from "@/utils";
-import { getSearchPreferences } from "@/hooks/useSearchPreferences";
 
 export const SearchInput = ({
   defaultValue = "",
   isReplace = false,
+  variant = "default",
 }: {
   defaultValue?: string;
   isReplace?: boolean;
+  /** 右上角紧凑搜索条：输入 + 类型 + 按钮 */
+  variant?: "default" | "hero";
 }) => {
   const [keyword, setKeyword] = useState("");
+  const [matchMode, setMatchMode] = useState<MatchMode>(DEFAULT_MATCH_MODE);
   const [loading, setLoading] = useState(false);
   const [translating, setTranslating] = useState(false);
   const [active, setActive] = useState(false);
@@ -43,55 +55,60 @@ export const SearchInput = ({
   }, [loading]);
 
   useEffect(() => {
-    // Set default value for keyword when provided
     if (defaultValue) {
       setKeyword(defaultValue);
     }
   }, [defaultValue]);
 
+  useEffect(() => {
+    setMatchMode(getSearchPreferences().matchMode || DEFAULT_MATCH_MODE);
+  }, []);
+
   function handleSearch() {
-    // Trim the keyword and set it to state
-    setKeyword(keyword.trim());
+    const q = keyword.trim();
+    setKeyword(q);
 
-    // If keyword is empty, do nothing
-    if (!keyword) {
+    if (!q) {
       return;
     }
 
-    // If search params equals current search params, do nothing
-    if (searchParams.get("keyword") === keyword && !searchParams.get("p")) {
-      return;
-    }
-
-    if (keyword.length < 2) {
-      // If keyword length is less than 2, display warning toast
-      // Toast.warn(t("Toast.keyword_too_short"));
+    if (q.length < 2) {
       setErrMessage(t("Toast.keyword_too_short"));
-
       return;
     }
 
-    if (keyword.length > 100) {
-      // limit keyword length to 100 characters
-      setKeyword(keyword.slice(0, 100));
+    const nextKeyword = q.length > 100 ? q.slice(0, 100) : q;
+    if (nextKeyword !== q) {
+      setKeyword(nextKeyword);
+    }
+
+    const currentMode = searchParams.get("matchMode") || "smart";
+    const sameKeyword = searchParams.get("keyword") === nextKeyword;
+    const sameMode =
+      (matchMode === "smart" && currentMode === "smart") ||
+      matchMode === currentMode;
+    if (sameKeyword && sameMode && !searchParams.get("p")) {
+      return;
     }
 
     const params = new URLSearchParams();
     const preferences = getSearchPreferences();
 
-    params.set("keyword", keyword.trim());
+    params.set("keyword", nextKeyword);
 
     if (preferences.sortType) {
       params.set("sortType", preferences.sortType);
     }
 
-    if (preferences.matchMode && preferences.matchMode !== "smart") {
-      params.set("matchMode", preferences.matchMode);
+    if (matchMode && matchMode !== "smart") {
+      params.set("matchMode", matchMode);
     }
+
+    saveSearchPreferences({ matchMode });
 
     const url = `/search?${params.toString()}`;
 
-    setLoading(true); // Set loading state to true
+    setLoading(true);
     if (isReplace) {
       router.replace(url);
     } else {
@@ -100,21 +117,16 @@ export const SearchInput = ({
   }
 
   function handleKeyup(e: any) {
-    // Handle Enter key press for triggering search
     if (e.key === "Enter" || e.keyCode === 13) {
-      // If on desktop, trigger search
       if (!$env.isMobile) {
         handleSearch();
       }
-
-      // Blur input, on mobile that will trigger search
       e.target.blur();
     }
   }
 
   function handleBlur() {
     if ($env.isMobile) {
-      // If on mobile, trigger search
       handleSearch();
     }
 
@@ -124,6 +136,11 @@ export const SearchInput = ({
   function handleFocus() {
     setErrMessage("");
     setActive(true);
+  }
+
+  function handleModeChange(next: MatchMode) {
+    setMatchMode(next);
+    saveSearchPreferences({ matchMode: next });
   }
 
   async function handleTranslate() {
@@ -167,6 +184,83 @@ export const SearchInput = ({
     } finally {
       setTranslating(false);
     }
+  }
+
+  const isHero = variant === "hero";
+
+  if (isHero) {
+    return (
+      <div className="home-search w-full">
+        <div
+          className={clsx(
+            "flex h-9 w-full items-stretch overflow-hidden rounded-md bg-background/95 shadow-sm ring-1 ring-default-200/80 backdrop-blur-sm",
+            "dark:bg-slate-900/90 dark:ring-slate-600/70",
+            "sm:h-10",
+            errMessage && "ring-2 ring-danger",
+            active && !errMessage && "ring-2 ring-primary/40",
+          )}
+        >
+          <input
+            aria-label="Search"
+            className="min-w-0 flex-1 bg-transparent px-2.5 text-sm outline-none placeholder:text-default-400 sm:px-3"
+            placeholder={t("Search.placeholder")}
+            type="text"
+            value={keyword}
+            onBlur={handleBlur}
+            onChange={(e) => setKeyword(e.target.value)}
+            onFocus={handleFocus}
+            onKeyUp={handleKeyup}
+          />
+          <label className="relative flex shrink-0 items-center border-l border-default-200/80 dark:border-slate-600/70">
+            <span className="sr-only">{t("Search.filterLabel.matchMode")}</span>
+            <select
+              className="h-full max-w-[5.5rem] cursor-pointer appearance-none bg-default-100/80 py-0 pl-2 pr-6 text-xs text-foreground outline-none dark:bg-slate-800/80 sm:max-w-none sm:pl-2.5 sm:pr-7 sm:text-[13px]"
+              value={matchMode}
+              onChange={(e) => handleModeChange(e.target.value as MatchMode)}
+            >
+              {SEARCH_PARAMS.matchMode.map((mode) => (
+                <option key={mode} value={mode}>
+                  {t(`Search.matchMode.${mode}`)}
+                </option>
+              ))}
+            </select>
+            <svg
+              aria-hidden
+              className="pointer-events-none absolute right-1.5 top-1/2 h-3 w-3 -translate-y-1/2 text-default-500"
+              fill="none"
+              viewBox="0 0 24 24"
+            >
+              <path
+                d="M6 9l6 6 6-6"
+                stroke="currentColor"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                strokeWidth="2"
+              />
+            </svg>
+          </label>
+          <button
+            aria-label={t("Search.action")}
+            className={clsx(
+              "flex h-full w-9 shrink-0 items-center justify-center bg-primary text-primary-foreground transition-opacity hover:opacity-90 sm:w-10",
+              { "cursor-progress opacity-80": loading },
+            )}
+            disabled={loading}
+            type="button"
+            onClick={() => handleSearch()}
+          >
+            {loading ? (
+              <Spinner color="current" size="sm" />
+            ) : (
+              <SearchIcon className="text-base sm:text-lg" />
+            )}
+          </button>
+        </div>
+        {errMessage ? (
+          <p className="mt-1 text-xs text-danger">{errMessage}</p>
+        ) : null}
+      </div>
+    );
   }
 
   return (
@@ -224,7 +318,7 @@ export const SearchInput = ({
               "cursor-progress": loading,
             })}
             variant="ghost"
-            onPress={handleSearch}
+            onPress={() => handleSearch()}
           >
             {loading ? (
               <Spinner size="sm" />

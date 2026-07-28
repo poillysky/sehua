@@ -4,8 +4,9 @@ import { gql } from "graphql-tag";
 import { NextRequest } from "next/server";
 
 const isDemoMode = process.env.DEMO_MODE === "true";
-const { search, resourceByHash, statsInfo, latestResources, randomResources } =
-  isDemoMode ? require("./moke") : require("./service");
+const { search, resourceByHash, statsInfo, latestResources } = isDemoMode
+  ? require("./moke")
+  : require("./service");
 
 if (isDemoMode) {
   console.log("[SehuaTang-Search] This website is running in demo mode.");
@@ -74,7 +75,6 @@ const typeDefs = gql`
     resourceByHash(hash: String!): Ed2kResource
     statsInfo: statsInfoResult
     latestResources(limit: Int): [Ed2kResource!]!
-    randomResources(limit: Int): [Ed2kResource!]!
   }
 `;
 
@@ -86,7 +86,6 @@ const server = new ApolloServer({
       resourceByHash,
       statsInfo,
       latestResources,
-      randomResources,
     },
   },
 });

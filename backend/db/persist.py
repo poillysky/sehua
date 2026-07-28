@@ -138,6 +138,22 @@ def _is_truncated_resource_name(short: str, long: str) -> bool:
     return l.replace(" ", "").startswith(s.replace(" ", ""))
 
 
+def _normalize_resource_name_key(name: str) -> str:
+    """合并用：去掉警告 emoji / 变体选择符，避免 ⚠ vs ⚠️ 切成双名。"""
+    import re
+
+    t = (name or "").strip().replace("\ufe0f", "")
+    t = re.sub(r"[⚠⚠︎]", "", t)
+    t = re.sub(r"\s+", "", t)
+    return t
+
+
+def _names_emoji_equivalent(a: str, b: str) -> bool:
+    ka = _normalize_resource_name_key(a)
+    kb = _normalize_resource_name_key(b)
+    return bool(ka) and ka == kb and (a or "").strip() != (b or "").strip()
+
+
 def _merge_truncated_name_groups(
     groups: list[tuple[str, ParsedAsset, list[ParsedAsset]]],
 ) -> list[tuple[str, ParsedAsset, list[ParsedAsset]]]:
@@ -152,6 +168,11 @@ def _merge_truncated_name_groups(
         if _is_truncated_resource_name(n1, n0):
             members = m0 + m1
             return [(n0, _pick_group_primary(members), members)]
+        # 仅警告符差异（⚠ / ⚠️）→ 并入较长名
+        if _names_emoji_equivalent(n0, n1):
+            keep = n0 if len(n0) >= len(n1) else n1
+            members = m0 + m1
+            return [(keep, _pick_group_primary(members), members)]
         return groups
 
     # 多名：短前缀名且仅匹配一个长名 → 吸收

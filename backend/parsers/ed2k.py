@@ -158,6 +158,23 @@ def build_search_string(
     return " ".join(parts)
 
 
+def _is_poisoned_ed2k_filename(filename: str) -> bool:
+    """CF 邮件保护 / HTML 残片进了 |file| 段 → 整链丢弃（同 hash 常另有干净副本）。"""
+    from parsers.resource_names import is_hard_dirty_filename
+
+    name = (filename or "").strip()
+    if not name:
+        return True
+    if is_hard_dirty_filename(name):
+        return True
+    low = name.lower()
+    if "cdn-cgi" in low or "email-protection" in low or "__cf_email__" in low:
+        return True
+    if "<" in name or ">" in name:
+        return True
+    return False
+
+
 def parse_ed2k_text(text: str) -> list[Ed2kLink]:
     from parsers.resource_names import context_subresource_title
 
@@ -169,6 +186,8 @@ def parse_ed2k_text(text: str) -> list[Ed2kLink]:
 
     for match in ED2K_RE.finditer(blob):
         filename = match.group(1).strip()
+        if _is_poisoned_ed2k_filename(filename):
+            continue
         size = int(match.group(2))
         if size > MAX_REASONABLE_FILE_BYTES:
             size = 0

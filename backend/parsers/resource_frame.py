@@ -81,9 +81,10 @@ _PLACEHOLDER_SIZE_MAX = 8 * 1024
 _V_COUNT_RE = re.compile(r"(?<![A-Za-z0-9.])(\d+)\s*V(?![A-Za-z])", re.I)
 # ed2k 合集常见：70.6G/1169V//7配额 · 20.2g/17V/2配额
 _QUOTA_COUNT_RE = re.compile(r"(\d+)\s*配额", re.I)
-# 标题写「115eD2k/夸克/迅雷」时，N配额常含云盘份，不全等于入库 ed2k 链数
+# 标题写「夸克/百度/迅雷/网盘」时，N配额常含云盘份，不全等于入库 ed2k 链数。
+# 注意：纯「115eD2k」是电驴合集标，不是云盘混合，勿当 cloud_soft（否则附件轮询会提前停）。
 _CLOUD_SHARE_IN_TITLE_RE = re.compile(
-    r"夸克|百度网盘|百度|迅雷|阿里云?盘?|UC云|蓝奏|网盘",
+    r"夸克|百度网盘|百度|迅雷|阿里云?盘?|UC云|蓝奏|网盘|115网盘|115分享",
     re.I,
 )
 # 【影片大小】：MB / 【资源大小】：（空）——有标签无有效数字
@@ -371,18 +372,22 @@ def _piece_count_expect(
     """取「应有链数」口径：只认 N配额；不用 V（V 极不准）。
 
     - 标题有配额 → 以标题为准（描述【资源大小】常写脏配额，勿抬高）
-    - 标题无、正文/blob 有 → 用 blob
+    - 标题在但无配额字样 → **不**回落描述脏配额（避免「标题写2配额」误报）
+    - 无标题、仅 blob 有 → 用 blob
     - 无配额 → None（不做强制链数判断；magnet/ed2k 相同）
+    返回 (数量, 来源标签)：来源为「标题」/「正文」/""。
     link_kind 保留兼容调用方，不参与口径选择。
     """
     del link_kind  # 配额口径与主链类型无关
     if title:
         q_title = _title_quota_count(title)
         if q_title is not None:
-            return q_title, "配额"
+            return q_title, "标题"
+        # 标题明确无「N配额」：勿用描述脏配额抬高期望
+        return None, ""
     q = _title_quota_count(blob)
     if q is not None:
-        return q, "配额"
+        return q, "正文"
     return None, ""
 
 
@@ -426,12 +431,42 @@ def _capacity_class(blob: str) -> str:
     return "D3"
 
 
+_MAGNET_BTIH_RE = re.compile(r"btih:([A-Za-z0-9]{32,40})", re.I)
+
+
+def _magnet_hash_from_uri(uri: str) -> str:
+    m = _MAGNET_BTIH_RE.search(uri or "")
+    return (m.group(1).upper() if m else "")
+
+
 def _asset_link_key(asset: ParsedAsset) -> str:
     """链身份：优先完整 URI（同 hash 不同文件名视为不同份），否则 hash。"""
     u = (getattr(asset, "uri", None) or "").strip()
     if u:
         return u
     return (getattr(asset, "hash", None) or "").strip().upper()
+
+
+def _canonical_download_key(
+    *, link_kind: str = "", uri: str = "", hash_: str = ""
+) -> str:
+    """与 _recog_link_keys 同一口径：磁力按 hash，ed2k 按完整 URI。
+
+    避免 asset.uri(magnet:?…) 与 magnets[].infohash 算成两条。
+    """
+    kind = (link_kind or "").strip().lower()
+    u = (uri or "").strip()
+    h = (hash_ or "").strip().upper()
+    if not kind:
+        if u.lower().startswith("magnet:"):
+            kind = "magnet"
+        elif u.lower().startswith("ed2k:"):
+            kind = "ed2k"
+    if kind == "magnet":
+        return h or _magnet_hash_from_uri(u)
+    if u:
+        return u
+    return h
 
 
 def _unique_link_hashes(
@@ -456,25 +491,33 @@ def _recog_link_keys(
     for a in list(parsed.assets or []):
         if (a.link_kind or "") not in kinds:
             continue
-        k = _asset_link_key(a)
+        k = _canonical_download_key(
+            link_kind=a.link_kind or "",
+            uri=getattr(a, "uri", None) or "",
+            hash_=getattr(a, "hash", None) or "",
+        )
         if k:
             out.add(k)
     if "magnet" in kinds:
         for m in getattr(parsed, "magnets", None) or []:
-            h = (
-                getattr(m, "infohash", None) or getattr(m, "hash", None) or ""
-            ).strip().upper()
-            if h:
-                out.add(h)
+            k = _canonical_download_key(
+                link_kind="magnet",
+                uri=getattr(m, "link", None) or "",
+                hash_=(
+                    getattr(m, "infohash", None) or getattr(m, "hash", None) or ""
+                ),
+            )
+            if k:
+                out.add(k)
     if "ed2k" in kinds:
         for e in getattr(parsed, "ed2k_links", None) or []:
-            link = (getattr(e, "link", None) or "").strip()
-            if link:
-                out.add(link)
-                continue
-            h = (getattr(e, "hash", None) or "").strip().upper()
-            if h:
-                out.add(h)
+            k = _canonical_download_key(
+                link_kind="ed2k",
+                uri=getattr(e, "link", None) or "",
+                hash_=getattr(e, "hash", None) or "",
+            )
+            if k:
+                out.add(k)
     return out
 
 
@@ -786,13 +829,20 @@ def validate_frame(
     group_keys: set[str] = set()
     for r in rows:
         for a in r.members:
-            k = _asset_link_key(a)
+            k = _canonical_download_key(
+                link_kind=a.link_kind or "",
+                uri=getattr(a, "uri", None) or "",
+                hash_=getattr(a, "hash", None) or "",
+            )
             if k:
                 group_keys.add(k)
         for u in r.links:
             uu = (u or "").strip()
-            if uu:
-                group_keys.add(uu)
+            if not uu:
+                continue
+            k = _canonical_download_key(uri=uu)
+            if k:
+                group_keys.add(k)
     recog = _recog_link_keys(parsed, kinds)
     recog_n = len(recog)
     member_sum = sum(len(r.members) for r in rows)
@@ -1112,10 +1162,10 @@ def validate_frame(
             tags.append("info:piece_count_match")
             metrics["piece_count_match"] = True
         else:
-            unit = piece_unit_a or "配额"
+            quota_src = piece_unit_a or "标题"
             src_zh = "附件" if spec.source == "attach" else "正文"
             msg = (
-                f"标题写{expect_pieces_a}{unit}，{src_zh}链数仅{member_n}"
+                f"{quota_src}写{expect_pieces_a}配额，{src_zh}链数仅{member_n}"
                 f"（漏链，待核）"
             )
             code = "warn:piece_count_mismatch_soft"
@@ -1146,9 +1196,9 @@ def validate_frame(
                 tags.append("cause:parse")
 
     v_count = _title_v_count(pack_blob)
-    # 配额展示口径与 piece expect 一致：标题有则用标题
+    # 配额展示口径与 piece expect 一致：标题有则用标题；标题无则不记描述脏配额
     quota_count = _title_quota_count(title) if title else None
-    if quota_count is None:
+    if quota_count is None and not title:
         quota_count = _title_quota_count(pack_blob)
     metrics["title_v_count"] = v_count
     metrics["title_quota_count"] = quota_count
@@ -1307,6 +1357,7 @@ def format_frame_outcome(base_tip: str, frame: ResourceFrame) -> str:
             parts.append("原因:" + "；".join(reasons))
     else:
         # 软提醒含【识别错误】→ 不合格：待核（兜底，非 100% 确认）
+        # 例外：云盘混合标题配额差（info:cloud_quota_soft）→ 成功 + 提醒，勿误杀
         from parsers.unqual_outcomes import UNQUAL_REVIEW
 
         parse_soft = [
@@ -1315,6 +1366,27 @@ def format_frame_outcome(base_tip: str, frame: ResourceFrame) -> str:
         missing_soft = [
             w for w in (v.soft_warnings or []) if str(w).startswith("【真没有】")
         ]
+        tags = list(v.tags or [])
+        cloud_soft = "info:cloud_quota_soft" in tags
+        if cloud_soft and parse_soft:
+            # 仅配额口径类软提醒：保持成功
+            quota_soft = [w for w in parse_soft if "配额" in str(w)]
+            other_soft = [w for w in parse_soft if "配额" not in str(w)]
+            if not other_soft and quota_soft:
+                if tip.startswith("成功") or not tip:
+                    head = tip if tip.startswith("成功") else (tip or "成功：已提取主链")
+                elif tip.startswith("待核") or tip.startswith("不合格："):
+                    head = tip
+                else:
+                    head = tip if "成功" in tip else f"成功：{tip}"
+                parts = [head, f"形态:{label}"]
+                if link_part:
+                    parts.append(link_part)
+                remind = list(quota_soft[:2]) + list(missing_soft[:1])
+                if remind:
+                    parts.append("提醒:" + "；".join(remind))
+                return " · ".join(parts)[:280]
+            parse_soft = other_soft
         if parse_soft:
             parts = [UNQUAL_REVIEW, f"形态:{label}"]
             if link_part:

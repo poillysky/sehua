@@ -15,6 +15,7 @@ import {
   parseEd2kLink,
   RESOURCE_HASH_REGEX,
 } from "@/utils/resource";
+import { compareCodes, extractCodesForPrefix } from "@/utils/av-code";
 
 /** 公开可见：磁力 / 电驴 / 115分享 / 占位 stub */
 const PUBLIC_RESOURCE_FILTER = `
@@ -686,30 +687,7 @@ LIMIT $1
   }
 }
 
-export async function randomResources(_: unknown, { limit = 20 }: { limit?: number }) {
-  try {
-    const safeLimit = Math.min(Math.max(Number(limit) || 20, 1), 50);
-    const sql = `
-SELECT
-  ${LIST_RESOURCE_SELECT}
-FROM ed2k_resources r
-${LIST_META_JOIN}
-WHERE TRUE
-${PUBLIC_RESOURCE_FILTER}
-ORDER BY RANDOM()
-LIMIT $1
-`;
-
-    const { rows } = await query(sql, [safeLimit]);
-
-    return rows.map(formatResource);
-  } catch (error) {
-    console.error("Error in randomResources resolver:", error);
-    throw new Error("Failed to fetch random resources");
-  }
-}
-
-/** 随便看看：按收录时间分页 */
+/** 板块分类列表：按收录时间分页 */
 export async function browseResources(
   _: unknown,
   {
@@ -804,3 +782,96 @@ WHERE ${whereSql}
     );
   }
 }
+
+export type PrefixCodeHit = {
+  code: string;
+  count: number;
+  sampleTitle: string | null;
+  sampleHash: string | null;
+};
+
+const PREFIX_SCAN_ROW_CAP = 8000;
+
+/** 按前缀扫描库内标题/文件名，汇总已有番号编号（升序） */
+export async function listPrefixCodes(
+  prefix: string,
+  {
+    limit = 200,
+    offset = 0,
+  }: {
+    limit?: number;
+    offset?: number;
+  } = {},
+): Promise<{
+  codes: PrefixCodeHit[];
+  total_codes: number;
+  matched_rows: number;
+}> {
+  const needle = String(prefix || "").trim();
+  if (!needle) {
+    return { codes: [], total_codes: 0, matched_rows: 0 };
+  }
+
+  const safeLimit = Math.min(Math.max(Number(limit) || 200, 1), 500);
+  const safeOffset = Math.max(Number(offset) || 0, 0);
+  const like = `%${needle}%`;
+
+  const sql = `
+SELECT
+  r.hash,
+  r.filename,
+  rs.title
+FROM ed2k_resources r
+${LIST_META_JOIN}
+WHERE TRUE
+${PUBLIC_RESOURCE_FILTER}
+  AND (
+    COALESCE(rs.title, '') ILIKE $1
+    OR COALESCE(r.filename, '') ILIKE $1
+  )
+LIMIT $2
+`;
+
+  try {
+    const { rows } = await query(sql, [like, PREFIX_SCAN_ROW_CAP]);
+    const map = new Map<string, PrefixCodeHit>();
+
+    for (const row of rows as Array<{
+      hash: string;
+      filename: string | null;
+      title: string | null;
+    }>) {
+      const blob = `${row.title || ""} ${row.filename || ""}`;
+      const codes = extractCodesForPrefix(blob, needle);
+      if (!codes.length) continue;
+      for (const code of codes) {
+        const prev = map.get(code);
+        if (prev) {
+          prev.count += 1;
+        } else {
+          map.set(code, {
+            code,
+            count: 1,
+            sampleTitle: (row.title || row.filename || "").trim() || null,
+            sampleHash: row.hash || null,
+          });
+        }
+      }
+    }
+
+    const all = Array.from(map.values()).sort((a, b) =>
+      compareCodes(a.code, b.code),
+    );
+    return {
+      codes: all.slice(safeOffset, safeOffset + safeLimit),
+      total_codes: all.length,
+      matched_rows: rows.length,
+    };
+  } catch (error) {
+    console.error("Error in listPrefixCodes:", error);
+    throw new Error(
+      `Failed to list prefix codes: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+}
+

@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""多附件：合并试算仍不合格则继续下后面附件；合格则停。"""
+"""多附件：不合格必须逐个判完；合格才可停。"""
 
 from __future__ import annotations
 
@@ -35,6 +35,27 @@ def test_attach_merge_ok_single_with_size_preview():
     )
     good = "magnet:?xt=urn:btih:" + ("B" * 40) + "&xl=" + str(2 * 1024**3)
     assert _attach_merge_still_unqualified(html, good, preferred_link="magnet") is False
+
+
+def test_attach_merge_preview_exception_continues():
+    """试算异常 → 当作仍不合格，必须继续（勿提前停）。"""
+    from crawler import attachments as mod
+    import db.persist as persist_mod
+
+    def boom(*_a, **_k):
+        raise RuntimeError("preview boom")
+
+    html = "<html><body><span id='thread_subject'>x</span></body></html>"
+    text = "magnet:?xt=urn:btih:" + ("A" * 40) + "&xl=1073741824"
+    orig = persist_mod.preview_frame_outcome
+    persist_mod.preview_frame_outcome = boom  # type: ignore[assignment]
+    try:
+        assert (
+            mod._attach_merge_still_unqualified(html, text, preferred_link="magnet")
+            is True
+        )
+    finally:
+        persist_mod.preview_frame_outcome = orig
 
 
 def test_download_tail_continues_when_merge_unqualified(monkeypatch):
@@ -78,7 +99,7 @@ def test_download_tail_continues_when_merge_unqualified(monkeypatch):
 
     async def fake_one(attachment, timeout, passwords=None):
         tried.append(attachment.name)
-        return texts[attachment.name], False, True, False
+        return texts[attachment.name], False, True, False, False, False
 
     monkeypatch.setattr(downloader, "_download_one", fake_one)
 
@@ -90,6 +111,47 @@ def test_download_tail_continues_when_merge_unqualified(monkeypatch):
     assert "A" * 40 in (res.text or "")
     assert "B" * 40 in (res.text or "")
     assert res.downloaded is True
+
+
+def test_download_tail_exhausts_all_while_always_unqualified(monkeypatch):
+    """一直不合格 → 必须把候选附件全部判断完。"""
+    from crawler import attachments as mod
+
+    html = "<html><body><span id='thread_subject'>三附件</span></body></html>"
+    atts = [
+        DownloadAttachment(name="a.txt", url="http://x/1", kind="txt"),
+        DownloadAttachment(name="b.txt", url="http://x/2", kind="txt"),
+        DownloadAttachment(name="c.txt", url="http://x/3", kind="txt"),
+    ]
+    tried: list[str] = []
+    monkeypatch.setattr(mod, "extract_download_attachments", lambda *_a, **_k: atts)
+    monkeypatch.setattr(mod, "filter_all_link_attachments", lambda items, **_k: items)
+    monkeypatch.setattr(mod, "_attach_merge_still_unqualified", lambda *_a, **_k: True)
+    monkeypatch.setattr(mod, "_quota_expect_from_html", lambda *_a, **_k: None)
+
+    class FakeSession:
+        _ready = True
+
+    downloader = mod.AttachmentDownloader(FakeSession())  # type: ignore[arg-type]
+
+    async def fake_one(attachment, timeout, passwords=None):
+        tried.append(attachment.name)
+        h = {"a.txt": "A", "b.txt": "B", "c.txt": "C"}[attachment.name]
+        return (
+            "magnet:?xt=urn:btih:" + (h * 40) + "&xl=1073741824",
+            False,
+            True,
+            False,
+            False,
+            False,
+        )
+
+    monkeypatch.setattr(downloader, "_download_one", fake_one)
+    res = asyncio.run(
+        downloader.download_tail(html, "http://example/thread", preferred_link="magnet")
+    )
+    assert tried == ["a.txt", "b.txt", "c.txt"]
+    assert all(ch * 40 in (res.text or "") for ch in "ABC")
 
 
 def test_download_tail_stops_when_merge_qualified(monkeypatch):
@@ -114,6 +176,7 @@ def test_download_tail_stops_when_merge_qualified(monkeypatch):
     monkeypatch.setattr(
         mod, "_attach_merge_still_unqualified", lambda *_a, **_k: False
     )
+    monkeypatch.setattr(mod, "_quota_expect_from_html", lambda *_a, **_k: None)
 
     class FakeSession:
         _ready = True
@@ -127,6 +190,8 @@ def test_download_tail_stops_when_merge_qualified(monkeypatch):
             False,
             True,
             False,
+            False,
+            False,
         )
 
     monkeypatch.setattr(downloader, "_download_one", fake_one)
@@ -137,3 +202,46 @@ def test_download_tail_stops_when_merge_qualified(monkeypatch):
     assert tried == ["a.txt"]
     assert "A" * 40 in (res.text or "")
     assert res.downloaded is True
+
+
+def test_download_tail_continues_on_short_quota_even_if_preview_ok(monkeypatch):
+    """试算写成「成功」但链数 < 标题配额 → 仍须继续下一个。"""
+    from crawler import attachments as mod
+
+    html = (
+        "<html><body><span id='thread_subject'>合集【10配额】</span>"
+        "<div id='postmessage_1'>x</div></body></html>"
+    )
+    atts = [
+        DownloadAttachment(name="a.txt", url="http://x/1", kind="txt"),
+        DownloadAttachment(name="b.txt", url="http://x/2", kind="txt"),
+    ]
+    tried: list[str] = []
+    monkeypatch.setattr(mod, "extract_download_attachments", lambda *_a, **_k: atts)
+    monkeypatch.setattr(mod, "filter_all_link_attachments", lambda items, **_k: items)
+    monkeypatch.setattr(mod, "_attach_merge_still_unqualified", lambda *_a, **_k: False)
+    monkeypatch.setattr(mod, "_quota_expect_from_html", lambda *_a, **_k: 10)
+
+    class FakeSession:
+        _ready = True
+
+    downloader = mod.AttachmentDownloader(FakeSession())  # type: ignore[arg-type]
+
+    async def fake_one(attachment, timeout, passwords=None):
+        tried.append(attachment.name)
+        h = "A" if attachment.name == "a.txt" else "B"
+        return (
+            "magnet:?xt=urn:btih:" + (h * 40) + "&xl=1073741824",
+            False,
+            True,
+            False,
+            False,
+            False,
+        )
+
+    monkeypatch.setattr(downloader, "_download_one", fake_one)
+    res = asyncio.run(
+        downloader.download_tail(html, "http://example/thread", preferred_link="magnet")
+    )
+    assert tried == ["a.txt", "b.txt"]
+    assert "A" * 40 in (res.text or "") and "B" * 40 in (res.text or "")

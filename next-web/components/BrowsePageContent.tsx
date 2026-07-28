@@ -263,7 +263,3 @@ export function BrowsePageContent({
     </div>
   );
 }
-
-export function prefetchBrowseResources() {
-  void fetchBrowsePage(1).catch(() => undefined);
-}

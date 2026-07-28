@@ -15,7 +15,3 @@ export function statsInfo() {
 export function latestResources() {
   return [];
 }
-
-export function randomResources() {
-  return [];
-}

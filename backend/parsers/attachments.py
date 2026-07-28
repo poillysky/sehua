@@ -360,10 +360,10 @@ _ATTACH_ORDER_MAGNET = {
 
 
 def _attach_name_priority(name: str) -> int:
-    """文件名含 115 / 「一分也是爱」优先试；越小越优先。"""
+    """文件名含 115 / 98 / 「一分也是爱」优先试；越小越优先。"""
     raw = name or ""
     n = raw.casefold()
-    if "115" in n:
+    if "115" in n or "98" in n:
         return 0
     if "一分也是爱" in raw:
         return 0
@@ -382,7 +382,7 @@ def filter_tail_attachments(
     *,
     limit: int = MAX_ATTACHMENTS_PER_THREAD,
 ) -> list[DownloadAttachment]:
-    """txt / excel / doc / zip / rar：115 / 「一分也是爱」文件名优先，再按类型排序逐个轮询。"""
+    """txt / excel / doc / zip / rar：115 / 98 / 「一分也是爱」文件名优先，再按类型排序逐个轮询。"""
     candidates = [
         item
         for item in attachments
@@ -422,30 +422,41 @@ def filter_all_link_attachments(
     limit: int = MAX_ATTACHMENTS_PER_THREAD,
     preferred_link: str | None = None,
 ) -> list[DownloadAttachment]:
-    """全部可抽链附件：先 115 / 「一分也是爱」文件名，再按板块主链类型，逐个轮询。
+    """全部可抽链附件：先 115 / 98 / 「一分也是爱」文件名，再按板块主链类型，逐个轮询。
 
     - 电驴板：txt → zip/rar → excel/doc → torrent
     - 磁力/双链：torrent → excel/doc/txt → zip/rar
-    每下完一个有链附件即试算入库；合格则停，不合格继续下一个。
+    - 目录类 txt（文件名含「目录」等）排在同批末尾，仍纳入轮询，避免漏判
+    每下完一个有链附件即试算；合格则停；不合格必须继续直到判完或合格。
     """
     candidates = [
         item
         for item in attachments
         if item.kind in ("txt", "excel", "doc", "zip", "rar", "torrent")
     ]
-    filtered = [
+    primary = [
         item
         for item in candidates
         if item.kind == "torrent"
         or not _looks_like_directory_attachment(item.name, kind=item.kind)
     ]
-    # 目录类过滤后若只剩空：保留 txt（与 filter_tail 一致）
-    if not filtered:
-        filtered = [item for item in candidates if item.kind == "txt"]
+    # 目录类 txt 放到末尾仍要判断（不合格时必须一个一个判完）
+    directory_txt = [
+        item
+        for item in candidates
+        if item.kind == "txt"
+        and _looks_like_directory_attachment(item.name, kind=item.kind)
+    ]
+    if not primary and not directory_txt:
+        primary = [item for item in candidates if item.kind == "txt"]
     order = _attach_kind_order(preferred_link)
-    filtered.sort(
-        key=lambda a: (_attach_name_priority(a.name), order.get(a.kind, 9), a.name)
-    )
+
+    def _sort_key(a: DownloadAttachment) -> tuple:
+        return (_attach_name_priority(a.name), order.get(a.kind, 9), a.name)
+
+    primary.sort(key=_sort_key)
+    directory_txt.sort(key=_sort_key)
+    filtered = primary + directory_txt
     lim = max(1, min(int(limit), MAX_ATTACHMENTS_PER_THREAD))
     return filtered[:lim]
 

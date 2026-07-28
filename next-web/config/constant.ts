@@ -35,7 +35,7 @@ export const SEARCH_KEYWORD_LENGTH_MIN = 2;
 export const SEARCH_KEYWORD_LENGTH_MAX = 100;
 export const SEARCH_PAGE_SIZE = 10;
 export const SEARCH_PAGE_MAX = 100;
-/** 随便看看：按收录量可翻页上限（每页 15 条时约可覆盖 7.5 万条），勿与搜索页共用 100 */
+/** 板块分类列表：按收录量可翻页上限（每页 15 条） */
 export const BROWSE_PAGE_MAX = 5000;
 export const BROWSE_PAGE_SIZE = 15;
 
