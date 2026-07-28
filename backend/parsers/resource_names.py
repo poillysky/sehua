@@ -842,6 +842,15 @@ _FILENAME_CREDIT_TAIL_RE = re.compile(
     r")\s*[:：]"
 )
 _FILENAME_LEADING_DASH_RE = re.compile(r"^[\-\u2013\u2014\s]{1,}")
+# [MP4/1.5G] -真名 / 【MP4/4.39G】：码 等容量装饰，勿当「开括号+分隔」结构字段
+_MEDIA_CAPACITY_IN_BRACKETS_RE = re.compile(
+    r"(?i)(?:MP4|AVI|MKV|WMV|MOV|FLV|TS|M4V|RMVB|ISO)\s*/\s*[\d.,]+\s*[KMGT]?B?"
+)
+
+
+def _is_media_capacity_labeled_field(matched: str) -> bool:
+    """片名容量前缀（如 [MP4/1.5G] -）不是结构字段，裁掉会清空整名。"""
+    return bool(_MEDIA_CAPACITY_IN_BRACKETS_RE.search(matched or ""))
 
 
 def clip_subresource_display_name(text: str | None) -> str:
@@ -881,7 +890,12 @@ def _clip_filename_structure_tail(text: str | None) -> str:
     )
     if m:
         cut_at = m.start()
-    m_gen = _LABELED_STRUCTURE_FIELD_RE.search(val)
+    m_gen = None
+    for cand in _LABELED_STRUCTURE_FIELD_RE.finditer(val):
+        if _is_media_capacity_labeled_field(cand.group(0)):
+            continue
+        m_gen = cand
+        break
     if m_gen and (cut_at is None or m_gen.start() < cut_at):
         cut_at = m_gen.start()
     if cut_at is not None:

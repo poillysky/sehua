@@ -122,11 +122,42 @@ RESOURCE_DB_MIGRATIONS = {
     "019_resource_sources_source_url_index.sql",
     "020_ed2k_resources_stub_index.sql",
     "022_ed2k_resources_updated_at_index.sql",
+    "023_resource_sources_unqual_index.sql",
 }
 
 
 def ensure_resource_db_schema(conn) -> list[str]:
-    """在资源库连接上对齐资源表结构。"""
+    """在资源库连接上对齐资源表结构。
+
+    若 resource_sources 已不存在（删库/DROP 后只留了 schema_migrations），
+    清掉资源迁移标记再重跑，避免误报 schema up to date。
+    """
+    prev_ac = getattr(conn, "autocommit", False)
+    try:
+        conn.autocommit = True
+        with conn.cursor() as cur:
+            cur.execute("SELECT to_regclass('public.resource_sources')")
+            if cur.fetchone()[0] is None:
+                cur.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS schema_migrations (
+                      filename TEXT PRIMARY KEY,
+                      applied_at TIMESTAMPTZ NOT NULL DEFAULT now()
+                    )
+                    """
+                )
+                cur.execute(
+                    "DELETE FROM schema_migrations WHERE filename = ANY(%s)",
+                    (sorted(RESOURCE_DB_MIGRATIONS),),
+                )
+                logger.warning(
+                    "resource_sources missing — cleared resource migration marks, rebuilding"
+                )
+    finally:
+        try:
+            conn.autocommit = prev_ac
+        except Exception:
+            pass
     return run_migrations(
         only=RESOURCE_DB_MIGRATIONS,
         conn=conn,

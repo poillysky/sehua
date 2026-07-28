@@ -1285,9 +1285,9 @@ class AttachmentDownloader:
         timeout: float = 45,
         preferred_link: str | None = None,
     ) -> AttachmentFetchResult:
-        """正文无链：按板块主链频次排序后逐个轮询附件。
+        """正文无链 / 正文不合格复判：按 115 文件名优先 + 板块主链频次逐个轮询附件。
 
-        压缩包抽到 magnet/ed2k 后试算入库：合格则停；不合格则继续合并后面附件。
+        每下完一个有链附件即试算入库：合格则停；不合格则继续合并后面附件。
         多个 txt 若标题 N配额尚未凑齐也继续合并（如 2 个 txt 合计 4 配额）。
         """
         if not self.session._ready:

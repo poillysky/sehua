@@ -163,10 +163,12 @@ def infer_resource_link_kind(ed2k_link: str | None) -> str:
 
 
 def _ensure_resource_schema(conn: Any) -> None:
-    """补缺列（IF NOT EXISTS）；空库先建资源表，避免读列表直接 500。"""
+    """补缺列（IF NOT EXISTS）；空库 / 删表后先建资源表，避免读列表直接 500。
+
+    进程缓存 ``_schema_ready`` 不能跳过「表是否还在」检查：独立库被 DROP/重建后
+    否则会继续 SELECT 已不存在的 resource_sources。
+    """
     global _schema_ready
-    if _schema_ready:
-        return
     needed = (
         "extract_password",
         "preview_images",
@@ -181,7 +183,11 @@ def _ensure_resource_schema(conn: Any) -> None:
     )
     with conn.cursor() as cur:
         cur.execute("SELECT to_regclass('public.resource_sources')")
-        if cur.fetchone()[0] is None:
+        table_ok = cur.fetchone()[0] is not None
+        if _schema_ready and table_ok:
+            return
+        if not table_ok:
+            _schema_ready = False
             from db.migrate import ensure_resource_db_schema
 
             ensure_resource_db_schema(conn)
@@ -1262,6 +1268,10 @@ def count_priority_account_stubs_q(
 
 
 # 填槽验收不合格（仍入库）：按帖归并为五类；旧「不合格：结构」按文案拆到资源名/链接/预览
+# 人工已审：outcome 前缀「人工已审 · 」，移出待处理不合格；可用 status=reviewed 回看
+MANUAL_REVIEW_OUTCOME_PREFIX = "人工已审 · "
+MANUAL_REVIEW_TAG = "manual_ok"
+
 FRAME_FAIL_REASON_SQL = """
 CASE
   WHEN {col} LIKE '不合格：资源名%%' THEN '不合格：资源名'
@@ -1286,9 +1296,17 @@ END
 """
 
 
+def _frame_fail_outcome_core(col: str = "rs.import_outcome") -> str:
+    """去掉人工已审前缀后再归类。"""
+    return (
+        f"regexp_replace(COALESCE({col}, ''), "
+        f"'^{MANUAL_REVIEW_OUTCOME_PREFIX}', '')"
+    )
+
+
 def _frame_fail_reason_expr(col: str = "rs.import_outcome") -> str:
     """不合格大类 SQL（与下拉 / 筛选同一口径）。"""
-    return FRAME_FAIL_REASON_SQL.format(col=col)
+    return FRAME_FAIL_REASON_SQL.format(col=_frame_fail_outcome_core(col))
 
 
 def _frame_fail_where(
@@ -1299,11 +1317,20 @@ def _frame_fail_where(
     """按帖聚合前的 WHERE（resource_sources rs）。"""
     clauses = [
         "NULLIF(BTRIM(COALESCE(rs.source_url, '')), '') IS NOT NULL",
-        # 新不合格前缀 + 旧「待核：」归入不合格明细
-        "(rs.import_outcome LIKE %s OR rs.import_outcome LIKE %s OR rs.import_outcome LIKE %s)",
     ]
-    params: list[Any] = ["不合格%", "待核：%", "待核:%"]
+    params: list[Any] = []
     st = (status or "all").strip().lower()
+    if st in {"reviewed", "已审", "manual"}:
+        clauses.append(
+            "(rs.import_outcome LIKE %s OR %s = ANY(COALESCE(rs.parse_tags, ARRAY[]::text[])))"
+        )
+        params.extend([f"{MANUAL_REVIEW_OUTCOME_PREFIX}%", MANUAL_REVIEW_TAG])
+    else:
+        # 新不合格前缀 + 旧「待核：」归入不合格明细（已审已改前缀，不会命中）
+        clauses.append(
+            "(rs.import_outcome LIKE %s OR rs.import_outcome LIKE %s OR rs.import_outcome LIKE %s)"
+        )
+        params.extend(["不合格%", "待核：%", "待核:%"])
     # 五类 + 旧结构兼容
     if st in {"name", "资源名"}:
         clauses.append(
@@ -1410,8 +1437,29 @@ def count_frame_fail_posts(
         "capacity": 0,
         "review": 0,
         "structure": 0,
+        "reviewed": 0,
         "total": 0,
     }
+
+    st_norm = (status or "all").strip().lower()
+    # 已审列表：只计人工已审帖
+    if st_norm in {"reviewed", "已审", "manual"}:
+        where_sql, params = _frame_fail_where(status="reviewed", forum_id=forum_id)
+        with conn.cursor() as cur:
+            cur.execute(
+                f"""
+                SELECT COUNT(DISTINCT BTRIM(rs.source_url))
+                FROM resource_sources rs
+                WHERE {where_sql}
+                  {q_sql}
+                """,
+                (*params, *q_params),
+            )
+            row = cur.fetchone()
+            n = int(row[0] or 0) if row else 0
+        empty["total"] = n
+        empty["reviewed"] = n
+        return empty
 
     # 按不合格大类筛：与下拉同一口径（每帖 MAX(outcome) 归类后计数）
     if reason_kind:
@@ -1553,6 +1601,23 @@ def count_frame_fail_posts(
             total = review_n
         elif st in {"structure", "结构"}:
             total = structure
+        reviewed_n = 0
+        try:
+            rev_where, rev_params = _frame_fail_where(
+                status="reviewed", forum_id=forum_id
+            )
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"""
+                    SELECT COUNT(DISTINCT BTRIM(rs.source_url))
+                    FROM resource_sources rs
+                    WHERE {rev_where}
+                    """,
+                    tuple(rev_params),
+                )
+                reviewed_n = int((cur.fetchone() or (0,))[0] or 0)
+        except Exception:
+            reviewed_n = 0
         return {
             "name": name_n,
             "link": link_n,
@@ -1560,6 +1625,7 @@ def count_frame_fail_posts(
             "capacity": capacity,
             "review": review_n,
             "structure": structure,
+            "reviewed": reviewed_n,
             "total": total,
         }
 
@@ -1717,10 +1783,16 @@ def list_frame_fail_posts(
                 from parsers.unqual_outcomes import KIND_TO_STATUS, normalize_unqual_reason_kind
 
                 kind = normalize_unqual_reason_kind(outcome)
-                item["status"] = KIND_TO_STATUS.get(kind, "failed")
-                item["reason_kind"] = kind
+                if outcome.startswith(MANUAL_REVIEW_OUTCOME_PREFIX):
+                    item["status"] = "reviewed"
+                    item["reason_kind"] = kind or "人工已审"
+                else:
+                    item["status"] = KIND_TO_STATUS.get(kind, "failed")
+                    item["reason_kind"] = kind
             except Exception:
-                if outcome.startswith("不合格：容量"):
+                if outcome.startswith(MANUAL_REVIEW_OUTCOME_PREFIX):
+                    item["status"] = "reviewed"
+                elif outcome.startswith("不合格：容量"):
                     item["status"] = "capacity"
                 elif outcome.startswith("不合格："):
                     item["status"] = "name"
@@ -1822,6 +1894,175 @@ def list_frame_fail_tids(
         seen.add(n)
         out.append({"tid": n, "hash": hash_key, "source_url": row.get("source_url") or ""})
     return out
+
+
+def mark_frame_fail_manual_reviewed(
+    conn: Any,
+    *,
+    tids: list[int],
+    forum_id: str | None = None,
+    undo: bool = False,
+) -> dict[str, Any]:
+    """人工确认已审：outcome 加「人工已审 · 」前缀并打 manual_ok，移出待处理不合格。
+
+    undo=True 时去掉前缀与标签，恢复进不合格列表。
+    """
+    clean = sorted({int(t) for t in tids if t is not None and int(t) > 0})
+    if not clean:
+        return {"matched": 0, "updated": 0, "undo": bool(undo), "tids": []}
+
+    _ensure_resource_schema(conn)
+    focus = (forum_id or "").strip()
+    catalog = list_frame_fail_posts(
+        conn,
+        status="reviewed" if undo else "all",
+        forum_id=focus or None,
+        limit=5000,
+        offset=0,
+    )
+    want = set(clean)
+    urls: list[str] = []
+    hit_tids: set[int] = set()
+    for row in catalog:
+        try:
+            tid = int(row.get("tid") or 0)
+        except (TypeError, ValueError):
+            tid = 0
+        if tid <= 0 or tid not in want:
+            continue
+        url = str(row.get("source_url") or "").strip()
+        if url:
+            urls.append(url)
+            hit_tids.add(tid)
+
+    missing = sorted(want - hit_tids)
+    if missing:
+        outcome_clause = (
+            "(import_outcome LIKE %s OR %s = ANY(COALESCE(parse_tags, ARRAY[]::text[])))"
+            if undo
+            else "(import_outcome LIKE %s OR import_outcome LIKE %s OR import_outcome LIKE %s)"
+        )
+        if undo:
+            outcome_params: tuple[Any, ...] = (
+                f"{MANUAL_REVIEW_OUTCOME_PREFIX}%",
+                MANUAL_REVIEW_TAG,
+            )
+        else:
+            outcome_params = ("不合格%", "待核：%", "待核:%")
+        forum_sql = ""
+        forum_params: list[Any] = []
+        if focus:
+            forum_sql = "AND COALESCE(NULLIF(BTRIM(forum_id), ''), 'sehuatang') = %s"
+            forum_params = [focus]
+        with conn.cursor() as cur:
+            for tid in missing:
+                cur.execute(
+                    f"""
+                    SELECT DISTINCT BTRIM(source_url)
+                    FROM resource_sources
+                    WHERE NULLIF(BTRIM(COALESCE(source_url, '')), '') IS NOT NULL
+                      AND {outcome_clause}
+                      {forum_sql}
+                      AND (
+                        source_url LIKE %s
+                        OR source_url LIKE %s
+                        OR source_url LIKE %s
+                      )
+                    """,
+                    (
+                        *outcome_params,
+                        *forum_params,
+                        f"%thread-{tid}-%",
+                        f"%tid={tid}%",
+                        f"%tid={tid}&%",
+                    ),
+                )
+                found = [str(r[0]).strip() for r in (cur.fetchall() or []) if r and r[0]]
+                if found:
+                    urls.extend(found)
+                    hit_tids.add(tid)
+
+    urls = list(dict.fromkeys(u for u in urls if u))
+    if not urls:
+        return {"matched": 0, "updated": 0, "undo": bool(undo), "tids": []}
+
+    prefix = MANUAL_REVIEW_OUTCOME_PREFIX
+    tag = MANUAL_REVIEW_TAG
+    with conn.cursor() as cur:
+        if undo:
+            cur.execute(
+                """
+                UPDATE resource_sources
+                SET
+                  import_outcome = CASE
+                    WHEN import_outcome LIKE %s
+                      THEN regexp_replace(import_outcome, %s, '')
+                    ELSE import_outcome
+                  END,
+                  parse_tags = CASE
+                    WHEN parse_tags IS NULL THEN NULL
+                    ELSE array_remove(parse_tags, %s)
+                  END
+                WHERE source_url = ANY(%s)
+                  AND (
+                    import_outcome LIKE %s
+                    OR %s = ANY(COALESCE(parse_tags, ARRAY[]::text[]))
+                  )
+                """,
+                (
+                    f"{prefix}%",
+                    f"^{prefix}",
+                    tag,
+                    urls,
+                    f"{prefix}%",
+                    tag,
+                ),
+            )
+        else:
+            cur.execute(
+                """
+                UPDATE resource_sources
+                SET
+                  import_outcome = CASE
+                    WHEN COALESCE(import_outcome, '') LIKE %s THEN import_outcome
+                    WHEN COALESCE(NULLIF(BTRIM(import_outcome), ''), '') = '' THEN %s
+                    ELSE %s || import_outcome
+                  END,
+                  parse_tags = CASE
+                    WHEN parse_tags IS NULL THEN ARRAY[%s]::text[]
+                    WHEN %s = ANY(parse_tags) THEN parse_tags
+                    ELSE parse_tags || ARRAY[%s]::text[]
+                  END
+                WHERE source_url = ANY(%s)
+                  AND (
+                    import_outcome LIKE %s
+                    OR import_outcome LIKE %s
+                    OR import_outcome LIKE %s
+                    OR import_outcome LIKE %s
+                  )
+                """,
+                (
+                    f"{prefix}%",
+                    f"{prefix}（无原 outcome）",
+                    prefix,
+                    tag,
+                    tag,
+                    tag,
+                    urls,
+                    "不合格%",
+                    "待核：%",
+                    "待核:%",
+                    f"{prefix}%",
+                ),
+            )
+        updated = int(cur.rowcount or 0)
+    conn.commit()
+    return {
+        "matched": len(hit_tids),
+        "updated": updated,
+        "undo": bool(undo),
+        "tids": sorted(hit_tids),
+    }
 
 
 def _resource_list_where(

@@ -24,7 +24,7 @@ function tip(){
 </script>
 """
     return (
-        "<html><head><title>【磁力】demo | 磁链迅雷</title></head><body>\n"
+        "<html><head><title>帖子 demo</title></head><body>\n"
         + (_PAD * 40)
         + tip
         + f'<div id="read_tpc" class="tpc_content">{body}</div>\n'

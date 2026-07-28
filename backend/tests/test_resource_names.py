@@ -40,6 +40,31 @@ def test_short_title_accept_and_salvage():
     assert is_weak_subresource_name("合集帖", post_title="合集帖")
 
 
+def test_clip_keeps_mp4_capacity_prefix_with_dash():
+    """[MP4/1.5G] -繁中片名：'-' 不是结构分隔，不得裁空后回落帖标题（tid 27446845）。"""
+    from parsers.resource_names import clip_subresource_display_name
+
+    raw = "[MP4/1.5G] -公雞俱樂部新人參戰全程無套-同房不換性癖好滿足區PART.2"
+    clipped = clip_subresource_display_name(raw)
+    assert "公雞俱樂部" in clipped
+    assert "PART.2" in clipped
+    assert clipped.startswith("[MP4/1.5G]")
+    post = "♀精品国产自拍㊣精彩合集♀[07.26]"
+    assert (
+        resolve_sub_filename(
+            inner_name=raw,
+            title=post,
+            hash_value="AA34BC478E275D1AD715D37EBC3B97715D385F30",
+        )
+        != post
+    )
+    assert "公雞俱樂部" in resolve_sub_filename(
+        inner_name=raw,
+        title=post,
+        hash_value="AA34BC478E275D1AD715D37EBC3B97715D385F30",
+    )
+
+
 def test_resolve_keeps_subresource_title():
     assert (
         resolve_sub_filename(

@@ -100,6 +100,9 @@ def classify_unqual_kind(
             blob = out
 
     st = (status or "").strip().lower()
+    # 人工已审前缀不影响原不合格归类
+    if out.startswith("人工已审 · "):
+        out = out[len("人工已审 · ") :].strip()
     for kind in UNQUAL_KINDS:
         if out.startswith(kind):
             return kind

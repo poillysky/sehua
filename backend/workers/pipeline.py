@@ -655,7 +655,8 @@ async def process_thread(
             board_fid=board_fid,
         )
 
-        # 正文有链已判 import，但填槽会不合格，且尚未下附件 → 再下附件复判后入库
+        # 正文有链已判 import，但填槽会不合格，且尚未下附件 → 再下附件复判
+        # 附件轮询：115 文件名优先；每下一个试算一次，合格即停并正常入库
         if (
             persist
             and outcome.verdict == "import"
@@ -707,10 +708,11 @@ async def process_thread(
                         attachment_text
                     ):
                         heavy = len(attachment_text) >= 24_000
+                        html_for_merge = html
                         if not heavy:
-                            html = inject_attachment_text(html, attachment_text)
+                            html_for_merge = inject_attachment_text(html, attachment_text)
                         merged = await _parse_dual(
-                            html,
+                            html_for_merge,
                             tid=tid,
                             preferred_link=link_pref,
                             extra_text=attachment_text,
@@ -725,30 +727,38 @@ async def process_thread(
                             ) or (outcome.title or list_title or merged.title or "")
                             if display and not coalesce_thread_title(merged.title):
                                 merged.title = display
-                            parsed = merged
-                            parsed.had_attachments = True
-                            parsed.description = await asyncio.to_thread(
+                            merged.had_attachments = True
+                            merged.description = await asyncio.to_thread(
                                 build_structured_description,
-                                parsed.metadata,
-                                extract_password=parsed.extract_password,
-                                title=parsed.title,
+                                merged.metadata,
+                                extract_password=merged.extract_password,
+                                title=merged.title,
                                 board_fid=board_fid,
                             )
-                            outcome = ThreadOutcome(
-                                "import",
-                                "成功：附件复判目标链接",
-                                outcome.link_kind,
-                                display,
-                                parsed=parsed,
-                            )
                             attach_preview = preview_frame_outcome(
-                                parsed, import_outcome=str(outcome.outcome or "")
+                                merged,
+                                import_outcome="成功：附件复判目标链接",
                             )
                             log.info(
                                 "tid=%s attachment rejudge → %s",
                                 tid,
                                 (attach_preview or "成功").split(" · ", 1)[0],
                             )
+                            if not (attach_preview or "").startswith("不合格"):
+                                html = html_for_merge
+                                parsed = merged
+                                outcome = ThreadOutcome(
+                                    "import",
+                                    "成功：附件复判目标链接",
+                                    outcome.link_kind,
+                                    display,
+                                    parsed=parsed,
+                                )
+                            else:
+                                log.info(
+                                    "tid=%s attachment still unqualified — keep body import",
+                                    tid,
+                                )
                     elif attachment_text and should_skip_as_115sha_only(attachment_text):
                         log.info(
                             "tid=%s attachment rejudge hit 115sha — keep body import",

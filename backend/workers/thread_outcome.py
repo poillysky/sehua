@@ -86,13 +86,9 @@ def _is_body_sample_ed2k(uri: str, *, size: int = 0) -> bool:
 
 
 def _body_has_multi_structured_targets(link_corpus: str, *, link_kind: str) -> bool:
-    """仅「多资源结构化正文」可跳过附件优先；单资源仍以附件为准。
+    """多资源结构化正文：≥2 独立目标链 + 种子名/子标题标签。
 
-    触发条件（同时满足）：
-    1. 正文独立目标链 ≥ 2（按 hash 去重；忽略 *_ss.rar 等样例链）
-    2. 【种子名称】≥ 2 或 子标题（影片/资源名等）≥ 2
-
-    不触发则保持「正文有链且有附件 → 以附件为准」。
+    用于附件无权占位等：合集正文已切开时勿因附件失败改 stub。
     """
     text = link_corpus or ""
     if not text.strip():
@@ -385,36 +381,10 @@ def judge_thread_html(
 
     # Body has target link? 仅认楼主语料（与 parse_thread_dual 一致）
     # 回帖/侧栏误检到的链不走进「有链无主资源」误杀。
-    # 正文有链 + 有可解析资源附件：默认以附件为准（正文常为样例/残链）。
-    # 例外：正文已有 ≥2 条带【种子名称】/子标题的独立链 → 直接解析正文，
-    # 避免附件只下到其中一条把合集压成单资源（2048 三级写真 tid=26719397）。
-    if (
-        has_lz_target
-        and not attachments_already_tried
-        and looks_like_attachment_zone(html)
-        and not _body_has_multi_structured_targets(link_corpus, link_kind=link_kind)
-    ):
-        if link_kind in {"magnet", "both"}:
-            from parsers.attachments import pick_magnet_attachment_kind
-
-            attach_kind = pick_magnet_attachment_kind(
-                base_url or "", html, title=title or ""
-            )
-        else:
-            from parsers.attachments import pick_ed2k_attachment_kind
-
-            attach_kind = pick_ed2k_attachment_kind(base_url or "", html)
-        return ThreadOutcome(
-            "need_attachments",
-            "正文有链且有附件，以附件为准",
-            link_kind,
-            title,
-            need_attachments=True,
-            attachment_kind=attach_kind,
-        )
-
+    # 正文有链：先按正文 import；入库验收「不合格*」时由 pipeline 再下附件复判
+    # （勿在此抢先 need_attachments，否则永远走不到「先正文后附件」）。
     if has_lz_target:
-        # 「正文有链且有附件，以附件为准」已试过：附件无权/空 → 占位，勿用正文残链当真入库
+        # 已因不合格下过附件：无权/空 → 占位，勿用正文残链当真入库
         # （tid=3395138：正文仅部分链，完整链在无权附件里）
         if (
             attachments_already_tried

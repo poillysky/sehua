@@ -5,6 +5,7 @@ import {
   fetchDiscardedTids,
   fetchFrameFailTids,
   fetchQueueBrowse,
+  markFrameFailReviewed,
   recrawlAccountStubs,
   recrawlFrameFailTids,
   requeueDiscardedTids,
@@ -35,6 +36,7 @@ const STATUS_LABEL: Record<string, string> = {
   link: '链接不合格',
   preview: '预览不合格',
   review: '待核（兜底）',
+  reviewed: '人工已审',
   single: '单资源',
   multi: '多资源',
 }
@@ -70,7 +72,7 @@ const QUEUE_MODAL_META: Record<
   frame_fail: {
     title: '不合格明细',
     kindHint: '已入库',
-    sub: '质检未过：资源名 / 链接 / 预览 / 容量 / 待核',
+    sub: '质检未过：资源名 / 链接 / 预览 / 容量 / 待核。可「标为已审」移出待审',
     reasonLabel: '不合格原因',
   },
 }
@@ -87,6 +89,7 @@ function queueModalEmptyText(
     return '暂无未入库记录'
   }
   if (kind === 'frame_fail') {
+    if (status === 'reviewed') return '暂无人工已审记录'
     return '暂无不合格记录'
   }
   if (kind === 'abnormal') return '暂无异常帖'
@@ -172,18 +175,19 @@ function normalizeMorphologyText(text: string): string {
 function frameFailKindLabel(full: string, row?: QueueBrowseItem): string {
   const fromApi = (row?.reason_kind || '').trim()
   if (fromApi.startsWith('不合格：') || fromApi.startsWith('待核')) return fromApi
-  if (full.startsWith('不合格：链接')) return '不合格：链接'
-  if (full.startsWith('不合格：预览')) return '不合格：预览'
-  if (full.startsWith('不合格：容量')) return '不合格：容量'
-  if (full.startsWith('不合格：待核') || full.startsWith('待核：') || full.startsWith('待核:'))
+  const core = full.replace(/^人工已审\s*·\s*/, '')
+  if (core.startsWith('不合格：链接')) return '不合格：链接'
+  if (core.startsWith('不合格：预览')) return '不合格：预览'
+  if (core.startsWith('不合格：容量')) return '不合格：容量'
+  if (core.startsWith('不合格：待核') || core.startsWith('待核：') || core.startsWith('待核:'))
     return '不合格：待核'
-  if (full.startsWith('不合格：资源名')) return '不合格：资源名'
-  if (full.startsWith('不合格：结构')) {
-    if (/预览|配图|首图/.test(full)) return '不合格：预览'
-    if (/链数|漏链|未进组|配额/.test(full)) return '不合格：链接'
+  if (core.startsWith('不合格：资源名')) return '不合格：资源名'
+  if (core.startsWith('不合格：结构')) {
+    if (/预览|配图|首图/.test(core)) return '不合格：预览'
+    if (/链数|漏链|未进组|配额/.test(core)) return '不合格：链接'
     return '不合格：资源名'
   }
-  const head = full.split(/\s*·\s*/)[0]?.trim()
+  const head = core.split(/\s*·\s*/)[0]?.trim()
   return head || ''
 }
 
@@ -233,17 +237,21 @@ function discardedReason(row: QueueBrowseItem, kind?: QueueBrowseKind): string {
   )
   // 不合格明细：筛选项是大类；单元格 = 大类 · 主因（与下拉对应）
   if (kind === 'frame_fail') {
-    const kindLabel = frameFailKindLabel(full, row)
-    const reasonMatch = full.match(/(?:原因[:：])\s*(.+)$/)
+    const reviewed = full.startsWith('人工已审')
+    const core = reviewed ? full.replace(/^人工已审\s*·\s*/, '') : full
+    const kindLabel = frameFailKindLabel(core, row)
+    const reasonMatch = core.match(/(?:原因[:：])\s*(.+)$/)
     const rawDetail = reasonMatch?.[1]?.trim() || ''
     const detail = rawDetail
       ? pickFrameFailPrimaryDetail(rawDetail, kindLabel)
       : ''
+    let body = ''
     if (kindLabel && detail) {
-      if (detail.startsWith(kindLabel)) return detail
-      return `${kindLabel} · ${detail}`
+      body = detail.startsWith(kindLabel) ? detail : `${kindLabel} · ${detail}`
+    } else {
+      body = kindLabel || detail || core
     }
-    return kindLabel || detail || full
+    return reviewed ? `人工已审 · ${body}` : body
   }
   if (kind === 'discarded') return normalizeDiscardedKind(full)
   return full
@@ -514,6 +522,7 @@ export function CrawlerPage() {
     | 'link'
     | 'preview'
     | 'review'
+    | 'reviewed'
   >('failed')
   const [discQInput, setDiscQInput] = useState('')
   const [discQ, setDiscQ] = useState('')
@@ -532,6 +541,7 @@ export function CrawlerPage() {
     link: 0,
     preview: 0,
     review: 0,
+    reviewed: 0,
   })
   const [discKindCounts, setDiscKindCounts] = useState<Record<string, number>>({})
   const [discLoading, setDiscLoading] = useState(false)
@@ -603,6 +613,7 @@ export function CrawlerPage() {
           link: Number(res.counts.link || 0),
           preview: Number(res.counts.preview || 0),
           review: Number(res.counts.review || 0),
+          reviewed: Number(res.counts.reviewed || 0),
         })
       }
       if (res.kind_counts) setDiscKindCounts(res.kind_counts)
@@ -1053,6 +1064,7 @@ export function CrawlerPage() {
             discStatus === 'capacity' ||
             discStatus === 'review' ||
             discStatus === 'structure' ||
+            discStatus === 'reviewed' ||
             discStatus === 'all'
               ? discStatus
               : 'all',
@@ -1139,6 +1151,37 @@ export function CrawlerPage() {
     } catch (err) {
       const msg = err instanceof Error ? err.message : '批量重爬失败'
       toast.error(msg)
+    } finally {
+      setDiscRequeueBusy(false)
+    }
+  }
+
+  const onMarkFrameFailReviewed = async () => {
+    if (queueModal !== 'frame_fail' || discRequeueBusy) return
+    const tids = Array.from(discSelected)
+    if (!tids.length) {
+      toast.info('请先勾选要标记的帖')
+      return
+    }
+    const undo = discStatus === 'reviewed'
+    const ok = await confirmDialog({
+      title: undo ? '撤销人工已审' : '标为人工已审',
+      message: undo
+        ? `将撤销选中 ${tids.length} 条的人工已审标记，重新进入待审不合格列表。确定？`
+        : `将选中 ${tids.length} 条标为人工已审（移出待审不合格；原因保留）。确定？`,
+      confirmText: undo ? '撤销已审' : '标为已审',
+    })
+    if (!ok) return
+    setDiscRequeueBusy(true)
+    try {
+      const res = await markFrameFailReviewed({ tids, undo })
+      const line = res.note || res.message || (undo ? '已撤销' : '已标为已审')
+      toast.success(line)
+      setDiscSelected(new Set())
+      await refresh()
+      await loadDiscarded()
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : '标记失败')
     } finally {
       setDiscRequeueBusy(false)
     }
@@ -1566,6 +1609,32 @@ export function CrawlerPage() {
                     ))}
                   </div>
                 ) : null}
+                {queueModal === 'frame_fail' ? (
+                  <div className="crawler-discarded-tabs" role="tablist" aria-label="不合格筛选">
+                    {(
+                      [
+                        ['all', `待审 ${Number(discCounts.total || 0)}`],
+                        ['reviewed', `已审 ${Number(discCounts.reviewed || 0)}`],
+                      ] as const
+                    ).map(([id, label]) => (
+                      <button
+                        key={id}
+                        type="button"
+                        role="tab"
+                        aria-selected={discStatus === id}
+                        className={`crawler-discarded-tab${discStatus === id ? ' active' : ''}`}
+                        onClick={() => {
+                          setDiscStatus(id)
+                          setDiscReason('')
+                          setDiscOffset(0)
+                          setDiscSelected(new Set())
+                        }}
+                      >
+                        {label}
+                      </button>
+                    ))}
+                  </div>
+                ) : null}
                 <div className="crawler-discarded-tools-row">
                   <input
                     type="search"
@@ -1599,6 +1668,29 @@ export function CrawlerPage() {
                             ? `已全选 ${discSelected.size}`
                             : `全选筛选${discTotal > 0 ? ` ${discTotal}` : ''}`}
                       </button>
+                      {queueModal === 'frame_fail' ? (
+                        <button
+                          type="button"
+                          className="crawler-action crawler-action-muted"
+                          disabled={discRequeueBusy || discSelected.size === 0}
+                          title={
+                            discStatus === 'reviewed'
+                              ? '撤销人工已审，回到待审列表'
+                              : '确认已人工审核，移出待审不合格'
+                          }
+                          onClick={() => void onMarkFrameFailReviewed()}
+                        >
+                          {discRequeueBusy
+                            ? '处理中…'
+                            : discStatus === 'reviewed'
+                              ? discSelected.size
+                                ? `撤销已审 ${discSelected.size}`
+                                : '撤销已审'
+                              : discSelected.size
+                                ? `标为已审 ${discSelected.size}`
+                                : '标为已审'}
+                        </button>
+                      ) : null}
                       <button
                         type="button"
                         className="crawler-action"

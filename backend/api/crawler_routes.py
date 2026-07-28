@@ -78,6 +78,11 @@ def _status_cache_set(key: str, payload: dict[str, Any]) -> None:
         )
 
 
+def _status_cache_clear() -> None:
+    with _STATUS_HEAVY_LOCK:
+        _STATUS_HEAVY_CACHE.clear()
+
+
 class EnabledBody(BaseModel):
     enabled: bool = True
     # 空 = 跟随当前启用论坛（勿写死色花堂）
@@ -739,28 +744,70 @@ def get_queue_browse(
         from db.resource_db import connect_resource
 
         st = (status or "all").strip().lower()
-        if st not in {"all", "name", "link", "preview", "capacity", "review", "structure", "资源名", "链接", "预览", "容量", "待核", "结构"}:
+        if st not in {
+            "all",
+            "name",
+            "link",
+            "preview",
+            "capacity",
+            "review",
+            "structure",
+            "reviewed",
+            "资源名",
+            "链接",
+            "预览",
+            "容量",
+            "待核",
+            "结构",
+            "已审",
+            "manual",
+        }:
             raise HTTPException(
                 status_code=400,
-                detail="status 仅支持 all / name / link / preview / capacity / review",
+                detail="status 仅支持 all / name / link / preview / capacity / review / reviewed",
             )
         focus = _resolve_crawler_forum_id()
         rconn = connect_resource()
         try:
+            # 页签角标始终按「待审全量」breakdown；已审单独计数
             counts = count_frame_fail_posts(
-                rconn, status=st, q=query, forum_id=focus
+                rconn, status="all", q=query, forum_id=focus
             )
-            total = (
+            reviewed_n = int(
                 count_frame_fail_posts(
                     rconn,
-                    status=st,
+                    status="reviewed",
                     q=query,
-                    reason=reason_key,
                     forum_id=focus,
-                )["total"]
-                if reason_key
-                else int(counts.get("total") or 0)
+                    breakdown=False,
+                ).get("total")
+                or 0
             )
+            counts["reviewed"] = reviewed_n
+            if st in {"reviewed", "已审", "manual"}:
+                total = (
+                    count_frame_fail_posts(
+                        rconn,
+                        status=st,
+                        q=query,
+                        reason=reason_key,
+                        forum_id=focus,
+                    )["total"]
+                    if reason_key
+                    else reviewed_n
+                )
+            else:
+                total = (
+                    count_frame_fail_posts(
+                        rconn,
+                        status=st,
+                        q=query,
+                        reason=reason_key,
+                        forum_id=focus,
+                    )["total"]
+                    if reason_key
+                    else int(counts.get("total") or 0)
+                )
             items = list_frame_fail_posts(
                 rconn,
                 status=st,
@@ -1023,9 +1070,26 @@ def get_frame_fail_tids(
     from db.resource_db import connect_resource
 
     st = (status or "all").strip().lower()
-    if st not in {"all", "name", "link", "preview", "capacity", "review", "structure", "资源名", "链接", "预览", "容量", "待核", "结构"}:
+    if st not in {
+        "all",
+        "name",
+        "link",
+        "preview",
+        "capacity",
+        "review",
+        "structure",
+        "reviewed",
+        "资源名",
+        "链接",
+        "预览",
+        "容量",
+        "待核",
+        "结构",
+        "已审",
+        "manual",
+    }:
         raise HTTPException(
-            status_code=400, detail="status 仅支持 all / name / link / preview / capacity / review"
+            status_code=400, detail="status 仅支持 all / name / link / preview / capacity / review / reviewed"
         )
     lim = max(1, min(5000, int(limit or 2000)))
     query = (q or "").strip()
@@ -1069,6 +1133,61 @@ def get_frame_fail_tids(
 class FrameFailRecrawlTidsBody(BaseModel):
     tids: list[int] = Field(default_factory=list)
     start_crawl: bool = True
+
+
+class FrameFailMarkReviewedBody(BaseModel):
+    tids: list[int] = Field(default_factory=list)
+    undo: bool = False
+
+
+@router.post("/queue/frame-fail/mark-reviewed")
+def post_frame_fail_mark_reviewed(
+    body: FrameFailMarkReviewedBody,
+    _user: dict = Depends(require_permission("crawl.run")),
+) -> dict:
+    """勾选不合格帖：标为人工已审（移出待审列表）；undo 则撤销。"""
+    from db.repository import mark_frame_fail_manual_reviewed
+    from db.resource_db import connect_resource
+
+    raw_tids = body.tids or []
+    if len(raw_tids) > 2000:
+        raise HTTPException(status_code=400, detail="一次最多选择 2000 条")
+    want: list[int] = []
+    seen: set[int] = set()
+    for raw in raw_tids:
+        try:
+            tid = int(raw)
+        except (TypeError, ValueError):
+            continue
+        if tid <= 0 or tid in seen:
+            continue
+        seen.add(tid)
+        want.append(tid)
+    if not want:
+        raise HTTPException(status_code=400, detail="请至少选择一条有效 tid")
+
+    focus = _resolve_crawler_forum_id()
+    rconn = connect_resource()
+    try:
+        result = mark_frame_fail_manual_reviewed(
+            rconn, tids=want, forum_id=focus, undo=bool(body.undo)
+        )
+    finally:
+        rconn.close()
+    _status_cache_clear()
+    updated = int(result.get("updated") or 0)
+    matched = int(result.get("matched") or 0)
+    if body.undo:
+        note = f"已撤销人工已审 {matched} 帖（更新 {updated} 行）"
+    else:
+        note = f"已标人工已审 {matched} 帖（更新 {updated} 行）"
+    return {
+        "ok": True,
+        "message": note,
+        "note": note,
+        "forum_id": focus,
+        **result,
+    }
 
 
 @router.post("/queue/frame-fail/recrawl-tids")

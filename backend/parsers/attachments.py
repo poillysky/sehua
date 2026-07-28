@@ -336,42 +336,6 @@ MAX_ARCHIVE_DEPTH = 4
 MAX_BINARY_LINK_SCAN_BYTES = 2 * 1024 * 1024
 
 
-def filter_tail_attachments(
-    attachments: list[DownloadAttachment],
-    *,
-    limit: int = MAX_ATTACHMENTS_PER_THREAD,
-) -> list[DownloadAttachment]:
-    """txt / excel / doc / zip / rar：按类型排序后逐个轮询（先文本与表格，再压缩包）。"""
-    candidates = [
-        item
-        for item in attachments
-        if item.kind in ("txt", "excel", "doc", "zip", "rar")
-    ]
-    filtered = [
-        item
-        for item in candidates
-        if not _looks_like_directory_attachment(item.name, kind=item.kind)
-    ]
-    if not filtered:
-        filtered = [item for item in candidates if item.kind == "txt"]
-    order = {"txt": 0, "excel": 1, "doc": 2, "zip": 3, "rar": 4}
-    filtered.sort(key=lambda a: (order.get(a.kind, 9), a.name))
-    lim = max(1, min(int(limit), MAX_ATTACHMENTS_PER_THREAD))
-    return filtered[:lim]
-
-
-def filter_torrent_attachments(
-    attachments: list[DownloadAttachment],
-    *,
-    limit: int = MAX_ATTACHMENTS_PER_THREAD,
-) -> list[DownloadAttachment]:
-    filtered = [item for item in attachments if item.kind == "torrent"]
-    lim = max(1, min(int(limit), MAX_ATTACHMENTS_PER_THREAD))
-    if len(filtered) <= lim:
-        return filtered
-    return filtered[:lim]
-
-
 # 按板块主链频次：多附件时先试更可能含目标链的类型
 _ATTACH_ORDER_ED2K = {
     "txt": 0,
@@ -391,11 +355,58 @@ _ATTACH_ORDER_MAGNET = {
 }
 
 
+def _attach_name_priority(name: str) -> int:
+    """文件名含 115（如 115ED2K下载链接.txt）优先试；越小越优先。"""
+    n = (name or "").casefold()
+    if "115" in n:
+        return 0
+    return 1
+
+
 def _attach_kind_order(preferred_link: str | None) -> dict[str, int]:
     pref = (preferred_link or "ed2k").strip().lower()
     if pref in {"magnet", "both"}:
         return _ATTACH_ORDER_MAGNET
     return _ATTACH_ORDER_ED2K
+
+
+def filter_tail_attachments(
+    attachments: list[DownloadAttachment],
+    *,
+    limit: int = MAX_ATTACHMENTS_PER_THREAD,
+) -> list[DownloadAttachment]:
+    """txt / excel / doc / zip / rar：115 文件名优先，再按类型排序逐个轮询。"""
+    candidates = [
+        item
+        for item in attachments
+        if item.kind in ("txt", "excel", "doc", "zip", "rar")
+    ]
+    filtered = [
+        item
+        for item in candidates
+        if not _looks_like_directory_attachment(item.name, kind=item.kind)
+    ]
+    if not filtered:
+        filtered = [item for item in candidates if item.kind == "txt"]
+    order = {"txt": 0, "excel": 1, "doc": 2, "zip": 3, "rar": 4}
+    filtered.sort(
+        key=lambda a: (_attach_name_priority(a.name), order.get(a.kind, 9), a.name)
+    )
+    lim = max(1, min(int(limit), MAX_ATTACHMENTS_PER_THREAD))
+    return filtered[:lim]
+
+
+def filter_torrent_attachments(
+    attachments: list[DownloadAttachment],
+    *,
+    limit: int = MAX_ATTACHMENTS_PER_THREAD,
+) -> list[DownloadAttachment]:
+    filtered = [item for item in attachments if item.kind == "torrent"]
+    filtered.sort(key=lambda a: (_attach_name_priority(a.name), a.name))
+    lim = max(1, min(int(limit), MAX_ATTACHMENTS_PER_THREAD))
+    if len(filtered) <= lim:
+        return filtered
+    return filtered[:lim]
 
 
 def filter_all_link_attachments(
@@ -404,10 +415,11 @@ def filter_all_link_attachments(
     limit: int = MAX_ATTACHMENTS_PER_THREAD,
     preferred_link: str | None = None,
 ) -> list[DownloadAttachment]:
-    """全部可抽链附件，按板块主链类型排序后逐个轮询。
+    """全部可抽链附件：先 115 文件名，再按板块主链类型，逐个轮询。
 
     - 电驴板：txt → zip/rar → excel/doc → torrent
     - 磁力/双链：torrent → excel/doc/txt → zip/rar
+    每下完一个有链附件即试算入库；合格则停，不合格继续下一个。
     """
     candidates = [
         item
@@ -424,7 +436,9 @@ def filter_all_link_attachments(
     if not filtered:
         filtered = [item for item in candidates if item.kind == "txt"]
     order = _attach_kind_order(preferred_link)
-    filtered.sort(key=lambda a: (order.get(a.kind, 9), a.name))
+    filtered.sort(
+        key=lambda a: (_attach_name_priority(a.name), order.get(a.kind, 9), a.name)
+    )
     lim = max(1, min(int(limit), MAX_ATTACHMENTS_PER_THREAD))
     return filtered[:lim]
 

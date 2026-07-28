@@ -567,6 +567,26 @@ def test_filter_all_link_attachments_order_and_limit():
     assert got_m[0].name == "seed.torrent"
 
 
+def test_filter_all_link_attachments_prefers_115_name():
+    """文件名含 115 的附件优先于同类型其它文件。"""
+    from parsers.attachments import filter_all_link_attachments, DownloadAttachment
+
+    atts = [
+        DownloadAttachment("百度网盘下载链接.txt", "u", "txt"),
+        DownloadAttachment("115ED2K下载链接.txt", "u", "txt"),
+        DownloadAttachment("防失效备用版.txt", "u", "txt"),
+        DownloadAttachment("other.zip", "u", "zip"),
+        DownloadAttachment("115备份.zip", "u", "zip"),
+    ]
+    got = filter_all_link_attachments(atts, preferred_link="ed2k")
+    names = [a.name for a in got]
+    assert names[0] == "115ED2K下载链接.txt"
+    assert names[1] == "115备份.zip"
+    assert "百度网盘下载链接.txt" in names
+    assert names.index("115ED2K下载链接.txt") < names.index("百度网盘下载链接.txt")
+    assert names.index("115备份.zip") < names.index("other.zip")
+
+
 def test_filter_all_link_attachments_both_uses_magnet_order():
     from parsers.attachments import filter_all_link_attachments, DownloadAttachment
 
@@ -839,8 +859,8 @@ def test_import_outcome_distinguishes_body_vs_attachment():
     assert attached.outcome == "成功：附件解析出目标链接"
 
 
-def test_body_link_plus_attachment_prefers_attachment():
-    """正文有样例链 + 有资源附件 → 先 need_attachments；注入后以附件链为准。"""
+def test_body_link_plus_attachment_imports_body_first():
+    """正文有样例链 + 有资源附件 → 先按正文 import（不合格再由 pipeline 下附件）。"""
     from workers.thread_outcome import judge_thread_html
 
     html = """
@@ -864,9 +884,9 @@ def test_body_link_plus_attachment_prefers_attachment():
         list_title="【整理】【115ED2K】合集【148配额】",
         preferred_link="ed2k",
     )
-    assert first.verdict == "need_attachments"
-    assert first.need_attachments is True
-    assert "附件为准" in first.outcome
+    assert first.verdict == "import"
+    assert first.need_attachments is False
+    assert "正文" in first.outcome
 
     attach_text = (
         "ed2k://|file|www.98t.la@A.mp4|10|11111111111111111111111111111111|/\n"
@@ -934,8 +954,8 @@ def test_multi_seed_name_body_skips_forced_attachment():
     assert title not in names or len(names) > 1
 
 
-def test_single_magnet_body_still_prefers_attachment():
-    """单资源正文有链 + 附件区：仍「以附件为准」（例外仅多资源结构化正文）。"""
+def test_single_magnet_body_imports_before_attachment():
+    """单资源正文有链 + 附件区：先正文 import（不合格才由 pipeline 下附件）。"""
     from workers.thread_outcome import judge_thread_html
 
     h = "E59DC164B2B932A1196311111111111111111111"
@@ -961,13 +981,13 @@ def test_single_magnet_body_still_prefers_attachment():
         forum_id="2048",
         tid=1,
     )
-    assert out.verdict == "need_attachments"
-    assert out.need_attachments is True
-    assert "附件为准" in out.outcome
+    assert out.verdict == "import"
+    assert out.need_attachments is False
+    assert "正文" in out.outcome
 
 
 def test_attach_preferred_denied_stubs_not_body_import():
-    """tid=3395138：以附件为准但无权 → stub，勿用正文残链成功入库。"""
+    """tid=3395138：不合格后试附件但无权 → stub，勿用正文残链成功入库。"""
     from workers.thread_outcome import judge_thread_html
 
     links = "\n".join(
@@ -1103,8 +1123,8 @@ def test_truncated_torrent_extension_torren():
     assert pick_magnet_attachment_kind(base, html) == "torrent"
 
 
-def test_ss_rar_body_samples_still_prefer_attachment():
-    """盖楼帖正文多段 *_ss.rar 样例链 + 【资源名称】：仍走附件优先（单资源附件结构）。"""
+def test_ss_rar_body_samples_import_body_first():
+    """盖楼帖正文多段 *_ss.rar 样例链 + 附件区：先正文 import（不合格再附件）。"""
     from workers.thread_outcome import judge_thread_html
 
     title = "【自转】【115ed2k】TeenMegaWorld 盖楼帖 Wow【121V/30G/121配额】"
@@ -1139,9 +1159,9 @@ def test_ss_rar_body_samples_still_prefer_attachment():
         list_title=title,
         preferred_link="ed2k",
     )
-    assert out.verdict == "need_attachments"
-    assert out.need_attachments is True
-    assert "附件为准" in out.outcome
+    assert out.verdict == "import"
+    assert out.need_attachments is False
+    assert "正文" in out.outcome
 
 
 def test_count_links_and_quota_from_html():

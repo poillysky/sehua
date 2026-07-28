@@ -376,7 +376,7 @@ export type FrameFailTidsResult = DiscardedTidsResult & {
 }
 
 export function fetchFrameFailTids(params?: {
-  status?: 'all' | 'structure' | 'capacity' | 'name' | 'link' | 'preview' | 'review'
+  status?: 'all' | 'structure' | 'capacity' | 'name' | 'link' | 'preview' | 'review' | 'reviewed'
   q?: string
   reason?: string
   limit?: number
@@ -406,6 +406,26 @@ export function recrawlFrameFailTids(body: { tids: number[]; start_crawl?: boole
     body: JSON.stringify({
       tids: body.tids,
       start_crawl: body.start_crawl !== false,
+    }),
+  })
+}
+
+export type FrameFailMarkReviewedResult = {
+  ok?: boolean
+  message?: string
+  note?: string
+  matched?: number
+  updated?: number
+  undo?: boolean
+  tids?: number[]
+}
+
+export function markFrameFailReviewed(body: { tids: number[]; undo?: boolean }) {
+  return api<FrameFailMarkReviewedResult>('/api/crawler/queue/frame-fail/mark-reviewed', {
+    method: 'POST',
+    body: JSON.stringify({
+      tids: body.tids,
+      undo: Boolean(body.undo),
     }),
   })
 }
@@ -448,7 +468,7 @@ export type QueueBrowseResult = {
 
 export function fetchQueueBrowse(params: {
   kind: QueueBrowseKind
-  status?: 'all' | 'failed' | 'skipped' | 'structure' | 'capacity' | 'name' | 'link' | 'preview' | 'review'
+  status?: 'all' | 'failed' | 'skipped' | 'structure' | 'capacity' | 'name' | 'link' | 'preview' | 'review' | 'reviewed'
   q?: string
   reason?: string
   limit?: number

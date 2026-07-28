@@ -50,7 +50,7 @@ services:
           memory: 512M
 
   app:
-    image: poillysky/sehuatang-app:1.2.15
+    image: poillysky/sehuatang-app:1.2.16
     container_name: sehuatang-app
     restart: always
     ports:
