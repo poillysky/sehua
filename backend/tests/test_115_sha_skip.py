@@ -531,6 +531,13 @@ def test_mega_and_gdrive_skip_clear_reason():
     assert has_gdrive_share_link("https://drive.google.com/file/d/abc/view")
     assert title_is_mega_without_ed2k_magnet("【MEGA】FC2示例") is True
     assert title_is_mega_without_ed2k_magnet("【mg网盘】示例") is True
+    # 人名含 mega 子串 ≠ MEGA 网盘
+    assert title_is_mega_without_ed2k_magnet(
+        "2048独家合集 CB源码直播录屏——meganmeow（260201~260227）合集"
+    ) is False
+    assert title_is_mega_without_ed2k_magnet(
+        "2048独家合集 顶级颜值美腿三开淫骚辣妹Megan_myersss录播合集"
+    ) is False
     assert title_is_gdrive_without_ed2k_magnet("[GOOGLE網盤]示例") is True
 
     html = """

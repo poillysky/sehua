@@ -15,9 +15,10 @@
 硬门前缀见 unqual_outcomes：
   资源名 — 多资源漏名/切错/不可区分
   链接   — 漏链或链未进组
-  预览   — 多资源分图失败（漏名旁证）
   容量   — 多资源标题 vs 子资源文案合计（漏名旁证）；单资源不硬判
   待核   — 名数=1 时配额≠实链等软存疑
+
+预览图：只入库/展示，不参与合格判定（缺图/共享图多为误报；靠切块与资源名保证）。
 
 名数=1：资源名可=标题；不用 V；不做 ×N/标签切开硬判（标题×N≠漏切）；
 正文同名标签≥2 却只认出 1 名 → 多资源漏切成单名，归「资源名」硬门报警。
@@ -69,9 +70,13 @@ CAUSE_LABEL = {
 # 勿把「6部合集」当 ×N：那是包内片数/片名用语，常配 1配额单链
 # 勿把分辨率「1024X576」「2048X1152」当 ×N（数字与 X 相连）
 # 勿把「365天×10次 / 365日×10発」次数用法当 ×N
+# 勿把正文资源名「楊x 23 c罩杯」当 ×23（latin x + 空格 + 数字须带个/部等）
+# 总资源数只匹配标题，勿扫正文
 _X_COUNT_RE = re.compile(
     r"×\s*(\d+)(?!\s*[Pp]\b)(?![Pp])(?!\d)(?!\s*(?:次|发|發|発|回))"
-    r"|(?<![0-9A-Za-z])[xX]\s*(\d+)(?!\s*[Pp]\b)(?![Pp])(?!\d)(?!\s*(?:次|发|發|発|回))"
+    # 紧贴 x23；「x 23」须带个/部等
+    r"|(?<![0-9A-Za-z])[xX](\d+)(?!\s*[Pp]\b)(?![Pp])(?!\d)(?!\s*(?:次|发|發|発|回))"
+    r"|(?<![0-9A-Za-z])[xX]\s+(\d+)\s*(?:个|個|部|題|题|片|集)"
     r"|(?:共|合计|總計|总计)\s*(\d+)\s*(?:部|个|個|題|题|片)"
     r"|（\s*(\d+)\s*部\s*）",
     re.I,
@@ -85,6 +90,17 @@ _QUOTA_COUNT_RE = re.compile(r"(\d+)\s*配额", re.I)
 # 注意：纯「115eD2k」是电驴合集标，不是云盘混合，勿当 cloud_soft（否则附件轮询会提前停）。
 _CLOUD_SHARE_IN_TITLE_RE = re.compile(
     r"夸克|百度网盘|百度|迅雷|阿里云?盘?|UC云|蓝奏|网盘|115网盘|115分享",
+    re.I,
+)
+# 【115eD2k压缩包】+1链：配额常指包内份数/115 额度，不是多条 ed2k
+_PACK_IN_TITLE_RE = re.compile(r"压缩包", re.I)
+# 配额旁证：帖内下载向链接（不必可入库）。扩展名后禁吃逗号，防 "a.mp4,http://b" 并一条
+_ED2K_QUOTA_RE = re.compile(r"ed2k://[^\s<>\"']+", re.I)
+_MAGNET_QUOTA_RE = re.compile(r"magnet:\?[^\s<>\"']+", re.I)
+_THUNDER_QUOTA_RE = re.compile(r"(?:thunder|ftp)://[^\s<>\"']+", re.I)
+_HTTP_HOST_MEDIA_RE = re.compile(
+    r"https?://[^\s<>\"',]+?\.(?:mp4|mkv|avi|wmv|ts|iso|mov|flv|m4v|rmvb|mpg|mpeg|zip|rar|7z)"
+    r"(?:\?[^\s<>\"']*)?",
     re.I,
 )
 # 【影片大小】：MB / 【资源大小】：（空）——有标签无有效数字
@@ -244,17 +260,16 @@ def _note(
     bucket.append(zh)
 
 
-def _title_expect_count(*texts: str) -> int | None:
-    """从标题/描述取 ×N、共N部等数量口径（大合集可上千）。"""
+def _title_expect_count(title: str, *_ignored: str) -> int | None:
+    """只从标题取 ×N / 共N部等期望资源数（正文不参与）。"""
     best: int | None = None
-    for text in texts:
-        for m in _X_COUNT_RE.finditer(text or ""):
-            for g in m.groups():
-                if g and str(g).isdigit():
-                    n = int(g)
-                    if 2 <= n <= 20000:
-                        best = n if best is None else max(best, n)
-                    break
+    for m in _X_COUNT_RE.finditer(title or ""):
+        for g in m.groups():
+            if g and str(g).isdigit():
+                n = int(g)
+                if 2 <= n <= 20000:
+                    best = n if best is None else max(best, n)
+                break
     return best
 
 
@@ -333,6 +348,53 @@ def _count_matches(actual: int, expect: int) -> bool:
     if e >= 20 and (e - a) <= max(2, e // 20):
         return True
     return False
+
+
+def _quota_link_key(raw: str) -> str:
+    s = (raw or "").strip().rstrip(".,;）)」』]")
+    if not s:
+        return ""
+    low = s.lower()
+    # magnet 按 btih 去重；其余按去 query 的全文
+    if low.startswith("magnet:"):
+        m = re.search(r"btih:([a-z0-9]{32,40})", low, re.I)
+        return f"magnet:{m.group(1)}" if m else low.split("&", 1)[0]
+    if low.startswith("ed2k:"):
+        return low.rstrip("/")
+    return low.split("?", 1)[0]
+
+
+def count_http_host_media_links(text: str) -> int:
+    """兼容旧名：仅 HTTP 媒体直链条数。"""
+    if not (text or "").strip():
+        return 0
+    found: set[str] = set()
+    for m in _HTTP_HOST_MEDIA_RE.finditer(text):
+        key = _quota_link_key(m.group(0) or "")
+        if key.startswith("http://") or key.startswith("https://"):
+            found.add(key)
+    return len(found)
+
+
+def count_post_quota_links(text: str) -> int:
+    """帖内下载向链接条数（去重）。含残链/HTTP 直链等非入库链，只作配额旁证。
+
+    口径：标题 N配额 对的是「帖子提供了多少条链接」，不必都是可入库有效链。
+    """
+    if not (text or "").strip():
+        return 0
+    found: set[str] = set()
+    for cre in (
+        _ED2K_QUOTA_RE,
+        _MAGNET_QUOTA_RE,
+        _THUNDER_QUOTA_RE,
+        _HTTP_HOST_MEDIA_RE,
+    ):
+        for m in cre.finditer(text):
+            key = _quota_link_key(m.group(0) or "")
+            if key:
+                found.add(key)
+    return len(found)
 
 
 def _title_v_count(blob: str) -> int | None:
@@ -453,7 +515,10 @@ def _canonical_download_key(
     """与 _recog_link_keys 同一口径：磁力按 hash，ed2k 按完整 URI。
 
     避免 asset.uri(magnet:?…) 与 magnets[].infohash 算成两条。
+    ed2k URI 空白/&nbsp; 归一，避免同文件双链计成识别2入库1。
     """
+    import html as _html
+
     kind = (link_kind or "").strip().lower()
     u = (uri or "").strip()
     h = (hash_ or "").strip().upper()
@@ -465,7 +530,8 @@ def _canonical_download_key(
     if kind == "magnet":
         return h or _magnet_hash_from_uri(u)
     if u:
-        return u
+        text = _html.unescape(u).replace("\xa0", " ").replace("\u3000", " ")
+        return re.sub(r"[ \t]+", " ", text)
     return h
 
 
@@ -682,7 +748,7 @@ def fill_rows(
             slots.append(SlotFill("links", False, "", cause, msg))
             slot_errors.append(f"【{CAUSE_LABEL[cause]}】{msg}")
 
-        # 图片槽：≤5；多资源且帖有图却本名为空 → 识别错误（硬）；单资源无图且帖无图 → 真没有（允许）
+        # 图片槽：≤5；缺图/未分图不进合格硬门（只记 info）
         if previews:
             summary = f"{len(previews)}张"
             if raw_preview_n > 5:
@@ -698,14 +764,13 @@ def fill_rows(
             else:
                 slots.append(SlotFill("previews", True, summary))
         elif thread_previews and n_groups > 1:
-            msg = "帖有预览却未分到该资源名下"
-            slots.append(SlotFill("previews", False, "", "parse", msg))
-            slot_errors.append(f"【识别错误】{msg}")
+            slots.append(
+                SlotFill("previews", True, "0", None, "帖有预览未分到该名下（不计不合格）")
+            )
         elif thread_previews and n_groups <= 1:
-            # 单资源本应回落帖级预览；仍空则识别错误
-            msg = "帖有预览却未填到资源上"
-            slots.append(SlotFill("previews", False, "", "parse", msg))
-            slot_errors.append(f"【识别错误】{msg}")
+            slots.append(
+                SlotFill("previews", True, "0", None, "帖有预览未填到资源上（不计不合格）")
+            )
         else:
             slots.append(
                 SlotFill("previews", True, "0", "missing", "帖面无预览图")
@@ -817,6 +882,9 @@ def validate_frame(
         for e in r.slot_errors
         if ("未分到该资源名下" in e or "帖有预览却未填到资源上" in e)
     )
+    if preview_slot_miss_n:
+        tags.append("info:preview_slot_miss")
+        metrics["preview_slot_miss_n"] = preview_slot_miss_n
 
     kinds: set[str] = set()
     for r in rows:
@@ -879,7 +947,7 @@ def validate_frame(
             )
             tags.append("flag:link_inconsistent")
 
-    expect_n = _title_expect_count(title, desc)
+    expect_n = _title_expect_count(title)
     metrics["title_expect_n"] = expect_n
     shape_ab = "A" if spec.shape in ("A", "C") else spec.shape
 
@@ -942,7 +1010,10 @@ def validate_frame(
             )
             name_split_noted = True
         # 4) 子名可区分：不重复、≠帖标题；弱名（过短/占位）= 未认出真名
-        from parsers.resource_names import is_weak_subresource_name
+        from parsers.resource_names import (
+            is_collection_album_header,
+            is_weak_subresource_name,
+        )
 
         names = [r.filename for r in rows]
         if len(set(names)) < len(names):
@@ -955,7 +1026,15 @@ def validate_frame(
             )
             name_split_noted = True
         if title:
-            same_title = sum(1 for r in rows if (r.filename or "").strip() == title)
+            # 子名=帖标题：区分「帖主用该片当标题」vs「回落帖标题漏识别」
+            same_title = 0
+            for r in rows:
+                fn = (r.filename or "").strip()
+                if fn != title:
+                    continue
+                # 合集专辑头 / 无容量文案的占位回落 → 真漏
+                if is_collection_album_header(fn) or int(getattr(r, "label_size", 0) or 0) <= 0:
+                    same_title += 1
             if same_title > 0:
                 _note(
                     tags,
@@ -966,15 +1045,24 @@ def validate_frame(
                     cause="parse",
                 )
                 name_split_noted = True
-        weak_n = sum(
-            1
-            for r in rows
-            if is_weak_subresource_name(
+        weak_n = 0
+        for r in rows:
+            if not is_weak_subresource_name(
                 r.filename,
                 post_title=title,
                 hash_value=(r.hashes[0] if r.hashes else ""),
-            )
-        )
+            ):
+                continue
+            fn = (r.filename or "").strip()
+            # 帖主用首片当标题：子名=帖标题且块内有容量 → 非「未认出真名」
+            if (
+                title
+                and fn == title
+                and int(getattr(r, "label_size", 0) or 0) > 0
+                and not is_collection_album_header(fn)
+            ):
+                continue
+            weak_n += 1
         if weak_n > 0:
             _note(
                 tags,
@@ -988,47 +1076,16 @@ def validate_frame(
         if not name_split_noted:
             tags.append("info:multi_resources_recognized")
 
-        # ---------- 旁证：分图 / 文案大小（服务于别漏资源名）----------
+        # ---------- 预览：只统计，不进硬/软合格门（靠切块+资源名）----------
         nonempty = [
             _preview_tuple(r.previews) for r in rows if _preview_tuple(r.previews)
         ]
         empty_n = sum(1 for r in rows if not r.previews)
         if nonempty and len({p for p in nonempty}) <= 1:
-            _note(
-                tags,
-                hard,
-                "warn:shared_preview",
-                "多资源预览图完全相同，未按资源名分开配图（漏资源名旁证）",
-                cause="parse",
-            )
-            tags.append("flag:preview_fail")
-        elif empty_n > 0 and thread_previews:
-            if empty_n <= 1 and n_groups >= 8:
-                _note(
-                    tags,
-                    soft,
-                    "warn:preview_unassigned_minor",
-                    f"多资源里有{empty_n}/{n_groups}个没有预览图（少数缺图，待核）",
-                    cause="parse",
-                )
-            else:
-                _note(
-                    tags,
-                    hard,
-                    "warn:preview_unassigned",
-                    f"多资源里有{empty_n}/{n_groups}个没有预览图"
-                    "（未按资源名分配，漏资源名旁证）",
-                    cause="parse",
-                )
-                tags.append("flag:preview_fail")
-        elif empty_n > n_groups // 2 and not thread_previews:
-            _note(
-                tags,
-                soft,
-                "warn:many_empty_preview",
-                f"多资源里有{empty_n}/{n_groups}个没有预览图（帖面也无图，属真没有）",
-                cause="missing",
-            )
+            tags.append("info:shared_preview")
+        if empty_n > 0:
+            tags.append("info:preview_empty_rows")
+            metrics["preview_empty_n"] = empty_n
 
         # 每资源文案容量：部分有部分无 / 与文案不一致 → 漏名旁证
         label_sizes = [int(getattr(r, "label_size", 0) or 0) for r in rows]
@@ -1112,24 +1169,11 @@ def validate_frame(
     elif shape_ab == "A" and n_groups == 1:
         r0 = rows[0]
         member_n = len(r0.members)
-        # 预览：单资源一条入口（槽位 miss 不另打）
-        if not r0.previews and thread_previews and preview_slot_miss_n > 0:
-            _note(
-                tags,
-                hard,
-                "warn:preview_unassigned",
-                "帖有预览却未填到资源上",
-                cause="parse",
-            )
-            tags.append("flag:preview_fail")
+        # 预览：单资源不计合格（无图/未回落只记 info）
+        if not r0.previews and thread_previews:
+            tags.append("info:preview_unfilled_single")
         elif not r0.previews and not thread_previews:
-            _note(
-                tags,
-                soft,
-                "warn:preview_missing_ok",
-                "单资源无预览图（帖面也无图，属真没有）",
-                cause="missing",
-            )
+            tags.append("info:preview_missing_ok")
 
         # 单资源：资源名可以等于帖标题；不做 ×N / 重复名称标签切开硬判
         name_eq_title = bool(title) and (r0.filename or "").strip() == title
@@ -1156,11 +1200,26 @@ def validate_frame(
         )
         metrics["piece_link_kind"] = link_kind_a
         metrics["title_piece_expect"] = expect_pieces_a
+        # 帖内链数（含非入库）≥ 可入库链；配额对齐用帖内总数即可
+        post_n = int(getattr(parsed, "quota_link_count", 0) or 0)
+        if post_n <= 0:
+            post_n = int(getattr(parsed, "http_media_count", 0) or 0)
+        if post_n <= 0:
+            post_n = count_post_quota_links(pack_blob)
+        post_n = max(post_n, member_n)
+        metrics["quota_link_count"] = post_n
+        metrics["http_media_count"] = max(
+            0, post_n - member_n
+        )  # 非入库旁证条数（展示用）
         if expect_pieces_a is None:
             tags.append("info:no_quota_skip_count")
-        elif _count_matches(member_n, expect_pieces_a):
+        elif _count_matches(member_n, expect_pieces_a) or _count_matches(
+            post_n, expect_pieces_a
+        ):
             tags.append("info:piece_count_match")
             metrics["piece_count_match"] = True
+            if post_n > member_n and not _count_matches(member_n, expect_pieces_a):
+                tags.append("info:post_links_fill_quota")
         else:
             quota_src = piece_unit_a or "标题"
             src_zh = "附件" if spec.source == "attach" else "正文"
@@ -1175,6 +1234,9 @@ def validate_frame(
             elif member_n < int(expect_pieces_a):
                 code = "warn:piece_count_mismatch_title_over"
                 tags.append("info:title_quota_overclaim_soft")
+                # 压缩包单链：标题 N配额 ≠ 漏链（包内多份/115额度口径）
+                if member_n == 1 and _PACK_IN_TITLE_RE.search(pack_blob or ""):
+                    tags.append("info:pack_quota_soft")
             _note(tags, soft, code, msg, cause="parse")
 
     for r in rows:
@@ -1184,16 +1246,7 @@ def validate_frame(
             if s.ok and s.message and "截断" in s.message:
                 # 预览上限 5 张是产品口径，截断本身不算识别错误 / 不合格
                 tags.append("info:preview_truncated")
-                continue
-            elif (
-                not s.ok
-                and s.cause == "parse"
-                and "warn:preview_unassigned" not in tags
-                and "warn:preview_unassigned_minor" not in tags
-                and "warn:shared_preview" not in tags
-            ):
-                tags.append("flag:preview_fail")
-                tags.append("cause:parse")
+            # 缺图/未分图：不计合格，仅 info（见上方 multi/single 预览口径）
 
     v_count = _title_v_count(pack_blob)
     # 配额展示口径与 piece expect 一致：标题有则用标题；标题无则不记描述脏配额
@@ -1356,8 +1409,7 @@ def format_frame_outcome(base_tip: str, frame: ResourceFrame) -> str:
         if reasons:
             parts.append("原因:" + "；".join(reasons))
     else:
-        # 软提醒含【识别错误】→ 不合格：待核（兜底，非 100% 确认）
-        # 例外：云盘混合标题配额差（info:cloud_quota_soft）→ 成功 + 提醒，勿误杀
+        # 例外：云盘混合 / 压缩包单链 的配额差 → 成功 + 提醒，勿误杀
         from parsers.unqual_outcomes import UNQUAL_REVIEW
 
         parse_soft = [
@@ -1367,8 +1419,10 @@ def format_frame_outcome(base_tip: str, frame: ResourceFrame) -> str:
             w for w in (v.soft_warnings or []) if str(w).startswith("【真没有】")
         ]
         tags = list(v.tags or [])
-        cloud_soft = "info:cloud_quota_soft" in tags
-        if cloud_soft and parse_soft:
+        quota_soft_ok = (
+            "info:cloud_quota_soft" in tags or "info:pack_quota_soft" in tags
+        )
+        if quota_soft_ok and parse_soft:
             # 仅配额口径类软提醒：保持成功
             quota_soft = [w for w in parse_soft if "配额" in str(w)]
             other_soft = [w for w in parse_soft if "配额" not in str(w)]

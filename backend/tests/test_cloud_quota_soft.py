@@ -83,6 +83,36 @@ def test_pure_115ed2k_tag_quota_mismatch_is_overclaim_not_cloud():
     assert out.startswith("不合格：待核")
 
 
+def test_pack_title_one_link_quota_soft_success():
+    """【115eD2k压缩包】单链 vs N配额 → 成功+提醒，勿待核误杀。"""
+    title = "【自录无水印】【115eD2k压缩包】某秀【16V/9.99G/2配额】"
+    a = _ed2k("A" * 32, "show", int(9.99 * 1024**3))
+    parsed = DualParseResult(
+        tid=3273275,
+        title=title,
+        description="",
+        metadata={},
+        preview_images=["http://a.jpg"],
+        extract_password="",
+        assets=[a],
+        primary_link_kind="ed2k",
+        layout="",
+        had_attachments=True,
+    )
+    frame = build_resource_frame(
+        parsed,
+        named_groups=[("某秀", a, [a])],
+        had_attachments=True,
+    )
+    assert frame.spec.kind == "single"
+    assert "info:pack_quota_soft" in frame.verdict.tags
+    assert "info:title_quota_overclaim_soft" in frame.verdict.tags
+    out = format_frame_outcome("成功：附件解析出目标链接", frame)
+    assert out.startswith("成功"), out
+    assert "提醒:" in out and "配额" in out
+    assert not out.startswith("不合格")
+
+
 def test_pure_ed2k_quota_mismatch_still_hard():
     """纯 ed2k 标题、链数远少于配额 → 标题偏高软提醒（附件已下）。"""
     title = "合集【10.0g/50V/20配额】"

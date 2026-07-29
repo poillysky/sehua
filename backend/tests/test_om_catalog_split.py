@@ -31,6 +31,31 @@ def test_catalog_bracket_line_title():
     assert _title_from_catalog_bracket_line(chunk).startswith("OM1 Accidental")
 
 
+def test_catalog_bracket_hat_long_digits():
+    """HAT13057 五位数字目录号（tid=25026517 空壳条目后）。"""
+    chunk = (
+        "[动漫精品] HAT13056\n"
+        "【种子名称】：\n"
+        "【磁力连接】：\n"
+        "[动漫精品] HAT13057 [基德漠化组] 迷情 第二季\n"
+        "【种子名称】：HAT13057.torrent\n"
+    )
+    assert "HAT13057" in _title_from_catalog_bracket_line(chunk, prefer_last=True)
+    assert _torrent_name_as_title("HAT13057.torrent") == "HAT13057"
+
+
+def test_empty_stub_seed_prefer_last_torrent():
+    from parsers.content import TORRENT_FIELD_FORMS, _block_field
+
+    chunk = (
+        "【种子名称】： 【磁力连接】：\n"
+        "【种子名称】：HAT13057.torrent\n"
+        "【磁力连接】：\n"
+    )
+    # 跳过空壳，取首个可用
+    assert _block_field(chunk, *TORRENT_FIELD_FORMS) == "HAT13057.torrent"
+
+
 def test_catalog_bracket_numeric_index_title():
     """[欧美无码] 01 18Lust... 不得只吃到种子名 01（tid=27191175）。"""
     chunk = (

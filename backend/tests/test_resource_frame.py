@@ -103,16 +103,31 @@ def test_frame_link_mismatch_structure_fail():
     assert any("【识别错误】" in e for e in frame.verdict.hard_errors)
 
 
-def test_frame_shared_preview_structure_fail():
+def test_frame_shared_preview_not_structure_fail():
+    """共享预览不再作合格硬门（靠切块/资源名）。"""
     img = ["http://same.jpg"]
     a = _asset("A" * 40, "甲", size=1, prev=img)
     b = _asset("B" * 40, "乙", size=1, prev=img)
     groups = [("甲", a, [a]), ("乙", b, [b])]
     frame = build_resource_frame(_parsed("双资源", [a, b]), named_groups=groups)
-    assert frame.verdict.status == "structure_fail"
-    assert any("预览图完全相同" in e for e in frame.verdict.hard_errors)
-    assert any("【识别错误】" in e for e in frame.verdict.hard_errors)
+    assert frame.verdict.status == "ok"
+    assert not any("预览图完全相同" in e for e in frame.verdict.hard_errors)
+    assert "flag:preview_fail" not in frame.verdict.tags
+    assert "info:shared_preview" in frame.verdict.tags
+    assert format_frame_outcome("成功：已提取", frame).startswith("成功")
     assert frame.spec.kind == "multi"
+
+
+def test_frame_same_hash_shared_preview_not_hard_fail():
+    """同 hash 被切成两名：预览相同不进硬门。"""
+    img = ["http://same.jpg"]
+    h = "F906A787B1A73B02CCD8CE62CF4FA19C"
+    a = _asset(h, "甲：放课后", size=1, prev=img)
+    b = _asset(h, "甲:放课后", size=1, prev=img)
+    groups = [("甲：放课后", a, [a]), ("甲:放课后", b, [b])]
+    frame = build_resource_frame(_parsed("单包", [a, b]), named_groups=groups)
+    assert not any("预览图完全相同" in e for e in frame.verdict.hard_errors)
+    assert "warn:shared_preview" not in frame.verdict.tags
 
 
 def test_frame_title_count_structure_fail():
@@ -214,17 +229,18 @@ def test_missing_preview_vs_parse_preview():
     a = _asset("A" * 40, "甲", size=1)
     b = _asset("B" * 40, "乙", size=1)
     groups = [("甲", a, [a]), ("乙", b, [b])]
-    # 帖面也无图 → 真没有（软提醒，结构仍可通过，outcome 仍成功）
+    # 帖面也无图 → 成功（预览不计合格）
     frame = build_resource_frame(_parsed("双", [a, b]), named_groups=groups)
-    assert any("【真没有】" in w and "预览" in w for w in frame.verdict.soft_warnings)
     assert frame.verdict.status == "ok"
     assert format_frame_outcome("成功：已提取 2 条资源", frame).startswith("成功")
-    # 帖面有图却未分到名下 → 识别错误（结构不合格）
+    assert "flag:preview_fail" not in frame.verdict.tags
+    # 帖面有图却未分到名下 → 仍成功（只记 info）
     parsed = _parsed("双", [a, b], preview_images=["http://t.jpg"])
     frame2 = build_resource_frame(parsed, named_groups=groups)
-    assert frame2.verdict.status == "structure_fail"
-    assert "flag:preview_fail" in frame2.verdict.tags
-    assert any("【识别错误】" in e and "预览" in e for e in frame2.verdict.hard_errors)
+    assert frame2.verdict.status == "ok"
+    assert "flag:preview_fail" not in frame2.verdict.tags
+    assert format_frame_outcome("成功：已提取 2 条资源", frame2).startswith("成功")
+    assert "info:preview_empty_rows" in frame2.verdict.tags
 
 
 def test_preview_truncate_is_info_not_review():
@@ -674,12 +690,11 @@ def test_persist_structure_fail_outcome(monkeypatch):
         def rollback(self):
             pass
 
-    # 多资源预览串名 → 结构不合格（仍写入）
-    img = ["http://same.jpg"]
-    a = _asset("A" * 40, "片子甲", size=1, prev=img)
-    b = _asset("B" * 40, "片子乙", size=1, prev=img)
+    # 多资源标题 ×N 与入库名数不符 → 结构不合格（仍写入）；预览不再作硬门
+    a = _asset("A" * 40, "片子甲", size=1, prev=["http://a.jpg"])
+    b = _asset("B" * 40, "片子乙", size=1, prev=["http://b.jpg"])
     a.is_primary = True
-    parsed = _parsed("双资源帖", [a, b])
+    parsed = _parsed("精选合集 ×5", [a, b])
     out = persist_mod.persist_dual_parse(
         Conn(),
         parsed,
@@ -872,8 +887,8 @@ def test_pack_size_prefers_gb_over_v_count():
     assert frame.verdict.status == "ok"
 
 
-def test_minor_missing_preview_soft():
-    """多资源仅 1/≥8 缺预览 → 软提醒，不结构不合格。"""
+def test_minor_missing_preview_not_unqual():
+    """多资源缺预览不计合格；outcome 成功。"""
     assets = []
     groups = []
     for i in range(8):
@@ -887,9 +902,12 @@ def test_minor_missing_preview_soft():
         named_groups=groups,
     )
     assert frame.verdict.status == "ok"
-    assert "warn:preview_unassigned_minor" in frame.verdict.tags
+    assert "warn:preview_unassigned_minor" not in frame.verdict.tags
     assert not frame.verdict.hard_errors
-    assert format_frame_outcome("成功：已提取", frame).startswith("不合格：待核")
+    assert not any("预览" in str(w) for w in frame.verdict.soft_warnings)
+    out = format_frame_outcome("成功：已提取", frame)
+    assert out.startswith("成功")
+    assert "不合格" not in out.split("·")[0]
 
 
 def test_n_bu_heji_not_title_expect_count():
@@ -954,6 +972,7 @@ def test_resolution_wxh_not_title_expect_count():
         "【资源数量】：1\n"
     )
     assert _title_expect_count(title) is None
+    # 即使传入 desc 也忽略（总资源数只匹配标题）
     assert _title_expect_count(title, desc) is None
 
 
@@ -965,4 +984,19 @@ def test_times_xn_ci_not_title_expect_count():
         "2048独家合集 MIDV-387 小野六花 365天×10次连续射精的我…【1V/19G/118分/4K】"
     )
     assert _title_expect_count(title) is None
+
+
+def test_desc_censored_name_x_age_not_title_expect_count():
+    """正文「楊x 23 c罩杯」不参与总资源数；只匹配标题（tid=23485940）。"""
+    from parsers.resource_frame import _title_expect_count
+
+    title = "★★最强優片★★最強國產專輯A♂[12.27 ]"
+    desc = (
+        "【资源名称】：重慶xx職業學院 楊x 23 c罩杯 在讀學生\n"
+        "共 50 部合集\n"
+        "【资源类型】：MP4\n"
+    )
+    assert _title_expect_count(title) is None
+    assert _title_expect_count(title, desc) is None
+    assert _title_expect_count("合集 x 23个资源") == 23
 

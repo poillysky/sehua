@@ -229,7 +229,7 @@ def test_incomplete_feature_full_code_is_abnormal_skip():
         tid=3027518,
     )
     assert out.verdict == "skipped"
-    assert out.outcome == "异常下载链接"
+    assert out.outcome == "非资源（跳过）"
     assert out.need_attachments is False
 
 

@@ -1,29 +1,27 @@
-import dns from "node:dns";
 import http from "node:http";
 import https from "node:https";
-import type { LookupFunction } from "node:net";
 
-const UPSTREAM_TIMEOUT_MS = Number(process.env.IMAGE_PROXY_TIMEOUT_MS || 30_000);
+const UPSTREAM_TIMEOUT_MS = Number(process.env.IMAGE_PROXY_TIMEOUT_MS || 12_000);
 
-const UPSTREAM_HEADERS = {
-  Referer: "https://www.sehuatang.net/",
+const DEFAULT_HEADERS = {
   "User-Agent":
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
   Accept: "image/avif,image/webp,image/apng,image/*,*/*;q=0.8",
 };
 
-/** Force IPv4. @types/node LookupFunction only models all:true; runtime uses one-address form. */
-const ipv4Lookup = ((
-  hostname: string,
-  _options: dns.LookupOptions,
-  callback: (
-    err: NodeJS.ErrnoException | null,
-    address: string,
-    family: number,
-  ) => void,
-) => {
-  dns.lookup(hostname, { family: 4 }, callback);
-}) as unknown as LookupFunction;
+function headersForUrl(url: string): Record<string, string> {
+  const host = new URL(url).hostname.toLowerCase();
+  if (host === "pics.dmm.co.jp" || host.endsWith(".dmm.co.jp")) {
+    return {
+      ...DEFAULT_HEADERS,
+      Referer: "https://www.dmm.co.jp/",
+    };
+  }
+  return {
+    ...DEFAULT_HEADERS,
+    Referer: "https://www.sehuatang.net/",
+  };
+}
 
 export function fetchUpstreamImage(
   url: string,
@@ -35,9 +33,9 @@ export function fetchUpstreamImage(
     const req = lib.get(
       url,
       {
-        headers: UPSTREAM_HEADERS,
-        lookup: ipv4Lookup,
+        headers: headersForUrl(url),
         timeout: UPSTREAM_TIMEOUT_MS,
+        family: 4,
       },
       (res) => {
         if (

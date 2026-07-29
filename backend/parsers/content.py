@@ -599,11 +599,47 @@ def _clean_text(raw: str) -> str:
 def extract_title(html: str) -> str:
     m = re.search(r'id="thread_subject"[^>]*>(.*?)</(?:a|span|div)>', html, re.I | re.S)
     if m:
-        return _strip_forum_title_suffix(_clean_text(m.group(1)))
-    m = re.search(r"<title>(.*?)</title>", html, re.I | re.S)
-    if m:
-        return _strip_forum_title_suffix(_clean_text(m.group(1)))
-    return ""
+        title = _strip_forum_title_suffix(_clean_text(m.group(1)))
+    else:
+        # PHPWind 常见 subject_tpc
+        m = re.search(
+            r'id="subject_tpc"[^>]*>(.*?)</(?:a|span|div|h\d)>',
+            html,
+            re.I | re.S,
+        )
+        if m:
+            title = _strip_forum_title_suffix(_clean_text(m.group(1)))
+        else:
+            m = re.search(r"<title>(.*?)</title>", html, re.I | re.S)
+            title = _strip_forum_title_suffix(_clean_text(m.group(1))) if m else ""
+    # 最强優片：页面 subject 偶发被改成某条单片名，正文首条【影片标题】仍是专辑头
+    album = _first_collection_album_film_title(html)
+    if album:
+        from parsers.resource_names import is_collection_album_header
+
+        if not is_collection_album_header(title):
+            return album
+    return title
+
+
+def _first_collection_album_film_title(html: str) -> str:
+    """正文第一条【影片标题】若为最强優片专辑头则返回之。"""
+    import html as html_lib
+
+    from parsers.resource_names import is_collection_album_header
+
+    m = re.search(
+        r"【\s*影片标题\s*】\s*[:：]?\s*([^<\n【]{5,160})",
+        html or "",
+        re.I,
+    )
+    if not m:
+        return ""
+    val = html_lib.unescape(_clean_text(m.group(1)))
+    val = re.sub(r"\s+", " ", val).strip()
+    if not is_collection_album_header(val):
+        return ""
+    return val
 
 
 def _strip_forum_title_suffix(title: str) -> str:
@@ -749,8 +785,10 @@ def extract_lz_scope_html(html: str, *, limit: int = 5) -> str:
 def extract_link_corpus_html(html: str, *, limit: int = 5) -> str:
     """链接/子资源语料：楼主各层（含二楼补链）+ 附件注入块。
 
-    路人回帖默认不参与；仅当标题/楼主明示「求磁力」类、且楼主正文无链时，
-    才补入含 magnet/ed2k 的回帖（避免讨论帖/网盘帖被回帖链误入库）。
+    路人回帖默认不参与；仅当下列情形且楼主正文无 magnet/ed2k 时，
+    才补入含目标链的回帖（避免讨论帖/网盘帖被回帖链误入库）：
+    - 标题/楼主明示「求磁力」类；或
+    - 标题/楼主宣称 115/ED2K/电驴（楼主常只贴网盘，链在回帖补，如 tid=3300074）。
 
     已注入附件且附件内含目标链时：链语料以附件为准（正文样例链不并入）。
     """
@@ -801,8 +839,17 @@ def extract_link_corpus_html(html: str, *, limit: int = 5) -> str:
             re.I,
         )
     )
-    if not has_body_link and asks_for_link:
-        # 楼主无链：扫回帖补 magnet/ed2k（限量）
+    # 标题/楼主宣称 115/ED2K/电驴，但楼主正文无 magnet/ed2k（常只贴网盘，链在回帖补）
+    # tid=3300074：【夸克/115eD2k】+夸克正文，回帖 blockcode 才有 ed2k
+    claims_ed2k = bool(
+        re.search(
+            r"115\s*e?d2k|【[^】]{0,48}(?:115|e?d2k|电驴)[^】]{0,48}】|(?<![A-Za-z0-9])e?d2k(?![A-Za-z0-9])|电驴",
+            ask_blob,
+            re.I,
+        )
+    )
+    if not has_body_link and (asks_for_link or claims_ed2k):
+        # 楼主无目标链：扫回帖补 magnet/ed2k（限量）
         src = html or ""
         starts = [m for m in _OP_POST_START_RE.finditer(src) if m.group(1).isdigit()]
         extra = 0
@@ -936,7 +983,7 @@ def _is_bogus_meta_value(key: str, val: str) -> bool:
         if len(v) < 2:
             return True
         # 目录号合法：OM1 / JP12 / A3 等（勿因 len<4 误杀）
-        if re.fullmatch(r"[A-Za-z]{1,6}\d{1,4}[A-Za-z]?", v):
+        if re.fullmatch(r"[A-Za-z]{1,6}\d{1,6}[A-Za-z]?", v):
             return False
         if (
             len(v) < 4
@@ -1536,7 +1583,19 @@ def _size_from_subresource_block(scope: str, label_end: int, next_start: int) ->
     return parse_capacity_bytes(chunk)
 
 
-def _block_field(chunk: str, *labels: str) -> str:
+def _block_field_value_unusable(val: str) -> bool:
+    """空值 / 吃到下一字段标签（如【磁力连接）。"""
+    v = (val or "").strip()
+    if not v:
+        return True
+    if v.startswith("【") or v.startswith("［") or v.startswith("["):
+        return True
+    if re.match(r"(?:磁力|下载网址|下載網址|驗證|验证|种子名称|種子名稱)", v):
+        return True
+    return False
+
+
+def _block_field(chunk: str, *labels: str, prefer_last: bool = False) -> str:
     """从子资源块文本取结构字段（不含子标题本身）。"""
     if not chunk or not labels:
         return ""
@@ -1545,23 +1604,31 @@ def _block_field(chunk: str, *labels: str) -> str:
     alts = structure_labels_alt(list(labels))
     if not alts:
         return ""
-    m = re.search(
-        rf"{STRUCTURE_FIELD_OPEN}\s*(?:{alts})\s*{STRUCTURE_FIELD_CLOSE}\s*{_STRUCTURE_SEP}\s*"
-        rf"(.+?)(?="
-        rf"\s*{STRUCTURE_FIELD_OPEN}\s*(?:{_LABEL_ALT})\s*{STRUCTURE_FIELD_CLOSE}"
-        rf"|{_ANY_STRUCTURE_BRACKET_LABEL_RE.pattern}\s*[:：︰﹒．.｜|/／·・•‧＝=]"
-        rf"|\s*magnet:|\s*ed2k:|\s*$)",
-        chunk,
-        re.I | re.S,
+    matches = list(
+        re.finditer(
+            rf"{STRUCTURE_FIELD_OPEN}\s*(?:{alts})\s*{STRUCTURE_FIELD_CLOSE}\s*{_STRUCTURE_SEP}\s*"
+            rf"(.+?)(?="
+            rf"\s*{STRUCTURE_FIELD_OPEN}\s*(?:{_LABEL_ALT})\s*{STRUCTURE_FIELD_CLOSE}"
+            rf"|{_ANY_STRUCTURE_BRACKET_LABEL_RE.pattern}\s*[:：︰﹒．.｜|/／·・•‧＝=]"
+            rf"|\s*magnet:|\s*ed2k:|\s*$)",
+            chunk,
+            re.I | re.S,
+        )
     )
-    if not m:
+    if not matches:
         return ""
-    val = re.sub(r"<[^>]+>", " ", m.group(1) or "")
-    val = re.sub(r"&nbsp;", " ", val, flags=re.I)
-    val = re.sub(r"\s+", " ", val).strip()
-    val = re.sub(r"^[:：﹒．.|｜/\\]+", "", val)
-    val = re.sub(r"[:：﹒．.|｜/\\]+$", "", val)
-    return val[:200]
+    ordered = reversed(matches) if prefer_last else matches
+    for m in ordered:
+        val = re.sub(r"<[^>]+>", " ", m.group(1) or "")
+        val = re.sub(r"&nbsp;", " ", val, flags=re.I)
+        val = re.sub(r"\s+", " ", val).strip()
+        val = re.sub(r"^[:：﹒．.|｜/\\]+", "", val)
+        val = re.sub(r"[:：﹒．.|｜/\\]+$", "", val)
+        if _block_field_value_unusable(val):
+            continue
+        return val[:200]
+    return ""
+
 
 
 _RE_2048_TORRENT_PAREN = re.compile(
@@ -1611,11 +1678,12 @@ def _torrent_name_as_title(raw: str | None) -> str:
 
 # [欧美无码] OM1 AccidentalGangbang... / [亚洲无码] JP3 ...
 # 亦见 [欧美无码] 01 18Lust.24.06.19....（两位序号+片名，tid=27191175）
+# HAT13057 等目录号可达 5～6 位数字（tid=25026517）
 _CATALOG_BRACKET_TITLE_RE = re.compile(
     r"\[\s*[^\]]{1,24}\s*\]\s*"
     r"("
     r"(?:"
-    r"[A-Za-z]{1,6}\d{1,4}\b"  # OM1 / JP12
+    r"[A-Za-z]{1,6}\d{1,6}\b"  # OM1 / JP12 / HAT13057
     r"|"
     r"\d{1,3}(?=\s+\S)"  # 01 + 片名
     r")"
@@ -1625,17 +1693,37 @@ _CATALOG_BRACKET_TITLE_RE = re.compile(
 )
 
 
-def _title_from_catalog_bracket_line(text: str | None) -> str:
+def _title_from_catalog_bracket_line(
+    text: str | None, *, prefer_last: bool = False
+) -> str:
     """无【影片名称】时，取「[分类] 目录号+片名」整行作子名。"""
-    m = _CATALOG_BRACKET_TITLE_RE.search(text or "")
-    if not m:
+    matches = list(_CATALOG_BRACKET_TITLE_RE.finditer(text or ""))
+    if not matches:
         return ""
-    val = (m.group(1) or "").strip()
+    m = matches[-1] if prefer_last else matches[0]
+    return _clean_catalog_title_match(m.group(1) or "")
+
+
+def _clean_catalog_title_match(raw: str) -> str:
+    val = (raw or "").strip()
     val = re.sub(r"\[XvX\]\s*$", "", val, flags=re.I).strip()
     val = re.sub(r"\s+", " ", val).strip()
     if len(val) < 3:
         return ""
     return val[:255]
+
+
+def _catalog_title_matching_torrent(text: str | None, torr_title: str) -> str:
+    """种子名 HAT13057 时，取同号目录行全文（跳过前面的空壳 HAT13056）。"""
+    code = (torr_title or "").strip().split()[0] if (torr_title or "").strip() else ""
+    if len(code) < 3:
+        return ""
+    for m in reversed(list(_CATALOG_BRACKET_TITLE_RE.finditer(text or ""))):
+        val = _clean_catalog_title_match(m.group(1) or "")
+        if val and (val == code or val.startswith(code + " ") or val.startswith(code + "[")):
+            return val
+    return ""
+
 
 
 @dataclass(slots=True)
@@ -1706,6 +1794,7 @@ def _assemble_subresource_block(
     lim: int,
     base_url: str,
     preview_chunk: str | None = None,
+    thread_title: str = "",
 ) -> SubresourceBlock:
     raw_chunk = scope[field_lo:field_hi]
     text_chunk = re.sub(r"<[^>]+>", " ", raw_chunk or "")
@@ -1726,6 +1815,13 @@ def _assemble_subresource_block(
     fmt = _block_field(text_chunk, *FORMAT_FIELD_FORMS)
     note = _block_field(text_chunk, *NOTE_FIELD_FORMS)
     torrent = _block_field(text_chunk, *TORRENT_FIELD_FORMS)
+    # 【影片标题】若只是合集帖标题/专辑头，改用【种子名称】真名
+    # （tid=23485940 / 23486061：subject 可能被改成单片名，专辑头≠帖标题）
+    from parsers.resource_names import is_weak_subresource_name
+
+    torr_title = _torrent_name_as_title(torrent)
+    if torr_title and is_weak_subresource_name(name, post_title=thread_title):
+        name = torr_title
     imgs = extract_preview_images(
         preview_chunk if preview_chunk is not None else raw_chunk,
         limit=lim,
@@ -1747,6 +1843,42 @@ def _assemble_subresource_block(
         torrent_name=torrent,
         preview_images=imgs,
         description=desc,
+    )
+
+
+def _repair_missing_structure_open_brackets(scope: str) -> str:
+    """补全偶发缺失的左【：如行首「套图名称】：」（tid=24506022）。
+
+    勿在「【原文片名】」内把后缀「片名】」再包一层。
+    """
+    if not scope or "】" not in scope:
+        return scope or ""
+    from parsers.resource_names import SUBRESOURCE_TITLE_MATCH_FORMS
+
+    # 子标题 + 常见块字段
+    labels = list(SUBRESOURCE_TITLE_MATCH_FORMS) + [
+        "图片数量",
+        "圖片數量",
+        "图片格式",
+        "圖片格式",
+        "文件大小",
+        "檔案大小",
+        "图片预览",
+        "圖片預覽",
+        "磁力连接",
+        "磁力連結",
+        "磁力链接",
+        "下載網址",
+        "下载网址",
+    ]
+    alt = "|".join(sorted({re.escape(x) for x in labels if x}, key=len, reverse=True))
+    if not alt:
+        return scope
+    # 标签前不得已是【／汉字／字母（防【原文片名】被切成【原文【片名】）
+    return re.sub(
+        rf"(?<![【［\u4e00-\u9fffA-Za-z0-9])(?P<lab>{alt})】",
+        lambda m: f"【{m.group('lab')}】",
+        scope,
     )
 
 
@@ -1793,6 +1925,7 @@ def extract_subresource_blocks_ex(
     scope = "\n".join(lz_parts) if lz_parts else (extract_first_postmessage_html(html) or (html or ""))
     if not scope.strip():
         scope = html or ""
+    scope = _repair_missing_structure_open_brackets(scope)
 
     wanted: set[str] | None = None
     if infohashes is not None:
@@ -1859,6 +1992,7 @@ def extract_subresource_blocks_ex(
                         kind="film",
                         lim=lim,
                         base_url=base_url,
+                        thread_title=name_fallback,
                     )
                 )
                 for h, _s, _e in in_seg[1:]:
@@ -1946,15 +2080,18 @@ def extract_subresource_blocks_ex(
             next_start = (
                 link_pos[i + 1][1] if i + 1 < len(link_pos) else len(scope)
             )
-            # 种子名在磁力前（驗證全碼→种子名称→磁力）；窗口含上一段尾到下一链前
+            # 种子名在磁力前；窗口到下一链前（兼容链后补字段）。空壳种子名靠 _block_field 跳过。
             field_lo, field_hi = prev_end, next_start
             raw_chunk = scope[field_lo:field_hi]
             text_chunk = re.sub(r"<[^>]+>", " ", raw_chunk or "")
             text_chunk = re.sub(r"&nbsp;", " ", text_chunk, flags=re.I)
+            # 取首个可用种子名（跳过空壳）；再用种子号对齐目录行（跳过空壳目录）
             torr = _block_field(text_chunk, *TORRENT_FIELD_FORMS)
+            torr_title = _torrent_name_as_title(torr)
             name = (
-                _title_from_catalog_bracket_line(text_chunk)
-                or _torrent_name_as_title(torr)
+                _catalog_title_matching_torrent(text_chunk, torr_title)
+                or _title_from_catalog_bracket_line(text_chunk)
+                or torr_title
                 or name_fallback
             )
             if not name:
@@ -1978,6 +2115,7 @@ def extract_subresource_blocks_ex(
                     lim=lim,
                     base_url=base_url,
                     preview_chunk=preview_chunk,
+                    thread_title=name_fallback,
                 )
             )
             prev_end = end
@@ -2014,6 +2152,7 @@ def extract_subresource_blocks_ex(
                     lim=lim,
                     base_url=base_url,
                     preview_chunk=preview_chunk,
+                    thread_title=name_fallback,
                 )
             )
         # 多出的链接挂到最后一个已配对名称
@@ -2078,6 +2217,7 @@ def extract_subresource_blocks_ex(
             kind=kind,
             lim=lim,
             base_url=base_url,
+            thread_title=name_fallback,
         )
         out.append(head)
         prev_end = first_end
@@ -2100,6 +2240,7 @@ def extract_subresource_blocks_ex(
                         kind=kind,
                         lim=lim,
                         base_url=base_url,
+                        thread_title=name_fallback,
                     )
                 )
             else:
@@ -2119,30 +2260,20 @@ def extract_subresource_blocks_ex(
     return out, layout
 
 
-def _drop_thread_title_lines(name: str, thread_title: str) -> str:
-    """去掉子名里粘贴的合集帖标题行/前缀（最强優片等常见：标题换行+真片名）。"""
+def _drop_thread_title_lines(name: str, thread_title: str = "") -> str:
+    """兼容旧调用：不再砍帖标题前缀，资源名原文保留（仅做空白规范化）。
+
+    历史曾剥帖标题前缀，会把「帖标题，尾巴」砍成「，尾巴」丢主体（约六千条）。
+    """
     import html as html_lib
 
+    _ = thread_title  # 保留参数兼容旧调用
     text = html_lib.unescape((name or "").strip())
-    title = (thread_title or "").strip()
     if not text:
         return ""
-    # 保留换行语义：先按行筛
-    lines = [re.sub(r"^[:：﹒．.|｜/\\]+", "", ln).strip() for ln in re.split(r"[\r\n]+", text)]
-    lines = [ln for ln in lines if ln]
-    if title and len(lines) >= 2:
-        kept = [ln for ln in lines if ln != title and not ln.startswith(title + " ")]
-        if kept:
-            text = " ".join(kept).strip()
-        else:
-            text = " ".join(lines).strip()
-    else:
-        text = " ".join(lines).strip() if lines else text
-    if title and text.startswith(title):
-        rest = text[len(title) :].lstrip(" \t-|:：﹒．.")
-        if len(rest) >= 4:
-            text = rest
-    return text.strip()
+    text = re.sub(r"[\r\n]+", " ", text)
+    text = re.sub(r"\s+", " ", text).strip()
+    return text
 
 
 def _subresource_title_value(

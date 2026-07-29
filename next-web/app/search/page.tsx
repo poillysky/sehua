@@ -1,3 +1,4 @@
+import { cookies } from "next/headers";
 import { Metadata } from "next";
 import { getTranslations } from "next-intl/server";
 
@@ -18,6 +19,10 @@ import {
   normalizeMatchMode,
   normalizeSortType,
 } from "@/config/constant";
+import {
+  BROWSE_PREFS_COOKIE,
+  parseBrowsePrefsCookie,
+} from "@/hooks/useBrowsePreferences";
 
 export const dynamic = "force-dynamic";
 
@@ -30,6 +35,8 @@ type SearchParams = {
   filterSize?: string;
   matchMode?: string;
   fuzzy?: string;
+  /** 日本分区发起的搜索：才套用中文/破解偏好 */
+  jp?: string;
 };
 
 function resolveSearchOption(searchParams: SearchParams) {
@@ -75,6 +82,10 @@ export default async function SearchPage({
 }) {
   const searchOption = resolveSearchOption(searchParams);
   const start_time = Date.now();
+  const japanScope = searchParams.jp === "1";
+  const browsePrefs = japanScope
+    ? parseBrowsePrefsCookie(cookies().get(BROWSE_PREFS_COOKIE)?.value)
+    : { preferChinese: false, preferCrack: false };
 
   const data = await searchResources(null, {
     queryInput: {
@@ -86,6 +97,8 @@ export default async function SearchPage({
       filterSize: searchOption.filterSize,
       matchMode: searchOption.matchMode,
       withTotalCount: true,
+      preferChinese: browsePrefs.preferChinese,
+      preferCrack: browsePrefs.preferCrack,
     },
   });
 
@@ -95,11 +108,15 @@ export default async function SearchPage({
     <div className="w-full md:max-w-3xl lg:max-w-4xl xl:max-w-5xl 2xl:max-w-6xl">
       <div className="flex items-center mb-7">
         <SiteLogoLink />
-        <SearchInput defaultValue={searchOption.keyword} />
+        <SearchInput
+          defaultValue={searchOption.keyword}
+          japanPrefs={japanScope}
+        />
         <SettingsNavLink />
       </div>
       <SearchResultsList
         cost_time={cost_time}
+        japanPrefs={japanScope}
         keywords={data.keywords}
         resultList={data.resources}
         searchOption={searchOption}

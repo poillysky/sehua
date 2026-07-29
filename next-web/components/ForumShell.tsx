@@ -6,6 +6,7 @@ import { usePathname } from "next/navigation";
 import { useTranslations } from "next-intl";
 
 import { ChevronRightIcon } from "@/components/BrowseIcons";
+import { BrowsePrefToggles } from "@/components/BrowsePrefToggles";
 import { ForumBreadcrumb, type ForumCrumb } from "@/components/ForumBreadcrumb";
 import {
   BOARD_NAV,
@@ -14,6 +15,7 @@ import {
   boardPath,
   categoryHref,
   isGroupBoard,
+  isJapanBrowseContext,
   isPrefixBoard,
   parentFid,
   type BoardNavParent,
@@ -221,19 +223,21 @@ export function ForumShell({
 
   const sidebar = useMemo(
     () => (
-      <aside className="flex w-full flex-col gap-4">
-        <div className="px-1">
-          <p className="text-[11px] font-semibold uppercase tracking-wider text-default-400">
+      <aside className="flex w-full flex-col gap-5">
+        <div className="px-1.5">
+          <p className="text-[11px] font-semibold tracking-[0.08em] text-default-400">
             {t("Boards.sidebar_title")}
           </p>
         </div>
         {BOARD_NAV.map((cat, ci) => {
           const catActive = activeCategoryIndex === ci;
           return (
-            <div key={cat.category} className="flex flex-col gap-1.5">
+            <div key={cat.category} className="flex flex-col gap-1">
               <Link
-                className={`px-1 text-xs font-semibold ${
-                  catActive ? "text-primary" : "text-default-600 hover:text-primary"
+                className={`rounded-md px-1.5 py-1 text-[13px] font-semibold transition-colors ${
+                  catActive
+                    ? "text-primary"
+                    : "text-default-600 hover:text-primary dark:text-slate-300"
                 }`}
                 href={categoryHref(ci)}
               >
@@ -259,26 +263,31 @@ export function ForumShell({
   );
 
   return (
-    <div className="mx-auto flex w-full flex-col gap-4 px-3 py-3 md:max-w-6xl md:gap-5 md:px-4 md:py-6 lg:max-w-7xl">
-      <div className="flex flex-col gap-3 md:gap-4">
-        <ForumBreadcrumb items={crumbs} />
+    <div className="forum-shell mx-auto flex w-full flex-col gap-4 px-3 py-3 md:max-w-6xl md:gap-5 md:px-4 md:py-5 lg:max-w-7xl">
+      <div className="flex flex-col gap-3">
+        <div className="flex items-start justify-between gap-3">
+          <ForumBreadcrumb items={crumbs} />
+          {isJapanBrowseContext(activeFid, activeTypeid) ? (
+            <BrowsePrefToggles />
+          ) : null}
+        </div>
         <button
           type="button"
-          className="inline-flex w-fit items-center gap-1.5 rounded-lg border border-default-200 px-3 py-1.5 text-xs font-medium text-default-600 md:hidden dark:border-slate-700"
+          className="inline-flex w-fit items-center gap-1.5 rounded-xl border border-default-200/80 bg-content1 px-3 py-1.5 text-xs font-medium text-default-600 transition-colors hover:border-primary/30 hover:text-primary md:hidden dark:border-slate-700"
           onClick={() => setMobileNavOpen((v) => !v)}
         >
           {mobileNavOpen ? t("Boards.hide_nav") : t("Boards.show_nav")}
         </button>
         {mobileNavOpen ? (
-          <div className="rounded-2xl border border-default-200 bg-content1 p-3 md:hidden dark:border-slate-700">
+          <div className="rounded-2xl border border-default-200/80 bg-content1 p-3.5 md:hidden dark:border-slate-700 dark:bg-slate-900/50">
             {sidebar}
           </div>
         ) : null}
       </div>
 
-      <div className="flex gap-6 lg:gap-8">
-        <div className="hidden w-56 shrink-0 md:block lg:w-64">
-          <div className="sticky top-4 max-h-[calc(100vh-2rem)] overflow-y-auto rounded-2xl border border-default-200/80 bg-content1 p-3 dark:border-slate-700/80 dark:bg-slate-900/50">
+      <div className="flex gap-5 lg:gap-7">
+        <div className="hidden w-52 shrink-0 md:block lg:w-60">
+          <div className="forum-sidebar sticky top-4 max-h-[calc(100vh-2rem)] overflow-y-auto rounded-2xl border border-default-200/70 bg-content1/95 p-3.5 shadow-sm dark:border-slate-700/70 dark:bg-slate-900/55">
             {sidebar}
           </div>
         </div>

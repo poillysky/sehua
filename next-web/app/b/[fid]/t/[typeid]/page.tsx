@@ -3,12 +3,12 @@ import { Suspense } from "react";
 import { notFound, redirect } from "next/navigation";
 import { getTranslations } from "next-intl/server";
 
-import { browseResources, listPrefixCodes } from "@/app/api/graphql/service";
+import { browseResources, listPrefixResources } from "@/app/api/graphql/service";
 import { BrowsePageContent } from "@/components/BrowsePageContent";
 import { BrowseResourceListSkeleton } from "@/components/BrowseResourceListSkeleton";
 import { BrowsePageToolbar } from "@/components/BrowsePageToolbar";
 import { ForumShell } from "@/components/ForumShell";
-import { PrefixCodeIndex } from "@/components/PrefixCodeIndex";
+import { PrefixResourceList } from "@/components/PrefixResourceList";
 import { SearchInput } from "@/components/SearchInput";
 import { SiteLogoLink } from "@/components/SiteLogoLink";
 import { SettingsNavLink } from "@/components/SettingsNavLink";
@@ -18,15 +18,15 @@ import {
   boardPath,
   categoryHref,
   findSubtype,
+  isJapanBrowseContext,
   legacyFidRedirect,
   makeBoardKey,
 } from "@/config/boards";
-import { prefixNote } from "@/config/av-makers";
-import { BROWSE_PAGE_MAX, BROWSE_PAGE_SIZE } from "@/config/constant";
+import { BROWSE_PAGE_MAX, BROWSE_PAGE_SIZE, PREFIX_CODE_PAGE_SIZE } from "@/config/constant";
 
 export const dynamic = "force-dynamic";
 
-const PREFIX_CODE_PAGE_SIZE = 120;
+const PREFIX_RESOURCE_PAGE_SIZE = PREFIX_CODE_PAGE_SIZE;
 
 export async function generateMetadata({
   params,
@@ -91,24 +91,24 @@ export default async function SubtypeBrowsePage({
     { label: boardLabel },
   ];
 
-  // 番号前缀：展示库内已有编号索引
+  // 番号前缀：库内资源按番号数字升序
   if (ctx.child.search_keyword) {
     const prefix = ctx.child.search_keyword.trim();
     const t = await getTranslations();
-    const note = prefixNote(ctx.child.board_name || ctx.parent.name, prefix);
-    const { codes, total_codes, matched_rows } = await listPrefixCodes(prefix, {
-      limit: PREFIX_CODE_PAGE_SIZE,
-      offset: (page - 1) * PREFIX_CODE_PAGE_SIZE,
-    });
-    const searchAll = new URLSearchParams();
-    searchAll.set("keyword", prefix);
-    searchAll.set("matchMode", "exact");
+    const { items, total_count } = await listPrefixResources(
+      prefix,
+      {
+        limit: PREFIX_RESOURCE_PAGE_SIZE,
+        offset: (page - 1) * PREFIX_RESOURCE_PAGE_SIZE,
+      },
+    );
+    const japanPrefs = isJapanBrowseContext(fid, typeid);
 
     return (
       <>
         <div className="mx-auto flex w-full max-w-6xl items-center gap-1 px-3 pt-3 md:px-4 lg:max-w-7xl">
           <SiteLogoLink />
-          <SearchInput />
+          <SearchInput japanPrefs={japanPrefs} />
           <SettingsNavLink />
         </div>
         <ForumShell
@@ -117,22 +117,14 @@ export default async function SubtypeBrowsePage({
           activeTypeid={typeid}
           crumbs={crumbs}
         >
-          <PrefixCodeIndex
-            codes={codes}
-            matchedRows={matched_rows}
-            note={note}
+          <PrefixResourceList
+            items={items}
             page={page}
-            pageSize={PREFIX_CODE_PAGE_SIZE}
+            pageSize={PREFIX_RESOURCE_PAGE_SIZE}
             prefix={prefix}
-            searchAllHref={`/search?${searchAll.toString()}`}
-            totalCodes={total_codes}
+            totalCount={total_count}
             labels={{
-              guide: t("Boards.prefix_code_guide"),
-              total: t("Boards.prefix_code_total"),
-              empty: t("Boards.prefix_code_empty"),
-              searchAll: t("Boards.prefix_code_search_all"),
-              resources: t("Boards.prefix_code_resources"),
-              pageOf: t("Boards.prefix_code_page"),
+              empty: t("Boards.prefix_resource_empty"),
               prev: t("Boards.prefix_code_prev"),
               next: t("Boards.prefix_code_next"),
             }}
@@ -150,12 +142,13 @@ export default async function SubtypeBrowsePage({
     board_fid: boardFid,
     board: ctx.child.name,
   });
+  const japanPrefs = isJapanBrowseContext(fid, typeid);
 
   return (
     <>
       <div className="mx-auto flex w-full max-w-6xl items-center gap-1 px-3 pt-3 md:px-4 lg:max-w-7xl">
         <SiteLogoLink />
-        <SearchInput />
+        <SearchInput japanPrefs={japanPrefs} />
         <SettingsNavLink />
       </div>
       <ForumShell

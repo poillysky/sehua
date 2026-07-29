@@ -328,7 +328,11 @@ SKIP_CLOUD_SHARE_SPECS: tuple[CloudShareSpec, ...] = (
         "mega",
         "MEGA网盘",
         RE_MEGA_SHARE,
-        re.compile(r"mega|mg\s*(?:网盘|網盤)", re.I),
+        # 勿裸匹配 mega：会误伤 meganmeow / Megan_myersss 等人名（tid=26632598/26710631）
+        re.compile(
+            r"(?<![A-Za-z0-9_])mega(?![A-Za-z0-9_])|mg\s*(?:网盘|網盤)",
+            re.I,
+        ),
         try_attachments=False,
     ),
     CloudShareSpec(

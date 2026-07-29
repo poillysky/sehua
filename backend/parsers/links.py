@@ -56,6 +56,10 @@ class DualParseResult:
     layout: str = ""
     # 流水线：本帖是否注入过附件文本
     had_attachments: bool = False
+    # 帖内下载向链总数（含非入库残链/HTTP；配额旁证，不计入库）
+    quota_link_count: int = 0
+    # 兼容旧字段：HTTP 媒体直链数
+    http_media_count: int = 0
 
     @property
     def search_string(self) -> str:
@@ -299,23 +303,53 @@ def parse_thread_dual(
                     if b.title:
                         from parsers.resource_names import (
                             clip_subresource_display_name,
+                            is_decoration_only_filename,
                             is_dirty_filename,
                             is_hard_dirty_filename,
+                            is_weak_subresource_name,
+                            subtitle_from_description,
                         )
 
-                        if is_hard_dirty_filename(b.title):
+                        if is_hard_dirty_filename(b.title) or is_decoration_only_filename(
+                            b.title
+                        ):
                             cleaned = ""
                         else:
                             cleaned = clip_subresource_display_name(b.title)
-                        if cleaned and not is_dirty_filename(cleaned):
+                        post_title = (content.title or "").strip()
+                        if (
+                            cleaned
+                            and not is_dirty_filename(cleaned)
+                            and not is_weak_subresource_name(
+                                cleaned, post_title=post_title, hash_value=asset.hash or ""
+                            )
+                        ):
                             asset.filename = cleaned[:255]
-                        elif content.title:
-                            # 切段名脏：回退帖标题，勿把 HTML/附件 UI 硬截断入库
-                            fb = clip_subresource_display_name(content.title) or content.title
-                            if fb and not is_dirty_filename(fb) and not is_hard_dirty_filename(
-                                fb
+                        else:
+                            # 切段名脏/弱：先从块 description 救真名，再回落帖标题
+                            salvaged = subtitle_from_description(b.description or "")
+                            if (
+                                salvaged
+                                and not is_dirty_filename(salvaged)
+                                and not is_hard_dirty_filename(salvaged)
+                                and not is_weak_subresource_name(
+                                    salvaged,
+                                    post_title=post_title,
+                                    hash_value=asset.hash or "",
+                                )
                             ):
-                                asset.filename = fb[:255]
+                                asset.filename = salvaged[:255]
+                            elif post_title:
+                                # 切段名脏：回退帖标题，勿把 HTML/附件 UI 硬截断入库
+                                fb = (
+                                    clip_subresource_display_name(post_title) or post_title
+                                )
+                                if (
+                                    fb
+                                    and not is_dirty_filename(fb)
+                                    and not is_hard_dirty_filename(fb)
+                                ):
+                                    asset.filename = fb[:255]
                     if b.size and b.size > 0:
                         asset.size = int(b.size)
                     if b.preview_images:
@@ -359,6 +393,11 @@ def parse_thread_dual(
         board_fid=board_fid,
     )
 
+    from parsers.resource_frame import count_http_host_media_links, count_post_quota_links
+
+    quota_n = count_post_quota_links(corpus)
+    http_n = count_http_host_media_links(corpus)
+
     return DualParseResult(
         tid=content.tid or tid,
         title=content.title,
@@ -372,4 +411,6 @@ def parse_thread_dual(
         assets=assets,
         primary_link_kind=primary_kind,
         layout=layout,
+        quota_link_count=quota_n,
+        http_media_count=http_n,
     )

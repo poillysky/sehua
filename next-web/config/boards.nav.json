@@ -10,13 +10,13 @@
             "name": "有码",
             "children": [
               {
-                "key": "mk-censored:SSIS",
+                "key": "mk-censored:SNOS",
                 "fid": "mk-censored",
-                "typeid": "SSIS",
-                "name": "有码 · SSIS",
-                "type_name": "SSIS",
+                "typeid": "SNOS",
+                "name": "有码 · SNOS",
+                "type_name": "SNOS",
                 "board_name": "S1",
-                "search_keyword": "SSIS"
+                "search_keyword": "SNOS"
               },
               {
                 "key": "mk-censored:SONE",
@@ -28,6 +28,15 @@
                 "search_keyword": "SONE"
               },
               {
+                "key": "mk-censored:SSIS",
+                "fid": "mk-censored",
+                "typeid": "SSIS",
+                "name": "有码 · SSIS",
+                "type_name": "SSIS",
+                "board_name": "S1",
+                "search_keyword": "SSIS"
+              },
+              {
                 "key": "mk-censored:SSNI",
                 "fid": "mk-censored",
                 "typeid": "SSNI",
@@ -35,6 +44,15 @@
                 "type_name": "SSNI",
                 "board_name": "S1",
                 "search_keyword": "SSNI"
+              },
+              {
+                "key": "mk-censored:SNIS",
+                "fid": "mk-censored",
+                "typeid": "SNIS",
+                "name": "有码 · SNIS",
+                "type_name": "SNIS",
+                "board_name": "S1",
+                "search_keyword": "SNIS"
               },
               {
                 "key": "mk-censored:SOE",
@@ -64,6 +82,33 @@
                 "search_keyword": "OFJE"
               },
               {
+                "key": "mk-censored:ONSD",
+                "fid": "mk-censored",
+                "typeid": "ONSD",
+                "name": "有码 · ONSD",
+                "type_name": "ONSD",
+                "board_name": "S1",
+                "search_keyword": "ONSD"
+              },
+              {
+                "key": "mk-censored:SPS",
+                "fid": "mk-censored",
+                "typeid": "SPS",
+                "name": "有码 · SPS",
+                "type_name": "SPS",
+                "board_name": "S1",
+                "search_keyword": "SPS"
+              },
+              {
+                "key": "mk-censored:MIDA",
+                "fid": "mk-censored",
+                "typeid": "MIDA",
+                "name": "有码 · MIDA",
+                "type_name": "MIDA",
+                "board_name": "MOODYZ",
+                "search_keyword": "MIDA"
+              },
+              {
                 "key": "mk-censored:MIDV",
                 "fid": "mk-censored",
                 "typeid": "MIDV",
@@ -82,31 +127,13 @@
                 "search_keyword": "MIDE"
               },
               {
-                "key": "mk-censored:MIAA",
+                "key": "mk-censored:MIDD",
                 "fid": "mk-censored",
-                "typeid": "MIAA",
-                "name": "有码 · MIAA",
-                "type_name": "MIAA",
+                "typeid": "MIDD",
+                "name": "有码 · MIDD",
+                "type_name": "MIDD",
                 "board_name": "MOODYZ",
-                "search_keyword": "MIAA"
-              },
-              {
-                "key": "mk-censored:MIMK",
-                "fid": "mk-censored",
-                "typeid": "MIMK",
-                "name": "有码 · MIMK",
-                "type_name": "MIMK",
-                "board_name": "MOODYZ",
-                "search_keyword": "MIMK"
-              },
-              {
-                "key": "mk-censored:MIBD",
-                "fid": "mk-censored",
-                "typeid": "MIBD",
-                "name": "有码 · MIBD",
-                "type_name": "MIBD",
-                "board_name": "MOODYZ",
-                "search_keyword": "MIBD"
+                "search_keyword": "MIDD"
               },
               {
                 "key": "mk-censored:MIAB",
@@ -118,6 +145,42 @@
                 "search_keyword": "MIAB"
               },
               {
+                "key": "mk-censored:MIAA",
+                "fid": "mk-censored",
+                "typeid": "MIAA",
+                "name": "有码 · MIAA",
+                "type_name": "MIAA",
+                "board_name": "MOODYZ",
+                "search_keyword": "MIAA"
+              },
+              {
+                "key": "mk-censored:MIAE",
+                "fid": "mk-censored",
+                "typeid": "MIAE",
+                "name": "有码 · MIAE",
+                "type_name": "MIAE",
+                "board_name": "MOODYZ",
+                "search_keyword": "MIAE"
+              },
+              {
+                "key": "mk-censored:MIAD",
+                "fid": "mk-censored",
+                "typeid": "MIAD",
+                "name": "有码 · MIAD",
+                "type_name": "MIAD",
+                "board_name": "MOODYZ",
+                "search_keyword": "MIAD"
+              },
+              {
+                "key": "mk-censored:MIMK",
+                "fid": "mk-censored",
+                "typeid": "MIMK",
+                "name": "有码 · MIMK",
+                "type_name": "MIMK",
+                "board_name": "MOODYZ",
+                "search_keyword": "MIMK"
+              },
+              {
                 "key": "mk-censored:MIRD",
                 "fid": "mk-censored",
                 "typeid": "MIRD",
@@ -125,6 +188,42 @@
                 "type_name": "MIRD",
                 "board_name": "MOODYZ",
                 "search_keyword": "MIRD"
+              },
+              {
+                "key": "mk-censored:MIGD",
+                "fid": "mk-censored",
+                "typeid": "MIGD",
+                "name": "有码 · MIGD",
+                "type_name": "MIGD",
+                "board_name": "MOODYZ",
+                "search_keyword": "MIGD"
+              },
+              {
+                "key": "mk-censored:MIFD",
+                "fid": "mk-censored",
+                "typeid": "MIFD",
+                "name": "有码 · MIFD",
+                "type_name": "MIFD",
+                "board_name": "MOODYZ",
+                "search_keyword": "MIFD"
+              },
+              {
+                "key": "mk-censored:MIBD",
+                "fid": "mk-censored",
+                "typeid": "MIBD",
+                "name": "有码 · MIBD",
+                "type_name": "MIBD",
+                "board_name": "MOODYZ",
+                "search_keyword": "MIBD"
+              },
+              {
+                "key": "mk-censored:MIZD",
+                "fid": "mk-censored",
+                "typeid": "MIZD",
+                "name": "有码 · MIZD",
+                "type_name": "MIZD",
+                "board_name": "MOODYZ",
+                "search_keyword": "MIZD"
               },
               {
                 "key": "mk-censored:IPZZ",
@@ -163,6 +262,15 @@
                 "search_keyword": "IPTD"
               },
               {
+                "key": "mk-censored:IPSD",
+                "fid": "mk-censored",
+                "typeid": "IPSD",
+                "name": "有码 · IPSD",
+                "type_name": "IPSD",
+                "board_name": "IDEA POCKET",
+                "search_keyword": "IPSD"
+              },
+              {
                 "key": "mk-censored:IDBD",
                 "fid": "mk-censored",
                 "typeid": "IDBD",
@@ -181,6 +289,15 @@
                 "search_keyword": "SUPD"
               },
               {
+                "key": "mk-censored:IPVR",
+                "fid": "mk-censored",
+                "typeid": "IPVR",
+                "name": "有码 · IPVR",
+                "type_name": "IPVR",
+                "board_name": "IDEA POCKET",
+                "search_keyword": "IPVR"
+              },
+              {
                 "key": "mk-censored:ABF",
                 "fid": "mk-censored",
                 "typeid": "ABF",
@@ -188,6 +305,15 @@
                 "type_name": "ABF",
                 "board_name": "PRESTIGE",
                 "search_keyword": "ABF"
+              },
+              {
+                "key": "mk-censored:ABW",
+                "fid": "mk-censored",
+                "typeid": "ABW",
+                "name": "有码 · ABW",
+                "type_name": "ABW",
+                "board_name": "PRESTIGE",
+                "search_keyword": "ABW"
               },
               {
                 "key": "mk-censored:ABP",
@@ -253,6 +379,15 @@
                 "search_keyword": "BLO"
               },
               {
+                "key": "mk-censored:START",
+                "fid": "mk-censored",
+                "typeid": "START",
+                "name": "有码 · START",
+                "type_name": "START",
+                "board_name": "SOD Create",
+                "search_keyword": "START"
+              },
+              {
                 "key": "mk-censored:STARS",
                 "fid": "mk-censored",
                 "typeid": "STARS",
@@ -260,6 +395,15 @@
                 "type_name": "STARS",
                 "board_name": "SOD Create",
                 "search_keyword": "STARS"
+              },
+              {
+                "key": "mk-censored:STAR",
+                "fid": "mk-censored",
+                "typeid": "STAR",
+                "name": "有码 · STAR",
+                "type_name": "STAR",
+                "board_name": "SOD Create",
+                "search_keyword": "STAR"
               },
               {
                 "key": "mk-censored:SDDE",
@@ -289,15 +433,6 @@
                 "search_keyword": "SDNM"
               },
               {
-                "key": "mk-censored:STAR",
-                "fid": "mk-censored",
-                "typeid": "STAR",
-                "name": "有码 · STAR",
-                "type_name": "STAR",
-                "board_name": "SOD Create",
-                "search_keyword": "STAR"
-              },
-              {
                 "key": "mk-censored:SDJS",
                 "fid": "mk-censored",
                 "typeid": "SDJS",
@@ -307,6 +442,24 @@
                 "search_keyword": "SDJS"
               },
               {
+                "key": "mk-censored:SDMT",
+                "fid": "mk-censored",
+                "typeid": "SDMT",
+                "name": "有码 · SDMT",
+                "type_name": "SDMT",
+                "board_name": "SOD Create",
+                "search_keyword": "SDMT"
+              },
+              {
+                "key": "mk-censored:JUR",
+                "fid": "mk-censored",
+                "typeid": "JUR",
+                "name": "有码 · JUR",
+                "type_name": "JUR",
+                "board_name": "Madonna",
+                "search_keyword": "JUR"
+              },
+              {
                 "key": "mk-censored:JUQ",
                 "fid": "mk-censored",
                 "typeid": "JUQ",
@@ -314,6 +467,15 @@
                 "type_name": "JUQ",
                 "board_name": "Madonna",
                 "search_keyword": "JUQ"
+              },
+              {
+                "key": "mk-censored:JUL",
+                "fid": "mk-censored",
+                "typeid": "JUL",
+                "name": "有码 · JUL",
+                "type_name": "JUL",
+                "board_name": "Madonna",
+                "search_keyword": "JUL"
               },
               {
                 "key": "mk-censored:JUY",
@@ -343,6 +505,24 @@
                 "search_keyword": "JUC"
               },
               {
+                "key": "mk-censored:JUKD",
+                "fid": "mk-censored",
+                "typeid": "JUKD",
+                "name": "有码 · JUKD",
+                "type_name": "JUKD",
+                "board_name": "Madonna",
+                "search_keyword": "JUKD"
+              },
+              {
+                "key": "mk-censored:JUSD",
+                "fid": "mk-censored",
+                "typeid": "JUSD",
+                "name": "有码 · JUSD",
+                "type_name": "JUSD",
+                "board_name": "Madonna",
+                "search_keyword": "JUSD"
+              },
+              {
                 "key": "mk-censored:OBA",
                 "fid": "mk-censored",
                 "typeid": "OBA",
@@ -359,6 +539,15 @@
                 "type_name": "ROE",
                 "board_name": "Madonna",
                 "search_keyword": "ROE"
+              },
+              {
+                "key": "mk-censored:URE",
+                "fid": "mk-censored",
+                "typeid": "URE",
+                "name": "有码 · URE",
+                "type_name": "URE",
+                "board_name": "Madonna",
+                "search_keyword": "URE"
               },
               {
                 "key": "mk-censored:FSDSS",
@@ -388,6 +577,15 @@
                 "search_keyword": "CAWD"
               },
               {
+                "key": "mk-censored:KAWD",
+                "fid": "mk-censored",
+                "typeid": "KAWD",
+                "name": "有码 · KAWD",
+                "type_name": "KAWD",
+                "board_name": "kawaii",
+                "search_keyword": "KAWD"
+              },
+              {
                 "key": "mk-censored:KWBD",
                 "fid": "mk-censored",
                 "typeid": "KWBD",
@@ -397,13 +595,22 @@
                 "search_keyword": "KWBD"
               },
               {
-                "key": "mk-censored:KAWD",
+                "key": "mk-censored:KAPD",
                 "fid": "mk-censored",
-                "typeid": "KAWD",
-                "name": "有码 · KAWD",
-                "type_name": "KAWD",
+                "typeid": "KAPD",
+                "name": "有码 · KAPD",
+                "type_name": "KAPD",
                 "board_name": "kawaii",
-                "search_keyword": "KAWD"
+                "search_keyword": "KAPD"
+              },
+              {
+                "key": "mk-censored:EBWH",
+                "fid": "mk-censored",
+                "typeid": "EBWH",
+                "name": "有码 · EBWH",
+                "type_name": "EBWH",
+                "board_name": "E-BODY",
+                "search_keyword": "EBWH"
               },
               {
                 "key": "mk-censored:EBOD",
@@ -422,6 +629,15 @@
                 "type_name": "MKCK",
                 "board_name": "E-BODY",
                 "search_keyword": "MKCK"
+              },
+              {
+                "key": "mk-censored:EYAN",
+                "fid": "mk-censored",
+                "typeid": "EYAN",
+                "name": "有码 · EYAN",
+                "type_name": "EYAN",
+                "board_name": "E-BODY",
+                "search_keyword": "EYAN"
               },
               {
                 "key": "mk-censored:ATID",
@@ -451,6 +667,15 @@
                 "search_keyword": "RBD"
               },
               {
+                "key": "mk-censored:RBK",
+                "fid": "mk-censored",
+                "typeid": "RBK",
+                "name": "有码 · RBK",
+                "type_name": "RBK",
+                "board_name": "Attackers",
+                "search_keyword": "RBK"
+              },
+              {
                 "key": "mk-censored:ADN",
                 "fid": "mk-censored",
                 "typeid": "ADN",
@@ -469,6 +694,24 @@
                 "search_keyword": "JBD"
               },
               {
+                "key": "mk-censored:ATKD",
+                "fid": "mk-censored",
+                "typeid": "ATKD",
+                "name": "有码 · ATKD",
+                "type_name": "ATKD",
+                "board_name": "Attackers",
+                "search_keyword": "ATKD"
+              },
+              {
+                "key": "mk-censored:SSPD",
+                "fid": "mk-censored",
+                "typeid": "SSPD",
+                "name": "有码 · SSPD",
+                "type_name": "SSPD",
+                "board_name": "Attackers",
+                "search_keyword": "SSPD"
+              },
+              {
                 "key": "mk-censored:PPPE",
                 "fid": "mk-censored",
                 "typeid": "PPPE",
@@ -485,6 +728,15 @@
                 "type_name": "PPPD",
                 "board_name": "OPPAI",
                 "search_keyword": "PPPD"
+              },
+              {
+                "key": "mk-censored:PPBD",
+                "fid": "mk-censored",
+                "typeid": "PPBD",
+                "name": "有码 · PPBD",
+                "type_name": "PPBD",
+                "board_name": "OPPAI",
+                "search_keyword": "PPBD"
               },
               {
                 "key": "mk-censored:PPSD",
@@ -523,6 +775,15 @@
                 "search_keyword": "HNDB"
               },
               {
+                "key": "mk-censored:HNDS",
+                "fid": "mk-censored",
+                "typeid": "HNDS",
+                "name": "有码 · HNDS",
+                "type_name": "HNDS",
+                "board_name": "本中",
+                "search_keyword": "HNDS"
+              },
+              {
                 "key": "mk-censored:PRED",
                 "fid": "mk-censored",
                 "typeid": "PRED",
@@ -539,6 +800,15 @@
                 "type_name": "PGD",
                 "board_name": "プレミアム",
                 "search_keyword": "PGD"
+              },
+              {
+                "key": "mk-censored:PBD",
+                "fid": "mk-censored",
+                "typeid": "PBD",
+                "name": "有码 · PBD",
+                "type_name": "PBD",
+                "board_name": "プレミアム",
+                "search_keyword": "PBD"
               },
               {
                 "key": "mk-censored:PJD",
@@ -568,13 +838,22 @@
                 "search_keyword": "WANZ"
               },
               {
-                "key": "mk-censored:DAZD",
+                "key": "mk-censored:BMW",
                 "fid": "mk-censored",
-                "typeid": "DAZD",
-                "name": "有码 · DAZD",
-                "type_name": "DAZD",
+                "typeid": "BMW",
+                "name": "有码 · BMW",
+                "type_name": "BMW",
+                "board_name": "WANZ",
+                "search_keyword": "BMW"
+              },
+              {
+                "key": "mk-censored:DASS",
+                "fid": "mk-censored",
+                "typeid": "DASS",
+                "name": "有码 · DASS",
+                "type_name": "DASS",
                 "board_name": "ダスッ！",
-                "search_keyword": "DAZD"
+                "search_keyword": "DASS"
               },
               {
                 "key": "mk-censored:DASD",
@@ -586,13 +865,13 @@
                 "search_keyword": "DASD"
               },
               {
-                "key": "mk-censored:JUNY",
+                "key": "mk-censored:DAZD",
                 "fid": "mk-censored",
-                "typeid": "JUNY",
-                "name": "有码 · JUNY",
-                "type_name": "JUNY",
-                "board_name": "Fitch",
-                "search_keyword": "JUNY"
+                "typeid": "DAZD",
+                "name": "有码 · DAZD",
+                "type_name": "DAZD",
+                "board_name": "ダスッ！",
+                "search_keyword": "DAZD"
               },
               {
                 "key": "mk-censored:JUFE",
@@ -604,6 +883,15 @@
                 "search_keyword": "JUFE"
               },
               {
+                "key": "mk-censored:JUNY",
+                "fid": "mk-censored",
+                "typeid": "JUNY",
+                "name": "有码 · JUNY",
+                "type_name": "JUNY",
+                "board_name": "Fitch",
+                "search_keyword": "JUNY"
+              },
+              {
                 "key": "mk-censored:NIMA",
                 "fid": "mk-censored",
                 "typeid": "NIMA",
@@ -611,6 +899,24 @@
                 "type_name": "NIMA",
                 "board_name": "Fitch",
                 "search_keyword": "NIMA"
+              },
+              {
+                "key": "mk-censored:JUFD",
+                "fid": "mk-censored",
+                "typeid": "JUFD",
+                "name": "有码 · JUFD",
+                "type_name": "JUFD",
+                "board_name": "Fitch",
+                "search_keyword": "JUFD"
+              },
+              {
+                "key": "mk-censored:JFB",
+                "fid": "mk-censored",
+                "typeid": "JFB",
+                "name": "有码 · JFB",
+                "type_name": "JFB",
+                "board_name": "Fitch",
+                "search_keyword": "JFB"
               },
               {
                 "key": "mk-censored:DVAJ",
@@ -647,6 +953,24 @@
                 "type_name": "SACE",
                 "board_name": "MAX-A",
                 "search_keyword": "SACE"
+              },
+              {
+                "key": "mk-censored:XV",
+                "fid": "mk-censored",
+                "typeid": "XV",
+                "name": "有码 · XV",
+                "type_name": "XV",
+                "board_name": "MAX-A",
+                "search_keyword": "XV"
+              },
+              {
+                "key": "mk-censored:SRXV",
+                "fid": "mk-censored",
+                "typeid": "SRXV",
+                "name": "有码 · SRXV",
+                "type_name": "SRXV",
+                "board_name": "MAX-A",
+                "search_keyword": "SRXV"
               },
               {
                 "key": "mk-censored:SIRO",
@@ -883,6 +1207,210 @@
             "name": "欧美 · 欧美无码",
             "type_name": "欧美无码",
             "board_name": "欧美"
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "category": "综合区",
+    "boards": [
+      {
+        "name": "综合讨论区",
+        "children": [
+          {
+            "key": "95:716",
+            "fid": "95",
+            "typeid": "716",
+            "name": "综合讨论区 · 情色分享",
+            "type_name": "情色分享",
+            "board_name": "综合讨论区"
+          }
+        ]
+      },
+      {
+        "name": "网友原创区",
+        "children": [
+          {
+            "key": "141:689",
+            "fid": "141",
+            "typeid": "689",
+            "name": "网友原创区 · 国产合集",
+            "type_name": "国产合集",
+            "board_name": "网友原创区"
+          },
+          {
+            "key": "141:690",
+            "fid": "141",
+            "typeid": "690",
+            "name": "网友原创区 · 欧美合集",
+            "type_name": "欧美合集",
+            "board_name": "网友原创区"
+          },
+          {
+            "key": "141:691",
+            "fid": "141",
+            "typeid": "691",
+            "name": "网友原创区 · 日本合集",
+            "type_name": "日本合集",
+            "board_name": "网友原创区"
+          },
+          {
+            "key": "141:844",
+            "fid": "141",
+            "typeid": "844",
+            "name": "网友原创区 · 合集推荐",
+            "type_name": "合集推荐",
+            "board_name": "网友原创区"
+          },
+          {
+            "key": "141:692",
+            "fid": "141",
+            "typeid": "692",
+            "name": "网友原创区 · 破解",
+            "type_name": "破解",
+            "board_name": "网友原创区"
+          },
+          {
+            "key": "141:705",
+            "fid": "141",
+            "typeid": "705",
+            "name": "网友原创区 · 增强",
+            "type_name": "增强",
+            "board_name": "网友原创区"
+          },
+          {
+            "key": "141:867",
+            "fid": "141",
+            "typeid": "867",
+            "name": "网友原创区 · 换脸",
+            "type_name": "换脸",
+            "board_name": "网友原创区"
+          },
+          {
+            "key": "141:866",
+            "fid": "141",
+            "typeid": "866",
+            "name": "网友原创区 · 自压",
+            "type_name": "自压",
+            "board_name": "网友原创区"
+          },
+          {
+            "key": "141:879",
+            "fid": "141",
+            "typeid": "879",
+            "name": "网友原创区 · 主播录播",
+            "type_name": "主播录播",
+            "board_name": "网友原创区"
+          },
+          {
+            "key": "141:695",
+            "fid": "141",
+            "typeid": "695",
+            "name": "网友原创区 · 套图",
+            "type_name": "套图",
+            "board_name": "网友原创区"
+          },
+          {
+            "key": "141:694",
+            "fid": "141",
+            "typeid": "694",
+            "name": "网友原创区 · 蓝光原盘",
+            "type_name": "蓝光原盘",
+            "board_name": "网友原创区"
+          },
+          {
+            "key": "141:693",
+            "fid": "141",
+            "typeid": "693",
+            "name": "网友原创区 · 二次元",
+            "type_name": "二次元",
+            "board_name": "网友原创区"
+          },
+          {
+            "key": "141:696",
+            "fid": "141",
+            "typeid": "696",
+            "name": "网友原创区 · 其它",
+            "type_name": "其它",
+            "board_name": "网友原创区"
+          }
+        ]
+      },
+      {
+        "name": "转帖交流区",
+        "children": [
+          {
+            "key": "142:697",
+            "fid": "142",
+            "typeid": "697",
+            "name": "转帖交流区 · 国产自拍",
+            "type_name": "国产自拍",
+            "board_name": "转帖交流区"
+          },
+          {
+            "key": "142:698",
+            "fid": "142",
+            "typeid": "698",
+            "name": "转帖交流区 · 直播视频",
+            "type_name": "直播视频",
+            "board_name": "转帖交流区"
+          },
+          {
+            "key": "142:699",
+            "fid": "142",
+            "typeid": "699",
+            "name": "转帖交流区 · 亚洲无码",
+            "type_name": "亚洲无码",
+            "board_name": "转帖交流区"
+          },
+          {
+            "key": "142:700",
+            "fid": "142",
+            "typeid": "700",
+            "name": "转帖交流区 · 亚洲有码",
+            "type_name": "亚洲有码",
+            "board_name": "转帖交流区"
+          },
+          {
+            "key": "142:701",
+            "fid": "142",
+            "typeid": "701",
+            "name": "转帖交流区 · 偷拍視頻",
+            "type_name": "偷拍視頻",
+            "board_name": "转帖交流区"
+          },
+          {
+            "key": "142:702",
+            "fid": "142",
+            "typeid": "702",
+            "name": "转帖交流区 · 动漫/二次元",
+            "type_name": "动漫/二次元",
+            "board_name": "转帖交流区"
+          },
+          {
+            "key": "142:703",
+            "fid": "142",
+            "typeid": "703",
+            "name": "转帖交流区 · 欧美风情",
+            "type_name": "欧美风情",
+            "board_name": "转帖交流区"
+          },
+          {
+            "key": "142:704",
+            "fid": "142",
+            "typeid": "704",
+            "name": "转帖交流区 · 其他資源",
+            "type_name": "其他資源",
+            "board_name": "转帖交流区"
+          },
+          {
+            "key": "142:706",
+            "fid": "142",
+            "typeid": "706",
+            "name": "转帖交流区 · 合集资源",
+            "type_name": "合集资源",
+            "board_name": "转帖交流区"
           }
         ]
       }
@@ -1361,210 +1889,6 @@
             "name": "4K原版 · 有码",
             "type_name": "有码",
             "board_name": "4K原版"
-          }
-        ]
-      }
-    ]
-  },
-  {
-    "category": "综合区",
-    "boards": [
-      {
-        "name": "综合讨论区",
-        "children": [
-          {
-            "key": "95:716",
-            "fid": "95",
-            "typeid": "716",
-            "name": "综合讨论区 · 情色分享",
-            "type_name": "情色分享",
-            "board_name": "综合讨论区"
-          }
-        ]
-      },
-      {
-        "name": "网友原创区",
-        "children": [
-          {
-            "key": "141:689",
-            "fid": "141",
-            "typeid": "689",
-            "name": "网友原创区 · 国产合集",
-            "type_name": "国产合集",
-            "board_name": "网友原创区"
-          },
-          {
-            "key": "141:690",
-            "fid": "141",
-            "typeid": "690",
-            "name": "网友原创区 · 欧美合集",
-            "type_name": "欧美合集",
-            "board_name": "网友原创区"
-          },
-          {
-            "key": "141:691",
-            "fid": "141",
-            "typeid": "691",
-            "name": "网友原创区 · 日本合集",
-            "type_name": "日本合集",
-            "board_name": "网友原创区"
-          },
-          {
-            "key": "141:844",
-            "fid": "141",
-            "typeid": "844",
-            "name": "网友原创区 · 合集推荐",
-            "type_name": "合集推荐",
-            "board_name": "网友原创区"
-          },
-          {
-            "key": "141:692",
-            "fid": "141",
-            "typeid": "692",
-            "name": "网友原创区 · 破解",
-            "type_name": "破解",
-            "board_name": "网友原创区"
-          },
-          {
-            "key": "141:705",
-            "fid": "141",
-            "typeid": "705",
-            "name": "网友原创区 · 增强",
-            "type_name": "增强",
-            "board_name": "网友原创区"
-          },
-          {
-            "key": "141:867",
-            "fid": "141",
-            "typeid": "867",
-            "name": "网友原创区 · 换脸",
-            "type_name": "换脸",
-            "board_name": "网友原创区"
-          },
-          {
-            "key": "141:866",
-            "fid": "141",
-            "typeid": "866",
-            "name": "网友原创区 · 自压",
-            "type_name": "自压",
-            "board_name": "网友原创区"
-          },
-          {
-            "key": "141:879",
-            "fid": "141",
-            "typeid": "879",
-            "name": "网友原创区 · 主播录播",
-            "type_name": "主播录播",
-            "board_name": "网友原创区"
-          },
-          {
-            "key": "141:695",
-            "fid": "141",
-            "typeid": "695",
-            "name": "网友原创区 · 套图",
-            "type_name": "套图",
-            "board_name": "网友原创区"
-          },
-          {
-            "key": "141:694",
-            "fid": "141",
-            "typeid": "694",
-            "name": "网友原创区 · 蓝光原盘",
-            "type_name": "蓝光原盘",
-            "board_name": "网友原创区"
-          },
-          {
-            "key": "141:693",
-            "fid": "141",
-            "typeid": "693",
-            "name": "网友原创区 · 二次元",
-            "type_name": "二次元",
-            "board_name": "网友原创区"
-          },
-          {
-            "key": "141:696",
-            "fid": "141",
-            "typeid": "696",
-            "name": "网友原创区 · 其它",
-            "type_name": "其它",
-            "board_name": "网友原创区"
-          }
-        ]
-      },
-      {
-        "name": "转帖交流区",
-        "children": [
-          {
-            "key": "142:697",
-            "fid": "142",
-            "typeid": "697",
-            "name": "转帖交流区 · 国产自拍",
-            "type_name": "国产自拍",
-            "board_name": "转帖交流区"
-          },
-          {
-            "key": "142:698",
-            "fid": "142",
-            "typeid": "698",
-            "name": "转帖交流区 · 直播视频",
-            "type_name": "直播视频",
-            "board_name": "转帖交流区"
-          },
-          {
-            "key": "142:699",
-            "fid": "142",
-            "typeid": "699",
-            "name": "转帖交流区 · 亚洲无码",
-            "type_name": "亚洲无码",
-            "board_name": "转帖交流区"
-          },
-          {
-            "key": "142:700",
-            "fid": "142",
-            "typeid": "700",
-            "name": "转帖交流区 · 亚洲有码",
-            "type_name": "亚洲有码",
-            "board_name": "转帖交流区"
-          },
-          {
-            "key": "142:701",
-            "fid": "142",
-            "typeid": "701",
-            "name": "转帖交流区 · 偷拍視頻",
-            "type_name": "偷拍視頻",
-            "board_name": "转帖交流区"
-          },
-          {
-            "key": "142:702",
-            "fid": "142",
-            "typeid": "702",
-            "name": "转帖交流区 · 动漫/二次元",
-            "type_name": "动漫/二次元",
-            "board_name": "转帖交流区"
-          },
-          {
-            "key": "142:703",
-            "fid": "142",
-            "typeid": "703",
-            "name": "转帖交流区 · 欧美风情",
-            "type_name": "欧美风情",
-            "board_name": "转帖交流区"
-          },
-          {
-            "key": "142:704",
-            "fid": "142",
-            "typeid": "704",
-            "name": "转帖交流区 · 其他資源",
-            "type_name": "其他資源",
-            "board_name": "转帖交流区"
-          },
-          {
-            "key": "142:706",
-            "fid": "142",
-            "typeid": "706",
-            "name": "转帖交流区 · 合集资源",
-            "type_name": "合集资源",
-            "board_name": "转帖交流区"
           }
         ]
       }

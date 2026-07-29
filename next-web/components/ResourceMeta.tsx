@@ -7,8 +7,8 @@ import { CopyIcon } from "@/components/icons";
 import { PreviewImage } from "@/components/PreviewImage";
 import { Ed2kResourceProps } from "@/types";
 import {
-  filterPreviewImages,
   formatDescriptionLines,
+  galleryPreviewImages,
   getEd2kCopyText,
   getEd2kLinkCount,
   linkKindOf,
@@ -22,7 +22,7 @@ export function ResourcePreviewImages({
   images?: string[];
   size?: "sm" | "md";
 }) {
-  const previewImages = filterPreviewImages(images);
+  const previewImages = galleryPreviewImages(images);
 
   if (!previewImages.length) {
     return null;
@@ -34,7 +34,7 @@ export function ResourcePreviewImages({
       : "min-h-20 max-h-48 w-full sm:min-h-28";
 
   return (
-    <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-2 md:gap-3">
+    <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 md:gap-3 lg:grid-cols-4 xl:grid-cols-5">
       {previewImages.map((src, index) => (
         <a
           key={`${src}-${index}`}
@@ -46,6 +46,7 @@ export function ResourcePreviewImages({
           <PreviewImage
             alt={`preview-${index + 1}`}
             className={`${heightClass} w-full object-cover transition-transform hover:scale-105 dark:brightness-90`}
+            preferProxy
             src={src}
           />
         </a>

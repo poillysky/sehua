@@ -48,21 +48,63 @@ def test_clip_keeps_mp4_capacity_prefix_with_dash():
     clipped = clip_subresource_display_name(raw)
     assert "公雞俱樂部" in clipped
     assert "PART.2" in clipped
-    assert clipped.startswith("[MP4/1.5G]")
-    post = "♀精品国产自拍㊣精彩合集♀[07.26]"
-    assert (
-        resolve_sub_filename(
-            inner_name=raw,
-            title=post,
-            hash_value="AA34BC478E275D1AD715D37EBC3B97715D385F30",
-        )
-        != post
+
+
+def test_clip_keeps_leading_nickname_bracket_dash():
+    """tid=22924760：【白菜妹妹】-正文 / 【91晚晚】-… 不得裁空回落帖标题。"""
+    from parsers.resource_names import clip_subresource_display_name
+
+    cabbage = (
+        "【白菜妹妹】- 影文并茂心中的白月光沦为多人胯下玩物 "
+        "狗链乳夹调教女神 淫荡的内心迎接抽插精液灌射"
     )
-    assert "公雞俱樂部" in resolve_sub_filename(
-        inner_name=raw,
-        title=post,
-        hash_value="AA34BC478E275D1AD715D37EBC3B97715D385F30",
+    clipped = clip_subresource_display_name(cabbage)
+    assert clipped.startswith("【白菜妹妹】")
+    assert "影文并茂" in clipped
+
+    wan = (
+        "【91晚晚】- 身材一流非常火的刚下海新人 逼嫩人美水多又淫荡 "
+        "操穴狂流白浆 不看后悔活超好期待后续更新[6V]"
     )
+    clipped2 = clip_subresource_display_name(wan)
+    assert clipped2.startswith("【91晚晚】")
+    assert "刚下海新人" in clipped2
+
+    # 真结构尾巴仍截
+    with_tail = clip_subresource_display_name(cabbage + "【影片大小】：757MB")
+    assert "影文并茂" in with_tail
+    assert "影片大小" not in with_tail
+    assert "757" not in with_tail
+
+
+def test_clip_keeps_ascii_studio_bracket_prefix():
+    """tid=23957210：【影片标题】：[スタジオVG] 片名… 勿把 スタジオ 当元数据尾巴裁成 '['。"""
+    from parsers.resource_names import clip_subresource_display_name
+
+    raw = "[スタジオVG] 3Dループアニメビフォアフ伝説女僧侶リリアの悲劇"
+    clipped = clip_subresource_display_name(raw)
+    assert clipped.startswith("[スタジオVG]")
+    assert "リリア" in clipped
+
+
+def test_clip_keeps_decorative_bracket_before_comma():
+    """tid=26644722：??【新流】，正文… 逗号不是字段分隔，勿裁成只剩 ??。"""
+    from parsers.resource_names import (
+        clip_subresource_display_name,
+        is_weak_subresource_name,
+    )
+
+    raw = "??【新流】，私人健身教练，约炮大神【黑杰克】付费无水印，淫乱病房，医院无套打炮实录"
+    clipped = clip_subresource_display_name(raw)
+    assert clipped.startswith("??【新流】")
+    assert "私人健身教练" in clipped
+    assert "黑杰克" in clipped
+    assert not is_weak_subresource_name(clipped, post_title="合集帖")
+    # 真结构字段（冒号分隔）仍截断
+    with_fmt = clip_subresource_display_name(raw + "【影片格式】：MP4")
+    assert "私人健身教练" in with_fmt
+    assert "影片格式" not in with_fmt
+    assert not with_fmt.endswith("MP4")
 
 
 def test_resolve_keeps_subresource_title():
@@ -102,6 +144,64 @@ def test_resolve_uses_description_subtitle():
         )
         == "真·资源名"
     )
+
+
+def test_resolve_skips_title_fallback_when_description_has_real_name():
+    """弱名(=帖标题)不得挡住 description 里的【影片名称】（tid=21973527 类误判）。"""
+    title = "★●最新の中文字幕㊣↗️精彩合集↘️♀[09.27]"
+    real = "[MIRD-260C]〜我是一个幻想发明家〜我要让布布键盘学院的女孩们的乳头变得敏感"
+    got = resolve_sub_filename(
+        inner_name=title,
+        title=title,
+        hash_value="A" * 40,
+        description=f"【影片名称】：{real}\n【影片大小】：6.81GB\n【影片格式】：MP4",
+    )
+    assert got == real
+    assert got != title
+
+
+def test_resolve_skips_decoration_only_heart():
+    """【影片名称】：❤️ 是装饰占位，不得当子名；无更好候选时才回落帖标题。"""
+    from parsers.resource_names import is_decoration_only_filename, is_weak_subresource_name
+
+    assert is_decoration_only_filename("❤️")
+    assert is_decoration_only_filename("??")
+    assert is_weak_subresource_name("❤️", post_title="合集帖")
+    title = "合集帖标题"
+    got = resolve_sub_filename(
+        inner_name="❤️",
+        title=title,
+        hash_value="B" * 40,
+        description="【影片名称】：❤️\n【影片大小】：2330MB",
+    )
+    assert got == title
+
+
+def test_clip_keeps_heart_decorative_bracket_before_comma():
+    """❤️【重磅群交】，正文… 不得被截成纯 ❤️（曾把中文逗号当结构分隔，tid=22128012）。"""
+    from parsers.content import _clip_field_value
+    from parsers.resource_names import clip_subresource_display_name, is_decoration_only_filename
+
+    raw = (
+        "❤️【重磅群交】，夫妻交流群线下聚会性轰趴群交三部曲，"
+        "直击换妻淫乱现场，场面堪比岛国A片，超级淫乱(3V)"
+    )
+    clipped = clip_subresource_display_name(raw)
+    assert "重磅群交" in clipped
+    assert "超级淫乱" in clipped
+    assert not is_decoration_only_filename(clipped)
+    assert _clip_field_value(raw, label="影片名称").find("重磅群交") >= 0
+
+
+def test_clip_keeps_decor_bracket_before_underscore():
+    """64【海砂原创】_玩弄… 不得被截成 64（下划线不作结构分隔，tid=24592539）。"""
+    from parsers.content import _clip_field_value
+    from parsers.resource_names import clip_subresource_display_name
+
+    raw = "64【海砂原创】_玩弄捆绑舞蹈系芭蕾少女极限驷马与对镜高抬腿sp惩罚"
+    clipped = clip_subresource_display_name(raw)
+    assert clipped == raw
+    assert "海砂原创" in _clip_field_value(raw, label="影片名称")
 
 
 def test_subtitle_from_description_prefers_film():

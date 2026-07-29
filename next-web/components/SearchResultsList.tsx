@@ -35,12 +35,15 @@ export default function SearchResultsList({
   cost_time = 0,
   total_count = 0,
   searchOption,
+  japanPrefs = false,
 }: {
   resultList: SearchResultsListProps["resources"];
   keywords: string[];
   cost_time: number;
   total_count: number;
   searchOption: SearchOption;
+  /** 保留日本分区偏好作用域 */
+  japanPrefs?: boolean;
 }) {
   const router = useRouter();
   const isSSR = useIsSSR();
@@ -73,6 +76,9 @@ export default function SearchResultsList({
     params.set("filterTime", newSearchOption.filterTime);
     params.set("filterSize", newSearchOption.filterSize);
     params.set("matchMode", newSearchOption.matchMode);
+    if (japanPrefs) {
+      params.set("jp", "1");
+    }
 
     router.push(`/search?${params.toString()}`);
   };

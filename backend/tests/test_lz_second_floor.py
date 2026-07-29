@@ -100,6 +100,43 @@ def test_main_post_magnet_keeps_reply_out():
     assert h2 not in hashes
 
 
+def test_title_claims_ed2k_allows_reply_supplement():
+    """tid=3300074：标题宣称 115eD2k，楼主只贴夸克，回帖补 ed2k 应入库。"""
+    ed2k = "ed2k://|file|0207zhengyi.7z|4857700065|C7484664B24FAE1A684FABEEB6088E6B|/"
+    html = f"""
+    <html><body>
+    <span id="thread_subject">【自转】【夸克/115eD2k】正义君合集【3V/4.53G/2配额】</span>
+    <div id="post_1">
+      <div class="authi"><img src="static/image/common/ico_lz.png" />&nbsp;楼主</div>
+      <div id="postmessage_111">
+        【资源链接】夸克 https://pan.quark.cn/s/e766a75f4c25?pwd=NxVB
+      </div>
+    </div>
+    <div id="post_2">
+      <div class="authi">热心路人</div>
+      <div id="postmessage_222">
+        <div class="blockcode"><ol><li>{ed2k}</ol></div>
+      </div>
+    </div>
+    Powered by Discuz!
+    </body></html>
+    """
+    html = html + ("<!-- pad -->" * 900)
+    corpus = extract_link_corpus_html(html)
+    assert "0207zhengyi.7z" in corpus
+    parsed = parse_thread_dual(html, preferred_link="magnet", tid=3300074)
+    assert any(a.hash.upper() == "C7484664B24FAE1A684FABEEB6088E6B" for a in parsed.assets)
+    out = judge_thread_html(
+        html,
+        board_fid="95",
+        forum_id="sehuatang",
+        list_title="【自转】【夸克/115eD2k】正义君合集【3V/4.53G/2配额】",
+        preferred_link="magnet",
+        tid=3300074,
+    )
+    assert out.verdict == "import"
+
+
 def test_tid2625357_style_lz_second_floor_magnet():
     """一楼只有简介、楼主二楼贴磁力（tid 2625357 形态）。"""
     h = "44AE2C54CBECE13E275312DA35964B5C866194DB"

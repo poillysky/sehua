@@ -12,7 +12,7 @@ import { SearchInput } from "@/components/SearchInput";
 import { SiteLogoLink } from "@/components/SiteLogoLink";
 import { SettingsNavLink } from "@/components/SettingsNavLink";
 import { FloatTool } from "@/components/FloatTool";
-import { boardPath, categoryHref, findByFid, legacyFidRedirect } from "@/config/boards";
+import { boardPath, categoryHref, findByFid, isJapanBrowseContext, legacyFidRedirect } from "@/config/boards";
 import { BROWSE_PAGE_MAX, BROWSE_PAGE_SIZE } from "@/config/constant";
 
 export const dynamic = "force-dynamic";
@@ -64,12 +64,13 @@ export default async function BoardAllResourcesPage({
     offset: (page - 1) * BROWSE_PAGE_SIZE,
     board_parent: ctx.parent.name,
   });
+  const japanPrefs = isJapanBrowseContext(fid);
 
   return (
     <>
       <div className="mx-auto flex w-full max-w-6xl items-center gap-1 px-3 pt-3 md:px-4 lg:max-w-7xl">
         <SiteLogoLink />
-        <SearchInput />
+        <SearchInput japanPrefs={japanPrefs} />
         <SettingsNavLink />
       </div>
       <ForumShell

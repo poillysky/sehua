@@ -5,8 +5,11 @@ function escapeRegExp(s: string): string {
 }
 
 function pushCode(out: Set<string>, prefix: string, num: string) {
-  const rawNum = (num || "").toUpperCase();
+  let rawNum = (num || "").toUpperCase();
   if (!rawNum) return;
+  // 列表只要「前缀-数字」：去掉 C/CX/U 等社区尾缀，非纯数字丢弃
+  rawNum = rawNum.replace(/[A-Z]+$/, "");
+  if (!/^\d{2,6}$/.test(rawNum)) return;
   out.add(`${prefix.toUpperCase()}-${rawNum}`);
 }
 
@@ -110,10 +113,21 @@ export function compareCodes(a: string, b: string): number {
   return ka[2].localeCompare(kb[2]);
 }
 
-/** 点番号 → 精确搜索 */
-export function codeSearchHref(code: string): string {
+/** 点番号 → 精确搜索；日本分区可带 jp=1 以启用中文/破解偏好 */
+export function codeSearchHref(
+  code: string,
+  options?: { japanPrefs?: boolean },
+): string {
   const params = new URLSearchParams();
   params.set("keyword", code);
   params.set("matchMode", "exact");
+  if (options?.japanPrefs) {
+    params.set("jp", "1");
+  }
   return `/search?${params.toString()}`;
+}
+
+/** FC2 / FC2-PPV 番号（封面偏横图） */
+export function isFc2Code(code: string): boolean {
+  return /^FC2(-PPV)?-\d+/i.test(String(code || "").trim());
 }

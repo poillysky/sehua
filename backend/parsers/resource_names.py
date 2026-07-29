@@ -394,8 +394,10 @@ STRUCTURE_BRACKET_PAIRS: tuple[tuple[str, str], ...] = (
     ("[", "]"),
 )
 
-# 标签后常见分隔：有冒号/等号才更像结构字段（片名里装饰【合集】常无此分隔）
-_STRUCTURE_LABEL_SEP_CLASS = r"[:：︰﹒．.｜|/／·・•‧＝=\-_;；,，〜～﹕→]"
+# 标签后常见分隔：冒号/等号/竖线等才像结构字段。
+# 勿含中英文逗号——片名装饰「??【新流】，正文…」会被误切成只剩 ??（tid=26644722）
+# 勿含下划线——「64【海砂原创】_玩弄…」会被误切成 64（tid=24592539）
+_STRUCTURE_LABEL_SEP_CLASS = r"[:：︰﹒．.｜|/／·・•‧＝=\-;；〜～﹕→]"
 
 
 def detect_structure_bracket_pair(text: str | None) -> tuple[str, str]:
@@ -516,12 +518,36 @@ def is_missing_filename(filename: str | None, *, hash_value: str = "") -> bool:
     return False
 
 
+# 仅装饰：emoji / 心形 / 星号 / 问号占位（【影片名称】：❤️）——无实质片名
+_DECORATION_ONLY_RE = re.compile(
+    r"^[\s"
+    r"\U0001F300-\U0001FAFF"  # emoji
+    r"\u2600-\u27BF"  # misc symbols
+    r"\uFE0E\uFE0F\u200D"  # VS / ZWJ
+    r"❤♥♡❥❣️⭐★☆✦✧✩✪✫✬✭✮✯✰＊※●○◆◇■□▲△▼▽☀☁☂♠♣♪♫♀♂㊣"
+    r"\?？!！~～·•‧。.、，,;；:：\-—__=+|/／\\|]"
+    r"+$"
+)
+
+
+def is_decoration_only_filename(filename: str | None) -> bool:
+    """整段只有装饰符/emoji/问号，没有中文或目录号实质。"""
+    n = (filename or "").strip()
+    if not n:
+        return True
+    if re.search(r"[\u4e00-\u9fffA-Za-z0-9]", n):
+        return False
+    return bool(_DECORATION_ONLY_RE.fullmatch(n))
+
+
 def is_acceptable_short_title(text: str | None) -> bool:
     """短片名是否可保留：1～3 字中文、短目录号（OM1），勿因 len<4 误杀。"""
     t = (text or "").strip()
     if not t or len(t) > 80:
         return False
     if is_hard_dirty_filename(t) or is_dirty_filename(t):
+        return False
+    if is_decoration_only_filename(t):
         return False
     if len(t) >= 4:
         return True
@@ -547,6 +573,22 @@ def salvage_short_subresource_name(raw: str | None) -> str:
     return ""
 
 
+def is_collection_album_header(name: str | None) -> bool:
+    """合集专辑头，不是子资源真名。
+
+    - ★★最强優片★★…專輯…[日期]
+    - ★◇精彩の…精品合集…♀[日期]
+    """
+    n = re.sub(r"\s+", "", (name or "").strip())
+    if not n:
+        return False
+    if re.match(r"^★*最强優片★*.*專輯.*\[\d[\d.]*\]$", n):
+        return True
+    if re.match(r"^★◇精彩の.+精品合集.+♀\[[\d.]+\]$", n):
+        return True
+    return False
+
+
 def is_weak_subresource_name(
     name: str | None,
     *,
@@ -560,7 +602,15 @@ def is_weak_subresource_name(
     t = (post_title or "").strip()
     if t and n == t:
         return True
+    # 空格差异仍视作帖标题（如 [12.27 ] vs [12.27]）
+    if t and re.sub(r"\s+", "", n) == re.sub(r"\s+", "", t):
+        return True
+    # 合集专辑头当子名（tid=23486061：subject 被改成单片名，首条仍写专辑头）
+    if is_collection_album_header(n):
+        return True
     if len(n) < 1:
+        return True
+    if is_decoration_only_filename(n):
         return True
     # 短串：无中文且非目录号 → 弱（如单字母 "A"）
     if len(n) < 4 and not is_acceptable_short_title(n):
@@ -654,10 +704,12 @@ _FILENAME_ATTACH_UI_RE = re.compile(
     r")"
 )
 
-# 日文贩卖页元数据尾巴
+# 日文贩卖页元数据尾巴（须像字段标签：前空白 + 冒号），勿误伤 [スタジオVG] 等片名前缀
 _FILENAME_JP_META_TAIL_RE = re.compile(
     r"(?:"
-    r"主演女優|主演女优|スタジオ|シリーズ|カテゴリで探す|カテゴリ\s*:"
+    r"(?:^|[\s　])(?:主演女優|主演女优|スタジオ|シリーズ)\s*[:：]"
+    r"|カテゴリで探す"
+    r"|カテゴリ\s*:"
     r")"
 )
 
@@ -795,12 +847,16 @@ def resolve_sub_filename(
     link_uri: str = "",
     description: str = "",
 ) -> str:
-    """子资源名：【影片名称】/【资源名称】→ 主资源标题；绝不用 ed2k/dn 链内名。"""
+    """子资源名：【影片名称】/【资源名称】→ 主资源标题；绝不用 ed2k/dn 链内名。
+
+    弱名（=帖标题 / 仅装饰 emoji / 过短）不得抢在 description 真名之前；
+    帖标题仅作最后回落（单资源常见）。
+    """
     main = (title or "").strip()
     link_name = filename_from_link(link_uri)
     link_norm = link_name.strip().lower()
 
-    def _usable(cand: str | None) -> str:
+    def _usable(cand: str | None, *, allow_title: bool = False) -> str:
         text = (cand or "").strip()
         if not text or is_missing_filename(text, hash_value=hash_value):
             return ""
@@ -815,22 +871,27 @@ def resolve_sub_filename(
             return ""
         if is_missing_filename(text, hash_value=hash_value):
             return ""
+        # 弱名（含 =帖标题、仅❤️/??）跳过，让 description 真名有机会上位
+        if not allow_title and is_weak_subresource_name(
+            text, post_title=main, hash_value=hash_value
+        ):
+            return ""
         return text
 
     for cand in (
         inner_name,
         subtitle_from_description(description),
     ):
-        got = _usable(cand)
+        got = _usable(cand, allow_title=False)
         if got:
             return got[:FILENAME_SOFT_MAX]
     if main:
-        clipped = _usable(main)
+        clipped = _usable(main, allow_title=True)
         if clipped:
             return clipped[:FILENAME_SOFT_MAX]
         soft = sanitize_filename_markup(main)
         soft = _clip_filename_structure_tail(soft)
-        if soft and not is_dirty_filename(soft):
+        if soft and not is_dirty_filename(soft) and not is_decoration_only_filename(soft):
             return soft[:FILENAME_SOFT_MAX]
     h = (hash_value or "").strip() or "resource"
     return h[:FILENAME_SOFT_MAX]
@@ -892,18 +953,25 @@ def _clip_filename_structure_tail(text: str | None) -> str:
         val,
         re.I,
     )
-    if m:
+    # 仅截「片名后」的结构尾巴；开头命中多为装饰前缀（勿裁空）
+    if m and m.start() > 0:
         cut_at = m.start()
     m_gen = None
     for cand in _LABELED_STRUCTURE_FIELD_RE.finditer(val):
         if _is_media_capacity_labeled_field(cand.group(0)):
+            continue
+        # 【白菜妹妹】-正文 / 【91晚晚】-…：前缀昵称+分隔，不是结构字段
+        if cand.start() == 0:
             continue
         m_gen = cand
         break
     if m_gen and (cut_at is None or m_gen.start() < cut_at):
         cut_at = m_gen.start()
     if cut_at is not None:
-        val = val[:cut_at].strip()
+        kept = val[:cut_at].strip()
+        # 裁空则放弃本次截断，避免回落帖标题（tid=22924760）
+        if kept:
+            val = kept
     m2 = _FILENAME_BUY_TIP_RE.search(val)
     if m2:
         val = val[: m2.start()].strip()

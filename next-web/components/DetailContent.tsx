@@ -21,7 +21,6 @@ import { useHydration } from "@/hooks/useHydration";
 import { ResourcePreviewImages, Ed2kCopyButton } from "@/components/ResourceMeta";
 import { P115SaveButton } from "@/components/P115SaveButton";
 import { Ed2kResourceDetailList } from "@/components/Ed2kResourceDetailList";
-import { DetailBackButton } from "@/components/DetailBackButton";
 
 const cardDividerClass = "bg-gray-200 dark:bg-slate-700";
 const cardBandClass = "bg-gray-100 dark:bg-slate-800";
@@ -97,9 +96,7 @@ export const DetailContent = ({ data }: { data: Ed2kResourceProps }) => {
 
   return (
     <>
-      <DetailBackButton />
-
-      <h1 className="mt-3 text-xl md:text-2xl break-words font-semibold leading-snug">
+      <h1 className="text-xl md:text-2xl break-words font-semibold leading-snug">
         {displayTitle}
       </h1>
 

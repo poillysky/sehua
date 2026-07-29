@@ -24,11 +24,14 @@ export const SearchInput = ({
   defaultValue = "",
   isReplace = false,
   variant = "default",
+  japanPrefs = false,
 }: {
   defaultValue?: string;
   isReplace?: boolean;
   /** 右上角紧凑搜索条：输入 + 类型 + 按钮 */
   variant?: "default" | "hero";
+  /** 日本分区：搜索带 jp=1，启用中文/破解偏好 */
+  japanPrefs?: boolean;
 }) => {
   const [keyword, setKeyword] = useState("");
   const [matchMode, setMatchMode] = useState<MatchMode>(DEFAULT_MATCH_MODE);
@@ -102,6 +105,10 @@ export const SearchInput = ({
 
     if (matchMode && matchMode !== "smart") {
       params.set("matchMode", matchMode);
+    }
+
+    if (japanPrefs || searchParams.get("jp") === "1") {
+      params.set("jp", "1");
     }
 
     saveSearchPreferences({ matchMode });

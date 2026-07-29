@@ -113,8 +113,9 @@ def test_shared_preview_zh():
     b = _asset("B" * 40, "乙", size=1, prev=img)
     groups = [("甲", a, [a]), ("乙", b, [b])]
     rep = build_shape_report(_parsed("双资源", [a, b]), named_groups=groups)
-    assert any("预览图完全相同" in w for w in rep.warnings)
-    assert rep.verdict == "structure_fail"
+    assert not any("预览图完全相同" in w for w in rep.warnings)
+    assert rep.verdict == "ok"
+    assert "info:shared_preview" in rep.tags
 
 
 def test_title_count_mismatch_zh():

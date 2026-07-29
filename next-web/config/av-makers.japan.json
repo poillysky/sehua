@@ -2,291 +2,478 @@
   {
     "maker": "S1",
     "kind": "有码",
-    "description": "エスワン（S1 NO.1 STYLE）。日本一线头部厂：强调高清摄影、灯光与服化道，女优多为专属或头部资源，作品偏「豪华感偶像向」——剧情服务女优人设，少粗糙素人风。检索时优先看 SSIS / SONE。",
-    "prefixes": ["SSIS", "SONE", "SSNI", "SOE", "ONED", "OFJE"],
+    "description": "一线头部厂。高清制作、专属女优，偏豪华偶像向。现行看 SNOS / SONE。",
+    "prefixes": [
+      "SNOS",
+      "SONE",
+      "SSIS",
+      "SSNI",
+      "SNIS",
+      "SOE",
+      "ONED",
+      "OFJE",
+      "ONSD",
+      "SPS"
+    ],
     "prefix_notes": {
-      "SSIS": "约 2020 起主力单片线，封面与包装统一感强，常见当红专属女优",
-      "SONE": "接棒 SSIS 的新主力编号，近期新作多落在此系列",
-      "SSNI": "2017–2021 前后主力，大量经典片源与人气女优作品集中于此",
-      "SOE": "更早期主力编号，老片、经典女优时期常见",
-      "ONED": "S1 早期编号体系，片龄偏老，画质与企划风格更「古典」",
-      "OFJE": "精选/合集盘，多女优或主题打包，适合一次搜系列精选"
+      "SNOS": "2025 起现行主力",
+      "SONE": "2023–2025 主力",
+      "SSIS": "2021–2023 主力",
+      "SSNI": "2017–2021 主力",
+      "SNIS": "2013–2017 主力",
+      "SOE": "2008–2013 主力",
+      "ONED": "2004–2008 早期",
+      "OFJE": "精选合集（2016 起）",
+      "ONSD": "早期精选合集",
+      "SPS": "True Love / 特典线"
     }
   },
   {
     "maker": "MOODYZ",
     "kind": "有码",
-    "description": "Moodyz（ムーディーズ）。老牌综合大厂，一条厂牌下多条产品线并存：主流女优单片、强企划主题、漫画改编、精选合集都有。风格不如 S1 统一「华丽」，但题材覆盖面最广，冷门题材也常能搜到。",
-    "prefixes": ["MIDV", "MIDE", "MIAA", "MIMK", "MIBD", "MIAB", "MIRD"],
+    "description": "老牌综合大厂，题材覆盖最广。现行主力 MIDA，历史线 MIDV / MIDE / MIDD。",
+    "prefixes": [
+      "MIDA",
+      "MIDV",
+      "MIDE",
+      "MIDD",
+      "MIAB",
+      "MIAA",
+      "MIAE",
+      "MIAD",
+      "MIMK",
+      "MIRD",
+      "MIGD",
+      "MIFD",
+      "MIBD",
+      "MIZD"
+    ],
     "prefix_notes": {
-      "MIDV": "现行主力单片，近年专属/主力女优新作多在此",
-      "MIDE": "上一代主力单片，2010 年代中后期大量代表作",
-      "MIAA": "偏企划、主题、特殊设定向，不一定走「纯女优形象片」",
-      "MIMK": "漫画/二次元改编向特色线，原作粉常认这个前缀",
-      "MIBD": "精选、总集、主题合集盘",
-      "MIAB": "系列作品线，常按主题或女优延续编号",
-      "MIRD": "系列/精选向，适合按主题打包检索"
+      "MIDA": "现行主力单片",
+      "MIDV": "2021–2024 主力",
+      "MIDE": "2013–2021 主力",
+      "MIDD": "2005–2013 主力",
+      "MIAB": "企划 / Acid 现行",
+      "MIAA": "企划 / Acid 上一代",
+      "MIAE": "企划 / Acid 更早",
+      "MIAD": "企划 / Acid 早期",
+      "MIMK": "漫画改编线",
+      "MIRD": "大型企划 / Real",
+      "MIGD": "硬核 / Gati 线",
+      "MIFD": "新人 Fresh 线",
+      "MIBD": "精选合集（旧）",
+      "MIZD": "精选合集（新）"
     }
   },
   {
     "maker": "IDEA POCKET",
     "kind": "有码",
-    "description": "Idea Pocket（アイデアポケット）。以「美形女优 + 精致影像」著称，服装、场景、分镜偏时尚杂志感，少脏乱纪实风。粉丝多冲女优脸与造型，而不是极端玩法企划。",
-    "prefixes": ["IPZZ", "IPX", "IPZ", "IPTD", "IDBD", "SUPD"],
+    "description": "美形女优 + 精致影像，偏时尚杂志感，少纪实脏乱风。",
+    "prefixes": [
+      "IPZZ",
+      "IPX",
+      "IPZ",
+      "IPTD",
+      "IPSD",
+      "IDBD",
+      "SUPD",
+      "IPVR"
+    ],
     "prefix_notes": {
-      "IPZZ": "现行主力单片，近年新作优先看这个",
-      "IPX": "上一代主力，大量人气女优成长期作品",
-      "IPZ": "再上一代主力，片库深、经典多",
-      "IPTD": "早期主力编号，老片检索用",
-      "IDBD": "精选/合集，多女优或主题剪辑",
-      "SUPD": "特定企划/系列线，非普通单片主力"
+      "IPZZ": "现行主力",
+      "IPX": "2017–2022 主力",
+      "IPZ": "2012–2017 主力",
+      "IPTD": "2002–2012 主力",
+      "IPSD": "Beauty Venus 等企划",
+      "IDBD": "精选合集",
+      "SUPD": "Digital Channel",
+      "IPVR": "VR 专线"
     }
   },
   {
     "maker": "PRESTIGE",
     "kind": "有码",
-    "description": "プレステージ（PRESTIGE）。强项是「发现新人 + 系列化包装」：AB 系走专属/准专属女优路线，另有大量素人、街拍、纪实感企划。整体比一线大厂更「贴近街头与素人感」，系列名辨识度高。",
-    "prefixes": ["ABF", "ABP", "ABS", "CHN", "YRH", "PPT", "TRE", "BLO"],
+    "description": "擅发现新人与系列包装；AB 系 ABS→ABP→ABW→ABF，另有素人街拍。",
+    "prefixes": [
+      "ABF",
+      "ABW",
+      "ABP",
+      "ABS",
+      "CHN",
+      "YRH",
+      "PPT",
+      "TRE",
+      "BLO"
+    ],
     "prefix_notes": {
-      "ABF": "ABSOLUTELY 系现行编号，专属女优单片主力",
-      "ABP": "ABSOLUTELY 上一代，大量成名女优代表作",
-      "ABS": "ABSOLUTELY 更早期编号",
-      "CHN": "街拍/素人约会纪实风，故事感强",
-      "YRH": "主题企划系列，设定先行",
-      "PPT": "企划系列线，偏概念包装",
-      "TRE": "企划系列，常按主题连续出",
-      "BLO": "企划系列，风格因主题而异"
+      "ABF": "AB 系现行（2023 起）",
+      "ABW": "AB 系 2020–2023",
+      "ABP": "AB 系 2013–2020",
+      "ABS": "AB 系早期",
+      "CHN": "街拍素人纪实",
+      "YRH": "主题企划",
+      "PPT": "概念企划",
+      "TRE": "主题系列",
+      "BLO": "企划系列"
     }
   },
   {
     "maker": "SOD Create",
     "kind": "有码",
-    "description": "SOD Create（ソフト・オン・デマンド）。双轨特色：一边是 STARS 专属女优的明星制造线，一边是 SD 开头的实验、恶搞、纪录片式强企划。敢做「社会实验感」和非常规设定，和纯偶像厂差异明显。",
-    "prefixes": ["STARS", "SDDE", "SDMU", "SDNM", "STAR", "SDJS"],
+    "description": "双轨：SODSTAR（START / STARS）专属线，与 SD 实验/恶搞强企划并重。",
+    "prefixes": [
+      "START",
+      "STARS",
+      "STAR",
+      "SDDE",
+      "SDMU",
+      "SDNM",
+      "SDJS",
+      "SDMT"
+    ],
     "prefix_notes": {
-      "STARS": "专属女优主力线，包装最「明星化」，新作关注度高",
-      "SDDE": "经典强企划系列（含著名奇葩/实验设定），辨识度极高",
-      "SDMU": "企划向单片，主题多变",
-      "SDNM": "素人、人妻、纪实招募向，偏真实感",
-      "STAR": "STARS 之前的专属线旧编号",
-      "SDJS": "社内职员/内部人设企划，SOD 特色玩法之一"
+      "START": "SODSTAR 现行（2024 起）",
+      "STARS": "SODSTAR 上一代",
+      "STAR": "SODSTAR 更早",
+      "SDDE": "经典强企划",
+      "SDMU": "主题企划",
+      "SDNM": "素人 / 人妻纪实",
+      "SDJS": "社内职员企划",
+      "SDMT": "素人企划旧线"
     }
   },
   {
     "maker": "Madonna",
     "kind": "有码",
-    "description": "マドンナ（Madonna）。人妻、熟女戏剧的标杆厂：剧本常围绕家庭、禁忌、伦理冲突，女优年龄层与人设明显偏「人妻/熟女魅力」，不是少女清新路线。",
-    "prefixes": ["JUQ", "JUY", "JUX", "JUC", "OBA", "ROE"],
+    "description": "人妻 / 熟女戏剧标杆。现行 JUR，历史 JUQ / JUY 等。",
+    "prefixes": [
+      "JUR",
+      "JUQ",
+      "JUL",
+      "JUY",
+      "JUX",
+      "JUC",
+      "JUKD",
+      "JUSD",
+      "OBA",
+      "ROE",
+      "URE"
+    ],
     "prefix_notes": {
-      "JUQ": "现行主力单片，新人妻向代表作多在此",
-      "JUY": "上一代主力，片库极深",
-      "JUX": "更早主力编号",
-      "JUC": "早期主力，老片检索",
-      "OBA": "更偏熟女年龄层与气质的系列",
-      "ROE": "主题/系列企划线"
+      "JUR": "现行主力",
+      "JUQ": "上一代主力",
+      "JUL": "JUQ 前一代",
+      "JUY": "更早主力",
+      "JUX": "再早主力",
+      "JUC": "早期主力",
+      "JUKD": "最早期编号",
+      "JUSD": "精选合集",
+      "OBA": "偏熟女气质",
+      "ROE": "主题企划",
+      "URE": "漫画原作线"
     }
   },
   {
     "maker": "FALENO",
     "kind": "有码",
-    "description": "FALENO。较新的高规格厂牌，强调 4K/高画质制作与专属女优运营，作品量相对精，走「少而精 + 颜值与影像质量」路线，不像老厂那样海量系列并行。",
-    "prefixes": ["FSDSS", "FCDSS"],
+    "description": "较新高规格厂牌，4K / 高画质，少而精的专属女优路线。",
+    "prefixes": [
+      "FSDSS",
+      "FCDSS"
+    ],
     "prefix_notes": {
-      "FSDSS": "主力单片番号，专属女优新作几乎都在这",
-      "FCDSS": "精选、总集、主题合集"
+      "FSDSS": "主力单片",
+      "FCDSS": "精选合集"
     }
   },
   {
     "maker": "kawaii",
     "kind": "有码",
-    "description": "kawaii*。明确「可爱、清新、少女感」定位：妆造偏甜、剧情服务反差与初恋感，少重口与极端凌辱向。冲女优萌属性与清新气质时优先看这家。",
-    "prefixes": ["CAWD", "KWBD", "KAWD"],
+    "description": "可爱清新少女感，偏甜妆与初恋反差，少重口。",
+    "prefixes": [
+      "CAWD",
+      "KAWD",
+      "KWBD",
+      "KAPD"
+    ],
     "prefix_notes": {
-      "CAWD": "现行主力单片",
-      "KWBD": "精选/合集盘",
-      "KAWD": "上一代主力，经典可爱系作品多"
+      "CAWD": "现行主力",
+      "KAWD": "上一代主力",
+      "KWBD": "精选合集",
+      "KAPD": "合辑 / 旁支"
     }
   },
   {
     "maker": "E-BODY",
     "kind": "有码",
-    "description": "E-BODY。以身材（曲线、肉感、高可视度体型）为第一卖点的厂牌，选角与镜头更服务「身体视觉」，剧情相对次要。喜欢肉感/高身材冲击力的优先检索。",
-    "prefixes": ["EBOD", "MKCK"],
+    "description": "身材卖点第一。现行多见 EBWH，经典 EBOD。",
+    "prefixes": [
+      "EBWH",
+      "EBOD",
+      "MKCK",
+      "EYAN"
+    ],
     "prefix_notes": {
-      "EBOD": "主力单片，女优身材卖点通常写得很直白",
-      "MKCK": "精选合集，按身材主题打包常见"
+      "EBWH": "现行主力倾向",
+      "EBOD": "经典主力",
+      "MKCK": "身材主题合集",
+      "EYAN": "人妻线"
     }
   },
   {
     "maker": "Attackers",
     "kind": "有码",
-    "description": "アタッカーズ（Attackers）。强剧情、强风格厂：凌辱、囚禁、复仇、禁忌等「暗黑戏剧」是招牌，表演与剧本权重高于普通企划片。口味偏重、喜欢完整故事线的用户常盯这家。",
-    "prefixes": ["ATID", "SHKD", "RBD", "ADN", "JBD"],
+    "description": "强剧情暗黑戏剧：凌辱、囚禁、复仇、禁忌是招牌。",
+    "prefixes": [
+      "ATID",
+      "SHKD",
+      "RBD",
+      "RBK",
+      "ADN",
+      "JBD",
+      "ATKD",
+      "SSPD"
+    ],
     "prefix_notes": {
-      "ATID": "剧情企划主力之一，设定完整、故事感强",
-      "SHKD": "经典凌辱向长寿系列，辨识度极高",
-      "RBD": "戏剧/凌辱剧情向",
-      "ADN": "人妻禁忌、家庭伦理戏剧色彩浓",
-      "JBD": "高强度、更极致风格的一条线"
+      "ATID": "剧情企划主力",
+      "SHKD": "经典凌辱系列",
+      "RBD": "龙缚戏剧线",
+      "RBK": "RBD 后继",
+      "ADN": "人妻禁忌戏剧",
+      "JBD": "蛇缚 / 高强度",
+      "ATKD": "精选合集",
+      "SSPD": "Super Special 企划"
     }
   },
   {
     "maker": "OPPAI",
     "kind": "有码",
-    "description": "OPPAI。巨乳题材专精厂，选角与镜头几乎全部围绕胸部卖点展开，系列命名和封面信息都很直接。冲巨乳标签时比综合厂更「对口」。",
-    "prefixes": ["PPPE", "PPPD", "PPSD"],
+    "description": "巨乳题材专精，选角与镜头几乎都围绕胸部卖点。",
+    "prefixes": [
+      "PPPE",
+      "PPPD",
+      "PPBD",
+      "PPSD"
+    ],
     "prefix_notes": {
-      "PPPE": "现行主力单片",
-      "PPPD": "上一代主力，片源非常多",
-      "PPSD": "系列/精选向"
+      "PPPE": "现行主力",
+      "PPPD": "上一代主力",
+      "PPBD": "精选合集",
+      "PPSD": "多女优 / 系列"
     }
   },
   {
     "maker": "本中",
     "kind": "有码",
-    "description": "本中（ほんなか）。以「中出」为核心卖点的主题厂，企划与文案高度统一，少绕弯子。相对综合厂，标签更单一、检索意图更明确。",
-    "prefixes": ["HMN", "HND", "HNDB"],
+    "description": "以中出为核心卖点的主题厂，标签清晰、检索意图明确。",
+    "prefixes": [
+      "HMN",
+      "HND",
+      "HNDB",
+      "HNDS"
+    ],
     "prefix_notes": {
-      "HMN": "现行主力单片",
-      "HND": "上一代主力，经典存量大",
-      "HNDB": "精选/合集"
+      "HMN": "现行主力",
+      "HND": "上一代主力",
+      "HNDB": "精选合集",
+      "HNDS": "大型企划"
     }
   },
   {
     "maker": "プレミアム",
     "kind": "有码",
-    "description": "プレミアム（Premium）。偏「高级感女优片」：妆造、场景、摄影更精致，定位介于一线华丽厂与普通企划厂之间，强调质感与女优形象，而非奇葩设定。",
-    "prefixes": ["PRED", "PGD", "PJD"],
+    "description": "偏高级感女优片：妆造与摄影更精致，重质感形象。",
+    "prefixes": [
+      "PRED",
+      "PGD",
+      "PBD",
+      "PJD"
+    ],
     "prefix_notes": {
-      "PRED": "现行主力单片",
+      "PRED": "现行主力",
       "PGD": "上一代主力",
-      "PJD": "系列番号，存量相对少"
+      "PBD": "精选合集",
+      "PJD": "系列番号"
     }
   },
   {
     "maker": "WANZ",
     "kind": "有码",
-    "description": "ワンズファクトリー（WANZ）。企划火力强、玩法敢推，常见高强度主题、痴女向、夸张设定。节奏快、刺激感优先，不走清新偶像路线。",
-    "prefixes": ["WAAA", "WANZ"],
+    "description": "企划火力强、玩法敢推，偏痴女与高强度刺激。",
+    "prefixes": [
+      "WAAA",
+      "WANZ",
+      "BMW"
+    ],
     "prefix_notes": {
-      "WAAA": "现行主力单片，近年新作主看这个",
-      "WANZ": "厂牌同名旧系/系列编号，老片常见"
+      "WAAA": "现行主力",
+      "WANZ": "同名旧系编号",
+      "BMW": "精选合集"
     }
   },
   {
     "maker": "ダスッ！",
     "kind": "有码",
-    "description": "ダスッ！。以激烈、压迫感、强刺激演出为特色，镜头与表演都更「凶」，适合重口取向；和清新、唯美厂是相反一端。",
-    "prefixes": ["DAZD", "DASD"],
+    "description": "激烈压迫感与强刺激演出。现行 DASS，旧线 DASD。",
+    "prefixes": [
+      "DASS",
+      "DASD",
+      "DAZD"
+    ],
     "prefix_notes": {
-      "DAZD": "精选/合集，方便一次看高强度代表作",
-      "DASD": "主力单片番号"
+      "DASS": "现行主力",
+      "DASD": "上一代主力",
+      "DAZD": "精选合集"
     }
   },
   {
     "maker": "Fitch",
     "kind": "有码",
-    "description": "Fitch。丰满、肉感、熟女身材路线：强调体型厚度与成熟魅力，和少女瘦骨、清新系形成对比。封面与文案通常直接打身材标签。",
-    "prefixes": ["JUNY", "JUFE", "NIMA"],
+    "description": "丰满肉感 / 熟女身材路线，强调体型厚度与成熟魅力。",
+    "prefixes": [
+      "JUFE",
+      "JUNY",
+      "NIMA",
+      "JUFD",
+      "JFB"
+    ],
     "prefix_notes": {
-      "JUNY": "丰满/肉感向系列之一",
-      "JUFE": "常见主力系列，片量较大",
-      "NIMA": "相关系列番号"
+      "JUFE": "常见主力系列",
+      "JUNY": "丰满肉感向",
+      "NIMA": "漫画原作线",
+      "JUFD": "上一代主力",
+      "JFB": "精选 / 旧线"
     }
   },
   {
     "maker": "アリスJAPAN",
     "kind": "有码",
-    "description": "アリスJAPAN（Alice Japan）。历史很长的老牌厂，片库跨度大，含不少经典女优时期作品；风格相对传统主流，不是近年那种强标签细分厂。",
-    "prefixes": ["DVAJ", "DV"],
+    "description": "历史很长的老牌厂，片库跨度大，风格偏传统主流。",
+    "prefixes": [
+      "DVAJ",
+      "DV"
+    ],
     "prefix_notes": {
-      "DVAJ": "现行较常见的单片编号",
-      "DV": "早期/经典编号，老片检索关键"
+      "DVAJ": "现行常见编号",
+      "DV": "早期经典编号"
     }
   },
   {
     "maker": "MAX-A",
     "kind": "有码",
-    "description": "MAX-A。综合型老牌厂，题材不极端偏科，女优单片与系列企划都有；存在感不如 S1/Moodyz 头部，但特定女优或系列粉会精确搜前缀。",
-    "prefixes": ["XVSR", "SACE"],
+    "description": "综合型老牌厂，题材不极端偏科，女优单片与系列都有。",
+    "prefixes": [
+      "XVSR",
+      "SACE",
+      "XV",
+      "SRXV"
+    ],
     "prefix_notes": {
-      "XVSR": "较常见的主力单片前缀",
-      "SACE": "系列向番号"
+      "XVSR": "常见主力前缀",
+      "SACE": "系列番号",
+      "XV": "更早 Karen 线",
+      "SRXV": "旧蓝光 / 系列"
     }
   },
   {
     "maker": "素人企划",
     "kind": "有码",
-    "description": "素人系常见出品合集（シロウトTV、ナンパ机关、高级素人等）。特色是「非专属女优包装」：纪实感、街拍/约拍流程、番号常为数字+字母。质量与风格因系列差异很大，建议按前缀分开搜。",
-    "prefixes": ["SIRO", "200GANA", "300MIUM", "259LUXU", "300MAAN", "326EVA"],
+    "description": "素人系常见出品合集。非专属包装，风格因系列差异大，建议按前缀分搜。",
+    "prefixes": [
+      "SIRO",
+      "200GANA",
+      "300MIUM",
+      "259LUXU",
+      "300MAAN",
+      "326EVA"
+    ],
     "prefix_notes": {
-      "SIRO": "シロウトTV：摄影棚面试/素人拍摄风，产量高",
-      "200GANA": "ナンパ系：搭讪→带回家的纪实流程感强",
-      "300MIUM": "素人纪实/约拍向，都市感文案常见",
-      "259LUXU": "Luxury 素人：包装更精、偏「高级素人」人设",
-      "300MAAN": "素人企划线，风格接近纪实约拍",
-      "326EVA": "素人企划线，按卖家/系列口碑筛选更稳"
+      "SIRO": "シロウトTV 面试风",
+      "200GANA": "搭讪纪实系",
+      "300MIUM": "都市约拍纪实",
+      "259LUXU": "Luxury 高级素人",
+      "300MAAN": "素人约拍企划",
+      "326EVA": "素人企划线"
     }
   },
   {
     "maker": "加勒比",
     "kind": "无码",
-    "description": "Caribbeancom（カリビアンコム）。无码站片头部之一：更新勤、系列全、画质相对稳定，女优与企划覆盖面广。搜无码「能稳定出片」时最常打的厂；番号/文件名里常带 carib、caribbeancom。",
-    "prefixes": ["CARIB", "Caribbean"],
+    "description": "无码站片头部之一：更新勤、系列全、画质相对稳定。",
+    "prefixes": [
+      "CARIB",
+      "Caribbean"
+    ],
     "prefix_notes": {
-      "CARIB": "中文圈常用简写检索，命中文件名/标题里的 carib",
-      "Caribbean": "英文站名写法，适合精确搜 caribbeancom / Caribbean"
+      "CARIB": "常用简写检索",
+      "Caribbean": "英文站名写法"
     }
   },
   {
     "maker": "一本道",
     "kind": "无码",
-    "description": "1pondo（一本道）。与加勒比齐名的无码老牌站片：制作完整、系列传承久，偏「正规站片」观感（相对个人配信）。很多经典无码女优作品集中于此。",
-    "prefixes": ["1PON", "1pondo"],
+    "description": "与加勒比齐名的无码老牌站片，制作完整、系列传承久。",
+    "prefixes": [
+      "1PON",
+      "1pondo"
+    ],
     "prefix_notes": {
-      "1PON": "中文圈常用简写，标题党/文件名高频",
-      "1pondo": "官方英文名写法，精确检索更干净"
+      "1PON": "常用简写",
+      "1pondo": "官方英文名"
     }
   },
   {
     "maker": "HEYZO",
     "kind": "无码",
-    "description": "HEYZO。无码站片厂，番号格式高度统一（常见 HEYZO-四位数字），便于精确搜索。风格偏正规站片，产量与系列完整度较好，适合「记住编号就能精确定位」的用法。",
-    "prefixes": ["HEYZO"],
+    "description": "番号格式统一（HEYZO-四位），便于精确搜索的无码站片厂。",
+    "prefixes": [
+      "HEYZO"
+    ],
     "prefix_notes": {
-      "HEYZO": "厂牌同名番号；建议搭配数字，如 HEYZO-0123"
+      "HEYZO": "建议搭配数字，如 HEYZO-0123"
     }
   },
   {
     "maker": "东京热",
     "kind": "无码",
-    "description": "Tokyo Hot（東京熱）。早期无码名厂，经典片与传奇女优存量大，历史地位高；但片龄整体偏老，画质/包装与近年站片不同。冲经典口碑、怀旧片库时优先。",
-    "prefixes": ["TokyoHot"],
+    "description": "早期无码名厂，经典存量大；整体片龄偏老，适合冲经典口碑。",
+    "prefixes": [
+      "TokyoHot"
+    ],
     "prefix_notes": {
-      "TokyoHot": "站名检索词；标题里也可能是东京热 / Tokyo Hot"
+      "TokyoHot": "站名检索词"
     }
   },
   {
     "maker": "FC2",
     "kind": "无码",
-    "description": "FC2PPV：个人与小工作室付费配信平台，不是单一厂牌。特色是「卖家决定质量」——有极高水平工作室，也有随意手机片。番号多为 FC2-PPV-一串数字；筛选时应看卖家、时长、预览，而不是只看平台名。",
-    "prefixes": ["FC2", "FC2PPV"],
+    "description": "个人/小工作室付费配信平台。质量看卖家，不看平台名。",
+    "prefixes": [
+      "FC2",
+      "FC2PPV"
+    ],
     "prefix_notes": {
-      "FC2": "平台简称，结果面最宽，需再收窄卖家或完整编号",
-      "FC2PPV": "付费配信常见完整写法，比单搜 FC2 更贴配信贴"
+      "FC2": "平台简称，结果面宽",
+      "FC2PPV": "付费配信完整写法"
     }
   },
   {
     "maker": "其它无码",
     "kind": "无码",
-    "description": "加勒比/一本道/HEYZO/东京热/FC2 之外的常见无码来源。各站定位差很大：人妻熟女、清纯系、合集站、Cosplay 向等，不要混当同一厂；按前缀分开搜更准。",
-    "prefixes": ["PACO", "10MU", "10musume", "XXX-AV", "Cospuri"],
+    "description": "上述之外的常见无码来源，定位差很大，请按前缀分开搜。",
+    "prefixes": [
+      "PACO",
+      "10MU",
+      "10musume",
+      "XXX-AV",
+      "Cospuri"
+    ],
     "prefix_notes": {
-      "PACO": "pacopacomama：人妻/熟女无码向，年龄层与气质明确",
-      "10MU": "10musume（天然むすめ）简写，偏清纯少女站片风",
-      "10musume": "天然むすめ正式检索写法",
-      "XXX-AV": "XXX-AV 等合集/站片来源，风格杂，看具体标题",
-      "Cospuri": "Cosplay 无码向，角色扮演与服装卖点突出"
+      "PACO": "人妻 / 熟女向",
+      "10MU": "天然むすめ简写",
+      "10musume": "天然むすめ正式写法",
+      "XXX-AV": "合集 / 站片来源",
+      "Cospuri": "Cosplay 向"
     }
   }
 ]

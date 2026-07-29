@@ -15,6 +15,8 @@ import {
   parseEd2kLink,
   RESOURCE_HASH_REGEX,
 } from "@/utils/resource";
+import { loadPrefixCodesCached } from "@/lib/prefixCodeCache";
+import { coverHostPriority, landscapeUrlHint } from "@/lib/imageProxy";
 import { compareCodes, extractCodesForPrefix } from "@/utils/av-code";
 
 /** 公开可见：磁力 / 电驴 / 115分享 / 占位 stub */
@@ -326,8 +328,8 @@ const extractKeywords = (
   return keywords;
 };
 
-const SEARCH_TITLE_EXPR =
-  "COALESCE(NULLIF(TRIM(rs.title), ''), r.filename)";
+/** 资源库检索字段：只搜资源名，不用帖子标题 */
+const SEARCH_NAME_EXPR = "COALESCE(r.filename, '')";
 
 const buildKeywordFilter = (
   keywords: { keyword: string; required: boolean }[],
@@ -340,14 +342,14 @@ const buildKeywordFilter = (
 
   if (matchMode === "exact") {
     return keywords
-      .map((_, i) => `(${SEARCH_TITLE_EXPR} ILIKE $${i + 1})`)
+      .map((_, i) => `(${SEARCH_NAME_EXPR} ILIKE $${i + 1})`)
       .join(" AND ");
   }
 
   if (matchMode === "fuzzy") {
     const matchParts = keywords.map(
       (_, i) =>
-        `(CASE WHEN ${SEARCH_TITLE_EXPR} ILIKE $${i + 1} THEN 1 ELSE 0 END)`,
+        `(CASE WHEN ${SEARCH_NAME_EXPR} ILIKE $${i + 1} THEN 1 ELSE 0 END)`,
     );
     const matchCountExpr = matchParts.join(" + ");
     const minMatches = Math.max(1, Math.ceil(keywords.length * 0.5));
@@ -356,11 +358,11 @@ const buildKeywordFilter = (
     if (fullKeywordParamIndex) {
       const fullKeywordRef = `$${fullKeywordParamIndex}`;
 
-      return `(${tokenMatch} OR word_similarity(${fullKeywordRef}, ${SEARCH_TITLE_EXPR}) > 0.25 OR similarity(${SEARCH_TITLE_EXPR}, ${fullKeywordRef}) > 0.15)`;
+      return `(${tokenMatch} OR word_similarity(${fullKeywordRef}, ${SEARCH_NAME_EXPR}) > 0.25 OR similarity(${SEARCH_NAME_EXPR}, ${fullKeywordRef}) > 0.15)`;
     }
 
     if (keywords.length === 1) {
-      return `(${SEARCH_TITLE_EXPR} ILIKE $1)`;
+      return `(${SEARCH_NAME_EXPR} ILIKE $1)`;
     }
 
     return tokenMatch;
@@ -370,7 +372,7 @@ const buildKeywordFilter = (
   const optionalKeywords: string[] = [];
 
   keywords.forEach(({ required }, i) => {
-    const condition = `(${SEARCH_TITLE_EXPR} ILIKE $${i + 1})`;
+    const condition = `(${SEARCH_NAME_EXPR} ILIKE $${i + 1})`;
 
     if (required) {
       requiredKeywords.push(condition);
@@ -396,16 +398,16 @@ const buildRelevanceOrderBy = (
   const scoreParts = keywords.map(({ required }, i) => {
     const weight = i === 0 ? 10 : required ? 3 : 1;
 
-    return `(CASE WHEN ${SEARCH_TITLE_EXPR} ILIKE $${i + 1} THEN ${weight} ELSE 0 END)`;
+    return `(CASE WHEN ${SEARCH_NAME_EXPR} ILIKE $${i + 1} THEN ${weight} ELSE 0 END)`;
   });
 
   const fullKeywordRef = `$${fullKeywordParamIndex}`;
 
   return `(${[
     ...scoreParts,
-    `(CASE WHEN lower(${SEARCH_TITLE_EXPR}) = lower(${fullKeywordRef}) THEN 100 ELSE 0 END)`,
-    `(CASE WHEN lower(${SEARCH_TITLE_EXPR}) LIKE lower(${fullKeywordRef}) || '%' THEN 40 ELSE 0 END)`,
-    `(COALESCE(word_similarity(${fullKeywordRef}, ${SEARCH_TITLE_EXPR}), 0) * 60 + COALESCE(similarity(${SEARCH_TITLE_EXPR}, ${fullKeywordRef}), 0) * 40)`,
+    `(CASE WHEN lower(${SEARCH_NAME_EXPR}) = lower(${fullKeywordRef}) THEN 100 ELSE 0 END)`,
+    `(CASE WHEN lower(${SEARCH_NAME_EXPR}) LIKE lower(${fullKeywordRef}) || '%' THEN 40 ELSE 0 END)`,
+    `(COALESCE(word_similarity(${fullKeywordRef}, ${SEARCH_NAME_EXPR}), 0) * 60 + COALESCE(similarity(${SEARCH_NAME_EXPR}, ${fullKeywordRef}), 0) * 40)`,
   ].join(" + ")}) DESC, size DESC, created_at DESC`;
 };
 
@@ -427,6 +429,52 @@ const buildOrderBy = (
 
   return orderByMap[sortType] || orderByMap.default;
 };
+
+/** 中文偏好命中：高清中文字幕板 / 番号尾 C·CX / 文件名含「字幕」 */
+function chinesePreferPredicateSql(): string {
+  return `(
+    COALESCE(rs.board_name, '') LIKE '%高清中文字幕%'
+    OR COALESCE(rs.board_fid, '') = '103'
+    OR COALESCE(rs.board_fid, '') LIKE '103:%'
+    OR ${SEARCH_NAME_EXPR} ~* '-[0-9]{2,6}(CX|C)([._[:space:]-]|$)'
+    OR ${SEARCH_NAME_EXPR} ILIKE '%-C%'
+    OR (
+      ${SEARCH_NAME_EXPR} ILIKE '%字幕%'
+      AND ${SEARCH_NAME_EXPR} NOT ILIKE '%无字幕%'
+    )
+  )`;
+}
+
+/** 破解偏好命中：U/UC/CX、破解、马赛克破坏、无码；高清中文字幕·无码板也算 */
+function crackPreferPredicateSql(): string {
+  return `(
+    COALESCE(rs.board_fid, '') = '103:481'
+    OR COALESCE(rs.board_name, '') LIKE '%无码高清%'
+    OR COALESCE(rs.board_name, '') LIKE '%無碼高清%'
+    OR COALESCE(rs.board_name, '') LIKE '%高清中文字幕%无码%'
+    OR COALESCE(rs.board_name, '') LIKE '%高清中文字幕%無碼%'
+    OR ${SEARCH_NAME_EXPR} ~* '-[0-9]{2,6}(CX|UC|U)([._[:space:]-]|$)'
+    OR ${SEARCH_NAME_EXPR} ILIKE '%-U%'
+    OR ${SEARCH_NAME_EXPR} ILIKE '%_U%'
+    OR ${SEARCH_NAME_EXPR} ILIKE '%破解%'
+    OR ${SEARCH_NAME_EXPR} ILIKE '%马赛克破坏%'
+    OR ${SEARCH_NAME_EXPR} ILIKE '%馬賽克破壞%'
+    OR ${SEARCH_NAME_EXPR} ILIKE '%无码%'
+    OR ${SEARCH_NAME_EXPR} ILIKE '%無碼%'
+  )`;
+}
+
+/** 偏好硬过滤：中文 / 破解可叠加（AND） */
+function buildPreferFilterSql(prefs?: {
+  preferChinese?: boolean;
+  preferCrack?: boolean;
+}): string {
+  const parts: string[] = [];
+  if (prefs?.preferChinese) parts.push(chinesePreferPredicateSql());
+  if (prefs?.preferCrack) parts.push(crackPreferPredicateSql());
+  if (!parts.length) return "";
+  return parts.map((p) => `AND ${p}`).join("\n");
+}
 
 const buildTimeFilter = (filterTime: string) => {
   const timeFilterMap: Record<string, string> = {
@@ -504,6 +552,10 @@ export async function search(_: unknown, { queryInput }: any) {
     const fullKeywordParamIndex = keywords.length + 1;
     const limitParamIndex = keywords.length + scoringExtraParams.length + 1;
     const offsetParamIndex = keywords.length + scoringExtraParams.length + 2;
+    const preferFilterSql = buildPreferFilterSql({
+      preferChinese: Boolean(queryInput.preferChinese),
+      preferCrack: Boolean(queryInput.preferCrack),
+    });
     const orderBy = buildOrderBy(
       sortType,
       keywords,
@@ -524,6 +576,7 @@ FROM ed2k_resources r
 ${SOURCE_META_JOIN}
 WHERE (${keywordFilter})
 ${PUBLIC_RESOURCE_FILTER}
+${preferFilterSql}
 ${timeFilter.replace(/created_at/g, "r.created_at").replace(/size/g, "r.size")}
 ${sizeFilter.replace(/size/g, "r.size")}
 ORDER BY ${orderBy.replace(/size/g, "r.size").replace(/created_at/g, "r.created_at")}
@@ -547,6 +600,7 @@ FROM ed2k_resources r
 ${SOURCE_META_JOIN}
 WHERE (${keywordFilter})
 ${PUBLIC_RESOURCE_FILTER}
+${preferFilterSql}
 ${timeFilter.replace(/created_at/g, "r.created_at").replace(/size/g, "r.size")}
 ${sizeFilter.replace(/size/g, "r.size")}
 `;
@@ -790,9 +844,129 @@ export type PrefixCodeHit = {
   sampleHash: string | null;
 };
 
-const PREFIX_SCAN_ROW_CAP = 8000;
+/** 单次扫描行上限；只取 filename，配合进程缓存 */
+const PREFIX_SCAN_ROW_CAP = 20000;
 
-/** 按前缀扫描库内标题/文件名，汇总已有番号编号（升序） */
+function escapeLikePattern(s: string): string {
+  return s.replace(/\\/g, "\\\\").replace(/%/g, "\\%").replace(/_/g, "\\_");
+}
+
+/** 封面优先级：色花堂图床 > 普通 > DMM/imagetwist；FC2 再偏横图 URL */
+function coverRank(
+  url: string | null | undefined,
+  opts?: { preferLandscape?: boolean },
+): number {
+  let score = coverHostPriority(url) * 10;
+  if (opts?.preferLandscape && url) {
+    score += landscapeUrlHint(url);
+  }
+  return score;
+}
+
+function isFc2Prefix(prefix: string): boolean {
+  const p = String(prefix || "").trim().toUpperCase();
+  return p === "FC2" || p === "FC2PPV";
+}
+
+function pickRankedCovers(
+  images?: string[] | null,
+  limit = 6,
+  opts?: { preferLandscape?: boolean },
+): string[] {
+  const list = filterPreviewImages(images);
+  if (!list.length) return [];
+  return [...list]
+    .sort((a, b) => coverRank(b, opts) - coverRank(a, opts))
+    .slice(0, limit);
+}
+
+function mergeCoverUrls(
+  prev: string[] | undefined,
+  next: string[],
+  opts?: { preferLandscape?: boolean },
+): string[] {
+  const map = new Map<string, string>();
+  for (const u of [...(prev || []), ...next]) {
+    if (u) map.set(u, u);
+  }
+  return Array.from(map.values())
+    .sort((a, b) => coverRank(b, opts) - coverRank(a, opts))
+    .slice(0, 6);
+}
+
+/**
+ * 轻量扫描：filename + 预览图，去重排序后进缓存。
+ * 同番号多资源：收集多封面候选（优先稳定图床）。
+ */
+async function scanPrefixCodeIndex(prefix: string): Promise<{
+  items: Array<{ code: string; coverUrl: string | null; coverUrls: string[] }>;
+  matchedRows: number;
+}> {
+  const needle = String(prefix || "").trim();
+  if (!needle) return { items: [], matchedRows: 0 };
+
+  return loadPrefixCodesCached(needle, async () => {
+    const like = `%${escapeLikePattern(needle)}%`;
+    const landscapeOpts = isFc2Prefix(needle)
+      ? { preferLandscape: true }
+      : undefined;
+    const sql = `
+SELECT
+  r.filename,
+  rs.preview_images
+FROM ed2k_resources r
+LEFT JOIN LATERAL (
+  SELECT preview_images
+  FROM resource_sources
+  WHERE hash = r.hash
+  ORDER BY coalesce(array_length(preview_images, 1), 0) DESC, created_at DESC
+  LIMIT 1
+) rs ON true
+WHERE TRUE
+${PUBLIC_RESOURCE_FILTER}
+  AND COALESCE(r.filename, '') ILIKE $1 ESCAPE '\\'
+ORDER BY
+  CASE WHEN coalesce(array_length(rs.preview_images, 1), 0) > 0 THEN 0 ELSE 1 END,
+  r.created_at DESC
+LIMIT $2
+`;
+    const { rows } = await query(sql, [like, PREFIX_SCAN_ROW_CAP]);
+    const map = new Map<
+      string,
+      { code: string; coverUrl: string | null; coverUrls: string[] }
+    >();
+
+    for (const row of rows as Array<{
+      filename: string | null;
+      preview_images?: string[] | null;
+    }>) {
+      const blob = row.filename || "";
+      if (!blob) continue;
+      const covers = pickRankedCovers(row.preview_images, 6, landscapeOpts);
+      for (const code of extractCodesForPrefix(blob, needle)) {
+        const prev = map.get(code);
+        if (!prev) {
+          map.set(code, {
+            code,
+            coverUrl: covers[0] || null,
+            coverUrls: covers,
+          });
+        } else {
+          const merged = mergeCoverUrls(prev.coverUrls, covers, landscapeOpts);
+          prev.coverUrls = merged;
+          prev.coverUrl = merged[0] || null;
+        }
+      }
+    }
+
+    const items = Array.from(map.values()).sort((a, b) =>
+      compareCodes(a.code, b.code),
+    );
+    return { items, matchedRows: rows.length };
+  });
+}
+
+/** 按前缀扫描库内文件名，汇总已有番号编号（升序） */
 export async function listPrefixCodes(
   prefix: string,
   {
@@ -814,63 +988,67 @@ export async function listPrefixCodes(
 
   const safeLimit = Math.min(Math.max(Number(limit) || 200, 1), 500);
   const safeOffset = Math.max(Number(offset) || 0, 0);
-  const like = `%${needle}%`;
-
-  const sql = `
-SELECT
-  r.hash,
-  r.filename,
-  rs.title
-FROM ed2k_resources r
-${LIST_META_JOIN}
-WHERE TRUE
-${PUBLIC_RESOURCE_FILTER}
-  AND (
-    COALESCE(rs.title, '') ILIKE $1
-    OR COALESCE(r.filename, '') ILIKE $1
-  )
-LIMIT $2
-`;
 
   try {
-    const { rows } = await query(sql, [like, PREFIX_SCAN_ROW_CAP]);
-    const map = new Map<string, PrefixCodeHit>();
-
-    for (const row of rows as Array<{
-      hash: string;
-      filename: string | null;
-      title: string | null;
-    }>) {
-      const blob = `${row.title || ""} ${row.filename || ""}`;
-      const codes = extractCodesForPrefix(blob, needle);
-      if (!codes.length) continue;
-      for (const code of codes) {
-        const prev = map.get(code);
-        if (prev) {
-          prev.count += 1;
-        } else {
-          map.set(code, {
-            code,
-            count: 1,
-            sampleTitle: (row.title || row.filename || "").trim() || null,
-            sampleHash: row.hash || null,
-          });
-        }
-      }
-    }
-
-    const all = Array.from(map.values()).sort((a, b) =>
-      compareCodes(a.code, b.code),
-    );
+    const { items, matchedRows } = await scanPrefixCodeIndex(needle);
     return {
-      codes: all.slice(safeOffset, safeOffset + safeLimit),
-      total_codes: all.length,
-      matched_rows: rows.length,
+      codes: items.slice(safeOffset, safeOffset + safeLimit).map((it) => ({
+        code: it.code,
+        count: 1,
+        sampleTitle: null,
+        sampleHash: null,
+      })),
+      total_codes: items.length,
+      matched_rows: matchedRows,
     };
   } catch (error) {
     console.error("Error in listPrefixCodes:", error);
     throw new Error(
       `Failed to list prefix codes: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+}
+
+export type PrefixResourceHit = {
+  code: string;
+  coverUrl: string | null;
+  coverUrls: string[];
+};
+
+/** 按前缀列出库内番号，按数字升序（001 → 002 → …）；结果缓存后分页 */
+export async function listPrefixResources(
+  prefix: string,
+  {
+    limit = 60,
+    offset = 0,
+  }: {
+    limit?: number;
+    offset?: number;
+  } = {},
+): Promise<{
+  items: PrefixResourceHit[];
+  total_count: number;
+  matched_rows: number;
+}> {
+  const needle = String(prefix || "").trim();
+  if (!needle) {
+    return { items: [], total_count: 0, matched_rows: 0 };
+  }
+
+  const safeLimit = Math.min(Math.max(Number(limit) || 60, 1), 200);
+  const safeOffset = Math.max(Number(offset) || 0, 0);
+
+  try {
+    const { items, matchedRows } = await scanPrefixCodeIndex(needle);
+    return {
+      items: items.slice(safeOffset, safeOffset + safeLimit),
+      total_count: items.length,
+      matched_rows: matchedRows,
+    };
+  } catch (error) {
+    console.error("Error in listPrefixResources:", error);
+    throw new Error(
+      `Failed to list prefix resources: ${error instanceof Error ? error.message : String(error)}`,
     );
   }
 }

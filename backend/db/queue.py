@@ -157,7 +157,11 @@ def canonical_thread_url(url: str, *, root: str = "", forum_id: str = "") -> str
 def dedupe_pending_by_tid(
     conn: Any, *, board_fid: str | int | list[str | int] | tuple[str | int, ...] | None = None
 ) -> int:
-    """合并同 tid 多条 pending（常见于 .net/.org 双入口）。保留一条，其余标 skipped。"""
+    """合并同 tid 多条 pending（常见于镜像双入口 / .net/.org）。
+
+    保留一条 pending，其余**直接删除**，不留 skipped + duplicate_tid_url 脏行
+    （管理端「跳过」列表不再出现这串英文）。
+    """
     cur = conn.cursor()
     board_clause, params = _board_fid_sql(board_fid)
     cur.execute(
@@ -177,17 +181,23 @@ def dedupe_pending_by_tid(
             AND tid IS NOT NULL
             {board_clause}
         )
-        UPDATE crawl_pages AS cp
-        SET status = 'skipped',
-            outcome = 'duplicate_tid_url',
-            updated_at = now()
-        FROM ranked
+        DELETE FROM crawl_pages AS cp
+        USING ranked
         WHERE cp.url = ranked.url
           AND ranked.rn > 1
         """,
         params or None,
     )
     n = int(cur.rowcount or 0)
+    # 清理历史：曾用 skipped/duplicate_tid_url 占位的镜像重复行
+    cur.execute(
+        """
+        DELETE FROM crawl_pages
+        WHERE page_type = 'thread'
+          AND outcome = 'duplicate_tid_url'
+        """
+    )
+    n += int(cur.rowcount or 0)
     if n:
         conn.commit()
     return n
@@ -242,6 +252,18 @@ def enqueue_thread(
     url = canonical_thread_url(url, forum_id=forum_id)
     tid = tid_from_url(url)
     cur = conn.cursor()
+    # 同论坛同 tid 已有任意状态行（含其它镜像 URL）→ 不再插第二条，避免重复队列
+    if tid is not None:
+        cur.execute(
+            """
+            SELECT 1 FROM crawl_pages
+            WHERE page_type = 'thread' AND tid = %s AND forum_id = %s
+            LIMIT 1
+            """,
+            (tid, forum_id or "sehuatang"),
+        )
+        if cur.fetchone():
+            return False
     cur.execute(
         """
         INSERT INTO crawl_pages (

@@ -1,4 +1,9 @@
 import { Ed2kResourceProps } from "@/types";
+import {
+  coverHostPriority,
+  isForumCoverHost,
+  isUnreliableCoverHost,
+} from "@/lib/imageProxy";
 
 /** 无有效子资源名：空、纯 hash、磁力占位 magnet-xxxxxxxx */
 const PLACEHOLDER_MAGNET_NAME_RE = /^magnet-[0-9a-f]{8}$/i;
@@ -223,7 +228,19 @@ export function filterPreviewImages(images?: string[] | null): string[] {
 
       return IMAGE_EXT_RE.test(lower) || lower.includes("/tupian/forum/");
     })
+    .sort((a, b) => coverHostPriority(b) - coverHostPriority(a))
     .slice(0, MAX_PREVIEW_IMAGES);
+}
+
+/**
+ * 多图展示（详情/列表条）：有色花堂图床时只展示色花堂，版面整齐；
+ * 否则去掉常挂的外链。封面探测仍用 filterPreviewImages 全量候选。
+ */
+export function galleryPreviewImages(images?: string[] | null): string[] {
+  const list = filterPreviewImages(images);
+  const forum = list.filter(isForumCoverHost);
+  if (forum.length) return forum;
+  return list.filter((u) => !isUnreliableCoverHost(u));
 }
 
 export { MAX_PREVIEW_IMAGES };

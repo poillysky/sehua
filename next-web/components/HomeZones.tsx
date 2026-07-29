@@ -9,20 +9,11 @@ export async function HomeZones() {
 
   return (
     <section className="home-zones relative z-[1] mt-6 flex flex-col gap-3 md:mt-8 md:gap-4">
-      <div className="px-0.5">
-        <h2 className="text-sm font-semibold tracking-wide text-foreground md:text-base">
-          {t("Boards.zones_title")}
-        </h2>
-        <p className="mt-1 text-xs text-default-500 md:text-sm">
-          {t("Boards.zones_subtitle")}
-        </p>
-      </div>
-
-      <div className="grid grid-cols-1 gap-3 sm:grid-cols-3 md:gap-4">
+      <div className="grid grid-cols-1 gap-3 md:gap-4">
         {BOARD_NAV.map((cat, index) => (
           <Link
             key={cat.category}
-            className="home-zone-card group relative flex min-h-[5.5rem] items-center gap-4 overflow-hidden rounded-2xl border border-default-200/70 bg-content1/90 px-4 py-4 transition-colors hover:border-primary/40 hover:bg-primary/[0.04] dark:border-slate-700/70 dark:bg-slate-900/55 dark:hover:border-primary/35 md:px-5 md:py-5"
+            className="home-zone-card group relative flex min-h-[5.25rem] items-center gap-4 overflow-hidden rounded-2xl border border-default-200/70 bg-content1/90 px-4 py-4 transition-colors hover:border-primary/40 hover:bg-primary/[0.04] dark:border-slate-700/70 dark:bg-slate-900/55 dark:hover:border-primary/35 md:px-5 md:py-5"
             href={categoryHref(index)}
           >
             <span

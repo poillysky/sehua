@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import html
+import re
 from dataclasses import replace
 from typing import Any
 
@@ -20,6 +22,30 @@ from parsers.links import DualParseResult, ParsedAsset
 from parsers.magnet import parse_capacity_bytes
 from parsers.resource_frame import build_resource_frame, format_frame_outcome, warnings_from_frame
 from parsers.resource_names import resolve_sub_filename
+
+
+def _norm_uri_dedupe_key(uri: str) -> str:
+    """同链仅实体编码 / 空白差异（&nbsp;、全角空格）时视为同一 URI。"""
+    text = html.unescape((uri or "").strip())
+    text = text.replace("\xa0", " ").replace("\u3000", " ")
+    text = re.sub(r"[ \t]+", " ", text)
+    return text
+
+
+_NAME_PUNCT_TRANS = str.maketrans(
+    {
+        "：": ":",
+        "︰": ":",
+        "＆": "&",
+        "\u3000": " ",
+    }
+)
+
+
+def _norm_resource_name_key(name: str) -> str:
+    """分组键：解实体 + 全角冒号/＆ 归一，避免假多资源名。"""
+    text = html.unescape((name or "").strip()).translate(_NAME_PUNCT_TRANS)
+    return re.sub(r"\s+", " ", text).strip()
 
 
 def _pick_group_primary(assets: list[ParsedAsset]) -> ParsedAsset:
@@ -213,6 +239,7 @@ def _group_assets_by_resource_name(
     """按资源名称分组；返回 [(resource_name, primary, members), ...]。"""
     groups: dict[str, list[ParsedAsset]] = {}
     order: list[str] = []
+    display_by_key: dict[str, str] = {}
     for asset in uniq:
         main_name = post_title or (asset.filename or "").strip() or asset.hash
         sub_name = resolve_sub_filename(
@@ -222,15 +249,18 @@ def _group_assets_by_resource_name(
             link_uri=asset.uri,
             description=asset.description or parsed.description or "",
         )
-        key = (sub_name or main_name or asset.hash or "").strip() or (asset.hash or "")
+        display = (sub_name or main_name or asset.hash or "").strip() or (asset.hash or "")
+        key = _norm_resource_name_key(display) or display
         if key not in groups:
             groups[key] = []
             order.append(key)
+            # 保留首次展示名（可能含全角冒号）
+            display_by_key[key] = display
         groups[key].append(asset)
     out: list[tuple[str, ParsedAsset, list[ParsedAsset]]] = []
     for key in order:
         members = groups[key]
-        out.append((key, _pick_group_primary(members), members))
+        out.append((display_by_key.get(key, key), _pick_group_primary(members), members))
     return out
 
 
@@ -261,11 +291,11 @@ def build_parse_frame(
     same_kind = [a for a in parsed.assets if a.link_kind == primary.link_kind] or [
         primary
     ]
-    # 按 URI 去重：同 hash 不同文件名仍算多份（配额对照）；完全相同 URI 才并掉
+    # 按 URI 去重：同 hash 不同文件名仍算多份（配额对照）；完全相同 URI（含仅实体编码差异）才并掉
     seen: set[str] = set()
     uniq: list[ParsedAsset] = []
     for asset in same_kind:
-        u = (asset.uri or "").strip()
+        u = _norm_uri_dedupe_key(asset.uri or "")
         h = (asset.hash or "").strip().upper()
         key = u or h
         if not key or key in seen:

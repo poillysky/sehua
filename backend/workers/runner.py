@@ -800,6 +800,8 @@ async def run_crawl_once(
                         crawler_config=cfg,
                         fetcher=fetcher,
                         forum_id=forum_id,
+                        # 待爬重跑须替换同帖旧资源，否则残名/错名 hash 行会残留
+                        replace_thread_assets=True,
                     )
                     result["crawled"] += 1
                     verdict = str(outcome.get("verdict") or "failed")

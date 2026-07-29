@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import html
 import re
 from dataclasses import dataclass
 
@@ -45,6 +46,37 @@ _GLUED_ED2K_RE = re.compile(
     r"(?:\|/?|/)?",
     re.IGNORECASE,
 )
+
+# Discuz BBCode：含 @ 文件名常被包成 [url]…[/url]（CF 解出后仍残留，会被 hard_dirty 整链丢掉）
+_BBCODE_URL_WRAP_RE = re.compile(r"\[url(?:=[^\]]*)?\](.*?)\[/url\]", re.I | re.S)
+# Discuz 用户卡片：www.98T.la[url=home.php?mod=space&uid=N]@[/url] (1).mp4
+# → 内层仅一个 @，须先还原，否则 salvage 会误捞成 (1).mp4（tid=3304545）
+_DISCUZ_AT_MENTION_URL_RE = re.compile(r"\[url=[^\]]+\]@\[/url\]", re.I)
+
+# Discuz 把含 @ 的 ed2k 渲成嵌套 <a>/script 时：|file| 段脏，但尾巴 |size|hash|/ 常还在
+# （tid=3405418：href 被拆、插 (0 Bytes)/script，后缀仍有 |976158193|B9DF…|/）
+_ED2K_HTML_POISONED_RE = re.compile(
+    r"ed2k://\|file\|"
+    r"(.{0,3000}?)"
+    r"\|(\d{3,})\|([A-Fa-f0-9]{32})\|/?",
+    re.IGNORECASE | re.DOTALL,
+)
+_ED2K_NAME_EXT = (
+    r"mp4|mkv|avi|wmv|ts|iso|mov|flv|m4v|rmvb|mpg|mpeg|zip|rar|7z|txt|ssa|ass"
+)
+_ED2K_HREF_NAME_RE = re.compile(
+    rf"""href=["'](?:https?://)?(www\.[^"'<>\s]+@[^"'<>\s]+\.(?:{_ED2K_NAME_EXT}))["']""",
+    re.I,
+)
+_ED2K_PLAIN_NAME_RE = re.compile(
+    rf"(www\.[^\s\[\]<>\"']+@[^\s\[\]<>\"']+\.(?:{_ED2K_NAME_EXT}))",
+    re.I,
+)
+_ED2K_ANY_FILE_RE = re.compile(
+    rf"([^\s\[\]<>\"']{{1,180}}\.(?:{_ED2K_NAME_EXT}))",
+    re.I,
+)
+_SCRIPT_BLOCK_RE = re.compile(r"(?is)<script\b[^>]*>.*?</script>")
 
 _FULLWIDTH_TRANS = str.maketrans(
     {
@@ -115,6 +147,71 @@ class Ed2kLink:
     display_name: str = ""
 
 
+def _extract_ed2k_filename_from_junk(junk: str) -> str:
+    """从 Discuz/CF 插烂的 |file| 段里捞真实文件名。"""
+    raw = junk or ""
+    m = _ED2K_HREF_NAME_RE.search(raw)
+    if m:
+        return html.unescape(m.group(1)).strip().rstrip("[/")
+    cleaned = _SCRIPT_BLOCK_RE.sub(" ", raw)
+    cleaned = re.sub(r"<[^>]+>", " ", cleaned)
+    cleaned = html.unescape(cleaned)
+    # 先还原 @用户卡片，再剥普通 [url]包名
+    cleaned = _DISCUZ_AT_MENTION_URL_RE.sub("@", cleaned)
+    cleaned = _BBCODE_URL_WRAP_RE.sub(r"\1", cleaned)
+    cleaned = re.sub(r"\(\s*0\s*Bytes\s*\)", " ", cleaned, flags=re.I)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    # 整段已是「…扩展名」：允许 www.x@ (1).mp4 这类空格，勿再被 ANY 切成 (1).mp4
+    m = re.fullmatch(
+        rf"(.+\.(?:{_ED2K_NAME_EXT}))",
+        cleaned,
+        flags=re.I,
+    )
+    if m:
+        name = m.group(1).strip().rstrip("[/")
+        if (
+            name
+            and "|" not in name
+            and "bytes" not in name.lower()
+            and not name.lower().startswith("http")
+            and not _is_poisoned_ed2k_filename(name)
+        ):
+            return name
+    m = _ED2K_PLAIN_NAME_RE.search(cleaned)
+    if m:
+        return m.group(1).strip().rstrip("[/")
+    m = _ED2K_ANY_FILE_RE.search(cleaned)
+    if m:
+        name = m.group(1).strip().rstrip("[/")
+        # 拒绝明显 UI 残片
+        if "bytes" in name.lower() or name.startswith("http"):
+            return ""
+        return name
+    return ""
+
+
+def _salvage_html_poisoned_ed2k(text: str) -> str:
+    """把「|file| + HTML 残骸 + |size|hash|」拼回干净 ed2k URI。"""
+
+    def _repl(match: re.Match[str]) -> str:
+        junk, size, file_hash = match.group(1), match.group(2), match.group(3)
+        # 已是干净名则不动，交给后续路径
+        if (
+            "<" not in junk
+            and "[url" not in junk.lower()
+            and "script" not in junk.lower()
+            and "\n" not in junk
+            and len(junk) < 300
+        ):
+            return match.group(0)
+        name = _extract_ed2k_filename_from_junk(junk)
+        if not name or _is_poisoned_ed2k_filename(name):
+            return match.group(0)
+        return f"ed2k://|file|{name}|{size}|{file_hash.upper()}|/"
+
+    return _ED2K_HTML_POISONED_RE.sub(_repl, text or "")
+
+
 def normalize_ed2k_corpus(text: str) -> str:
     """还原被掐字母 / 全角 / 空格拆开 / 缺斜杠的 ed2k 协议头。"""
     if not text:
@@ -137,6 +234,12 @@ def normalize_ed2k_corpus(text: str) -> str:
         lambda m: f"ed2k://|file|{m.group(1).strip()}|{m.group(2)}|{m.group(3).upper()}|/",
         out,
     )
+    # Discuz @用户卡片嵌进文件名：须在 HTML salvage / 剥 [url] 之前还原成裸 @
+    out = _DISCUZ_AT_MENTION_URL_RE.sub("@", out)
+    # Discuz 嵌套 <a>/script 残骸（须在剥 [url] 前，保留 href 线索）
+    out = _salvage_html_poisoned_ed2k(out)
+    # [url]www.98T.la@xxx.mp4[/url] → 裸文件名（tid=3219637 等）
+    out = _BBCODE_URL_WRAP_RE.sub(r"\1", out)
     return out
 
 
@@ -165,6 +268,9 @@ def _is_poisoned_ed2k_filename(filename: str) -> bool:
     name = (filename or "").strip()
     if not name:
         return True
+    # 残缺 CF 解码常出单字母/极短垃圾（如 data-cfemail 过短 → "w"）
+    if len(name) < 3:
+        return True
     if is_hard_dirty_filename(name):
         return True
     low = name.lower()
@@ -176,16 +282,19 @@ def _is_poisoned_ed2k_filename(filename: str) -> bool:
 
 
 def parse_ed2k_text(text: str) -> list[Ed2kLink]:
+    from parsers.content import restore_cloudflare_emails
     from parsers.resource_names import context_subresource_title
 
     results: list[Ed2kLink] = []
     # 按完整 URI 去重：同 hash 但文件名不同仍保留（配额按「下载份」计，
     # 如 tid=3524065 末条与首条同 hash、不同名，勿并成漏链）
     seen: set[str] = set()
-    blob = normalize_ed2k_corpus(text or "")
+    # 先解 CF 邮件保护，再 normalize（含剥 [url]），否则 |file| 段带 HTML/[url] 会被整链丢弃
+    blob = normalize_ed2k_corpus(restore_cloudflare_emails(text or ""))
 
     for match in ED2K_RE.finditer(blob):
-        filename = match.group(1).strip()
+        # 帖内常同时出现 & 与 &amp; 两份同链；解实体后再去重
+        filename = html.unescape(match.group(1).strip())
         if _is_poisoned_ed2k_filename(filename):
             continue
         size = int(match.group(2))

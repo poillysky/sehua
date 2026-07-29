@@ -16,6 +16,7 @@ import {
 } from "@/utils";
 import {
   filterPreviewImages,
+  galleryPreviewImages,
   getDescriptionField,
   getDisplayTitle,
   getExtractPassword,
@@ -285,7 +286,10 @@ export function ResourceFeedItem({
   const displayTitle = getDisplayTitle(item);
   const detailUrl = `/detail/${hexToBase64(item.hash)}`;
   const previewImages = filterPreviewImages(item.preview_images);
+  const galleryImages = galleryPreviewImages(item.preview_images);
   const coverImage = previewImages[0];
+  const thumbImages =
+    galleryImages.length > 1 ? galleryImages.slice(1) : [];
   const resourceType = getDescriptionField(item.description, "资源类型");
   const resourceSize = getDescriptionField(item.description, "资源大小");
   const resourceAmount = getDescriptionField(item.description, "资源数量");
@@ -373,7 +377,8 @@ export function ResourceFeedItem({
               <PreviewImage
                 alt={displayTitle}
                 className="h-24 w-24 rounded-lg border border-default-200 bg-default-100 object-cover md:h-28 md:w-28"
-                src={coverImage}
+                preferProxy
+                srcs={previewImages}
               />
             </div>
           ) : (
@@ -391,13 +396,14 @@ export function ResourceFeedItem({
           />
         </div>
 
-        {!compact && previewImages.length > 1 && (
-          <div className="mt-3 flex flex-wrap gap-2">
-            {previewImages.slice(1).map((src, index) => (
+        {!compact && thumbImages.length > 0 && (
+          <div className="mt-3 grid grid-cols-4 gap-2 sm:grid-cols-5 md:grid-cols-6">
+            {thumbImages.map((src, index) => (
               <PreviewImage
                 key={`${src}-${index}`}
                 alt={`preview-${index + 2}`}
-                className="h-20 w-20 rounded-md border border-default-200 bg-default-100 object-cover"
+                className="aspect-square w-full rounded-md border border-default-200 bg-default-100 object-cover"
+                preferProxy
                 src={src}
               />
             ))}

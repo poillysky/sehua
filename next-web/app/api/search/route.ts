@@ -1,3 +1,4 @@
+import { cookies } from "next/headers";
 import { NextResponse } from "next/server";
 import { z } from "zod";
 
@@ -17,6 +18,10 @@ import {
   normalizeMatchMode,
   normalizeSortType,
 } from "@/config/constant";
+import {
+  BROWSE_PREFS_COOKIE,
+  parseBrowsePrefsCookie,
+} from "@/hooks/useBrowsePreferences";
 
 const schema = z.object({
   keyword: z
@@ -76,7 +81,16 @@ const handler = async (request: Request) => {
   }
 
   try {
-    const cacheKey = getSearchCacheKey(safeParams);
+    const japanScope = searchParams.get("jp") === "1";
+    const browsePrefs = japanScope
+      ? parseBrowsePrefsCookie(cookies().get(BROWSE_PREFS_COOKIE)?.value)
+      : { preferChinese: false, preferCrack: false };
+    const queryInput = {
+      ...safeParams,
+      preferChinese: browsePrefs.preferChinese,
+      preferCrack: browsePrefs.preferCrack,
+    };
+    const cacheKey = getSearchCacheKey(queryInput);
     const cached = getCachedSearch(cacheKey);
 
     if (cached) {
@@ -97,7 +111,7 @@ const handler = async (request: Request) => {
       );
     }
 
-    const data = await searchResources(null, { queryInput: safeParams });
+    const data = await searchResources(null, { queryInput });
 
     setCachedSearch(cacheKey, data);
 

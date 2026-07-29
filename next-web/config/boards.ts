@@ -304,11 +304,11 @@ const LEGACY_FID_REDIRECT: Record<string, string> = {
   "36": "/b/mk-uncensored",
   "37": "/b/mk-censored",
   "104": "/b/mk-censored",
-  "103": "/c/1",
-  "107": "/c/1",
-  "39": "/c/1",
-  "151": "/c/1",
-  "160": "/c/1",
+  "103": "/c/2",
+  "107": "/c/2",
+  "39": "/c/2",
+  "151": "/c/2",
+  "160": "/c/2",
 };
 
 export function legacyFidRedirect(fid: string): string | null {
@@ -356,6 +356,56 @@ export function boardAllResourcesHref(parent: BoardNavParent): string {
 
 export function categoryHref(index: number): string {
   return categoryPath(index);
+}
+
+/**
+ * 分区层级后退目标（非浏览器历史）：
+ * 子类/前缀 → 版块 →（日本枢纽）→ 片区 → 首页
+ */
+export function resolveSectionParentHref(pathname: string): string {
+  const raw = String(pathname || "/").split("?")[0].trim();
+  const path = (raw.replace(/\/+$/, "") || "/") as string;
+  if (path === "/") return "/";
+
+  const cat = path.match(/^\/c\/(\d+)$/);
+  if (cat) return "/";
+
+  const subtype = path.match(/^\/b\/([^/]+)\/t\/([^/]+)$/);
+  if (subtype) {
+    return boardPath(decodeURIComponent(subtype[1]));
+  }
+
+  const all = path.match(/^\/b\/([^/]+)\/all$/);
+  if (all) {
+    return boardPath(decodeURIComponent(all[1]));
+  }
+
+  const board = path.match(/^\/b\/([^/]+)$/);
+  if (board) {
+    const fid = decodeURIComponent(board[1]);
+    const ctx = findByFid(fid);
+    if (!ctx) return "/";
+    if (ctx.group) return boardParentBrowseHref(ctx.group);
+    return categoryHref(ctx.categoryIndex);
+  }
+
+  return "/";
+}
+
+/** 是否日本分区（有码/无码/厂商前缀等）；中文·破解偏好仅此范围 */
+export function isJapanBrowseContext(
+  fid?: string | null,
+  typeid?: string | null,
+): boolean {
+  const f = String(fid || "").trim();
+  if (!f) return false;
+  if (f === "mk-japan" || f === "mk-censored" || f === "mk-uncensored") {
+    return true;
+  }
+  const t = String(typeid || "").trim();
+  const ctx = t ? findSubtype(f, t) || findByFid(f) : findByFid(f);
+  if (!ctx) return false;
+  return ctx.parent.name === "日本" || ctx.group?.name === "日本";
 }
 
 /** 旧 /browse?board_fid=141:689 → 新路径 */

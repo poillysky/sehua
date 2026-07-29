@@ -9,7 +9,7 @@ import { Providers } from "./providers";
 import { siteConfig } from "@/config/site";
 import { fontSans, fontNoto, fontMono } from "@/config/fonts";
 import { DemoMode } from "@/components/DemoMode";
-import { BgEffect } from "@/components/BgEffect";
+import { GlobalBackButton } from "@/components/PageBackButton";
 import { IosStandalone } from "@/components/IosStandalone";
 import { SafariChromeTint } from "@/components/SafariChromeTint";
 import { CHROME_DARK, CHROME_LIGHT } from "@/config/chrome";
@@ -91,7 +91,7 @@ export default async function RootLayout({
             <SafariChromeTint />
             <div className="app-shell relative flex h-full min-h-[100dvh] flex-col">
               <DemoMode />
-              <BgEffect />
+              <GlobalBackButton />
               <main className="container z-10 mx-auto w-full max-w-6xl flex-grow md:w-4/5">
                 {children}
               </main>

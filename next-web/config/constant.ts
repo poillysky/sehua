@@ -38,6 +38,8 @@ export const SEARCH_PAGE_MAX = 100;
 /** 板块分类列表：按收录量可翻页上限（每页 15 条） */
 export const BROWSE_PAGE_MAX = 5000;
 export const BROWSE_PAGE_SIZE = 15;
+/** 前缀番号网格：每页条数（3 列布局） */
+export const PREFIX_CODE_PAGE_SIZE = 60;
 
 export const DEFAULT_SORT_TYPE: SortType = "default";
 export const DEFAULT_FILTER_TIME: FilterTime = "all";
