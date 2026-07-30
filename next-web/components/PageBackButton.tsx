@@ -129,14 +129,17 @@ export function GlobalBackButton() {
       aria-label={t("Nav.back")}
       title={t("Nav.back")}
       className={clsx(
-        "safe-fixed-fab-back fixed z-30 flex h-11 w-11 items-center justify-center rounded-full",
-        "border border-default-200/80 bg-content1/95 text-default-700 shadow-md backdrop-blur-md",
-        "transition-colors hover:border-primary/35 hover:text-primary",
-        "dark:border-slate-700/80 dark:bg-slate-900/90 dark:text-slate-200",
+        "safe-fixed-fab-back fixed z-30 flex h-11 w-11 items-center justify-center overflow-hidden rounded-full",
+        /* 勿用 backdrop-blur / ring-inset：iOS 易出黑色发丝线 */
+        "bg-white text-default-700 shadow-[0_2px_10px_rgba(15,23,42,0.1)]",
+        "transition-[color,box-shadow,background-color] hover:bg-white hover:text-primary hover:shadow-[0_4px_14px_rgba(15,23,42,0.14)]",
+        "dark:bg-slate-800 dark:text-slate-200 dark:shadow-[0_2px_10px_rgba(0,0,0,0.45)]",
+        "focus-visible:outline-none focus-visible:shadow-[0_0_0_3px_rgba(44,133,255,0.28)]",
+        "[-webkit-tap-highlight-color:transparent]",
       )}
       onClick={() => goBackOrHome(router, pathname)}
     >
-      <PrevIcon size={18} />
+      <PrevIcon className="relative -ml-0.5" size={18} />
     </button>
   );
 }

@@ -1,7 +1,7 @@
 name: Build sehua-search image
 
 # 仅构建 / 推送搜索端，与主栈 sehua 完全独立
-# 触发：改 next-web / VERSION.search，或打标签 search-v1.2.3
+# 触发：改 next-web / VERSION.search，或打标签 search-v1.2.4
 # 手动：Actions → Build sehua-search image → Run workflow
 # 注意：不会因 VERSION（主栈）或普通 v* 标签触发
 on:

@@ -1436,17 +1436,25 @@ class AttachmentDownloader:
 
                 merged = _pick_best_archive_texts(chunks)
                 have = _count_importable_links(merged)
+                try:
+                    from parsers.resource_frame import count_post_quota_links
+
+                    provided = count_post_quota_links(merged)
+                except Exception:
+                    provided = have
                 rest = attachments[idx + 1 :]
                 if not rest:
                     log.info(
-                        "Attachment %s (%s) → %s links — last attach, stop",
+                        "Attachment %s (%s) → %s links (provided %s) — last attach, stop",
                         attachment.name,
                         attachment.kind,
                         have,
+                        provided,
                     )
                     break
 
                 # 硬规则：不合格必须继续；单资源配额未齐也继续（即使 cloud_soft 写成「成功」）
+                # 额度对照「提供链数」非去重入库数（同 hash 重复张贴仍计）
                 still_unqual = _attach_merge_still_unqualified(
                     html,
                     merged,
@@ -1456,13 +1464,13 @@ class AttachmentDownloader:
                 short_quota = (
                     bool(quota_stop)
                     and bool(quota_expect)
-                    and have < int(quota_expect)
+                    and provided < int(quota_expect)
                 )
                 if still_unqual or short_quota:
                     why = (
                         f"不合格"
                         if still_unqual
-                        else f"链数{have}<配额{quota_expect}"
+                        else f"提供链数{provided}<配额{quota_expect}"
                     )
                     log.info(
                         "Attachment %s (%s) → %s — continue next (%s left)",

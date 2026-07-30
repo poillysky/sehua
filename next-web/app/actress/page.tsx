@@ -3,13 +3,15 @@ import { Suspense } from "react";
 import { getTranslations } from "next-intl/server";
 
 import { listActressResources } from "@/app/api/graphql/service";
+import type { ForumCrumb } from "@/components/ForumBreadcrumb";
 import { PrefixResourceList } from "@/components/PrefixResourceList";
 import { PrefixResourceListSkeleton } from "@/components/PrefixResourceListSkeleton";
-import { SearchInput } from "@/components/SearchInput";
-import { SiteLogoLink } from "@/components/SiteLogoLink";
-import { SettingsNavLink } from "@/components/SettingsNavLink";
+import { PageSearchHeader } from "@/components/PageSearchHeader";
 import { FloatTool } from "@/components/FloatTool";
-import { MobileShellHeader, MobileViewportScroll } from "@/components/MobileViewportScroll";
+import {
+  MobileShellHeader,
+  MobileViewportScroll,
+} from "@/components/MobileViewportScroll";
 import { BROWSE_PAGE_MAX, PREFIX_CODE_PAGE_SIZE } from "@/config/constant";
 
 export const dynamic = "force-dynamic";
@@ -94,19 +96,24 @@ export default async function ActressSearchPage({
   const japanPrefs = searchParams.jp === "1";
   const t = await getTranslations();
 
+  const crumbs: ForumCrumb[] = [
+    { label: t("Search.mode.actress"), href: keyword ? "/actress" : undefined },
+  ];
+  if (keyword) {
+    crumbs.push({ label: keyword });
+  }
+
   return (
     <>
       <MobileViewportScroll>
         <MobileShellHeader>
-          <div className="mx-auto flex w-full max-w-6xl items-center gap-1 px-3 pt-2 pb-2 md:px-4 md:pt-3 lg:max-w-7xl">
-            <SiteLogoLink />
-            <SearchInput
-              defaultSearchKind="actress"
-              defaultValue={keyword}
-              japanPrefs={japanPrefs}
-            />
-            <SettingsNavLink />
-          </div>
+          <PageSearchHeader
+            compact
+            crumbs={crumbs}
+            defaultSearchKind="actress"
+            defaultValue={keyword}
+            japanPrefs={japanPrefs}
+          />
         </MobileShellHeader>
         <div className="mx-auto flex min-h-0 w-full max-w-6xl flex-1 flex-col overflow-hidden px-3 py-3 md:overflow-visible md:px-4 md:py-6 lg:max-w-7xl">
           {!keyword ? (

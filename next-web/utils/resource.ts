@@ -81,21 +81,43 @@ export function getDisplayTitle(
   return title || name || "";
 }
 
+/** 搜索/列表主标题：优先帖标题，其次描述里的作品名 */
+export function getCardTitle(
+  item: Pick<
+    Ed2kResourceProps,
+    "title" | "name" | "description" | "hash" | "ed2k_link" | "ed2k_links"
+  >,
+) {
+  const title = item.title?.trim() || "";
+  if (title) return title;
+  const fromDesc =
+    getDescriptionField(item.description, "资源名称") ||
+    getDescriptionField(item.description, "影片名称");
+  if (fromDesc) return fromDesc;
+  return getDisplayTitle(item);
+}
+
+/** 搜索/列表次行：文件名（与标题不同时才返回） */
+export function getCardFilename(
+  item: Pick<
+    Ed2kResourceProps,
+    "title" | "name" | "description" | "hash" | "ed2k_link" | "ed2k_links"
+  >,
+) {
+  const name = item.name?.trim() || "";
+  if (isMissingSubName(name, item.hash)) return null;
+  const cardTitle = getCardTitle(item);
+  if (!name || name === cardTitle) return null;
+  return name;
+}
+
 export function getDisplayFilename(
   item: Pick<
     Ed2kResourceProps,
     "title" | "name" | "description" | "hash" | "ed2k_link" | "ed2k_links"
   >,
 ) {
-  // 子资源与主资源不同时，返回主资源名作次要信息
-  const name = getDisplayTitle(item);
-  const title = item.title?.trim();
-
-  if (!title || !name || title === name) {
-    return null;
-  }
-
-  return title;
+  return getCardFilename(item);
 }
 
 export type DescriptionLine = {
@@ -105,14 +127,14 @@ export type DescriptionLine = {
 
 const DISPLAY_DESCRIPTION_LABELS = [
   "资源名称",
-  "资源类型",
+  "影片名称",
   "资源大小",
+  "出演女优",
+  "资源类型",
   "是否有码",
   "有无水印",
   "资源数量",
   "解压密码",
-  "影片名称",
-  "出演女优",
 ] as const;
 
 const DESCRIPTION_LABEL_ALIASES: Record<string, (typeof DISPLAY_DESCRIPTION_LABELS)[number]> = {
@@ -125,6 +147,10 @@ const DESCRIPTION_LABEL_ALIASES: Record<string, (typeof DISPLAY_DESCRIPTION_LABE
   资源解压密码: "解压密码",
   影片名稱: "影片名称",
   資源名稱: "资源名称",
+  女优名称: "出演女优",
+  女优: "出演女优",
+  演员: "出演女优",
+  主演: "出演女优",
 };
 
 export function formatDescriptionLines(description?: string | null): DescriptionLine[] {
@@ -134,7 +160,9 @@ export function formatDescriptionLines(description?: string | null): Description
     return [];
   }
 
-  const picked = new Map<string, string>();
+  /** 按原文出现顺序收集；同名（含别名）只留首次 */
+  const seen = new Set<string>();
+  const collected: DescriptionLine[] = [];
 
   for (const rawLine of text.split("\n")) {
     const line = rawLine.trim();
@@ -145,13 +173,12 @@ export function formatDescriptionLines(description?: string | null): Description
     }
 
     const rawLabel = match[1].trim();
-    const canonical =
-      DESCRIPTION_LABEL_ALIASES[rawLabel] ||
-      (DISPLAY_DESCRIPTION_LABELS.includes(rawLabel as (typeof DISPLAY_DESCRIPTION_LABELS)[number])
-        ? (rawLabel as (typeof DISPLAY_DESCRIPTION_LABELS)[number])
-        : null);
+    if (!rawLabel) {
+      continue;
+    }
 
-    if (!canonical || picked.has(canonical)) {
+    const label = DESCRIPTION_LABEL_ALIASES[rawLabel] || rawLabel;
+    if (seen.has(label)) {
       continue;
     }
 
@@ -160,13 +187,36 @@ export function formatDescriptionLines(description?: string | null): Description
       continue;
     }
 
-    picked.set(canonical, value);
+    seen.add(label);
+    collected.push({ label, value });
   }
 
-  return DISPLAY_DESCRIPTION_LABELS.filter((label) => picked.has(label)).map((label) => ({
-    label,
-    value: picked.get(label)!,
-  }));
+  if (!collected.length) {
+    return [];
+  }
+
+  // 常见字段按约定顺序靠前，其余保持库里出现顺序
+  const preferredIndex = new Map(
+    DISPLAY_DESCRIPTION_LABELS.map((label, index) => [label, index]),
+  );
+  const known: DescriptionLine[] = [];
+  const rest: DescriptionLine[] = [];
+
+  for (const row of collected) {
+    if (preferredIndex.has(row.label as (typeof DISPLAY_DESCRIPTION_LABELS)[number])) {
+      known.push(row);
+    } else {
+      rest.push(row);
+    }
+  }
+
+  known.sort(
+    (a, b) =>
+      (preferredIndex.get(a.label as (typeof DISPLAY_DESCRIPTION_LABELS)[number]) ?? 0) -
+      (preferredIndex.get(b.label as (typeof DISPLAY_DESCRIPTION_LABELS)[number]) ?? 0),
+  );
+
+  return [...known, ...rest];
 }
 
 export function getDescriptionField(

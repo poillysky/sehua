@@ -319,7 +319,7 @@ export const Ed2kLogo: React.FC<IconSvgProps> = ({
   ...props
 }: IconSvgProps) => (
   <svg
-    aria-label="色花堂搜索"
+    aria-label="资源仓库"
     className={className}
     height={size || height || "1em"}
     role="img"

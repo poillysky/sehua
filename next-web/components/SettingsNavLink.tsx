@@ -14,10 +14,10 @@ export function SettingsNavLink({ noBg = false }: { noBg?: boolean }) {
       aria-label="设置"
       className={clsx(
         "group inline-flex shrink-0 items-center justify-center rounded-medium transition-all",
-        "text-stone-600 hover:text-primary dark:text-slate-300 dark:hover:text-primary",
+        "text-default-600 hover:text-primary dark:text-slate-300 dark:hover:text-primary",
         noBg
-          ? "h-11 w-11 hover:bg-default-100/80 dark:hover:bg-slate-800/80 md:h-8 md:w-8"
-          : "ml-2 h-9 w-9 border border-default-200/90 bg-gray-50/90 shadow-sm hover:border-primary/40 hover:bg-primary/5 md:ml-3 dark:border-slate-700 dark:bg-slate-800/80 dark:hover:bg-primary/10",
+          ? "h-11 w-11 hover:bg-white/70 dark:hover:bg-slate-800/80 md:h-8 md:w-8"
+          : "ml-1 h-9 w-9 shrink-0 border border-default-200/70 bg-white/90 shadow-soft hover:border-primary/40 hover:bg-primary/5 md:ml-3 dark:border-slate-600 dark:bg-slate-800/80 dark:hover:bg-primary/10",
       )}
       href="/settings"
       title="设置"

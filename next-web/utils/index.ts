@@ -99,12 +99,17 @@ export function parseHighlight(text: string, highlight: string | string[]) {
 
   // Function to highlight the keywords
   function highlightKeywords(text: string, keyword: string) {
-    const regex = new RegExp(`(${escapeHtml(keyword)})(?![^<>]*>)`, "gi");
-
-    return text.replace(
-      regex,
-      `<span class="text-red-400 font-bold">$1</span>`,
-    );
+    const safe = keyword.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    if (!safe) return text;
+    try {
+      const regex = new RegExp(`(${safe})(?![^<>]*>)`, "gi");
+      return text.replace(
+        regex,
+        `<span class="text-red-400 font-bold">$1</span>`,
+      );
+    } catch {
+      return text;
+    }
   }
 
   let highlightedText = text;

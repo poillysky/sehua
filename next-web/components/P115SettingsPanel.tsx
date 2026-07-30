@@ -18,11 +18,11 @@ type FolderItem = { cid: string; name: string };
 type FolderPath = { cid: string; name: string };
 
 const shell =
-  "overflow-hidden rounded-lg border border-gray-200 bg-white shadow-sm dark:border-slate-700 dark:bg-slate-900";
-const band = "bg-gray-50 dark:bg-slate-800";
-const line = "h-px w-full bg-gray-200 dark:bg-slate-700";
+  "overflow-hidden rounded-2xl border border-default-200/60 bg-white/90 shadow-card backdrop-blur-md dark:border-slate-600/50 dark:bg-slate-800/80";
+const band = "bg-slate-50/80 dark:bg-slate-800/90";
+const line = "h-px w-full bg-default-200/80 dark:bg-slate-700/80";
 const inputWrap =
-  "bg-gray-50 dark:bg-slate-800/80 border border-gray-200 dark:border-slate-700 shadow-none";
+  "bg-white/80 dark:bg-slate-800/80 border border-default-200/70 dark:border-slate-600 shadow-none";
 
 function SectionTitle({
   step,

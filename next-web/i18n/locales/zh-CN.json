@@ -30,9 +30,11 @@
     "resource_amount": "资源数量",
     "extract_password": "解压密码",
     "share_code": "分享码",
-    "tagline": "分类整理 · 全文检索 · 论坛式导航",
-    "search_hint": "输入片名、番号或关键词，回车即可搜索",
-    "browse_boards": "浏览分区目录"
+    "tagline": "搜片名、番号与女优 · 按区浏览入库资源",
+    "search_hint": "回车搜索",
+    "browse_boards": "按区浏览",
+    "pulse_count": "已收录 {count} 条",
+    "pulse_size": "约 {size}"
   },
   "Browse": {
     "title": "分类浏览",
@@ -47,7 +49,7 @@
     "entry": "分区目录",
     "title": "分区目录",
     "zones_title": "板块区间",
-    "zones_subtitle": "片区（日本 / 国产 / 欧美）· 综合区 · 影视区",
+    "zones_subtitle": "片区（日本 / 国产 / 欧美）· 综合区（自建目录）· 影视区",
     "section_kicker": "按版浏览",
     "subtitle": "按论坛分区与版块浏览资源",
     "board_count": "个版块",
@@ -75,15 +77,21 @@
     "prefix_code_next": "下一页",
     "prefix_resource_total": "{count} 条资源",
     "prefix_resource_empty": "库中暂无此前缀可识别番号的资源。",
+    "maker_board_empty": "该分类暂无厂牌前缀，可先看同区「无码」。",
     "prefix_resource_sort": "按番号升序",
     "pref_group": "浏览偏好",
     "pref_chinese": "中文",
     "pref_crack": "破解",
     "pref_chinese_hint": "优先：高清中文字幕板 / 番号尾 C·CX / 含「字幕」",
-    "pref_crack_hint": "优先：U/UC/CX、破解、马赛克破坏、无码；含高清中文字幕·无码板"
+    "pref_crack_hint": "优先：U/UC/CX、破解、马赛克破坏、无码；含高清中文字幕·无码板",
+    "zone_folder_count": "{count} 个自定义文件夹",
+    "zone_mode_hint": "网盘式自建目录 · 可挂搜索",
+    "zone_search_title": "目录资源",
+    "zone_search_hint": "按「{keyword}」搜索",
+    "zone_open_full_search": "打开完整搜索"
   },
   "Search": {
-    "placeholder": "搜索色花堂资源…",
+    "placeholder": "搜索资源…",
     "placeholderActress": "搜索女优…",
     "action": "搜索",
     "translate": "翻译为英文",

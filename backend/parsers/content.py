@@ -2325,32 +2325,80 @@ def _assemble_subresource_block(
     )
 
 
+def _structure_repair_label_alt() -> str:
+    """补括号/粘括号共用的结构标签交替（长优先）。"""
+    from parsers.resource_names import (
+        SIZE_FIELD_FORMS,
+        SUBRESOURCE_TITLE_MATCH_FORMS,
+        STRUCTURE_FIELD_BOUNDARY_FORMS,
+    )
+
+    labels = list(
+        dict.fromkeys(
+            (
+                *SUBRESOURCE_TITLE_MATCH_FORMS,
+                *SIZE_FIELD_FORMS,
+                *STRUCTURE_FIELD_BOUNDARY_FORMS,
+                "图片数量",
+                "圖片數量",
+                "图片格式",
+                "圖片格式",
+                "文件大小",
+                "檔案大小",
+                "图片预览",
+                "圖片預覽",
+                "磁力连接",
+                "磁力連結",
+                "磁力链接",
+                "下載網址",
+                "下载网址",
+            )
+        )
+    )
+    return "|".join(sorted({re.escape(x) for x in labels if x}, key=len, reverse=True))
+
+
+_TAG_OR_WS_BETWEEN_BRACKETS = r"(?:<[^>]+>|\s|&nbsp;|&\#?\w+;)*"
+
+
+def _glue_structure_brackets_split_by_tags(scope: str) -> str:
+    """Discuz 常把开括号与标签名拆到不同 <font>/<span>：
+
+    ``【</font><font>资源名称】`` → ``【资源名称】``
+
+    只粘「开括号↔已知标签名↔闭括号」之间的纯标签/空白，不改标签名本身。
+    须在「补左开括号」之前做，否则会先插第二个【，再被跨标签正则误吞。
+    """
+    if not scope:
+        return scope or ""
+    alt = _structure_repair_label_alt()
+    if not alt:
+        return scope
+    from parsers.resource_names import STRUCTURE_BRACKET_PAIRS
+
+    out = scope
+    for op, cl in STRUCTURE_BRACKET_PAIRS:
+        out = re.sub(
+            re.escape(op)
+            + _TAG_OR_WS_BETWEEN_BRACKETS
+            + rf"({alt})"
+            + _TAG_OR_WS_BETWEEN_BRACKETS
+            + re.escape(cl),
+            lambda m, o=op, c=cl: f"{o}{m.group(1)}{c}",
+            out,
+            flags=re.I,
+        )
+    return out
+
+
 def _repair_missing_structure_open_brackets(scope: str) -> str:
-    """补全偶发缺失的左【：如行首「套图名称】：」（tid=24506022）。
+    """补全**缺失的左开括号**【（不是补右】）：如行首「套图名称】：」（tid=24506022）。
 
     勿在「【原文片名】」内把后缀「片名】」再包一层。
     """
     if not scope or "】" not in scope:
         return scope or ""
-    from parsers.resource_names import SUBRESOURCE_TITLE_MATCH_FORMS
-
-    # 子标题 + 常见块字段
-    labels = list(SUBRESOURCE_TITLE_MATCH_FORMS) + [
-        "图片数量",
-        "圖片數量",
-        "图片格式",
-        "圖片格式",
-        "文件大小",
-        "檔案大小",
-        "图片预览",
-        "圖片預覽",
-        "磁力连接",
-        "磁力連結",
-        "磁力链接",
-        "下載網址",
-        "下载网址",
-    ]
-    alt = "|".join(sorted({re.escape(x) for x in labels if x}, key=len, reverse=True))
+    alt = _structure_repair_label_alt()
     if not alt:
         return scope
     # 标签前不得已是【／汉字／字母（防【原文片名】被切成【原文【片名】）
@@ -2358,6 +2406,13 @@ def _repair_missing_structure_open_brackets(scope: str) -> str:
         rf"(?<![【［\u4e00-\u9fffA-Za-z0-9])(?P<lab>{alt})】",
         lambda m: f"【{m.group('lab')}】",
         scope,
+    )
+
+
+def _normalize_structure_brackets_in_scope(scope: str) -> str:
+    """结构括号归一：先粘跨标签拆开的【名】，再补真正缺失的左【。"""
+    return _repair_missing_structure_open_brackets(
+        _glue_structure_brackets_split_by_tags(scope)
     )
 
 
@@ -2417,7 +2472,7 @@ def extract_subresource_blocks_ex(
             scope = lz_parts[0] if lz_parts else (html or "")
     if not scope.strip():
         scope = html or ""
-    scope = _repair_missing_structure_open_brackets(scope)
+    scope = _normalize_structure_brackets_in_scope(scope)
 
     wanted: set[str] | None = None
     if infohashes is not None:

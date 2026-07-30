@@ -47,7 +47,7 @@ function SettingsPageInner() {
     <section className="mx-auto flex w-full max-w-3xl flex-col gap-4 px-3 py-4 md:py-8">
       <header className="flex items-center gap-3">
         <SiteLogoLink />
-        <h1 className="min-w-0 flex-1 text-lg font-semibold text-gray-800 dark:text-slate-100">
+        <h1 className="min-w-0 flex-1 text-lg font-semibold text-foreground">
           设置
         </h1>
         <Button
@@ -62,15 +62,15 @@ function SettingsPageInner() {
         </Button>
       </header>
 
-      <div className="flex gap-1 rounded-lg border border-gray-200 bg-gray-50 p-1 dark:border-slate-700 dark:bg-slate-800/80">
+      <div className="flex gap-1 rounded-full border border-default-200/60 bg-white/70 p-1 shadow-soft backdrop-blur-md dark:border-slate-600/50 dark:bg-slate-800/70">
         {TABS.map((t) => (
           <button
             key={t.key}
             className={clsx(
-              "flex-1 rounded-md px-3 py-2 text-sm font-medium transition-colors",
+              "flex-1 rounded-full px-3 py-2 text-sm font-medium transition-colors",
               tab === t.key
-                ? "bg-white text-primary shadow-sm dark:bg-slate-900"
-                : "text-gray-600 hover:text-gray-900 dark:text-slate-300 dark:hover:text-white",
+                ? "bg-primary text-primary-foreground shadow-soft"
+                : "text-default-600 hover:text-foreground",
             )}
             type="button"
             onClick={() => setTab(t.key)}
@@ -90,7 +90,7 @@ export default function SettingsPage() {
     <Suspense
       fallback={
         <section className="mx-auto flex w-full max-w-3xl flex-col gap-4 px-3 py-4 md:py-8">
-          <p className="text-sm text-gray-400">加载设置…</p>
+          <p className="text-sm text-default-400">加载设置…</p>
         </section>
       }
     >

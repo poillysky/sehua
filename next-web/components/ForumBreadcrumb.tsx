@@ -16,10 +16,10 @@ export function ForumBreadcrumb({ items }: { items: ForumCrumb[] }) {
   return (
     <nav
       aria-label="breadcrumb"
-      className="flex flex-wrap items-center gap-1 text-xs text-default-500 md:gap-1.5 md:text-[13px]"
+      className="flex min-w-0 flex-wrap items-center gap-0.5 text-[11px] text-default-500 sm:gap-1 sm:text-xs md:text-[13px]"
     >
       <Link
-        className="rounded-md px-1 py-0.5 transition-colors hover:bg-default-100 hover:text-primary dark:hover:bg-slate-800"
+        className="rounded-md px-0.5 py-0.5 transition-colors hover:bg-primary/10 hover:text-primary sm:px-1"
         href="/"
       >
         {t("Boards.home")}
@@ -27,18 +27,18 @@ export function ForumBreadcrumb({ items }: { items: ForumCrumb[] }) {
       {items.map((item, i) => (
         <span
           key={`${item.label}-${i}`}
-          className="inline-flex items-center gap-1 md:gap-1.5"
+          className="inline-flex min-w-0 items-center gap-0.5 sm:gap-1"
         >
-          <ChevronRightIcon className="text-default-300" size={12} />
+          <ChevronRightIcon className="shrink-0 text-default-300" size={11} />
           {item.href ? (
             <Link
-              className="rounded-md px-1 py-0.5 transition-colors hover:bg-default-100 hover:text-primary dark:hover:bg-slate-800"
+              className="truncate rounded-md px-0.5 py-0.5 transition-colors hover:bg-primary/10 hover:text-primary sm:px-1"
               href={item.href}
             >
               {item.label}
             </Link>
           ) : (
-            <span className="rounded-md px-1 py-0.5 font-medium text-foreground">
+            <span className="truncate rounded-md px-0.5 py-0.5 font-medium text-foreground sm:px-1">
               {item.label}
             </span>
           )}

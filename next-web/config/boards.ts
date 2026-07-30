@@ -16,6 +16,8 @@ export type BoardNavParent = {
   children: BoardNavChild[];
   /** 日本 → 有码/无码 等嵌套版块 */
   boards?: BoardNavParent[];
+  /** 二级枢纽稳定 fid（可无 children，如国产有码空壳） */
+  hub_fid?: string;
 };
 
 export type BoardNavCategory = {
@@ -81,6 +83,8 @@ function normalizeParent(board: unknown): BoardNavParent | null {
   const name = asStr((board as { name?: unknown }).name);
   if (!name) return null;
 
+  const hubFid = asStr((board as { hub_fid?: unknown }).hub_fid);
+
   const childrenRaw = (board as { children?: unknown }).children;
   const children: BoardNavChild[] = [];
   if (Array.isArray(childrenRaw)) {
@@ -99,11 +103,13 @@ function normalizeParent(board: unknown): BoardNavParent | null {
     }
   }
 
-  if (!children.length && !nested.length) return null;
+  // 允许空壳二级（如国产有码）仅靠 hub_fid 占位
+  if (!children.length && !nested.length && !hubFid) return null;
   return {
     name,
     children,
     ...(nested.length ? { boards: nested } : {}),
+    ...(hubFid ? { hub_fid: hubFid } : {}),
   };
 }
 
@@ -133,7 +139,7 @@ export function normalizeBoardNav(raw: unknown): BoardNavCategory[] {
       const parent = normalizeParent(board);
       if (parent) boards.push(parent);
     }
-    if (!boards.length) continue;
+    // 允许空 boards（综合区=用户自定义文件夹，无静态版块）
     out.push({ category, boards });
   }
   return out;
@@ -228,21 +234,29 @@ export function findBoardChild(
   return undefined;
 }
 
-/** 按版块 fid 找父版块（取第一个匹配）。 */
+/** 按版块 fid 找父版块（取第一个匹配；`107~三级` 可精确到父名）。 */
 export function findByFid(
   fid: string,
   nav: BoardNavCategory[] = FALLBACK_BOARD_NAV,
 ): BoardNavContext | undefined {
-  const needle = String(fid || "").trim();
+  const raw = String(fid || "").trim();
+  if (!raw) return undefined;
+  const { baseFid: needle, parentName } = parseSharedParentFid(raw);
   if (!needle) return undefined;
 
-  // 日本分组枢纽
-  if (needle === "mk-japan") {
+  // 三大片区枢纽（同级）：日本 / 国产 / 欧美
+  const regionHubName: Record<string, string> = {
+    "mk-japan": "日本",
+    "mk-china-hub": "国产",
+    "mk-western-hub": "欧美",
+  };
+  const regionName = regionHubName[needle];
+  if (regionName) {
     for (let ci = 0; ci < nav.length; ci++) {
       const cat = nav[ci];
-      const group = cat.boards.find((b) => b.name === "日本" && b.boards?.length);
-      if (group) {
-        return { categoryIndex: ci, category: cat, parent: group };
+      const hub = cat.boards.find((b) => b.name === regionName);
+      if (hub) {
+        return { categoryIndex: ci, category: cat, parent: hub };
       }
     }
   }
@@ -250,7 +264,12 @@ export function findByFid(
   for (let ci = 0; ci < nav.length; ci++) {
     const cat = nav[ci];
     for (const { parent, group } of walkParents(cat, ci)) {
+      if (parent.hub_fid && parent.hub_fid === needle) {
+        if (parentName && parent.name !== parentName) continue;
+        return { categoryIndex: ci, category: cat, parent, group };
+      }
       if (parent.children.some((c) => c.fid === needle)) {
+        if (parentName && parent.name !== parentName) continue;
         return { categoryIndex: ci, category: cat, parent, group };
       }
     }
@@ -264,8 +283,22 @@ export function findSubtype(
   nav: BoardNavCategory[] = FALLBACK_BOARD_NAV,
 ): BoardNavContext | undefined {
   const f = String(fid || "").trim();
-  const t = String(typeid || "").trim();
+  let t = String(typeid || "").trim();
   if (!f || !t) return undefined;
+
+  // 无码旧别名入口 → 主前缀（收口冗余写法后保留书签兼容）
+  if (f === "mk-uncensored") {
+    const alias: Record<string, string> = {
+      caribbean: "CARIB",
+      caribbeancom: "CARIB",
+      "1pondo": "1PON",
+      pacopacomama: "PACO",
+      "10musume": "10MU",
+    };
+    const mapped = alias[t.toLowerCase()];
+    if (mapped) t = mapped;
+  }
+
   const key = makeBoardKey(f, t);
   for (let ci = 0; ci < nav.length; ci++) {
     const cat = nav[ci];
@@ -281,11 +314,25 @@ export function findSubtype(
   return undefined;
 }
 
-export function parentFid(parent: BoardNavParent): string {
+export function parentFid(
+  parent: BoardNavParent,
+  nav: BoardNavCategory[] = FALLBACK_BOARD_NAV,
+): string {
+  // 三大片区同级枢纽
+  if (parent.name === "日本") return "mk-japan";
+  if (parent.name === "国产") return "mk-china-hub";
+  if (parent.name === "欧美") return "mk-western-hub";
+  if (parent.hub_fid) return parent.hub_fid.trim();
   if (parent.boards?.length) {
     return "mk-japan";
   }
-  return (parent.children[0]?.fid || "").trim();
+  const base = (parent.children[0]?.fid || "").trim();
+  if (!base) return "";
+  // 多个父版块共用同一论坛 fid（如三级/写真 → 107）时区分路径
+  if (sharedForumFidCount(base, nav) > 1) {
+    return `${base}${SHARED_FID_SEP}${parent.name}`;
+  }
+  return base;
 }
 
 export function isPrefixBoard(parent: BoardNavParent): boolean {
@@ -299,21 +346,60 @@ export function isGroupBoard(parent: BoardNavParent): boolean {
   return Boolean(parent.boards?.length);
 }
 
-/** 旧论坛 fid → 新导航 */
+/** 旧论坛 fid → 新导航（仅已撤出独立浏览入口的板） */
 const LEGACY_FID_REDIRECT: Record<string, string> = {
+  "2": "/b/mk-china-hub",
+  "38": "/b/mk-western-hub",
   "36": "/b/mk-uncensored",
   "37": "/b/mk-censored",
   "104": "/b/mk-censored",
+  // 103/39/151/160 已从影视区移除，旧书签回分区首页
   "103": "/c/2",
-  "107": "/c/2",
   "39": "/c/2",
   "151": "/c/2",
   "160": "/c/2",
+  // 注意：107（三级/写真）必须可进 /b/107/t/...，勿再重定向到 /c/2
 };
 
-export function legacyFidRedirect(fid: string): string | null {
+/** 同论坛 fid 被多个父版块共用时，父级路径用 `fid~父名` 区分 */
+const SHARED_FID_SEP = "~";
+
+export function forumBaseFid(fid: string): string {
   const needle = String(fid || "").trim();
+  const i = needle.indexOf(SHARED_FID_SEP);
+  return i >= 0 ? needle.slice(0, i) : needle;
+}
+
+function parseSharedParentFid(fid: string): { baseFid: string; parentName: string } {
+  const needle = String(fid || "").trim();
+  const i = needle.indexOf(SHARED_FID_SEP);
+  if (i < 0) return { baseFid: needle, parentName: "" };
+  return {
+    baseFid: needle.slice(0, i),
+    parentName: needle.slice(i + SHARED_FID_SEP.length),
+  };
+}
+
+function sharedForumFidCount(
+  forumFid: string,
+  nav: BoardNavCategory[],
+): number {
+  const needle = String(forumFid || "").trim();
+  if (!needle) return 0;
+  let n = 0;
+  for (const cat of nav) {
+    for (const parent of cat.boards) {
+      if (parent.children?.some((c) => c.fid === needle)) n += 1;
+    }
+  }
+  return n;
+}
+
+export function legacyFidRedirect(fid: string): string | null {
+  const needle = forumBaseFid(fid);
   if (!needle) return null;
+  // 带 ~ 的父级路径不是旧书签
+  if (String(fid || "").includes(SHARED_FID_SEP)) return null;
   return LEGACY_FID_REDIRECT[needle] || null;
 }
 
@@ -408,6 +494,149 @@ export function isJapanBrowseContext(
   return ctx.parent.name === "日本" || ctx.group?.name === "日本";
 }
 
+/** 浏览壳：由 pathname 推导高亮 / 面包屑 / 手机铺满（壳放 layout 防闪） */
+export type BrowseShellState = {
+  crumbs: { label: string; href?: string }[];
+  activeFid?: string;
+  activeTypeid?: string;
+  activeCategoryIndex?: number;
+  fillMobile: boolean;
+  japanPrefs: boolean;
+  /** 末屑用 i18n key（如 Boards.all_children） */
+  crumbTailKey?: string;
+};
+
+export function resolveBrowseShellState(
+  pathname: string,
+): BrowseShellState | null {
+  const raw = String(pathname || "/").split("?")[0].trim();
+  const path = (raw.replace(/\/+$/, "") || "/") as string;
+
+  const catFolder = path.match(/^\/c\/(\d+)\/f\/([^/]+)$/);
+  if (catFolder) {
+    const index = Number(catFolder[1]);
+    const category = findCategory(index);
+    if (!category) return null;
+    const folderId = decodeURIComponent(catFolder[2]);
+    return {
+      crumbs: [{ label: category.category, href: categoryHref(index) }],
+      activeCategoryIndex: index,
+      activeFid: `zone:${folderId}`,
+      fillMobile: false,
+      japanPrefs: false,
+    };
+  }
+
+  const cat = path.match(/^\/c\/(\d+)$/);
+  if (cat) {
+    const index = Number(cat[1]);
+    const category = findCategory(index);
+    if (!category) return null;
+    return {
+      crumbs: [{ label: category.category }],
+      activeCategoryIndex: index,
+      fillMobile: false,
+      japanPrefs: false,
+    };
+  }
+
+  const all = path.match(/^\/b\/([^/]+)\/all$/);
+  if (all) {
+    const fid = decodeURIComponent(all[1]);
+    const ctx = findByFid(fid);
+    if (!ctx) return null;
+    return {
+      crumbs: [
+        {
+          label: ctx.category.category,
+          href: categoryHref(ctx.categoryIndex),
+        },
+        ...(ctx.group
+          ? [
+              {
+                label: ctx.group.name,
+                href: boardParentBrowseHref(ctx.group),
+              },
+            ]
+          : []),
+        { label: ctx.parent.name, href: boardPath(fid) },
+      ],
+      crumbTailKey: "Boards.all_children",
+      activeFid: fid,
+      activeCategoryIndex: ctx.categoryIndex,
+      fillMobile: false,
+      japanPrefs: isJapanBrowseContext(fid),
+    };
+  }
+
+  const subtype = path.match(/^\/b\/([^/]+)\/t\/([^/]+)$/);
+  if (subtype) {
+    const fid = decodeURIComponent(subtype[1]);
+    const typeid = decodeURIComponent(subtype[2]);
+    const ctx = findSubtype(fid, typeid);
+    if (!ctx?.child) return null;
+    const boardLabel = ctx.child.type_name || ctx.child.name;
+    const parentKey = parentFid(ctx.parent);
+    return {
+      crumbs: [
+        {
+          label: ctx.category.category,
+          href: categoryHref(ctx.categoryIndex),
+        },
+        ...(ctx.group
+          ? [
+              {
+                label: ctx.group.name,
+                href: boardParentBrowseHref(ctx.group),
+              },
+            ]
+          : []),
+        {
+          label: ctx.parent.name,
+          href: boardPath(parentKey || fid),
+        },
+        { label: boardLabel },
+      ],
+      activeFid: parentKey || fid,
+      activeTypeid: typeid,
+      activeCategoryIndex: ctx.categoryIndex,
+      fillMobile: Boolean(ctx.child.search_keyword),
+      japanPrefs: isJapanBrowseContext(fid, typeid),
+    };
+  }
+
+  const board = path.match(/^\/b\/([^/]+)$/);
+  if (board) {
+    const fid = decodeURIComponent(board[1]);
+    const ctx = findByFid(fid);
+    if (!ctx) return null;
+    const parentKey = parentFid(ctx.parent);
+    return {
+      crumbs: [
+        {
+          label: ctx.category.category,
+          href: categoryHref(ctx.categoryIndex),
+        },
+        ...(ctx.group
+          ? [
+              {
+                label: ctx.group.name,
+                href: boardParentBrowseHref(ctx.group),
+              },
+            ]
+          : []),
+        { label: ctx.parent.name },
+      ],
+      activeFid: parentKey || fid,
+      activeCategoryIndex: ctx.categoryIndex,
+      fillMobile: false,
+      japanPrefs: isJapanBrowseContext(forumBaseFid(fid)),
+    };
+  }
+
+  return null;
+}
+
 /** 旧 /browse?board_fid=141:689 → 新路径 */
 export function legacyBrowseRedirectTarget(
   search: {
@@ -480,34 +709,14 @@ export type ScrapePrefixOption = {
   label: string;
 };
 
-const CHINESE_SCRAPE_PREFIXES: ScrapePrefixOption[] = [
-  "MD",
-  "MKY",
-  "PMX",
-  "TMY",
-  "91CM",
-  "JVID",
-  "MSD",
-  "MAD",
-  "TX",
-  "TZ",
-].map((p) => ({ prefix: p, label: p }));
-
-const WESTERN_SCRAPE_PREFIXES: ScrapePrefixOption[] = [
-  "CARIB",
-  "1PONDO",
-  "HEYZO",
-  "PACO",
-].map((p) => ({ prefix: p, label: p }));
-
 function collectSearchPrefixes(parent: BoardNavParent): ScrapePrefixOption[] {
   const out: ScrapePrefixOption[] = [];
   const seen = new Set<string>();
   const pushChild = (ch: BoardNavChild) => {
     const p = (ch.search_keyword || ch.type_name || "").trim().toUpperCase();
     if (!p || seen.has(p)) return;
-    // 只要像厂牌前缀的（字母数字），跳过纯中文分类
-    if (!/^[A-Z0-9][A-Z0-9-]{1,15}$/i.test(p)) return;
+    // 厂牌前缀（含欧美长名如 DigitalPlayground）；跳过纯中文分类
+    if (!/^[A-Z0-9][A-Z0-9-]{1,23}$/i.test(p)) return;
     seen.add(p);
     out.push({ prefix: p, label: p });
   };
@@ -548,8 +757,6 @@ export function scrapeRegionPrefixes(
   nestedBoard = "",
 ): ScrapePrefixOption[] {
   if (region === "手动") return [];
-  if (region === "国产") return CHINESE_SCRAPE_PREFIXES;
-  if (region === "欧美") return WESTERN_SCRAPE_PREFIXES;
 
   const parent = findRegionBoard(region, nav);
   if (!parent) return [];

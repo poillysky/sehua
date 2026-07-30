@@ -14,7 +14,7 @@ import { Ed2kResourceProps } from "@/types";
 import { formatDate, setClipboard, Toast } from "@/utils";
 import {
   formatDescriptionLines,
-  getDisplayTitle,
+  getCardTitle,
   getExtractPassword,
 } from "@/utils/resource";
 import { useHydration } from "@/hooks/useHydration";
@@ -23,8 +23,8 @@ import { P115SaveButton } from "@/components/P115SaveButton";
 import { Ed2kResourceDetailList } from "@/components/Ed2kResourceDetailList";
 import { DetailBackButton } from "@/components/PageBackButton";
 
-const cardDividerClass = "bg-gray-200 dark:bg-slate-700";
-const cardBandClass = "bg-gray-100 dark:bg-slate-800";
+const cardDividerClass = "bg-default-200/80 dark:bg-slate-700/80";
+const cardBandClass = "bg-slate-50/80 dark:bg-slate-800/90";
 const cardHeaderClass = `flex items-center justify-between gap-2 py-1 text-sm ${cardBandClass}`;
 const cardBodyClass = "px-3 py-1 md:px-4";
 
@@ -89,7 +89,7 @@ function CopyablePassword({
 export const DetailContent = ({ data }: { data: Ed2kResourceProps }) => {
   const t = useTranslations();
   const hydrated = useHydration();
-  const displayTitle = getDisplayTitle(data);
+  const displayTitle = getCardTitle(data);
   const hasPreview = Boolean(data.preview_images?.length);
   const detailRows = formatDescriptionLines(data.description);
   const extractPassword = getExtractPassword(data);

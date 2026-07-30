@@ -36,6 +36,8 @@ export default function SearchResultsList({
   total_count = 0,
   searchOption,
   japanPrefs = false,
+  /** 非空时翻页/筛选留在此路径（综合区搜索目录） */
+  resultsBasePath,
 }: {
   resultList: SearchResultsListProps["resources"];
   keywords: string[];
@@ -44,6 +46,7 @@ export default function SearchResultsList({
   searchOption: SearchOption;
   /** 保留日本分区偏好作用域 */
   japanPrefs?: boolean;
+  resultsBasePath?: string;
 }) {
   const router = useRouter();
   const isSSR = useIsSSR();
@@ -73,8 +76,11 @@ export default function SearchResultsList({
     replace: boolean,
   ) => {
     const params = new URLSearchParams();
+    const base = (resultsBasePath || "").trim();
 
-    params.set("keyword", newSearchOption.keyword);
+    if (!base) {
+      params.set("keyword", newSearchOption.keyword);
+    }
     params.set("p", String(page));
     params.set("ps", String(newSearchOption.ps));
     params.set("sortType", newSearchOption.sortType);
@@ -85,7 +91,9 @@ export default function SearchResultsList({
       params.set("jp", "1");
     }
 
-    const url = `/search?${params.toString()}`;
+    const url = base
+      ? `${base}?${params.toString()}`
+      : `/search?${params.toString()}`;
     if (replace) router.replace(url);
     else router.push(url);
   };

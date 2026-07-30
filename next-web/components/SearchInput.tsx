@@ -251,7 +251,12 @@ export const SearchInput = ({
   const kindTabs = (
     <div
       aria-label={t("Search.filterLabel.searchKind")}
-      className="inline-flex shrink-0 rounded-lg bg-black/[0.04] p-0.5 dark:bg-white/[0.06]"
+      className={clsx(
+        "inline-flex shrink-0",
+        isHero
+          ? "home-search__kinds gap-1 rounded-full bg-black/[0.04] p-0.5 dark:bg-white/[0.06]"
+          : "rounded-full bg-black/[0.04] p-0.5 dark:bg-white/[0.06]",
+      )}
       role="radiogroup"
     >
       {(
@@ -266,10 +271,10 @@ export const SearchInput = ({
             key={kind}
             aria-checked={selected}
             className={clsx(
-              "rounded-md px-2.5 py-[5px] text-xs font-medium tracking-wide transition-[color,background-color,box-shadow]",
-              isHero && "sm:px-3 sm:text-[13px]",
+              "rounded-full px-1.5 py-[4px] text-[11px] font-medium tracking-wide transition-[color,background-color,box-shadow] sm:px-2.5 sm:py-[5px] sm:text-xs",
+              isHero && "px-2.5 py-[5px] text-xs sm:px-3 sm:text-[13px]",
               selected
-                ? "bg-white text-foreground shadow-sm dark:bg-slate-700 dark:text-slate-50"
+                ? "bg-primary text-primary-foreground shadow-soft"
                 : "text-default-500 hover:text-foreground dark:text-slate-400 dark:hover:text-slate-100",
             )}
             role="radio"
@@ -313,9 +318,9 @@ export const SearchInput = ({
       <div className="home-search w-full">
         <div
           className={clsx(
-            "home-search__bar flex w-full items-center overflow-hidden rounded-2xl backdrop-blur-md transition-[box-shadow,ring-color] duration-200",
+            "home-search__bar flex w-full items-center overflow-hidden rounded-full backdrop-blur-md transition-[box-shadow,ring-color] duration-200",
             errMessage && "ring-2 ring-danger",
-            active && !errMessage && "ring-2 ring-primary/45",
+            active && !errMessage && "ring-2 ring-primary/35",
           )}
         >
           <div className="flex shrink-0 items-center pl-2.5 pr-1 sm:pl-3">
@@ -323,7 +328,7 @@ export const SearchInput = ({
           </div>
           <input
             aria-label="Search"
-            className="home-search__input min-w-0 flex-1 bg-transparent py-3 outline-none placeholder:text-default-400"
+            className="home-search__input min-w-0 flex-1 bg-transparent py-3.5 outline-none placeholder:text-default-400"
             placeholder={placeholder}
             type="search"
             enterKeyHint="search"
@@ -339,7 +344,7 @@ export const SearchInput = ({
           <div className="flex shrink-0 items-center gap-0.5 pr-1">
             {clearBtn}
             {!isActress ? (
-              <label className="home-search__mode relative flex h-9 shrink-0 items-center rounded-lg px-1.5 hover:bg-black/[0.03] dark:hover:bg-white/[0.05]">
+              <label className="home-search__mode relative flex h-9 shrink-0 items-center rounded-md px-1.5 hover:bg-black/[0.03] dark:hover:bg-white/[0.05]">
                 <span className="sr-only">{t("Search.filterLabel.matchMode")}</span>
                 <select
                   className="home-search__select h-full cursor-pointer appearance-none bg-transparent py-1 pl-1.5 pr-5 text-sm text-foreground outline-none"
@@ -396,18 +401,18 @@ export const SearchInput = ({
   }
 
   return (
-    <div className="relative w-full">
+    <div className="relative min-w-0 flex-1">
       <div
         className={clsx(
-          "flex h-12 w-full items-center gap-1.5 rounded-2xl border bg-default-100/90 px-2 transition-[box-shadow,border-color,background-color] duration-200 dark:bg-slate-800/70",
+          "flex h-11 w-full min-w-0 items-center gap-1 rounded-full border border-default-200/70 bg-white px-1.5 shadow-soft transition-[box-shadow,border-color,background-color] duration-200 sm:h-12 sm:gap-1.5 sm:px-2 dark:border-slate-600/70 dark:bg-slate-800",
           errMessage
             ? "border-danger"
             : active
-              ? "border-primary/40 shadow-[0_0_0_3px_rgba(14,165,233,0.12)] dark:shadow-[0_0_0_3px_rgba(56,189,248,0.12)]"
-              : "border-default-200/80 dark:border-slate-700/80",
+              ? "border-primary/40 shadow-[0_0_0_3px_var(--focus-ring)]"
+              : "",
         )}
       >
-        <div className="flex shrink-0 items-center pl-0.5">{kindTabs}</div>
+        <div className="flex shrink-0 items-center">{kindTabs}</div>
         <input
           aria-label="Search"
           autoCapitalize="off"
@@ -423,14 +428,14 @@ export const SearchInput = ({
           onFocus={handleFocus}
           onKeyUp={handleKeyup}
         />
-        <div className="flex shrink-0 items-center gap-0.5 pr-0.5">
+        <div className="flex shrink-0 items-center gap-0 pr-0.5">
           {clearBtn}
           {!isActress ? (
             <Tooltip closeDelay={0} content={t("Search.translate")} delay={300}>
               <Button
                 isIconOnly
                 className={clsx(
-                  "h-8 min-w-8 w-8 border-none text-default-400 hover:bg-default-200/70 dark:hover:bg-slate-700/80",
+                  "hidden h-8 min-w-8 w-8 border-none text-default-400 hover:bg-default-200/70 sm:inline-flex dark:hover:bg-slate-700/80",
                   { "cursor-progress": translating },
                 )}
                 isDisabled={translating || !keyword.trim()}

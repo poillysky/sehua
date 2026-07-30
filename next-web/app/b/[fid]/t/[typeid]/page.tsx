@@ -7,20 +7,10 @@ import { browseResources, listPrefixResources } from "@/app/api/graphql/service"
 import { BrowsePageContent } from "@/components/BrowsePageContent";
 import { BrowseResourceListSkeleton } from "@/components/BrowseResourceListSkeleton";
 import { BrowsePageToolbar } from "@/components/BrowsePageToolbar";
-import { ForumShell } from "@/components/ForumShell";
 import { PrefixResourceList } from "@/components/PrefixResourceList";
 import { PrefixResourceListSkeleton } from "@/components/PrefixResourceListSkeleton";
-import { SearchInput } from "@/components/SearchInput";
-import { SiteLogoLink } from "@/components/SiteLogoLink";
-import { SettingsNavLink } from "@/components/SettingsNavLink";
-import { FloatTool } from "@/components/FloatTool";
-import { MobileShellHeader, MobileViewportScroll } from "@/components/MobileViewportScroll";
 import {
-  boardParentBrowseHref,
-  boardPath,
-  categoryHref,
   findSubtype,
-  isJapanBrowseContext,
   legacyFidRedirect,
   makeBoardKey,
 } from "@/config/boards";
@@ -59,11 +49,9 @@ function BrowseContentFallback() {
 async function PrefixBrowseSection({
   prefix,
   page,
-  landscapeCovers,
 }: {
   prefix: string;
   page: number;
-  landscapeCovers?: boolean;
 }) {
   const t = await getTranslations();
   const { items, total_count } = await listPrefixResources(prefix, {
@@ -73,7 +61,6 @@ async function PrefixBrowseSection({
   return (
     <PrefixResourceList
       items={items}
-      landscapeCovers={landscapeCovers}
       page={page}
       pageSize={PREFIX_RESOURCE_PAGE_SIZE}
       prefix={prefix}
@@ -113,65 +100,14 @@ export default async function SubtypeBrowsePage({
     BROWSE_PAGE_MAX,
   );
 
-  const crumbs = [
-    {
-      label: ctx.category.category,
-      href: categoryHref(ctx.categoryIndex),
-    },
-    ...(ctx.group
-      ? [
-          {
-            label: ctx.group.name,
-            href: boardParentBrowseHref(ctx.group),
-          },
-        ]
-      : []),
-    { label: ctx.parent.name, href: boardPath(fid) },
-    { label: boardLabel },
-  ];
-
-  const japanPrefs = isJapanBrowseContext(fid, typeid);
-
-  // 番号前缀：壳先出，列表 Suspense 扫库
   if (ctx.child.search_keyword) {
     const prefix = ctx.child.search_keyword.trim();
-
     return (
-      <>
-        <MobileViewportScroll>
-          <MobileShellHeader>
-            <div className="mx-auto flex w-full max-w-6xl items-center gap-1 px-3 pt-2 pb-2 md:px-4 md:pt-3 lg:max-w-7xl">
-              <SiteLogoLink />
-              <SearchInput japanPrefs={japanPrefs} />
-              <SettingsNavLink />
-            </div>
-          </MobileShellHeader>
-          <ForumShell
-            activeCategoryIndex={ctx.categoryIndex}
-            activeFid={fid}
-            activeTypeid={typeid}
-            crumbs={crumbs}
-            fillMobile
-          >
-            <Suspense
-              fallback={
-                <PrefixResourceListSkeleton
-                  count={12}
-                  landscape={fid === "mk-uncensored"}
-                  prefix={prefix}
-                />
-              }
-            >
-              <PrefixBrowseSection
-                landscapeCovers={fid === "mk-uncensored"}
-                page={page}
-                prefix={prefix}
-              />
-            </Suspense>
-          </ForumShell>
-        </MobileViewportScroll>
-        <FloatTool />
-      </>
+      <Suspense
+        fallback={<PrefixResourceListSkeleton count={12} prefix={prefix} />}
+      >
+        <PrefixBrowseSection page={page} prefix={prefix} />
+      </Suspense>
     );
   }
 
@@ -184,29 +120,14 @@ export default async function SubtypeBrowsePage({
   });
 
   return (
-    <>
-      <div className="mx-auto flex w-full max-w-6xl items-center gap-1 px-3 pt-3 md:px-4 lg:max-w-7xl">
-        <SiteLogoLink />
-        <SearchInput japanPrefs={japanPrefs} />
-        <SettingsNavLink />
-      </div>
-      <ForumShell
-        activeCategoryIndex={ctx.categoryIndex}
-        activeFid={fid}
-        activeTypeid={typeid}
-        crumbs={crumbs}
-      >
-        <Suspense fallback={<BrowseContentFallback />}>
-          <BrowsePageContent
-            boardFid={boardFid}
-            boardLabel={boardLabel}
-            initialPage={page}
-            initialResources={resources}
-            initialTotalCount={total_count}
-          />
-        </Suspense>
-      </ForumShell>
-      <FloatTool />
-    </>
+    <Suspense fallback={<BrowseContentFallback />}>
+      <BrowsePageContent
+        boardFid={boardFid}
+        boardLabel={boardLabel}
+        initialPage={page}
+        initialResources={resources}
+        initialTotalCount={total_count}
+      />
+    </Suspense>
   );
 }

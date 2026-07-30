@@ -28,10 +28,10 @@ function PrefChip({
       aria-pressed={active}
       title={title}
       className={clsx(
-        "inline-flex h-7 items-center rounded-lg border px-2.5 text-[12px] font-medium transition-colors",
+        "inline-flex h-6 items-center rounded-full border px-2 text-[11px] font-medium transition-colors sm:h-7 sm:px-2.5 sm:text-[12px]",
         active
-          ? "border-primary/40 bg-primary/15 text-primary"
-          : "border-default-200/80 bg-content1 text-default-500 hover:border-primary/30 hover:text-primary dark:border-slate-700 dark:bg-slate-900/40",
+          ? "border-primary/35 bg-primary/12 text-primary"
+          : "border-default-200/70 bg-white/80 text-default-500 hover:border-primary/30 hover:text-primary dark:border-slate-600 dark:bg-slate-800/70",
       )}
       onClick={onClick}
     >

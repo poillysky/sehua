@@ -9,10 +9,12 @@ import { Providers } from "./providers";
 import { siteConfig } from "@/config/site";
 import { fontSans, fontNoto, fontMono } from "@/config/fonts";
 import { DemoMode } from "@/components/DemoMode";
+import { BrowseChrome } from "@/components/BrowseChrome";
 import { GlobalBackButton } from "@/components/PageBackButton";
 import { IosStandalone } from "@/components/IosStandalone";
 import { SafariChromeTint } from "@/components/SafariChromeTint";
 import { CHROME_DARK, CHROME_LIGHT } from "@/config/chrome";
+import { readZoneFolders } from "@/lib/zoneFolders";
 
 export const metadata: Metadata = {
   title: {
@@ -67,6 +69,7 @@ export default async function RootLayout({
 }) {
   const locale = await getLocale();
   const messages = await getMessages();
+  const zoneFolders = await readZoneFolders();
 
   return (
     <html suppressHydrationWarning lang={locale}>
@@ -74,7 +77,8 @@ export default async function RootLayout({
       <body
         className={clsx(
           /* 勿加 h-full：会覆盖 style.css 的 height:auto，导致 iOS Safari 滚不到页底 */
-          "min-h-dvh bg-background font-sans antialiased",
+          /* 透明底：露出全站柔光渐变 */
+          "min-h-dvh bg-transparent font-sans antialiased",
           fontSans.variable,
           fontMono.variable,
           locale.startsWith("zh") ? fontNoto.className : "",
@@ -90,11 +94,11 @@ export default async function RootLayout({
           >
             <IosStandalone />
             <SafariChromeTint />
-            <div className="app-shell relative flex min-h-[100dvh] flex-col">
+            <div className="app-shell relative flex min-h-[100dvh] min-w-0 flex-col">
               <DemoMode />
               <GlobalBackButton />
-              <main className="container z-10 mx-auto flex w-full max-w-6xl flex-grow flex-col md:w-4/5">
-                {children}
+              <main className="container z-10 mx-auto flex w-full min-w-0 max-w-6xl flex-grow flex-col md:w-4/5">
+                <BrowseChrome zoneFolders={zoneFolders}>{children}</BrowseChrome>
               </main>
             </div>
           </Providers>

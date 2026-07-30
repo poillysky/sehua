@@ -32,9 +32,11 @@
     "resource_amount": "Amount",
     "extract_password": "Password",
     "share_code": "Share code",
-    "tagline": "Organized boards · Full-text search · Forum navigation",
-    "search_hint": "Title, code, or keyword — press Enter to search",
-    "browse_boards": "Browse categories"
+    "tagline": "Search titles, codes & actresses · Browse by zone",
+    "search_hint": "Press Enter",
+    "browse_boards": "Browse by zone",
+    "pulse_count": "{count} resources indexed",
+    "pulse_size": "~{size}"
   },
   "Browse": {
     "title": "Browse",
@@ -49,7 +51,7 @@
     "entry": "Categories",
     "title": "Categories",
     "zones_title": "Sections",
-    "zones_subtitle": "Clips · General · Movies",
+    "zones_subtitle": "Regions · General (custom folders) · Movies",
     "section_kicker": "Browse by board",
     "subtitle": "Browse by forum section and board",
     "board_count": "boards",
@@ -77,12 +79,18 @@
     "prefix_code_next": "Next",
     "prefix_resource_total": "{count} items",
     "prefix_resource_empty": "No library items with a recognizable code for this prefix.",
+    "maker_board_empty": "No maker prefixes in this category yet — try Uncensored in the same region.",
     "prefix_resource_sort": "Sorted by code ↑",
     "pref_group": "Browse preferences",
     "pref_chinese": "CN sub",
     "pref_crack": "Crack",
     "pref_chinese_hint": "Prefer: HD Chinese-sub board / C·CX suffix / 「字幕」",
-    "pref_crack_hint": "Prefer: U/UC/CX, 破解, 马赛克破坏, 无码; incl. HD Chinese-sub uncensor board"
+    "pref_crack_hint": "Prefer: U/UC/CX, 破解, 马赛克破坏, 无码; incl. HD Chinese-sub uncensor board",
+    "zone_folder_count": "{count} custom folders",
+    "zone_mode_hint": "Cloud-drive style folders · optional search scope",
+    "zone_search_title": "Folder results",
+    "zone_search_hint": "Search for “{keyword}”",
+    "zone_open_full_search": "Open full search"
   },
   "Search": {
     "placeholder": "Search what you want...",

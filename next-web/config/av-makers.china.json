@@ -1,0 +1,169 @@
+[
+  {
+    "maker": "麻豆",
+    "kind": "国产",
+    "description": "国产头部厂牌，片量最大、系列最全。现行看 MD / MDS。",
+    "prefixes": ["MD", "MDS", "MDC", "MAD", "MAH"],
+    "prefix_notes": {
+      "MD": "麻豆主力番号",
+      "MDS": "麻豆社",
+      "MDC": "麻豆传媒相关线",
+      "MAD": "麻豆衍生线",
+      "MAH": "麻豆相关线"
+    },
+    "cover_aspect": "16/9"
+  },
+  {
+    "maker": "猫爪影像",
+    "kind": "国产",
+    "description": "麻豆系猫爪品牌，偏剧情短片与系列企划。",
+    "prefixes": ["MKY"],
+    "prefix_notes": {
+      "MKY": "猫爪影像主力"
+    },
+    "cover_aspect": "16/9"
+  },
+  {
+    "maker": "蜜桃影像",
+    "kind": "国产",
+    "description": "国产中坚厂，偏甜宠与剧情向单片。",
+    "prefixes": ["PMX", "PM"],
+    "prefix_notes": {
+      "PMX": "蜜桃影像主力",
+      "PM": "蜜桃短番号"
+    },
+    "cover_aspect": "16/9"
+  },
+  {
+    "maker": "天美传媒",
+    "kind": "国产",
+    "description": "国产一线厂，制作较完整，系列稳定。",
+    "prefixes": ["TMY", "TMW"],
+    "prefix_notes": {
+      "TMY": "天美主力",
+      "TMW": "天美相关线"
+    },
+    "cover_aspect": "16/9"
+  },
+  {
+    "maker": "桃之夭夭",
+    "kind": "国产",
+    "description": "国产厂牌，偏清新女优与主题企划。",
+    "prefixes": ["TZ", "TDMY"],
+    "prefix_notes": {
+      "TZ": "桃之夭夭主力",
+      "TDMY": "桃之夭夭系列"
+    },
+    "cover_aspect": "16/9"
+  },
+  {
+    "maker": "精东影业",
+    "kind": "国产",
+    "description": "国产厂牌，常见 JD 番号；与麻豆并列为常见搜索前缀。",
+    "prefixes": ["JD"],
+    "prefix_notes": {
+      "JD": "精东影业主力"
+    },
+    "cover_aspect": "16/9"
+  },
+  {
+    "maker": "91制片厂",
+    "kind": "国产",
+    "description": "91 系制片厂，番号多为 91CM-数字。",
+    "prefixes": ["91CM"],
+    "prefix_notes": {
+      "91CM": "91制片厂主力"
+    },
+    "cover_aspect": "16/9"
+  },
+  {
+    "maker": "JVID",
+    "kind": "国产",
+    "description": "写真 / 影像平台向，番号格式 JVID-…。",
+    "prefixes": ["JVID"],
+    "prefix_notes": {
+      "JVID": "JVID 平台番号"
+    },
+    "cover_aspect": "16/9"
+  },
+  {
+    "maker": "星空传媒",
+    "kind": "国产",
+    "description": "国产厂牌，星空系常见 XKVP / XJX 前缀。",
+    "prefixes": ["XKVP", "XJX"],
+    "prefix_notes": {
+      "XKVP": "星空主力",
+      "XJX": "星空相关线"
+    },
+    "cover_aspect": "16/9"
+  },
+  {
+    "maker": "糖心Vlog",
+    "kind": "国产",
+    "description": "短视频 / Vlog 向国产内容，常见 TX 前缀。",
+    "prefixes": ["TX"],
+    "prefix_notes": {
+      "TX": "糖心 Vlog"
+    },
+    "cover_aspect": "16/9"
+  },
+  {
+    "maker": "皇家华人",
+    "kind": "国产",
+    "description": "国产厂牌，番号多为 RAS-数字。",
+    "prefixes": ["RAS"],
+    "prefix_notes": {
+      "RAS": "皇家华人主力"
+    },
+    "cover_aspect": "16/9"
+  },
+  {
+    "maker": "其它国产",
+    "kind": "国产",
+    "description": "上述之外的常见国产前缀，风格差异大，建议按前缀分搜。",
+    "prefixes": [
+      "MSD",
+      "MSQ",
+      "CUS",
+      "LY",
+      "DOM",
+      "DSUA",
+      "EMX",
+      "FSOG",
+      "HKG",
+      "IDG",
+      "KCM",
+      "LAA",
+      "MB",
+      "MCY",
+      "ML",
+      "MMZ",
+      "MPG",
+      "MSG",
+      "MTVQ",
+      "MXJ",
+      "MZQ",
+      "NHK",
+      "NMH",
+      "NMS",
+      "OMG",
+      "PCA",
+      "SAT",
+      "SAO",
+      "SEX",
+      "SMD",
+      "TG",
+      "UA",
+      "WDM",
+      "YM",
+      "YOK",
+      "ZMX"
+    ],
+    "prefix_notes": {
+      "MSD": "国产常见前缀",
+      "UA": "乌托邦等常见线",
+      "CUS": "国产企划常见前缀"
+    },
+    "cover_aspect": "16/9"
+  }
+]

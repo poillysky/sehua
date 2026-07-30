@@ -315,9 +315,21 @@ const extractKeywords = (
   return keywords;
 };
 
-/** 资源库检索字段：只搜资源名，不用帖子标题 */
-const SEARCH_NAME_EXPR = "COALESCE(r.filename, '')";
+/**
+ * 资源库检索字段：资源名 + 帖子标题。
+ * FC2 等常把番号写在 title（如 FC2PPV-123），filename 只有中文片名。
+ */
+const SEARCH_NAME_EXPR =
+  "(COALESCE(r.filename, '') || E'\\n' || COALESCE(rs.title, ''))";
 
+/** 无码番号检索时勿套「中文字幕」偏好，否则 FC2 等会被滤成 0 */
+function isUncensoredCodeKeyword(keyword: string): boolean {
+  const k = String(keyword || "").trim();
+  if (!k) return false;
+  return /^(FC2|CARIB|1PON|HEYZO|TOKYO\s*HOT|PACO|KIN8|H0930|C0930|H4610|10MU|GACHI|COSPURI|XXX[-_]?AV)\b/i.test(
+    k,
+  );
+}
 const buildKeywordFilter = (
   keywords: { keyword: string; required: boolean }[],
   matchMode: MatchMode,
@@ -539,8 +551,11 @@ export async function search(_: unknown, { queryInput }: any) {
     const fullKeywordParamIndex = keywords.length + 1;
     const limitParamIndex = keywords.length + scoringExtraParams.length + 1;
     const offsetParamIndex = keywords.length + scoringExtraParams.length + 2;
+    const preferChinese =
+      Boolean(queryInput.preferChinese) &&
+      !isUncensoredCodeKeyword(queryInput.keyword);
     const preferFilterSql = buildPreferFilterSql({
-      preferChinese: Boolean(queryInput.preferChinese),
+      preferChinese,
       preferCrack: Boolean(queryInput.preferCrack),
     });
     const orderBy = buildOrderBy(

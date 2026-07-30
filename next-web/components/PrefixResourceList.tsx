@@ -6,7 +6,7 @@ import Link from "next/link";
 import type { PrefixResourceHit } from "@/app/api/graphql/service";
 import { JapanCodeSearchLink } from "@/components/JapanCodeSearchLink";
 import { HIDE_GLOBAL_BACK_ATTR } from "@/components/PageBackButton";
-import { isLandscapeCoverPrefix } from "@/utils/av-code";
+import { findMakerByPrefix, resolveCoverDisplay } from "@/config/av-makers";
 
 /**
  * 前缀/女优封面格 + 翻页。
@@ -22,7 +22,6 @@ export function PrefixResourceList({
   labels,
   buildPageHref,
   subtitle,
-  landscapeCovers,
 }: {
   prefix: string;
   items: PrefixResourceHit[];
@@ -37,8 +36,6 @@ export function PrefixResourceList({
   };
   buildPageHref?: (page: number) => string;
   subtitle?: string;
-  /** 无码板块强制横图；未传则按前缀推断 */
-  landscapeCovers?: boolean;
 }) {
   const totalPages = Math.max(1, Math.ceil(totalCount / pageSize));
   const hrefFor = buildPageHref || ((p: number) => (p <= 1 ? "?" : `?p=${p}`));
@@ -49,8 +46,10 @@ export function PrefixResourceList({
   const prevHref = hrefFor(page - 1);
   const nextHref = hrefFor(page + 1);
   const listScrollRef = useRef<HTMLDivElement>(null);
-  const useLandscape =
-    landscapeCovers ?? isLandscapeCoverPrefix(prefix);
+  /** 已知厂牌前缀才锁板块比例；女优页等按番号自行推断 */
+  const coverAspect = findMakerByPrefix(prefix)
+    ? resolveCoverDisplay(prefix).aspect
+    : undefined;
 
   useEffect(() => {
     if (!showPager) return;
@@ -89,16 +88,16 @@ export function PrefixResourceList({
             {labels.empty}
           </div>
         ) : (
-          <div className="relative z-0 grid grid-cols-4 gap-1.5 pb-2 sm:gap-2.5 md:grid-cols-5 md:gap-3 lg:grid-cols-6">
+          <div className="relative z-0 grid grid-cols-3 gap-2 pb-2 sm:gap-2.5 md:grid-cols-4 md:gap-3">
             {items.map(({ code, coverUrl, coverUrls }, index) => (
               <JapanCodeSearchLink
                 key={code}
-                className="group relative z-0 flex flex-col overflow-hidden rounded-xl border border-default-200/70 bg-content1 shadow-sm transition-[border-color,box-shadow,background-color] duration-200 hover:border-primary/40 hover:shadow-md dark:border-slate-700/70 dark:bg-slate-900/40 dark:hover:border-primary/35"
+                className="group relative z-0 flex flex-col overflow-hidden rounded-2xl border border-default-200/60 bg-white/90 shadow-soft backdrop-blur-md transition-[border-color,box-shadow,background-color] duration-200 hover:border-primary/40 hover:shadow-card dark:border-slate-600/50 dark:bg-slate-800/80 dark:hover:border-primary/35"
                 code={code}
                 coverUrl={coverUrl}
                 coverUrls={coverUrls}
+                coverAspect={coverAspect}
                 fetchPriority={index < 6 ? "high" : "auto"}
-                landscapeCover={useLandscape}
                 loading={index < 8 ? "eager" : "lazy"}
               />
             ))}

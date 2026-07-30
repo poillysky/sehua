@@ -365,22 +365,33 @@ def _quota_link_key(raw: str) -> str:
 
 
 def count_http_host_media_links(text: str) -> int:
-    """兼容旧名：仅 HTTP 媒体直链条数。"""
+    """兼容旧名：仅 HTTP 媒体直链条数（按出现次数）。"""
     if not (text or "").strip():
         return 0
-    found: set[str] = set()
-    for m in _HTTP_HOST_MEDIA_RE.finditer(text):
-        key = _quota_link_key(m.group(0) or "")
-        if key.startswith("http://") or key.startswith("https://"):
-            found.add(key)
-    return len(found)
+    return len(list(_HTTP_HOST_MEDIA_RE.finditer(text)))
 
 
 def count_post_quota_links(text: str) -> int:
-    """帖内下载向链接条数（去重）。含残链/HTTP 直链等非入库链，只作配额旁证。
+    """帖内/附件**提供**的下载向链接条数（按出现次数，不按 hash 去重）。
 
-    口径：标题 N配额 对的是「帖子提供了多少条链接」，不必都是可入库有效链。
+    口径：标题 N配额 对的是「提供了多少条链接」（含重复张贴的同一 btih），
+    不是入库不重复有效链数。残链/HTTP 直链也计。
     """
+    if not (text or "").strip():
+        return 0
+    n = 0
+    for cre in (
+        _ED2K_QUOTA_RE,
+        _MAGNET_QUOTA_RE,
+        _THUNDER_QUOTA_RE,
+        _HTTP_HOST_MEDIA_RE,
+    ):
+        n += sum(1 for _ in cre.finditer(text))
+    return n
+
+
+def count_unique_importable_quota_links(text: str) -> int:
+    """可入库链去重条数（magnet btih / ed2k hash）；仅展示/对照用，不作额度主口径。"""
     if not (text or "").strip():
         return 0
     found: set[str] = set()
@@ -1313,7 +1324,7 @@ def validate_frame(
         )
         metrics["piece_link_kind"] = link_kind_a
         metrics["title_piece_expect"] = expect_pieces_a
-        # 帖内链数（含非入库）≥ 可入库链；配额对齐用帖内总数即可
+        # 帖内/附件「提供」链数（含重复张贴）；额度主口径，不是入库去重数
         post_n = int(getattr(parsed, "quota_link_count", 0) or 0)
         if post_n <= 0:
             post_n = int(getattr(parsed, "http_media_count", 0) or 0)
@@ -1323,7 +1334,7 @@ def validate_frame(
         metrics["quota_link_count"] = post_n
         metrics["http_media_count"] = max(
             0, post_n - member_n
-        )  # 非入库旁证条数（展示用）
+        )  # 提供数相对入库去重的差额（展示用）
         if expect_pieces_a is None:
             tags.append("info:no_quota_skip_count")
         elif _count_matches(member_n, expect_pieces_a) or _count_matches(
@@ -1337,14 +1348,14 @@ def validate_frame(
             quota_src = piece_unit_a or "标题"
             src_zh = "附件" if spec.source == "attach" else "正文"
             msg = (
-                f"{quota_src}写{expect_pieces_a}配额，{src_zh}链数仅{member_n}"
+                f"{quota_src}写{expect_pieces_a}配额，{src_zh}提供链数仅{post_n}"
                 f"（漏链，待核）"
             )
             code = "warn:piece_count_mismatch_soft"
             if _CLOUD_SHARE_IN_TITLE_RE.search(pack_blob or ""):
                 code = "warn:piece_count_mismatch_cloud"
                 tags.append("info:cloud_quota_soft")
-            elif member_n < int(expect_pieces_a):
+            elif post_n < int(expect_pieces_a):
                 code = "warn:piece_count_mismatch_title_over"
                 tags.append("info:title_quota_overclaim_soft")
                 # 压缩包单链：标题 N配额 ≠ 漏链（包内多份/115额度口径）

@@ -30,9 +30,11 @@
     "resource_amount": "資源數量",
     "extract_password": "解壓密碼",
     "share_code": "分享碼",
-    "tagline": "分類整理 · 全文檢索 · 論壇式導航",
-    "search_hint": "輸入片名、番號或關鍵詞，回車即可搜尋",
-    "browse_boards": "瀏覽分區目錄"
+    "tagline": "搜片名、番號與女優 · 按區瀏覽入庫資源",
+    "search_hint": "回車搜尋",
+    "browse_boards": "按區瀏覽",
+    "pulse_count": "已收錄 {count} 條",
+    "pulse_size": "約 {size}"
   },
   "Browse": {
     "title": "分類瀏覽",
@@ -47,7 +49,7 @@
     "entry": "分區目錄",
     "title": "分區目錄",
     "zones_title": "板塊區間",
-    "zones_subtitle": "片區 · 綜合區 · 影視區",
+    "zones_subtitle": "片區（日本 / 國產 / 歐美）· 綜合區（自建目錄）· 影視區",
     "section_kicker": "按版瀏覽",
     "subtitle": "依論壇分區與板塊瀏覽資源",
     "board_count": "個板塊",
@@ -75,12 +77,18 @@
     "prefix_code_next": "下一頁",
     "prefix_resource_total": "{count} 條資源",
     "prefix_resource_empty": "庫中暫無此前綴可識別番號的資源。",
+    "maker_board_empty": "該分類暫無廠牌前綴，可先看同區「無碼」。",
     "prefix_resource_sort": "按番號升序",
     "pref_group": "瀏覽偏好",
     "pref_chinese": "中文",
     "pref_crack": "破解",
     "pref_chinese_hint": "優先：高清中文字幕板 / 番號尾 C·CX / 含「字幕」",
-    "pref_crack_hint": "優先：U/UC/CX、破解、馬賽克破壞、無碼；含高清中文字幕·無碼板"
+    "pref_crack_hint": "優先：U/UC/CX、破解、馬賽克破壞、無碼；含高清中文字幕·無碼板",
+    "zone_folder_count": "{count} 個自訂資料夾",
+    "zone_mode_hint": "網盤式自建目錄 · 可掛搜尋",
+    "zone_search_title": "目錄資源",
+    "zone_search_hint": "依「{keyword}」搜尋",
+    "zone_open_full_search": "開啟完整搜尋"
   },
   "Search": {
     "placeholder": "搜尋你想要的...",

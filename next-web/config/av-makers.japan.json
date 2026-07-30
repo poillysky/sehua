@@ -26,7 +26,8 @@
       "OFJE": "精选合集（2016 起）",
       "ONSD": "早期精选合集",
       "SPS": "True Love / 特典线"
-    }
+    },
+    "cover_aspect": "2/3"
   },
   {
     "maker": "MOODYZ",
@@ -49,21 +50,22 @@
       "MIZD"
     ],
     "prefix_notes": {
-      "MIDA": "现行主力单片",
+      "MIDA": "2024 起现行主力",
       "MIDV": "2021–2024 主力",
       "MIDE": "2013–2021 主力",
       "MIDD": "2005–2013 主力",
-      "MIAB": "企划 / Acid 现行",
-      "MIAA": "企划 / Acid 上一代",
-      "MIAE": "企划 / Acid 更早",
-      "MIAD": "企划 / Acid 早期",
+      "MIAB": "Acid 企划现行",
+      "MIAA": "Acid 企划上一代",
+      "MIAE": "Acid 企划更早",
+      "MIAD": "Acid 企划早期",
       "MIMK": "漫画改编线",
-      "MIRD": "大型企划 / Real",
-      "MIGD": "硬核 / Gati 线",
+      "MIRD": "大型 Real 企划",
+      "MIGD": "硬核 Gati 线",
       "MIFD": "新人 Fresh 线",
       "MIBD": "精选合集（旧）",
       "MIZD": "精选合集（新）"
-    }
+    },
+    "cover_aspect": "2/3"
   },
   {
     "maker": "IDEA POCKET",
@@ -80,15 +82,16 @@
       "IPVR"
     ],
     "prefix_notes": {
-      "IPZZ": "现行主力",
+      "IPZZ": "2022 起现行主力",
       "IPX": "2017–2022 主力",
       "IPZ": "2012–2017 主力",
       "IPTD": "2002–2012 主力",
-      "IPSD": "Beauty Venus 等企划",
+      "IPSD": "Beauty Venus 企划",
       "IDBD": "精选合集",
       "SUPD": "Digital Channel",
       "IPVR": "VR 专线"
-    }
+    },
+    "cover_aspect": "2/3"
   },
   {
     "maker": "PRESTIGE",
@@ -111,11 +114,12 @@
       "ABP": "AB 系 2013–2020",
       "ABS": "AB 系早期",
       "CHN": "街拍素人纪实",
-      "YRH": "主题企划",
-      "PPT": "概念企划",
-      "TRE": "主题系列",
-      "BLO": "企划系列"
-    }
+      "YRH": "一人旅 / 主题企划",
+      "PPT": "概念企划短片",
+      "TRE": "TREND 主题系列",
+      "BLO": "BLOOM 企划系列"
+    },
+    "cover_aspect": "2/3"
   },
   {
     "maker": "SOD Create",
@@ -138,13 +142,14 @@
       "STARS": "SODSTAR 上一代",
       "STAR": "SODSTAR 更早",
       "SDDE": "经典强企划",
-      "SDMU": "主题企划",
+      "SDMU": "主题实验企划",
       "SDNM": "素人 / 人妻纪实",
       "SDJS": "社内职员企划",
       "SDMT": "素人企划旧线",
       "SDMM": "マジックミラー号",
-      "SDAB": "青春/学生向"
-    }
+      "SDAB": "青春 / 学生向"
+    },
+    "cover_aspect": "2/3"
   },
   {
     "maker": "Madonna",
@@ -164,18 +169,19 @@
       "URE"
     ],
     "prefix_notes": {
-      "JUR": "现行主力",
-      "JUQ": "上一代主力",
-      "JUL": "JUQ 前一代",
-      "JUY": "更早主力",
-      "JUX": "再早主力",
-      "JUC": "早期主力",
+      "JUR": "2024 起现行主力",
+      "JUQ": "2022–2024 主力",
+      "JUL": "2020–2022 主力",
+      "JUY": "2017–2020 主力",
+      "JUX": "2013–2017 主力",
+      "JUC": "2010–2013 主力",
       "JUKD": "最早期编号",
       "JUSD": "精选合集",
-      "OBA": "偏熟女气质",
-      "ROE": "主题企划",
+      "OBA": "偏熟女气质线",
+      "ROE": "主题企划线",
       "URE": "漫画原作线"
-    }
+    },
+    "cover_aspect": "2/3"
   },
   {
     "maker": "FALENO",
@@ -187,10 +193,11 @@
       "FNS"
     ],
     "prefix_notes": {
-      "FSDSS": "主力单片",
+      "FSDSS": "专属女优单片",
       "FCDSS": "精选合集",
-      "FNS": "FALENO star 现行数字线"
-    }
+      "FNS": "FALENO star 数字线"
+    },
+    "cover_aspect": "2/3"
   },
   {
     "maker": "kawaii",
@@ -203,11 +210,12 @@
       "KAPD"
     ],
     "prefix_notes": {
-      "CAWD": "现行主力",
+      "CAWD": "2019 起现行主力",
       "KAWD": "上一代主力",
       "KWBD": "精选合集",
       "KAPD": "合辑 / 旁支"
-    }
+    },
+    "cover_aspect": "2/3"
   },
   {
     "maker": "E-BODY",
@@ -220,11 +228,12 @@
       "EYAN"
     ],
     "prefix_notes": {
-      "EBWH": "现行主力倾向",
-      "EBOD": "经典主力",
+      "EBWH": "现行高规格身材线",
+      "EBOD": "经典身材主力",
       "MKCK": "身材主题合集",
-      "EYAN": "人妻线"
-    }
+      "EYAN": "E-BODY 人妻线"
+    },
+    "cover_aspect": "2/3"
   },
   {
     "maker": "Attackers",
@@ -245,13 +254,14 @@
       "ATID": "剧情企划主力",
       "SHKD": "经典凌辱系列",
       "RBD": "龙缚戏剧线",
-      "RBK": "RBD 后继",
+      "RBK": "RBD 后继线",
       "ADN": "人妻禁忌戏剧",
-      "JBD": "蛇缚 / 高强度",
+      "JBD": "蛇缚高强度",
       "ATKD": "精选合集",
       "SSPD": "Super Special 企划",
-      "SAME": "Attackers SAME 线"
-    }
+      "SAME": "SAME 暗黑线"
+    },
+    "cover_aspect": "2/3"
   },
   {
     "maker": "OPPAI",
@@ -264,11 +274,12 @@
       "PPSD"
     ],
     "prefix_notes": {
-      "PPPE": "现行主力",
+      "PPPE": "2021 起现行主力",
       "PPPD": "上一代主力",
       "PPBD": "精选合集",
       "PPSD": "多女优 / 系列"
-    }
+    },
+    "cover_aspect": "2/3"
   },
   {
     "maker": "本中",
@@ -281,11 +292,12 @@
       "HNDS"
     ],
     "prefix_notes": {
-      "HMN": "现行主力",
+      "HMN": "2021 起现行主力",
       "HND": "上一代主力",
       "HNDB": "精选合集",
       "HNDS": "大型企划"
-    }
+    },
+    "cover_aspect": "2/3"
   },
   {
     "maker": "プレミアム",
@@ -300,13 +312,14 @@
       "OFES"
     ],
     "prefix_notes": {
-      "PRED": "现行主力",
+      "PRED": "2016 起现行主力",
       "PGD": "上一代主力",
       "PBD": "精选合集",
-      "PJD": "系列番号",
-      "PFES": "Premium 精选/企划",
+      "PJD": "系列旁支番号",
+      "PFES": "Premium 精选企划",
       "OFES": "Premium 企划线"
-    }
+    },
+    "cover_aspect": "2/3"
   },
   {
     "maker": "WANZ",
@@ -318,10 +331,11 @@
       "BMW"
     ],
     "prefix_notes": {
-      "WAAA": "现行主力",
+      "WAAA": "2020 起现行主力",
       "WANZ": "同名旧系编号",
       "BMW": "精选合集"
-    }
+    },
+    "cover_aspect": "2/3"
   },
   {
     "maker": "ダスッ！",
@@ -333,10 +347,11 @@
       "DAZD"
     ],
     "prefix_notes": {
-      "DASS": "现行主力",
+      "DASS": "2021 起现行主力",
       "DASD": "上一代主力",
       "DAZD": "精选合集"
-    }
+    },
+    "cover_aspect": "2/3"
   },
   {
     "maker": "Fitch",
@@ -351,13 +366,14 @@
       "FPRE"
     ],
     "prefix_notes": {
-      "JUFE": "常见主力系列",
+      "JUFE": "丰满肉感现行",
       "JUNY": "丰满肉感向",
       "NIMA": "漫画原作线",
       "JUFD": "上一代主力",
       "JFB": "精选 / 旧线",
       "FPRE": "Fitch Premium"
-    }
+    },
+    "cover_aspect": "2/3"
   },
   {
     "maker": "アリスJAPAN",
@@ -370,7 +386,8 @@
     "prefix_notes": {
       "DVAJ": "现行常见编号",
       "DV": "早期经典编号"
-    }
+    },
+    "cover_aspect": "2/3"
   },
   {
     "maker": "MAX-A",
@@ -383,11 +400,12 @@
       "SRXV"
     ],
     "prefix_notes": {
-      "XVSR": "常见主力前缀",
-      "SACE": "系列番号",
+      "XVSR": "现行常见前缀",
+      "SACE": "系列企划番号",
       "XV": "更早 Karen 线",
       "SRXV": "旧蓝光 / 系列"
-    }
+    },
+    "cover_aspect": "2/3"
   },
   {
     "maker": "溜池ゴロー",
@@ -398,327 +416,356 @@
       "MFYD"
     ],
     "prefix_notes": {
-      "MEYD": "主力人妻线",
-      "MFYD": "关联企划/出道线"
-    }
+      "MEYD": "人妻不伦主力",
+      "MFYD": "关联企划 / 出道"
+    },
+    "cover_aspect": "2/3"
   },
   {
     "maker": "痴女ヘブン",
     "kind": "有码",
-    "description": "痴女特化。CJOD 为主力品番。",
+    "description": "痴女特化厂，主动出击人设与强势玩法是招牌。",
     "prefixes": [
       "CJOD"
     ],
     "prefix_notes": {
-      "CJOD": "痴女ヘブン主力"
-    }
+      "CJOD": "痴女主动出击线"
+    },
+    "cover_aspect": "2/3"
   },
   {
     "maker": "DAHLIA",
     "kind": "有码",
-    "description": "高制作人妻/戏剧向精品厂。",
+    "description": "高制作人妻 / 戏剧向精品厂，画质与妆造偏精致。",
     "prefixes": [
       "DLDSS"
     ],
     "prefix_notes": {
-      "DLDSS": "DAHLIA 主力"
-    }
+      "DLDSS": "人妻戏剧精品单片"
+    },
+    "cover_aspect": "2/3"
   },
   {
     "maker": "タカラ映像",
     "kind": "有码",
-    "description": "熟女/母子题材常见出品。",
+    "description": "熟女 / 母子禁忌题材常见，偏家庭戏剧向。",
     "prefixes": [
       "ALDN"
     ],
     "prefix_notes": {
-      "ALDN": "タカラ映像主力"
-    }
+      "ALDN": "熟女母子戏剧线"
+    },
+    "cover_aspect": "2/3"
   },
   {
     "maker": "Glory Quest",
     "kind": "有码",
-    "description": "综合向老牌厂，题材覆盖广。",
+    "description": "综合向老牌厂，题材覆盖广，企划与女优单片都有。",
     "prefixes": [
       "GVH"
     ],
     "prefix_notes": {
-      "GVH": "Glory Quest 主力"
-    }
+      "GVH": "综合企划主力番号"
+    },
+    "cover_aspect": "2/3"
   },
   {
     "maker": "Venus",
     "kind": "有码",
-    "description": "熟女人妻向。VEC / VENX / VEMA 等。",
+    "description": "熟女 / 人妻向，偏成熟魅力与家庭戏剧。",
     "prefixes": [
       "VEC",
       "VENX",
       "VEMA"
     ],
     "prefix_notes": {
-      "VEC": "Venus 主力",
-      "VENX": "Venus 企划线",
-      "VEMA": "Venus 关联线"
-    }
+      "VEC": "熟女人妻主力",
+      "VENX": "熟女企划线",
+      "VEMA": "熟女关联线"
+    },
+    "cover_aspect": "2/3"
   },
   {
     "maker": "MAXING",
     "kind": "有码",
-    "description": "综合有码厂，MXGS 常见。",
+    "description": "综合有码厂，女优单片与企划并存，风格偏主流。",
     "prefixes": [
       "MXGS"
     ],
     "prefix_notes": {
-      "MXGS": "MAXING 主力"
-    }
+      "MXGS": "综合单片主力番号"
+    },
+    "cover_aspect": "2/3"
   },
   {
     "maker": "kira☆kira",
     "kind": "有码",
-    "description": "辣妹/黑系风格鲜明。",
+    "description": "辣妹 / 黑系风格鲜明，妆造大胆、节奏偏嗨。",
     "prefixes": [
       "BLK"
     ],
     "prefix_notes": {
-      "BLK": "kira☆kira 主力"
-    }
+      "BLK": "辣妹黑系主力番号"
+    },
+    "cover_aspect": "2/3"
   },
   {
     "maker": "ROOKIE",
     "kind": "有码",
-    "description": "企划/合集向常见出品。",
+    "description": "企划 / 合集向常见出品，大型企划与精选较多。",
     "prefixes": [
       "RKI"
     ],
     "prefix_notes": {
-      "RKI": "ROOKIE 主力"
-    }
+      "RKI": "大型企划 / 合集线"
+    },
+    "cover_aspect": "2/3"
   },
   {
     "maker": "えむっ娘ラボ",
     "kind": "有码",
-    "description": "偏硬核/调教向。",
+    "description": "偏硬核 / 调教向，重刺激与 SM 氛围。",
     "prefixes": [
       "MISM"
     ],
     "prefix_notes": {
-      "MISM": "えむっ娘ラボ主力"
-    }
+      "MISM": "硬核调教主力番号"
+    },
+    "cover_aspect": "2/3"
   },
   {
     "maker": "BeFree",
     "kind": "有码",
-    "description": "戏剧向有码厂，BF 品番。",
+    "description": "戏剧向有码厂，偏清爽剧情与女优单片。",
     "prefixes": [
       "BF"
     ],
     "prefix_notes": {
-      "BF": "BeFree 主力"
-    }
+      "BF": "戏剧单片主力番号"
+    },
+    "cover_aspect": "2/3"
   },
   {
     "maker": "無垢",
     "kind": "有码",
-    "description": "学生/清纯人设向。MUDR / MUKD 等。",
+    "description": "学生 / 清纯人设向，偏青涩反差与成长系。",
     "prefixes": [
       "MUDR",
       "MUKD",
       "MUKC"
     ],
     "prefix_notes": {
-      "MUDR": "無垢主力",
-      "MUKD": "無垢关联",
-      "MUKC": "無垢关联"
-    }
+      "MUDR": "清纯学生现行",
+      "MUKD": "清纯学生旧线",
+      "MUKC": "清纯关联旁支"
+    },
+    "cover_aspect": "2/3"
   },
   {
     "maker": "S-Cute",
     "kind": "有码",
-    "description": "清新短片风格，SQTE 品番。",
+    "description": "清新短片风格，节奏轻、妆造自然，偏日常感。",
     "prefixes": [
       "SQTE"
     ],
     "prefix_notes": {
-      "SQTE": "S-Cute 主力"
-    }
+      "SQTE": "清新短片主力番号"
+    },
+    "cover_aspect": "2/3"
   },
   {
     "maker": "ROCKET",
     "kind": "有码",
-    "description": "恶搞/奇想企划厂。",
+    "description": "恶搞 / 奇想企划厂，玩法脑洞大、系列感强。",
     "prefixes": [
       "RCTD"
     ],
     "prefix_notes": {
-      "RCTD": "ROCKET 主力"
-    }
+      "RCTD": "奇想恶搞企划线"
+    },
+    "cover_aspect": "2/3"
   },
   {
     "maker": "山と空",
     "kind": "有码",
-    "description": "户外/强迫系题材常见。",
+    "description": "户外 / 露出系题材常见，场景偏野外与开放空间。",
     "prefixes": [
       "SORA"
     ],
     "prefix_notes": {
-      "SORA": "山と空主力"
-    }
+      "SORA": "户外露出企划线"
+    },
+    "cover_aspect": "2/3"
   },
   {
     "maker": "ビビアン",
     "kind": "有码",
-    "description": "百合/女同题材专精。",
+    "description": "百合 / 女同题材专精，双女主戏剧与企划并重。",
     "prefixes": [
       "BBAN"
     ],
     "prefix_notes": {
-      "BBAN": "ビビアン主力"
-    }
+      "BBAN": "百合女同主力番号"
+    },
+    "cover_aspect": "2/3"
   },
   {
     "maker": "桃太郎",
     "kind": "有码",
-    "description": "桃太郎映像出版，企划向。",
+    "description": "桃太郎映像出版，偏强企划与主题包装。",
     "prefixes": [
       "YMDD"
     ],
     "prefix_notes": {
-      "YMDD": "桃太郎主力"
-    }
+      "YMDD": "主题企划主力番号"
+    },
+    "cover_aspect": "2/3"
   },
   {
     "maker": "Hunter",
     "kind": "有码",
-    "description": "情景喜剧/乱交企划常见。",
+    "description": "情景喜剧 / 乱交企划常见，偏群体玩法与桥段感。",
     "prefixes": [
       "HUNTC"
     ],
     "prefix_notes": {
-      "HUNTC": "Hunter 主力"
-    }
+      "HUNTC": "情景乱交企划线"
+    },
+    "cover_aspect": "2/3"
   },
   {
     "maker": "ROYD",
     "kind": "有码",
-    "description": "戏剧向中坚厂。",
+    "description": "戏剧向中坚厂，偏日常禁忌与关系戏剧。",
     "prefixes": [
       "ROYD"
     ],
     "prefix_notes": {
-      "ROYD": "ROYD 主力"
-    }
+      "ROYD": "关系戏剧主力番号"
+    },
+    "cover_aspect": "2/3"
   },
   {
     "maker": "DEEP'S",
     "kind": "有码",
-    "description": "マジックミラー便等企划知名。",
+    "description": "マジックミラー便等街头企划知名，偏公开实验风。",
     "prefixes": [
       "DVMM"
     ],
     "prefix_notes": {
-      "DVMM": "DEEP'S 主力"
-    }
+      "DVMM": "魔镜号等企划线"
+    },
+    "cover_aspect": "2/3"
   },
   {
     "maker": "Million",
     "kind": "有码",
-    "description": "KMP / Million 系综合出品。",
+    "description": "KMP / Million 系综合出品，女优单片与企划都有。",
     "prefixes": [
       "MKMP"
     ],
     "prefix_notes": {
-      "MKMP": "Million 主力"
-    }
+      "MKMP": "Million 综合主力"
+    },
+    "cover_aspect": "2/3"
   },
   {
     "maker": "エムズビデオ",
     "kind": "有码",
-    "description": "中出题材特化。",
+    "description": "中出题材特化，标签清晰、检索意图明确。",
     "prefixes": [
       "MVSD"
     ],
     "prefix_notes": {
-      "MVSD": "エムズビデオ主力"
-    }
+      "MVSD": "中出主题主力番号"
+    },
+    "cover_aspect": "2/3"
   },
   {
     "maker": "プラネットプラス",
     "kind": "有码",
-    "description": "人妻/家政妇企划常见。",
+    "description": "人妻 / 家政妇企划常见，偏家庭角色扮演。",
     "prefixes": [
       "NACR"
     ],
     "prefix_notes": {
-      "NACR": "プラネットプラス主力"
-    }
+      "NACR": "人妻家政妇企划"
+    },
+    "cover_aspect": "2/3"
   },
   {
     "maker": "セレブの友",
     "kind": "有码",
-    "description": "熟女戏剧向。",
+    "description": "熟女戏剧向，偏贵妇人设与成熟魅力。",
     "prefixes": [
       "CEMD"
     ],
     "prefix_notes": {
-      "CEMD": "セレブの友主力"
-    }
+      "CEMD": "熟女戏剧主力番号"
+    },
+    "cover_aspect": "2/3"
   },
   {
     "maker": "フォーカス",
     "kind": "有码",
-    "description": "戏剧/NTR 企划常见。",
+    "description": "戏剧 / NTR 企划常见，偏关系崩坏与禁忌桥段。",
     "prefixes": [
       "FOCS"
     ],
     "prefix_notes": {
-      "FOCS": "フォーカス主力"
-    }
+      "FOCS": "NTR 戏剧企划线"
+    },
+    "cover_aspect": "2/3"
   },
   {
     "maker": "ながえSTYLE",
     "kind": "有码",
-    "description": "和姦/郁向剧情片。",
+    "description": "和姦 / 郁向剧情片，重心理戏与压抑氛围。",
     "prefixes": [
       "NSFS"
     ],
     "prefix_notes": {
-      "NSFS": "ながえSTYLE主力"
-    }
+      "NSFS": "和姦郁向剧情线"
+    },
+    "cover_aspect": "2/3"
   },
   {
     "maker": "センタービレッジ",
     "kind": "有码",
-    "description": "熟女纪录片向，JRZE / JURA 等。",
+    "description": "熟女纪录片向，初撮り与年龄层纪录是招牌。",
     "prefixes": [
       "JRZE",
       "JURA"
     ],
     "prefix_notes": {
       "JRZE": "初撮り熟女纪录",
-      "JURA": "五十路ドキュメント"
-    }
+      "JURA": "五十路纪录片线"
+    },
+    "cover_aspect": "2/3"
   },
   {
     "maker": "JET映像",
     "kind": "有码",
-    "description": "人妻 NTR 题材常见。",
+    "description": "人妻 NTR 题材常见，偏出轨与偷情戏剧。",
     "prefixes": [
       "NGOD"
     ],
     "prefix_notes": {
-      "NGOD": "JET映像主力"
-    }
+      "NGOD": "人妻 NTR 主力番号"
+    },
+    "cover_aspect": "2/3"
   },
   {
     "maker": "MILK",
     "kind": "有码",
-    "description": "年轻向中坚厂。",
+    "description": "年轻向中坚厂，偏清新女优单片与轻企划。",
     "prefixes": [
       "MILK"
     ],
     "prefix_notes": {
-      "MILK": "MILK 主力"
-    }
+      "MILK": "年轻女优主力番号"
+    },
+    "cover_aspect": "2/3"
   },
   {
     "maker": "素人企划",
@@ -739,17 +786,18 @@
     ],
     "prefix_notes": {
       "SIRO": "シロウトTV 面试风",
-      "200GANA": "搭讪纪实系",
+      "200GANA": "ナンパ搭讪纪实",
       "300MIUM": "都市约拍纪实",
       "259LUXU": "Luxury 高级素人",
       "300MAAN": "素人约拍企划",
-      "326EVA": "素人企划线",
-      "ORECO": "俺の素人 / MGS 系",
+      "326EVA": "素人纪实企划",
+      "ORECO": "俺の素人 / MGS",
       "ORECS": "俺の素人系",
       "OREMO": "俺の素人系",
       "ORECZ": "俺の素人系",
       "KNB": "ナンパ系素人"
-    }
+    },
+    "cover_aspect": "2/3"
   },
   {
     "maker": "加勒比",
@@ -757,15 +805,15 @@
     "description": "无码站片头部之一：更新勤、系列全、画质相对稳定。",
     "prefixes": [
       "CARIB",
-      "Caribbean",
-      "Caribbeancom",
       "CARIBPR"
     ],
     "prefix_notes": {
-      "CARIB": "常用简写检索",
-      "Caribbean": "英文站名写法",
-      "Caribbeancom": "文件名常见全站名",
-      "CARIBPR": "加勒比 Premium"
+      "CARIB": "加勒比主站番号",
+      "CARIBPR": "Premium 高规格线"
+    },
+    "cover_aspect": "16/9",
+    "prefix_aspects": {
+      "CARIBPR": "16/10"
     }
   },
   {
@@ -773,13 +821,12 @@
     "kind": "无码",
     "description": "与加勒比齐名的无码老牌站片，制作完整、系列传承久。",
     "prefixes": [
-      "1PON",
-      "1pondo"
+      "1PON"
     ],
     "prefix_notes": {
-      "1PON": "常用简写",
-      "1pondo": "官方英文名"
-    }
+      "1PON": "一本道主站番号"
+    },
+    "cover_aspect": "16/9"
   },
   {
     "maker": "HEYZO",
@@ -789,8 +836,9 @@
       "HEYZO"
     ],
     "prefix_notes": {
-      "HEYZO": "建议搭配数字，如 HEYZO-0123"
-    }
+      "HEYZO": "格式如 HEYZO-0123"
+    },
+    "cover_aspect": "16/9"
   },
   {
     "maker": "东京热",
@@ -800,26 +848,28 @@
       "TokyoHot"
     ],
     "prefix_notes": {
-      "TokyoHot": "站名检索词"
-    }
+      "TokyoHot": "东京热经典存量"
+    },
+    "cover_aspect": "4/3"
   },
   {
     "maker": "FC2",
     "kind": "无码",
-    "description": "个人/小工作室付费配信平台。质量看卖家，不看平台名。",
+    "description": "个人 / 小工作室付费配信平台。质量看卖家，不看平台名。",
     "prefixes": [
       "FC2",
       "FC2PPV"
     ],
     "prefix_notes": {
-      "FC2": "平台简称，结果面宽",
-      "FC2PPV": "付费配信完整写法"
-    }
+      "FC2": "非 PPV，如 FC2-1234567",
+      "FC2PPV": "付费配信，如 FC2-PPV-1234567"
+    },
+    "cover_aspect": "16/9"
   },
   {
     "maker": "人妻斩",
     "kind": "无码",
-    "description": "人妻/素人向站片常见前缀，文件名里番号后缀多为字母+数字。",
+    "description": "人妻 / 素人向站片常见前缀，文件名后缀多为字母 + 数字。",
     "prefixes": [
       "H0930",
       "C0930",
@@ -828,19 +878,21 @@
     "prefix_notes": {
       "H0930": "エッチな0930",
       "C0930": "人妻斩主系列",
-      "H4610": "オリエンタル素人线"
-    }
+      "H4610": "オリエンタル素人"
+    },
+    "cover_aspect": "4/3"
   },
   {
     "maker": "金8天国",
     "kind": "无码",
-    "description": "金发/欧美向无码站片，番号多为 KIN8-四位。",
+    "description": "金发 / 欧美向无码站片，番号多为 KIN8-四位。",
     "prefixes": [
       "KIN8"
     ],
     "prefix_notes": {
-      "KIN8": "金8天国"
-    }
+      "KIN8": "格式如 KIN8-0123"
+    },
+    "cover_aspect": "16/9"
   },
   {
     "maker": "其它无码",
@@ -848,21 +900,23 @@
     "description": "上述之外的常见无码来源，定位差很大，请按前缀分开搜。",
     "prefixes": [
       "PACO",
-      "PACOPACOMAMA",
       "10MU",
-      "10musume",
       "XXX-AV",
       "Cospuri",
       "GACHINCO"
     ],
     "prefix_notes": {
-      "PACO": "人妻 / 熟女向简写",
-      "PACOPACOMAMA": "文件名常见全站名",
-      "10MU": "天然むすめ简写",
-      "10musume": "天然むすめ正式写法",
+      "PACO": "パコパコママ 人妻向",
+      "10MU": "天然むすめ 素人向",
       "XXX-AV": "合集 / 站片来源",
-      "Cospuri": "Cosplay 向",
-      "GACHINCO": "ガチん娘"
+      "Cospuri": "Cosplay 专向",
+      "GACHINCO": "ガチん娘 素人"
+    },
+    "cover_aspect": "16/9",
+    "prefix_aspects": {
+      "GACHINCO": "4/3",
+      "XXX-AV": "4/3",
+      "Cospuri": "3/4"
     }
   }
 ]

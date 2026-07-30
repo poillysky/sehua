@@ -1,3 +1,3 @@
-/** Safari tab / overscroll / PWA chrome color anchors */
-export const CHROME_LIGHT = "#ffffff";
-export const CHROME_DARK = "#0B1220";
+/** Safari tab / overscroll / PWA chrome color anchors（柔光玻璃浅底） */
+export const CHROME_LIGHT = "#eef6ff";
+export const CHROME_DARK = "#0b1220";

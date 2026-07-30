@@ -5,7 +5,7 @@ import { cache } from "react";
 import { resourceByHash } from "@/app/api/graphql/service";
 import { base64ToHex } from "@/utils";
 import { DetailContent } from "@/components/DetailContent";
-import { getDisplayTitle, isResourceHash } from "@/utils/resource";
+import { getCardTitle, isResourceHash } from "@/utils/resource";
 
 export const dynamic = "force-dynamic";
 
@@ -35,7 +35,7 @@ export async function generateMetadata({
   const data = await fetchData(hash64);
 
   return {
-    title: getDisplayTitle(data),
+    title: getCardTitle(data),
   };
 }
 

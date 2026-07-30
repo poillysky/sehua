@@ -31,9 +31,9 @@ import {
 import { Toast } from "@/utils";
 
 const shell =
-  "overflow-hidden rounded-lg border border-gray-200 bg-white shadow-sm dark:border-slate-700 dark:bg-slate-900";
+  "overflow-hidden rounded-2xl border border-default-200/60 bg-white/90 shadow-card backdrop-blur-md dark:border-slate-600/50 dark:bg-slate-800/80";
 const inputWrap =
-  "bg-gray-50 dark:bg-slate-800/80 border border-gray-200 dark:border-slate-700 shadow-none";
+  "bg-white/80 dark:bg-slate-800/80 border border-default-200/70 dark:border-slate-600 shadow-none";
 
 const ALL_CODES = "__ALL__";
 const ALL_BOARD = "__ALL__";
@@ -1079,7 +1079,7 @@ export function ScrapeSettingsPanel() {
             </span>
           )}
           {monitorRunning ? (
-            <span className="rounded bg-sky-50 px-1.5 py-0.5 text-[10px] text-sky-700 dark:bg-sky-950/40 dark:text-sky-300">
+            <span className="rounded bg-default-100 px-1.5 py-0.5 text-[10px] text-default-600 dark:bg-slate-800 dark:text-slate-300">
               监控中 · {monitorIntervalMin}分
             </span>
           ) : null}
@@ -1104,15 +1104,15 @@ export function ScrapeSettingsPanel() {
         </Button>
       </div>
 
-      <div className="flex gap-1 rounded-lg border border-gray-200 bg-gray-50 p-1 dark:border-slate-700 dark:bg-slate-800/80">
+      <div className="flex gap-1 rounded-full border border-default-200/60 bg-white/70 p-1 shadow-soft backdrop-blur-md dark:border-slate-600/50 dark:bg-slate-800/70">
         {TABS.map((t) => (
           <button
             key={t.key}
             className={clsx(
-              "flex-1 rounded-md px-3 py-2 text-sm font-medium transition-colors",
+              "flex-1 rounded-full px-3 py-2 text-sm font-medium transition-colors",
               tab === t.key
-                ? "bg-white text-primary shadow-sm dark:bg-slate-900"
-                : "text-gray-600 hover:text-gray-900 dark:text-slate-300 dark:hover:text-white",
+                ? "bg-primary text-primary-foreground shadow-soft"
+                : "text-default-600 hover:text-foreground",
             )}
             type="button"
             onClick={() => setTab(t.key)}
@@ -1849,7 +1849,7 @@ export function ScrapeSettingsPanel() {
                     color:
                       activeJobs >= scrapeConcurrency
                         ? "text-orange-600"
-                        : "text-sky-600",
+                        : "text-primary",
                     sub:
                       queue.running > activeJobs
                         ? `队列 ${queue.running}`
@@ -1871,14 +1871,14 @@ export function ScrapeSettingsPanel() {
               ).map((item) => (
                 <div
                   key={item.key}
-                  className="rounded-md bg-gray-50 px-2 py-2 dark:bg-slate-800/80"
+                  className="rounded-md bg-default-100 px-2 py-2 dark:bg-slate-800/80"
                 >
                   <p className={`text-lg font-semibold ${item.color}`}>
                     {item.n}
                   </p>
-                  <p className="text-[11px] text-gray-400">{item.label}</p>
+                  <p className="text-[11px] text-default-400">{item.label}</p>
                   {"sub" in item && item.sub ? (
-                    <p className="mt-0.5 text-[10px] text-sky-500/90">{item.sub}</p>
+                    <p className="mt-0.5 text-[10px] text-default-500">{item.sub}</p>
                   ) : null}
                 </div>
               ))}

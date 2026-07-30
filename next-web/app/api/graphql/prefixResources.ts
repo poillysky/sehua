@@ -3,7 +3,7 @@ import { filterPreviewImages } from "@/utils/resource";
 import { loadPrefixCodesCached } from "@/lib/prefixCodeCache";
 import { coverHostPriority, landscapeUrlHint } from "@/lib/imageProxy";
 import { resolveCoverUrl } from "@/lib/coverUrl";
-import { compareCodes, extractCodesForPrefix } from "@/utils/av-code";
+import { compareCodes, extractCodesForPrefix, isWesternStudioPrefix } from "@/utils/av-code";
 import { PUBLIC_RESOURCE_FILTER } from "./resourceFilters";
 
 export type PrefixCodeHit = {
@@ -35,6 +35,61 @@ function coverRank(
 function isFc2Prefix(prefix: string): boolean {
   const p = String(prefix || "").trim().toUpperCase();
   return p === "FC2" || p === "FC2PPV";
+}
+
+/** 前缀预筛 LIKE：常规 PREFIX-%；FC2 / FC2PPV / 欧美厂牌分入口 */
+function prefixLikePatterns(prefix: string): string[] {
+  const raw = String(prefix || "").trim();
+  const pUpper = raw.toUpperCase();
+  if (!raw) return [];
+
+  if (pUpper === "FC2PPV") {
+    return [
+      "FC2PPV%",
+      "%FC2PPV%",
+      "%FC2-PPV%",
+      "%FC2 PPV%",
+      "FC2-PPV%",
+      "FC2 PPV%",
+    ];
+  }
+  if (pUpper === "FC2") {
+    // 仅非 PPV：FC2-123 / FC2 123；不含 FC2PPV
+    return ["FC2-%", "%FC2-%", "FC2 %", "%FC2 %"];
+  }
+
+  const esc = escapeLikePattern(raw);
+  if (isWesternStudioPrefix(raw)) {
+    // 欧美文件名多为 Studio.日期.标题，不全是 Studio-
+    return [
+      `${esc}%`,
+      `%${esc}%`,
+      `%${esc}.%`,
+      `%${esc}-%`,
+      `%${esc}_%`,
+    ];
+  }
+
+  return [`${esc}-%`, `%${esc}-%`];
+}
+
+/** FC2 / Blacked 等入口排除易撞车形态 */
+function prefixExcludeLikePatterns(prefix: string): string[] {
+  const p = String(prefix || "").trim().toUpperCase();
+  if (p === "FC2") {
+    return [
+      "%FC2PPV%",
+      "FC2PPV%",
+      "%FC2-PPV%",
+      "FC2-PPV%",
+      "%FC2 PPV%",
+      "FC2 PPV%",
+    ];
+  }
+  if (p === "BLACKED") {
+    return ["%BlackedRaw%", "%BLACKEDRAW%", "%blackedraw%"];
+  }
+  return [];
 }
 
 function pickRankedCovers(
@@ -111,20 +166,31 @@ async function scanPrefixCodeIndex(prefix: string): Promise<{
   if (!needle) return { items: [], matchedRows: 0 };
 
   const indexed = await loadPrefixCodesCached(needle, async () => {
-    const esc = escapeLikePattern(needle);
-    // 优先 PREFIX-% / %PREFIX-%，比 %PREFIX% 更贴番号形态、误伤更少
-    const likeStart = `${esc}-%`;
-    const likeMid = `%${esc}-%`;
-    const landscapeOpts = isFc2Prefix(needle)
-      ? { preferLandscape: true }
-      : undefined;
+    const likes = prefixLikePatterns(needle);
+    if (!likes.length) return { items: [], matchedRows: 0 };
+    const excludes = prefixExcludeLikePatterns(needle);
+const landscapeOpts =
+      isFc2Prefix(needle) || isWesternStudioPrefix(needle)
+        ? { preferLandscape: true }
+        : undefined;
+    // filename 常无番号、title 有（尤其 FC2PPV-xxxxxx）；两边都扫
+    const excludeSql = excludes.length
+      ? `
+  AND NOT EXISTS (
+    SELECT 1
+    FROM unnest($3::text[]) AS e(pat)
+    WHERE COALESCE(r.filename, '') ILIKE e.pat
+       OR COALESCE(rs.title, '') ILIKE e.pat
+  )`
+      : "";
     const sql = `
 SELECT
   r.filename,
+  rs.title,
   rs.preview_images
 FROM ed2k_resources r
 LEFT JOIN LATERAL (
-  SELECT preview_images
+  SELECT title, preview_images
   FROM resource_sources
   WHERE hash = r.hash
   ORDER BY coalesce(array_length(preview_images, 1), 0) DESC, created_at DESC
@@ -132,15 +198,20 @@ LEFT JOIN LATERAL (
 ) rs ON true
 WHERE TRUE
 ${PUBLIC_RESOURCE_FILTER}
-  AND (
-    COALESCE(r.filename, '') ILIKE $1 ESCAPE '\\'
-    OR COALESCE(r.filename, '') ILIKE $2 ESCAPE '\\'
+  AND EXISTS (
+    SELECT 1
+    FROM unnest($1::text[]) AS p(pat)
+    WHERE COALESCE(r.filename, '') ILIKE p.pat
+       OR COALESCE(rs.title, '') ILIKE p.pat
   )
+${excludeSql}
 ORDER BY
   CASE WHEN coalesce(array_length(rs.preview_images, 1), 0) > 0 THEN 0 ELSE 1 END
-LIMIT $3
+LIMIT $2
 `;
-    const { rows } = await query(sql, [likeStart, likeMid, PREFIX_SCAN_ROW_CAP]);
+    const params: unknown[] = [likes, PREFIX_SCAN_ROW_CAP];
+    if (excludes.length) params.push(excludes);
+    const { rows } = await query(sql, params);
     const map = new Map<
       string,
       { code: string; coverUrl: string | null; coverUrls: string[] }
@@ -148,9 +219,10 @@ LIMIT $3
 
     for (const row of rows as Array<{
       filename: string | null;
+      title?: string | null;
       preview_images?: string[] | null;
     }>) {
-      const blob = row.filename || "";
+      const blob = [row.filename, row.title].filter(Boolean).join("\n");
       if (!blob) continue;
       const covers = pickRankedCovers(row.preview_images, 2, landscapeOpts);
       for (const code of extractCodesForPrefix(blob, needle)) {

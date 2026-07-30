@@ -15,7 +15,7 @@ export function BrowseLinkRow({
 }) {
   return (
     <Link
-      className={`browse-link-row group flex items-center gap-3 border border-default-200/70 bg-content1 transition-colors hover:border-primary/35 hover:bg-primary/[0.03] active:bg-primary/10 dark:border-slate-700/70 dark:bg-slate-900/40 dark:hover:border-primary/30 ${
+      className={`browse-link-row group flex items-center gap-3 rounded-2xl border border-default-200/60 bg-white/90 shadow-soft backdrop-blur-md transition-colors hover:border-primary/35 hover:bg-primary/[0.04] active:bg-primary/10 dark:border-slate-600/50 dark:bg-slate-800/80 dark:hover:border-primary/30 ${
         compact
           ? "min-h-12 rounded-xl px-3.5 py-2.5"
           : "min-h-14 rounded-2xl px-4 py-3.5"
