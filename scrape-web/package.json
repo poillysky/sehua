@@ -1,0 +1,28 @@
+{
+  "name": "sehuatang-scrape-web",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Independent AV metadata scrape service for next-web",
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/index.js",
+    "backfill": "tsx src/backfill.ts",
+    "migrate:layout": "tsx src/migrateFlatLayout.ts"
+  },
+  "dependencies": {
+    "dotenv": "^17.4.2",
+    "express": "^4.21.2",
+    "pg": "^8.12.0",
+    "sharp": "^0.35.3",
+    "undici": "^8.9.0"
+  },
+  "devDependencies": {
+    "@types/express": "^4.17.21",
+    "@types/node": "^20.19.43",
+    "@types/pg": "^8.11.6",
+    "tsx": "^4.19.2",
+    "typescript": "^5.4.5"
+  }
+}

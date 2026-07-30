@@ -14,8 +14,9 @@ export interface ProvidersProps {
 export function Providers({ children, themeProps }: ProvidersProps) {
   const router = useRouter();
 
+  // 勿用 h-full：会把整树锁在视口高度，iOS Safari 滚不到页底翻页
   return (
-    <NextUIProvider className="h-full" navigate={router.push}>
+    <NextUIProvider className="min-h-dvh" navigate={router.push}>
       <NextThemesProvider {...themeProps}>{children}</NextThemesProvider>
     </NextUIProvider>
   );

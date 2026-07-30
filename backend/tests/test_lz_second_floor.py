@@ -1,8 +1,12 @@
-"""主贴抽链：纳入楼主各层（含二楼补链），排除路人回帖。"""
+"""抽链楼层：单资源看楼主多楼；多资源只看一楼；路人回帖默认排除。"""
 
 from __future__ import annotations
 
-from parsers.content import extract_link_corpus_html, extract_lz_posts_html
+from parsers.content import (
+    extract_link_corpus_html,
+    extract_lz_posts_html,
+    should_scan_lz_multi_floor,
+)
 from parsers.links import parse_thread_dual
 from workers.thread_outcome import judge_thread_html
 
@@ -178,3 +182,64 @@ def test_tid2625357_style_lz_second_floor_magnet():
     )
     assert out.verdict == "import"
     assert out.link_kind == "magnet"
+
+
+def test_multi_resource_skips_lz_second_floor_links():
+    """多资源（一楼≥2 名称标签）：不扫楼主二楼补链。"""
+    h1 = "1111111111111111111111111111111111111111"
+    h2 = "2222222222222222222222222222222222222222"
+    h3 = "3333333333333333333333333333333333333333"
+    html = f"""
+    <html><body>
+    <span id="thread_subject">合集两部</span>
+    <div id="post_1">
+      <div class="authi"><img src="static/image/common/ico_lz.png" />&nbsp;楼主</div>
+      <div id="postmessage_1">
+        【影片名称】：甲片
+        magnet:?xt=urn:btih:{h1}
+        【影片名称】：乙片
+        magnet:?xt=urn:btih:{h2}
+      </div>
+    </div>
+    <div id="post_2">
+      <div class="authi"><img src="static/image/common/ico_lz.png" />&nbsp;楼主</div>
+      <div id="postmessage_2">
+        二楼补链 magnet:?xt=urn:btih:{h3}&dn=extra
+      </div>
+    </div>
+    </body></html>
+    """
+    assert should_scan_lz_multi_floor(html) is False
+    corpus = extract_link_corpus_html(html)
+    assert h1.lower() in corpus.lower() or h1 in corpus
+    assert h3 not in corpus
+    parsed = parse_thread_dual(html, preferred_link="magnet")
+    hashes = {a.hash.upper() for a in parsed.assets if a.link_kind == "magnet"}
+    assert hashes == {h1, h2}
+    assert h3 not in hashes
+
+
+def test_single_resource_still_reads_lz_second_floor():
+    """单资源（一楼仅 1 个名称）：仍看楼主二楼。"""
+    h = "4444444444444444444444444444444444444444"
+    html = f"""
+    <html><body>
+    <span id="thread_subject">单资源</span>
+    <div id="post_1">
+      <div class="authi"><img src="static/image/common/ico_lz.png" />&nbsp;楼主</div>
+      <div id="postmessage_1">
+        【影片名称】：只有简介
+        【影片大小】：1G
+      </div>
+    </div>
+    <div id="post_2">
+      <div class="authi"><img src="static/image/common/ico_lz.png" />&nbsp;楼主</div>
+      <div id="postmessage_2">
+        magnet:?xt=urn:btih:{h}
+      </div>
+    </div>
+    </body></html>
+    """
+    assert should_scan_lz_multi_floor(html) is True
+    parsed = parse_thread_dual(html, preferred_link="magnet")
+    assert any(a.hash.upper() == h for a in parsed.assets)

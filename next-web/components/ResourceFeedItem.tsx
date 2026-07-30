@@ -283,6 +283,8 @@ export function ResourceFeedItem({
   const router = useRouter();
   const pathname = usePathname();
   const [navigating, setNavigating] = useState(false);
+  const [coverDead, setCoverDead] = useState(false);
+  const [deadThumbs, setDeadThumbs] = useState<Record<string, boolean>>({});
   const displayTitle = getDisplayTitle(item);
   const detailUrl = `/detail/${hexToBase64(item.hash)}`;
   const previewImages = filterPreviewImages(item.preview_images);
@@ -290,6 +292,9 @@ export function ResourceFeedItem({
   const coverImage = previewImages[0];
   const thumbImages =
     galleryImages.length > 1 ? galleryImages.slice(1) : [];
+  const visibleThumbs = thumbImages.filter(
+    (src, index) => !deadThumbs[`${src}-${index}`],
+  );
   const resourceType = getDescriptionField(item.description, "资源类型");
   const resourceSize = getDescriptionField(item.description, "资源大小");
   const resourceAmount = getDescriptionField(item.description, "资源数量");
@@ -372,13 +377,14 @@ export function ResourceFeedItem({
       <div className={cardDividerClass} />
       <div className={`${cardBodyClass} py-3`}>
         <div className="flex items-stretch gap-3 md:gap-4">
-          {coverImage ? (
+          {coverImage && !coverDead ? (
             <div className="shrink-0 self-center">
               <PreviewImage
                 alt={displayTitle}
                 className="h-24 w-24 rounded-lg border border-default-200 bg-default-100 object-cover md:h-28 md:w-28"
                 preferProxy
                 srcs={previewImages}
+                onAllFailed={() => setCoverDead(true)}
               />
             </div>
           ) : (
@@ -396,17 +402,24 @@ export function ResourceFeedItem({
           />
         </div>
 
-        {!compact && thumbImages.length > 0 && (
+        {!compact && visibleThumbs.length > 0 && (
           <div className="mt-3 grid grid-cols-4 gap-2 sm:grid-cols-5 md:grid-cols-6">
-            {thumbImages.map((src, index) => (
-              <PreviewImage
-                key={`${src}-${index}`}
-                alt={`preview-${index + 2}`}
-                className="aspect-square w-full rounded-md border border-default-200 bg-default-100 object-cover"
-                preferProxy
-                src={src}
-              />
-            ))}
+            {thumbImages.map((src, index) => {
+              const key = `${src}-${index}`;
+              if (deadThumbs[key]) return null;
+              return (
+                <PreviewImage
+                  key={key}
+                  alt={`preview-${index + 2}`}
+                  className="aspect-square w-full rounded-md border border-default-200 bg-default-100 object-cover"
+                  preferProxy
+                  src={src}
+                  onAllFailed={() =>
+                    setDeadThumbs((prev) => ({ ...prev, [key]: true }))
+                  }
+                />
+              );
+            })}
           </div>
         )}
       </div>

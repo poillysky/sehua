@@ -9,10 +9,12 @@ import { BrowseResourceListSkeleton } from "@/components/BrowseResourceListSkele
 import { BrowsePageToolbar } from "@/components/BrowsePageToolbar";
 import { ForumShell } from "@/components/ForumShell";
 import { PrefixResourceList } from "@/components/PrefixResourceList";
+import { PrefixResourceListSkeleton } from "@/components/PrefixResourceListSkeleton";
 import { SearchInput } from "@/components/SearchInput";
 import { SiteLogoLink } from "@/components/SiteLogoLink";
 import { SettingsNavLink } from "@/components/SettingsNavLink";
 import { FloatTool } from "@/components/FloatTool";
+import { MobileShellHeader, MobileViewportScroll } from "@/components/MobileViewportScroll";
 import {
   boardParentBrowseHref,
   boardPath,
@@ -24,7 +26,8 @@ import {
 } from "@/config/boards";
 import { BROWSE_PAGE_MAX, BROWSE_PAGE_SIZE, PREFIX_CODE_PAGE_SIZE } from "@/config/constant";
 
-export const dynamic = "force-dynamic";
+/** 前缀/板块列表可短缓存；避免 force-dynamic 导致每次前进后退都整页重拉 */
+export const revalidate = 60;
 
 const PREFIX_RESOURCE_PAGE_SIZE = PREFIX_CODE_PAGE_SIZE;
 
@@ -49,6 +52,42 @@ function BrowseContentFallback() {
       <BrowsePageToolbar loading />
       <BrowseResourceListSkeleton />
     </div>
+  );
+}
+
+/** 番号前缀列表：单独 async，外壳可先流式出来 */
+async function PrefixBrowseSection({
+  prefix,
+  page,
+  landscapeCovers,
+}: {
+  prefix: string;
+  page: number;
+  landscapeCovers?: boolean;
+}) {
+  const t = await getTranslations();
+  const { items, total_count } = await listPrefixResources(prefix, {
+    limit: PREFIX_RESOURCE_PAGE_SIZE,
+    offset: (page - 1) * PREFIX_RESOURCE_PAGE_SIZE,
+  });
+  return (
+    <PrefixResourceList
+      items={items}
+      landscapeCovers={landscapeCovers}
+      page={page}
+      pageSize={PREFIX_RESOURCE_PAGE_SIZE}
+      prefix={prefix}
+      totalCount={total_count}
+      labels={{
+        empty: t("Boards.prefix_resource_empty"),
+        prev: t("Boards.prefix_code_prev"),
+        next: t("Boards.prefix_code_next"),
+        pageOf: t("Browse.page_of", {
+          page,
+          total: Math.max(1, Math.ceil(total_count / PREFIX_RESOURCE_PAGE_SIZE)),
+        }),
+      }}
+    />
   );
 }
 
@@ -91,45 +130,46 @@ export default async function SubtypeBrowsePage({
     { label: boardLabel },
   ];
 
-  // 番号前缀：库内资源按番号数字升序
+  const japanPrefs = isJapanBrowseContext(fid, typeid);
+
+  // 番号前缀：壳先出，列表 Suspense 扫库
   if (ctx.child.search_keyword) {
     const prefix = ctx.child.search_keyword.trim();
-    const t = await getTranslations();
-    const { items, total_count } = await listPrefixResources(
-      prefix,
-      {
-        limit: PREFIX_RESOURCE_PAGE_SIZE,
-        offset: (page - 1) * PREFIX_RESOURCE_PAGE_SIZE,
-      },
-    );
-    const japanPrefs = isJapanBrowseContext(fid, typeid);
 
     return (
       <>
-        <div className="mx-auto flex w-full max-w-6xl items-center gap-1 px-3 pt-3 md:px-4 lg:max-w-7xl">
-          <SiteLogoLink />
-          <SearchInput japanPrefs={japanPrefs} />
-          <SettingsNavLink />
-        </div>
-        <ForumShell
-          activeCategoryIndex={ctx.categoryIndex}
-          activeFid={fid}
-          activeTypeid={typeid}
-          crumbs={crumbs}
-        >
-          <PrefixResourceList
-            items={items}
-            page={page}
-            pageSize={PREFIX_RESOURCE_PAGE_SIZE}
-            prefix={prefix}
-            totalCount={total_count}
-            labels={{
-              empty: t("Boards.prefix_resource_empty"),
-              prev: t("Boards.prefix_code_prev"),
-              next: t("Boards.prefix_code_next"),
-            }}
-          />
-        </ForumShell>
+        <MobileViewportScroll>
+          <MobileShellHeader>
+            <div className="mx-auto flex w-full max-w-6xl items-center gap-1 px-3 pt-2 pb-2 md:px-4 md:pt-3 lg:max-w-7xl">
+              <SiteLogoLink />
+              <SearchInput japanPrefs={japanPrefs} />
+              <SettingsNavLink />
+            </div>
+          </MobileShellHeader>
+          <ForumShell
+            activeCategoryIndex={ctx.categoryIndex}
+            activeFid={fid}
+            activeTypeid={typeid}
+            crumbs={crumbs}
+            fillMobile
+          >
+            <Suspense
+              fallback={
+                <PrefixResourceListSkeleton
+                  count={12}
+                  landscape={fid === "mk-uncensored"}
+                  prefix={prefix}
+                />
+              }
+            >
+              <PrefixBrowseSection
+                landscapeCovers={fid === "mk-uncensored"}
+                page={page}
+                prefix={prefix}
+              />
+            </Suspense>
+          </ForumShell>
+        </MobileViewportScroll>
         <FloatTool />
       </>
     );
@@ -142,7 +182,6 @@ export default async function SubtypeBrowsePage({
     board_fid: boardFid,
     board: ctx.child.name,
   });
-  const japanPrefs = isJapanBrowseContext(fid, typeid);
 
   return (
     <>

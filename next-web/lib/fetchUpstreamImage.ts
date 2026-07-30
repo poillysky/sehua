@@ -1,6 +1,8 @@
 import http from "node:http";
 import https from "node:https";
 
+import { expandForumCdnUrls } from "@/lib/imageProxy";
+
 const UPSTREAM_TIMEOUT_MS = Number(process.env.IMAGE_PROXY_TIMEOUT_MS || 12_000);
 
 const DEFAULT_HEADERS = {
@@ -23,7 +25,7 @@ function headersForUrl(url: string): Record<string, string> {
   };
 }
 
-export function fetchUpstreamImage(
+function fetchOneUpstreamImage(
   url: string,
 ): Promise<{ buffer: Buffer; contentType: string }> {
   return new Promise((resolve, reject) => {
@@ -45,7 +47,7 @@ export function fetchUpstreamImage(
           res.headers.location
         ) {
           const nextUrl = new URL(res.headers.location, url).toString();
-          fetchUpstreamImage(nextUrl).then(resolve).catch(reject);
+          fetchOneUpstreamImage(nextUrl).then(resolve).catch(reject);
           return;
         }
 
@@ -72,4 +74,22 @@ export function fetchUpstreamImage(
       reject(new Error("Upstream timeout"));
     });
   });
+}
+
+/** 拉图；论坛 tu.* 图床 404 时自动换镜像主机 */
+export async function fetchUpstreamImage(
+  url: string,
+): Promise<{ buffer: Buffer; contentType: string }> {
+  const candidates = expandForumCdnUrls(url);
+  let lastError: unknown;
+  for (const cand of candidates) {
+    try {
+      return await fetchOneUpstreamImage(cand);
+    } catch (err) {
+      lastError = err;
+    }
+  }
+  throw lastError instanceof Error
+    ? lastError
+    : new Error("Image upstream failed");
 }

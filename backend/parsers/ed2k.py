@@ -55,11 +55,12 @@ _DISCUZ_AT_MENTION_URL_RE = re.compile(r"\[url=[^\]]+\]@\[/url\]", re.I)
 
 # Discuz 把含 @ 的 ed2k 渲成嵌套 <a>/script 时：|file| 段脏，但尾巴 |size|hash|/ 常还在
 # （tid=3405418：href 被拆、插 (0 Bytes)/script，后缀仍有 |976158193|B9DF…|/）
+# 中间段不得跨下一条 ed2k://——否则脏/半截链会吞掉后面完整链的 size|hash（附件 txt 多段常见）
 _ED2K_HTML_POISONED_RE = re.compile(
     r"ed2k://\|file\|"
-    r"(.{0,3000}?)"
+    r"((?:(?!ed2k://)[\s\S]){0,3000}?)"
     r"\|(\d{3,})\|([A-Fa-f0-9]{32})\|/?",
-    re.IGNORECASE | re.DOTALL,
+    re.IGNORECASE,
 )
 _ED2K_NAME_EXT = (
     r"mp4|mkv|avi|wmv|ts|iso|mov|flv|m4v|rmvb|mpg|mpeg|zip|rar|7z|txt|ssa|ass"
@@ -281,18 +282,13 @@ def _is_poisoned_ed2k_filename(filename: str) -> bool:
     return False
 
 
-def parse_ed2k_text(text: str) -> list[Ed2kLink]:
-    from parsers.content import restore_cloudflare_emails
+def _parse_ed2k_blob(blob: str) -> list[Ed2kLink]:
+    """在已 normalize 的语料上抽全部 ed2k（按完整 URI 去重）。"""
     from parsers.resource_names import context_subresource_title
 
     results: list[Ed2kLink] = []
-    # 按完整 URI 去重：同 hash 但文件名不同仍保留（配额按「下载份」计，
-    # 如 tid=3524065 末条与首条同 hash、不同名，勿并成漏链）
     seen: set[str] = set()
-    # 先解 CF 邮件保护，再 normalize（含剥 [url]），否则 |file| 段带 HTML/[url] 会被整链丢弃
-    blob = normalize_ed2k_corpus(restore_cloudflare_emails(text or ""))
-
-    for match in ED2K_RE.finditer(blob):
+    for match in ED2K_RE.finditer(blob or ""):
         # 帖内常同时出现 & 与 &amp; 两份同链；解实体后再去重
         filename = html.unescape(match.group(1).strip())
         if _is_poisoned_ed2k_filename(filename):
@@ -315,6 +311,37 @@ def parse_ed2k_text(text: str) -> list[Ed2kLink]:
                 display_name=(display[:255] if display else ""),
             )
         )
+    return results
+
+
+def parse_ed2k_text(text: str) -> list[Ed2kLink]:
+    """抽全部可入库 ed2k。
+
+    附件 txt 常「链 + 脏段/广告 + 再链」：必须认全，不能因前一段脏/半截
+    把后面完整链吞掉。整段扫一遍后，再按空行分段补扫并集。
+    """
+    from parsers.content import restore_cloudflare_emails
+
+    # 按完整 URI 去重：同 hash 但文件名不同仍保留（配额按「下载份」计，
+    # 如 tid=3524065 末条与首条同 hash、不同名，勿并成漏链）
+    # 先解 CF 邮件保护，再 normalize（含剥 [url]），否则 |file| 段带 HTML/[url] 会被整链丢弃
+    raw = restore_cloudflare_emails(text or "")
+    blob = normalize_ed2k_corpus(raw)
+    results = _parse_ed2k_blob(blob)
+    seen = {item.link for item in results}
+
+    # 空行分段再扫：半截/脏段 normalize 偶发伤及后链时，独立段仍能捞回
+    parts = re.split(r"\n\s*\n+", raw)
+    if len(parts) > 1:
+        for part in parts:
+            part = (part or "").strip()
+            if not part or "ed2k" not in part.lower():
+                continue
+            for item in _parse_ed2k_blob(normalize_ed2k_corpus(part)):
+                if item.link in seen:
+                    continue
+                seen.add(item.link)
+                results.append(item)
 
     return results
 

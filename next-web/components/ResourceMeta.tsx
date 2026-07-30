@@ -1,5 +1,6 @@
 "use client";
 
+import { useState } from "react";
 import { Button } from "@nextui-org/react";
 import { useTranslations } from "next-intl";
 
@@ -14,6 +15,35 @@ import {
   linkKindOf,
 } from "@/utils/resource";
 import { setClipboard, Toast } from "@/utils";
+
+function PreviewGalleryTile({
+  src,
+  index,
+  heightClass,
+}: {
+  src: string;
+  index: number;
+  heightClass: string;
+}) {
+  const [hidden, setHidden] = useState(false);
+  if (hidden) return null;
+  return (
+    <a
+      className="block shrink-0 overflow-hidden rounded-md border border-default-200 bg-default-100"
+      href={src}
+      rel="noreferrer noopener"
+      target="_blank"
+    >
+      <PreviewImage
+        alt={`preview-${index + 1}`}
+        className={`${heightClass} w-full object-cover transition-transform hover:scale-105 dark:brightness-90`}
+        preferProxy
+        src={src}
+        onAllFailed={() => setHidden(true)}
+      />
+    </a>
+  );
+}
 
 export function ResourcePreviewImages({
   images,
@@ -36,20 +66,12 @@ export function ResourcePreviewImages({
   return (
     <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 md:gap-3 lg:grid-cols-4 xl:grid-cols-5">
       {previewImages.map((src, index) => (
-        <a
+        <PreviewGalleryTile
           key={`${src}-${index}`}
-          className="block shrink-0 overflow-hidden rounded-md border border-default-200 bg-default-100"
-          href={src}
-          rel="noreferrer noopener"
-          target="_blank"
-        >
-          <PreviewImage
-            alt={`preview-${index + 1}`}
-            className={`${heightClass} w-full object-cover transition-transform hover:scale-105 dark:brightness-90`}
-            preferProxy
-            src={src}
-          />
-        </a>
+          heightClass={heightClass}
+          index={index}
+          src={src}
+        />
       ))}
     </div>
   );

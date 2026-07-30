@@ -471,3 +471,134 @@ export function legacyBoardNames(displayName: string): string[] {
   }
   return Array.from(names);
 }
+
+/** 刮削页分区（与片区导航对齐） */
+export type ScrapeRegionId = "日本" | "国产" | "欧美" | "手动";
+
+export type ScrapePrefixOption = {
+  prefix: string;
+  label: string;
+};
+
+const CHINESE_SCRAPE_PREFIXES: ScrapePrefixOption[] = [
+  "MD",
+  "MKY",
+  "PMX",
+  "TMY",
+  "91CM",
+  "JVID",
+  "MSD",
+  "MAD",
+  "TX",
+  "TZ",
+].map((p) => ({ prefix: p, label: p }));
+
+const WESTERN_SCRAPE_PREFIXES: ScrapePrefixOption[] = [
+  "CARIB",
+  "1PONDO",
+  "HEYZO",
+  "PACO",
+].map((p) => ({ prefix: p, label: p }));
+
+function collectSearchPrefixes(parent: BoardNavParent): ScrapePrefixOption[] {
+  const out: ScrapePrefixOption[] = [];
+  const seen = new Set<string>();
+  const pushChild = (ch: BoardNavChild) => {
+    const p = (ch.search_keyword || ch.type_name || "").trim().toUpperCase();
+    if (!p || seen.has(p)) return;
+    // 只要像厂牌前缀的（字母数字），跳过纯中文分类
+    if (!/^[A-Z0-9][A-Z0-9-]{1,15}$/i.test(p)) return;
+    seen.add(p);
+    out.push({ prefix: p, label: p });
+  };
+  for (const ch of parent.children || []) pushChild(ch);
+  for (const nested of parent.boards || []) {
+    for (const ch of nested.children || []) pushChild(ch);
+  }
+  return out.sort((a, b) => a.prefix.localeCompare(b.prefix));
+}
+
+function findRegionBoard(
+  region: ScrapeRegionId,
+  nav: BoardNavCategory[] = FALLBACK_BOARD_NAV,
+): BoardNavParent | null {
+  if (region === "手动") return null;
+  for (const cat of nav) {
+    for (const board of cat.boards) {
+      if (board.name === region) return board;
+    }
+  }
+  return null;
+}
+
+/** 日本等有嵌套时：有码 / 无码 … */
+export function scrapeNestedBoards(
+  region: ScrapeRegionId,
+  nav: BoardNavCategory[] = FALLBACK_BOARD_NAV,
+): ScrapePrefixOption[] {
+  const parent = findRegionBoard(region, nav);
+  if (!parent?.boards?.length) return [];
+  return parent.boards.map((b) => ({ prefix: b.name, label: b.name }));
+}
+
+/** 刮削表单：分区 → 可选厂牌前缀；nestedBoard 如「有码」「无码」 */
+export function scrapeRegionPrefixes(
+  region: ScrapeRegionId,
+  nav: BoardNavCategory[] = FALLBACK_BOARD_NAV,
+  nestedBoard = "",
+): ScrapePrefixOption[] {
+  if (region === "手动") return [];
+  if (region === "国产") return CHINESE_SCRAPE_PREFIXES;
+  if (region === "欧美") return WESTERN_SCRAPE_PREFIXES;
+
+  const parent = findRegionBoard(region, nav);
+  if (!parent) return [];
+
+  const nested = String(nestedBoard || "").trim();
+  if (nested && parent.boards?.length) {
+    const sub = parent.boards.find((b) => b.name === nested);
+    if (sub) return collectSearchPrefixes(sub);
+    return [];
+  }
+  return collectSearchPrefixes(parent);
+}
+
+/** 自动爬取作用域：多级板块 → 厂牌前缀列表 */
+export type ScrapeAutoScope = {
+  region: ScrapeRegionId;
+  /** 二级板块，如有码 / 无码；空=该分区全部 */
+  board: string;
+  /** 厂牌前缀；空=该板块下全部厂牌 */
+  prefix: string;
+  /** 具体番号；空=该厂牌下全部 */
+  code: string;
+};
+
+export function resolveScopePrefixes(
+  scope: Pick<ScrapeAutoScope, "region" | "board" | "prefix">,
+  nav: BoardNavCategory[] = FALLBACK_BOARD_NAV,
+): ScrapePrefixOption[] {
+  const region = scope.region;
+  if (region === "手动") return [];
+  const all = scrapeRegionPrefixes(region, nav, scope.board);
+  const p = String(scope.prefix || "")
+    .trim()
+    .toUpperCase();
+  if (!p) return all;
+  return all.filter((x) => x.prefix === p);
+}
+
+export const SCRAPE_REGIONS: ScrapeRegionId[] = [
+  "日本",
+  "国产",
+  "欧美",
+  "手动",
+];
+
+/** 自动爬取可选一级分区（不含手动） */
+export const SCRAPE_AUTO_REGIONS: Exclude<ScrapeRegionId, "手动">[] = [
+  "日本",
+  "国产",
+  "欧美",
+];
+

@@ -1,10 +1,13 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useMemo, useState, type CSSProperties } from "react";
 
+import { resolveCoverUrl, isLocalCoverPath } from "@/lib/coverUrl";
 import {
   buildImageProxyUrl,
   coverHostPriority,
+  expandForumCdnUrls,
+  isForumCoverHost,
   isUnreliableCoverHost,
   landscapeUrlHint,
 } from "@/lib/imageProxy";
@@ -15,90 +18,56 @@ type PreviewImageProps = {
   srcs?: string[];
   alt: string;
   className?: string;
+  style?: CSSProperties;
   loading?: "lazy" | "eager";
+  fetchPriority?: "high" | "low" | "auto";
   preferProxy?: boolean;
   /** 多候选时优先宽>高的横图（FC2 等） */
   preferLandscape?: boolean;
+  /** 最多尝试几条源 URL（默认 6：含图床镜像） */
+  maxSources?: number;
+  /** 全部候选加载失败（含 404）时回调；组件自身不再渲染占位 */
+  onAllFailed?: () => void;
 };
 
-type LoadState = "loading" | "ok" | "fail";
-
-type ProbeOk = { url: string; w: number; h: number };
-
-function resolveAttempts(url: string, preferProxy: boolean): string[] {
-  const proxied = buildImageProxyUrl(url);
-  if (isUnreliableCoverHost(url)) {
-    return [url];
-  }
-  if (preferProxy) {
-    return [proxied, url];
-  }
-  return [url, proxied];
-}
-
-function probeImage(url: string, timeoutMs = 8_000): Promise<ProbeOk | null> {
-  return new Promise((resolve) => {
-    if (typeof window === "undefined") {
-      resolve(null);
-      return;
-    }
-    const img = new Image();
-    let settled = false;
-    const finish = (hit: ProbeOk | null) => {
-      if (settled) return;
-      settled = true;
-      window.clearTimeout(timer);
-      img.onload = null;
-      img.onerror = null;
-      resolve(hit);
-    };
-    const timer = window.setTimeout(() => finish(null), timeoutMs);
-    img.onload = () =>
-      finish({
-        url,
-        w: img.naturalWidth || 0,
-        h: img.naturalHeight || 0,
-      });
-    img.onerror = () => finish(null);
-    img.referrerPolicy = "strict-origin-when-cross-origin";
-    img.src = url;
-  });
-}
-
-async function pickFirstLoadable(
+function buildAttemptUrls(
   candidates: string[],
   preferProxy: boolean,
-  preferLandscape: boolean,
-  signal: { cancelled: boolean },
-): Promise<string | null> {
-  if (!candidates.length) return null;
+): string[] {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  const push = (u: string) => {
+    if (!u || seen.has(u)) return;
+    seen.add(u);
+    out.push(u);
+  };
 
-  const loaded: Array<ProbeOk & { index: number }> = [];
-
-  await Promise.all(
-    candidates.map(async (raw, index) => {
-      for (const attempt of resolveAttempts(raw, preferProxy)) {
-        if (signal.cancelled) return;
-        const hit = await probeImage(attempt);
-        if (signal.cancelled) return;
-        if (hit) {
-          loaded.push({ ...hit, index });
-          return;
-        }
+  for (const raw of candidates) {
+    if (isLocalCoverPath(raw)) {
+      const resolved = resolveCoverUrl(raw) || raw;
+      push(resolved);
+      continue;
+    }
+    // 论坛 tu.* 图床：原主机优先，失败再换镜像
+    for (const variant of expandForumCdnUrls(raw)) {
+      const direct = resolveCoverUrl(variant) || variant;
+      const proxied = isUnreliableCoverHost(variant)
+        ? null
+        : buildImageProxyUrl(variant);
+      const preferDirect =
+        !preferProxy ||
+        isForumCoverHost(variant) ||
+        isUnreliableCoverHost(variant);
+      if (preferDirect) {
+        push(direct);
+        if (proxied) push(proxied);
+      } else {
+        if (proxied) push(proxied);
+        push(direct);
       }
-    }),
-  );
-
-  if (signal.cancelled || !loaded.length) return null;
-
-  loaded.sort((a, b) => a.index - b.index);
-
-  if (preferLandscape) {
-    const landscape = loaded.filter((x) => x.w > 0 && x.h > 0 && x.w >= x.h);
-    if (landscape.length) return landscape[0].url;
+    }
   }
-
-  return loaded[0].url;
+  return out;
 }
 
 export function PreviewImage({
@@ -106,67 +75,39 @@ export function PreviewImage({
   srcs,
   alt,
   className,
+  style,
   loading = "lazy",
+  fetchPriority,
   preferProxy = false,
   preferLandscape = false,
+  maxSources = 6,
+  onAllFailed,
 }: PreviewImageProps) {
-  const candidates = (
-    srcs && srcs.length > 0 ? srcs.filter(Boolean) : src ? [src] : []
-  ).sort((a, b) => {
-    const byHost = coverHostPriority(b) - coverHostPriority(a);
-    if (byHost) return byHost;
-    if (preferLandscape) return landscapeUrlHint(b) - landscapeUrlHint(a);
-    return 0;
-  });
-  const candidatesKey = candidates.join("|");
-  const [imgSrc, setImgSrc] = useState("");
-  const [state, setState] = useState<LoadState>(
-    candidates.length ? "loading" : "fail",
-  );
+  const attempts = useMemo(() => {
+    const candidates = (
+      srcs && srcs.length > 0 ? srcs.filter(Boolean) : src ? [src] : []
+    )
+      .sort((a, b) => {
+        const byHost = coverHostPriority(b) - coverHostPriority(a);
+        if (byHost) return byHost;
+        if (preferLandscape) return landscapeUrlHint(b) - landscapeUrlHint(a);
+        return 0;
+      })
+      .slice(0, Math.max(1, maxSources));
+    return buildAttemptUrls(candidates, preferProxy);
+  }, [src, srcs, preferProxy, preferLandscape, maxSources]);
 
-  useEffect(() => {
-    if (!candidates.length) {
-      setImgSrc("");
-      setState("fail");
-      return;
-    }
+  const attemptsKey = attempts.join("|");
+  const [index, setIndex] = useState(0);
+  const [failedKey, setFailedKey] = useState("");
 
-    const signal = { cancelled: false };
-    setImgSrc("");
-    setState("loading");
+  // 候选变化时重置（用 key 同步，避免 effect 空窗）
+  const activeIndex = failedKey === attemptsKey ? index : 0;
+  const exhausted = activeIndex >= attempts.length;
+  const imgSrc = exhausted ? "" : attempts[activeIndex] || "";
 
-    pickFirstLoadable(
-      candidates,
-      preferProxy,
-      preferLandscape,
-      signal,
-    ).then((picked) => {
-      if (signal.cancelled) return;
-      if (picked) {
-        setImgSrc(picked);
-        setState("ok");
-      } else {
-        setImgSrc("");
-        setState("fail");
-      }
-    });
-
-    return () => {
-      signal.cancelled = true;
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [candidatesKey, preferProxy, preferLandscape]);
-
-  if (state === "loading") {
-    return <span className="block h-full w-full" aria-hidden />;
-  }
-
-  if (state === "fail" || !imgSrc) {
-    return (
-      <span className="flex h-full w-full items-center justify-center text-[10px] text-default-300">
-        —
-      </span>
-    );
+  if (!attempts.length || exhausted || !imgSrc) {
+    return null;
   }
 
   return (
@@ -174,12 +115,22 @@ export function PreviewImage({
     <img
       alt={alt}
       className={className}
+      decoding="async"
+      fetchPriority={fetchPriority}
       loading={loading}
       referrerPolicy="strict-origin-when-cross-origin"
       src={imgSrc}
+      style={style}
       onError={() => {
-        setState("fail");
-        setImgSrc("");
+        const next = (failedKey === attemptsKey ? index : 0) + 1;
+        if (next < attempts.length) {
+          setFailedKey(attemptsKey);
+          setIndex(next);
+          return;
+        }
+        setFailedKey(attemptsKey);
+        setIndex(attempts.length);
+        onAllFailed?.();
       }}
     />
   );

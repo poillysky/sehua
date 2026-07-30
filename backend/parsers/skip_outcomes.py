@@ -26,6 +26,7 @@ SKIP_AUTHOR_BANNED = "作者已禁止（跳过）"
 SKIP_MOD_BLOCKED = "版主屏蔽（跳过）"
 SKIP_META_AD = "版务/广告帖（跳过）"
 SKIP_NO_ACCESS = "无阅读权限（跳过）"
+SKIP_NO_ACCESS_NO_TITLE = "无阅读权限（无有效标题，跳过）"
 SKIP_PURCHASE = "需购买贴（跳过）"
 SKIP_LOGIN_NO_TITLE = "需登录（无有效标题，跳过）"
 

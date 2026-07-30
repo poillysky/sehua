@@ -521,7 +521,7 @@ async def parse_thread_for_admin(
                 for s in parsed.share115_links
             ],
             "attachments": [{"name": a.name, "kind": a.kind, "url": a.url} for a in attachments],
-            "preview_images": list(parsed.preview_images or [])[:5],
+            "preview_images": list(parsed.preview_images or [])[:6],
             "html_len": len(html),
             "soft_browser_retried": soft_browser_retried,
             "fetch_mode": "browser→http" if soft_browser_retried else "http",

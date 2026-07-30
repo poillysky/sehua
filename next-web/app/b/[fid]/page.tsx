@@ -21,7 +21,8 @@ import {
   type BoardNavChild,
 } from "@/config/boards";
 
-export const dynamic = "force-dynamic";
+/** 板块导航几乎是静态配置；短 ISR，后退可走客户端缓存，避免每次重扫库 */
+export const revalidate = 120;
 
 function groupByMaker(
   children: BoardNavChild[],

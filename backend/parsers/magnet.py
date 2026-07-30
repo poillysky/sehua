@@ -34,9 +34,17 @@ def _film_size_label_alt() -> str:
     return structure_labels_alt(SIZE_FIELD_FORMS)
 
 
+# 字段值可为人写装饰括号：【资源大小】：【1V299m】 / 【1V/299m】
+_FILM_SIZE_VALUE_CAP = (
+    r"(?:"
+    r"【[^】\n]{1,40}】"
+    r"|\[[^\]\n]{1,40}\]"
+    r"|[^\n【\[]{1,96}"
+    r")"
+)
 _FILM_SIZE_RE = re.compile(
     rf"【\s*(?:{_film_size_label_alt()})\s*】"
-    r"\s*[:：︰｜|/／·・•‧＝=\-_;；,，〜～﹕→]?\s*([^\n【]{1,96})",
+    rf"\s*[:：︰｜|/／·・•‧＝=\-_;；,，〜～﹕→]?\s*({_FILM_SIZE_VALUE_CAP})",
     re.I,
 )
 
@@ -46,6 +54,28 @@ _CAPACITY_TOKEN_RE = re.compile(
     r"(TB|TIB|GB|GIB|MB|MIB|KB|KIB|T|G|M|K)(?![A-Za-z])",
     re.I,
 )
+
+# 粘写片数+容量：1V299m / 13V66.7GB → 插入空位再认 token
+_GLUED_VOLUME_CAPACITY_RE = re.compile(r"(?i)(\d+)\s*[Vv](?=\d)")
+
+# 整段装饰【1V299m】/[MP4/1.5G]，剥壳给 clip / capacity
+_DECORATIVE_CAPACITY_INNER_RE = re.compile(
+    r"(?i)(?:\d+\s*[VvPp]|\d+(?:\.\d+)?\s*[KMGT]B?\b|配额|(?:MP4|MKV|AVI|WMV|MOV|FLV|TS|ISO)\s*/)"
+)
+
+
+def unwrap_decorative_capacity_value(raw: str) -> str:
+    """剥掉人写容量外的装饰括号：【1V299m】→1V299m；多层可剥。"""
+    s = (raw or "").strip()
+    for _ in range(3):
+        m = re.fullmatch(r"[【\[]\s*([^】\]]+?)\s*[】\]]", s)
+        if not m:
+            break
+        inner = m.group(1).strip()
+        if not inner or not _DECORATIVE_CAPACITY_INNER_RE.search(inner):
+            break
+        s = inner
+    return s
 
 # 中文编辑粘贴常见：全角标点 + 零宽/软连字符（防复制检测）
 # 另：2048 国内原创常见【ＨＡＳＨ】全角拉丁（须折半角再认线索）
@@ -482,6 +512,7 @@ def parse_capacity_bytes(text: str | None) -> int:
     """从「13V 66.7GB」「635V/1.3TB」「2.6G/1V」「【989V/1.5T】」等文本取容量字节。
 
     忽略纯片数（数字+V）；同段多个容量单位时取最大字节值。
+    亦认粘写「1V299m」与字段值外包装饰【1V299m】。
     """
     raw = (text or "").strip()
     if not raw:
@@ -496,6 +527,9 @@ def parse_capacity_bytes(text: str | None) -> int:
         got = _bare_number_as_gb(sm.group(1))
         if got:
             return got
+    # 装饰括号整值 / 粘写 1V299m
+    raw = unwrap_decorative_capacity_value(raw)
+    raw = _GLUED_VOLUME_CAPACITY_RE.sub(r"\1V ", raw)
     best = 0
     for m in _CAPACITY_TOKEN_RE.finditer(raw):
         # 紧贴在 NNNV 后的数字仍要认（13V 66.7GB）；token 本身不会匹配 V

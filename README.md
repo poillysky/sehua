@@ -2,7 +2,7 @@
 
 家庭 NAS 上的 **论坛资源采集与检索全栈**：爬虫入库 · 管理运维 · 全文搜索，一套 Compose 跑通。
 
-[![Version](https://img.shields.io/badge/version-1.2.20-0ea5e9?style=flat-square)](./VERSION)
+[![Version](https://img.shields.io/badge/version-1.2.21-0ea5e9?style=flat-square)](./VERSION)
 [![Stack](https://img.shields.io/badge/stack-FastAPI%20%7C%20React%20%7C%20Next.js%20%7C%20Postgres-64748b?style=flat-square)](#技术栈)
 [![Deploy](https://img.shields.io/badge/deploy-Docker%20Hub%20pull%20only-22c55e?style=flat-square)](#nas-部署)
 [![License](https://img.shields.io/badge/use-personal%20%2F%20LAN-f59e0b?style=flat-square)](#声明)
@@ -17,32 +17,40 @@
 flowchart LR
   subgraph Edge["访问入口"]
     S["搜索 :3010"]
-    A["管理 :8082"]
+    A["管理+API :8082"]
+    C["刮削 :9209"]
   end
 
-  subgraph Runtime["Docker Compose"]
-    NW["next-web"]
-    AD["admin · Nginx"]
-    API["backend · FastAPI / Playwright"]
+  subgraph Main["Compose 主栈 nas.yml"]
+    APP["sehua-app · FastAPI+Admin"]
     PG[("PostgreSQL :5433")]
   end
 
+  subgraph Search["Compose 搜索 search.yml"]
+    NW["next-web"]
+    SW["scrape-web"]
+  end
+
   Forum["目标论坛"]
+  Meta["AV 元数据站"]
 
   S --> NW
-  A --> AD
-  AD -->|"/api"| API
+  A --> APP
+  C --> SW
   NW --> PG
-  API --> PG
-  API <--> Forum
+  NW -->|"/covers"| SW
+  SW --> PG
+  APP --> PG
+  APP <--> Forum
+  SW <--> Meta
 ```
 
 | 组件 | 职责 | 生产端口 |
 |------|------|----------|
-| **backend** | 列表扫帖 · 详情解析 · 入库 · 重爬 · 资源库备份 | 不对外（经 admin 反代） |
-| **admin** | 鉴权、爬虫拓扑、论坛配置、导入与数据管理 | **8082** |
-| **next-web** | 搜索 / 浏览 / 详情；可选 115 转存与云解压 | **3010** |
-| **PostgreSQL 16** | 资源、来源元数据、爬虫队列、鉴权 | **5433** |
+| **sehua-app** | 爬虫入库 + 管理 SPA（合并容器） | **8082** |
+| **next-web** | 搜索 / 浏览 / 详情；刮削设置 UI | **3010** |
+| **scrape-web** | 番号元数据刮削、封面落盘、队列 worker | **9209** |
+| **PostgreSQL 16** | 资源、来源元数据、爬虫队列、`av_metadata` | **5433** |
 
 ---
 
@@ -84,8 +92,8 @@ flowchart LR
 
 | 产品 | 标签 |
 |------|------|
-| sehua | [`1.2.20`](https://hub.docker.com/r/poillysky/sehuatang-app/tags)（见 `deploy/docker-compose.nas.yml`） |
-| search | [`1.2.2`](https://hub.docker.com/r/poillysky/sehuatang-search/tags)（见 `deploy/docker-compose.search.yml`） |
+| sehua | [`1.2.21`](https://hub.docker.com/r/poillysky/sehuatang-app/tags)（见 `deploy/docker-compose.nas.yml`） |
+| search | [`1.2.3`](https://hub.docker.com/r/poillysky/sehuatang-search/tags)（见 `deploy/docker-compose.search.yml`） |
 
 - 发 sehua **不会**自动打 search
 - 发 search **不会**自动打 sehua
@@ -94,8 +102,8 @@ flowchart LR
 ### GHCR（可选）
 
 ```text
-ghcr.io/poillysky/sehuatang-app:1.2.20
-ghcr.io/poillysky/sehuatang-search:1.2.2
+ghcr.io/poillysky/sehuatang-app:1.2.21
+ghcr.io/poillysky/sehuatang-search:1.2.3
 ```
 
 ---
@@ -139,6 +147,7 @@ docker compose -f docker-compose.search.yml up -d
 |-----|------|
 | `http://NAS_IP:8082` | sehua 管理+API |
 | `http://NAS_IP:3010` | 搜索前端（独立 compose） |
+| `http://NAS_IP:9209/health` | scrape-web 探活（同 search compose） |
 | `NAS_IP:5433` | PostgreSQL（工具直连，以本机映射为准） |
 
 默认凭据（**上线后立刻修改**）：

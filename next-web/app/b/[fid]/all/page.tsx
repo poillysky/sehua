@@ -15,7 +15,7 @@ import { FloatTool } from "@/components/FloatTool";
 import { boardPath, categoryHref, findByFid, isJapanBrowseContext, legacyFidRedirect } from "@/config/boards";
 import { BROWSE_PAGE_MAX, BROWSE_PAGE_SIZE } from "@/config/constant";
 
-export const dynamic = "force-dynamic";
+export const dynamic = "force-dynamic"; // all 页依赖实时资源列表
 
 export async function generateMetadata({
   params,

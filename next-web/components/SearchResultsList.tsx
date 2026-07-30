@@ -63,10 +63,15 @@ export default function SearchResultsList({
       saveSearchPreferences({ matchMode: value as MatchMode });
     }
 
-    handlePageChange(1, updatedSearchOption);
+    // 改筛选：replace，避免筛选项塞满历史栈
+    navigateSearch(1, updatedSearchOption, true);
   };
 
-  const handlePageChange = (page: number, newSearchOption: SearchOption) => {
+  const navigateSearch = (
+    page: number,
+    newSearchOption: SearchOption,
+    replace: boolean,
+  ) => {
     const params = new URLSearchParams();
 
     params.set("keyword", newSearchOption.keyword);
@@ -80,7 +85,14 @@ export default function SearchResultsList({
       params.set("jp", "1");
     }
 
-    router.push(`/search?${params.toString()}`);
+    const url = `/search?${params.toString()}`;
+    if (replace) router.replace(url);
+    else router.push(url);
+  };
+
+  const handlePageChange = (page: number, newSearchOption: SearchOption) => {
+    // 翻页：push，便于浏览器后退回到上一页结果
+    navigateSearch(page, newSearchOption, false);
   };
 
   const pagiConf = {
@@ -147,11 +159,17 @@ export default function SearchResultsList({
         )}
       </div>
 
-      {resultList.map((item) => (
-        <div key={item.hash} className="mb-4">
-          <SearchResultsItem item={item} keywords={keywords} />
+      {resultList.length === 0 ? (
+        <div className="mb-4 rounded-2xl border border-dashed border-default-300/80 px-4 py-12 text-center text-sm text-default-500 dark:border-slate-600">
+          {t("Search.empty")}
         </div>
-      ))}
+      ) : (
+        resultList.map((item) => (
+          <div key={item.hash} className="mb-4">
+            <SearchResultsItem item={item} keywords={keywords} />
+          </div>
+        ))
+      )}
 
       {!isSSR && pagiConf.total > 1 && (
         <Pagination

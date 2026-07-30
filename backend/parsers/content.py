@@ -27,6 +27,9 @@ from parsers.resource_names import (
     structure_labels_alt,
 )
 
+# 每资源预览图上限（帖级 / 块内 / 入库截断同一口径）
+PREVIEW_IMAGE_LIMIT = 6
+
 # BT + ED2K board label styles commonly used on sehuatang / 2048（抽样核对）
 LABEL_KEYS = tuple(STRUCTURE_FIELD_BOUNDARY_FORMS)
 
@@ -355,11 +358,14 @@ _BOGUS_TORRENT_NAME_RE = re.compile(
     r"^(?:\]?ent|\.?torrent|\]+)$",
     re.I,
 )
-# 预览类字段若是下载页/购买提示/纯磁链导语，则丢弃（勿当结构字段入库）
+# 预览类字段若是下载页/购买提示/纯磁链导语/附件列表噪声，则丢弃（勿当结构字段入库）
 _BOGUS_PREVIEW_META_RE = re.compile(
     r"(?:"
     r"rmdown\.com|购买本帖|立即购买|购买人名单|需向作者支付"
     r"|下载磁链|磁力链接\s*$|磁力連接"
+    r"|下载附件|下载次数|点击文件名下载"
+    r"|\.png\s*\(|\.jpe?g\s*\(|\.gif\s*\(|\.webp\s*\("
+    r"|aid=\d+"
     r")",
     re.I,
 )
@@ -404,35 +410,122 @@ _FIELD_NOISE_RE = re.compile(
     re.I,
 )
 
-# 枚举型短字段：取值到首个空白/标点为止，避免一楼边界失败时吞进回复
+# 枚举型短字段：取值到首个空白/标点为止，避免一楼边界失败时吞进回复/营销行
 _SHORT_ENUM_LABELS = frozenset(
     {
         "资源类型",
+        "資源類型",
         "是否有码",
+        "是否有碼",
         "有无码",
+        "有無碼",
         "影片码别",
         "有无第三方水印",
+        "有無第三方水印",
         "有无水印",
+        "有無水印",
         "第三方水印",
         "影片格式",
+        "影片有无声音",
+        "影片有無聲音",
+        "有无声音",
+        "有無聲音",
+        "影片有无聲音",
     }
 )
 _SHORT_ENUM_VALUE_RE = re.compile(r"^([^\s，,。；;|/]+)")
 # 「解压密码是www.98T.la@」——「是/为」是系词不是密码；也兼容冒号/等号
 # 另有【资源密码】写法（】与冒号之间可无空格）
 # 帖内常见简写「解压码：」（无「密」字）；www.98T.la 与 @ 常被拆成链接+彩色字
+_PASSWORD_ASCII_TOKEN = (
+    r"(?:www\.)?98[Tt]\.la\s*@?|[A-Za-z0-9][A-Za-z0-9@._\-]{2,79}"
+)
+# 人眼可见的短中文口令（排除「错误/私信」等提示词，见 _is_bogus_password）
+_PASSWORD_CN_TOKEN = r"[\u4e00-\u9fffA-Za-z0-9@._\-]{2,16}"
+_PASSWORD_NOT_HINT = r"(?!(?:错误|不对|忘記|忘记|私信|看图|看圖|见下|見下|同上|没有|沒有))"
+
 PASSWORD_RE = re.compile(
-    r"(?:解压|提取|资源)\s*密?\s*码\s*】?\s*(?:[:：=]|是|为)?\s*"
-    r"((?:www\.)?98[Tt]\.la\s*@?|[^\s【】\n，,。；;]+)",
+    r"(?:解压|提取|资源|解壓|資源)\s*密?\s*码\s*】?\s*(?:[:：=]|是|为)?\s*"
+    rf"{_PASSWORD_NOT_HINT}"
+    rf"({_PASSWORD_ASCII_TOKEN}|[^\s【】\n，,。；;]+)",
     re.I,
 )
 # 帖内常见：单独「密码/码」后跟 www.98T.la@（无解压/提取前缀，常夹在 font 标签里）
 PASSWORD_BARE_98T_RE = re.compile(
-    r"(?:密码|码)\s*(?:[:：=]|是|为)?\s*((?:www\.)?98[Tt]\.la\s*@?)",
+    rf"(?:密码|密碼|码|碼)\s*(?:[:：=]|是|为)?\s*((?:www\.)?98[Tt]\.la\s*@?)",
+    re.I,
+)
+# 人一眼能认：密码：/密码是/密码 sakura / 密码sakura99（可无冒号，但值须像口令）
+PASSWORD_GENERIC_RE = re.compile(
+    rf"(?:密码|密碼|pass(?:word)?|pwd)\s*(?:[:：=]|是|为)?\s*"
+    rf"{_PASSWORD_NOT_HINT}"
+    rf"({_PASSWORD_ASCII_TOKEN}|{_PASSWORD_CN_TOKEN})",
+    re.I,
+)
+# 「解压用/解压请用」后直接跟口令（仅 ASCII/98T，避免吞「这个」）
+PASSWORD_UNZIP_USE_RE = re.compile(
+    rf"(?:解压|解壓)\s*(?:用|请用|請用)\s*[:：]?\s*"
+    rf"({_PASSWORD_ASCII_TOKEN})",
     re.I,
 )
 _PASSWORD_META_KEYS = ("解压密码", "提取密码", "资源密码", "解压码", "提取码", "资源码")
 _PASSWORD_LABELS = frozenset(_PASSWORD_META_KEYS)
+# 口令结束：换行 / 下一【标签】 / 标点 / 链 / 附件 UI / 空格+中文说明 / ASCII后紧贴中文
+_PASSWORD_END_RE = re.compile(
+    r"(?:"
+    r"\n"
+    r"|【"
+    r"|[，,。．；;、！!？?]"
+    r"|(?:ed2k://|magnet:\?)"
+    r"|(?:下载附件|下载次数|点击文件名下载|阅读权限\s*:)"
+    r"|\s+\S+\.(?:rar|zip|7z|txt|docx?|xlsx?|xls|torrent|jpe?g|png|gif|bmp|webp|mp4|mkv|avi)\b"
+    r"|\s+[\u4e00-\u9fff]"
+    r"|(?<=[A-Za-z0-9@.])[\u4e00-\u9fff]"
+    r")",
+    re.I,
+)
+# 完整 98T 口令优先整段收下（避免被后续噪声拉长）
+_PASSWORD_98T_HEAD_RE = re.compile(
+    r"^((?:www\.)?98[Tt]\.la\s*@?|[0-9A-Za-z._\-]+@(?:www\.)?98[Tt]\.la)",
+    re.I,
+)
+# 人一看就不是解压口令的提示词
+_BOGUS_PASSWORD_WORDS = frozenset(
+    {
+        "错误",
+        "不对",
+        "忘记",
+        "忘記",
+        "私信",
+        "看图",
+        "看圖",
+        "见下",
+        "見下",
+        "见楼",
+        "見樓",
+        "同上",
+        "如下",
+        "上面",
+        "下面",
+        "没有",
+        "沒有",
+        "无",
+        "空",
+        "自取",
+        "附图",
+        "附圖",
+        "本帖",
+        "回帖",
+        "积分",
+        "積分",
+        "金币",
+        "金幣",
+        "这个",
+        "這個",
+        "那个",
+        "那個",
+    }
+)
 # 优先 zoomfile / file（Discuz 高清）、data-original（PHPWind 懒加载），再 src
 IMG_TAG_RE = re.compile(r"<img\b([^>]*)>", re.I)
 IMG_ATTR_RE = re.compile(
@@ -587,8 +680,17 @@ def _clean_text(raw: str) -> str:
     text = restore_cloudflare_emails(raw or "")
     text = re.sub(r"(?is)<script.*?>.*?</script>", " ", text)
     text = re.sub(r"(?is)<style.*?>.*?</style>", " ", text)
-    text = re.sub(r"<br\s*/?>", "\n", text, flags=re.I)
-    text = re.sub(r"</p\s*>", "\n", text, flags=re.I)
+    # 块级/换行标签 → 真换行（Discuz 一字段一行常用 </div><div>，勿收成空格）
+    text = re.sub(
+        r"(?i)<br\s*/?>|</p\s*>|</div\s*>|</li\s*>|</tr\s*>|</h[1-6]\s*>",
+        "\n",
+        text,
+    )
+    text = re.sub(
+        r"(?i)<(?:p|div|li|tr|h[1-6])\b[^>]*>",
+        "\n",
+        text,
+    )
     text = re.sub(r"<[^>]+>", " ", text)
     text = html_lib.unescape(text)
     text = _EMAIL_PROTECTED_RE.sub(" ", text)
@@ -597,9 +699,14 @@ def _clean_text(raw: str) -> str:
 
 
 def extract_title(html: str) -> str:
+    """取页面帖标题；仅剥「B 【影片名称】：」类内嵌标签，其余按页面原文。
+
+    不做正文补全、专辑头替换。仅去掉 HTML 标签/实体；
+    退到 <title> 时再去站名后缀。
+    """
     m = re.search(r'id="thread_subject"[^>]*>(.*?)</(?:a|span|div)>', html, re.I | re.S)
     if m:
-        title = _strip_forum_title_suffix(_clean_text(m.group(1)))
+        title = _clean_text(m.group(1)).strip()
     else:
         # PHPWind 常见 subject_tpc
         m = re.search(
@@ -608,38 +715,17 @@ def extract_title(html: str) -> str:
             re.I | re.S,
         )
         if m:
-            title = _strip_forum_title_suffix(_clean_text(m.group(1)))
+            title = _clean_text(m.group(1)).strip()
         else:
             m = re.search(r"<title>(.*?)</title>", html, re.I | re.S)
-            title = _strip_forum_title_suffix(_clean_text(m.group(1))) if m else ""
-    # 最强優片：页面 subject 偶发被改成某条单片名，正文首条【影片标题】仍是专辑头
-    album = _first_collection_album_film_title(html)
-    if album:
-        from parsers.resource_names import is_collection_album_header
+            if not m:
+                return ""
+            # <title> 常带「片名 - 论坛名」
+            title = _strip_forum_title_suffix(_clean_text(m.group(1)))
+    from parsers.resource_names import unwrap_subject_film_title
+    from parsers.thread_gates import close_trailing_capacity_bracket
 
-        if not is_collection_album_header(title):
-            return album
-    return title
-
-
-def _first_collection_album_film_title(html: str) -> str:
-    """正文第一条【影片标题】若为最强優片专辑头则返回之。"""
-    import html as html_lib
-
-    from parsers.resource_names import is_collection_album_header
-
-    m = re.search(
-        r"【\s*影片标题\s*】\s*[:：]?\s*([^<\n【]{5,160})",
-        html or "",
-        re.I,
-    )
-    if not m:
-        return ""
-    val = html_lib.unescape(_clean_text(m.group(1)))
-    val = re.sub(r"\s+", " ", val).strip()
-    if not is_collection_album_header(val):
-        return ""
-    return val
+    return close_trailing_capacity_bracket(unwrap_subject_film_title(title))
 
 
 def _strip_forum_title_suffix(title: str) -> str:
@@ -782,8 +868,34 @@ def extract_lz_scope_html(html: str, *, limit: int = 5) -> str:
     return scopes[0][0]
 
 
-def extract_link_corpus_html(html: str, *, limit: int = 5) -> str:
-    """链接/子资源语料：楼主各层（含二楼补链）+ 附件注入块。
+def first_floor_name_label_count(html: str) -> int:
+    """一楼（物理首帖 / 首层楼主帖）上的子资源名称标签数。"""
+    body = extract_first_postmessage_html(html) or ""
+    if not body.strip():
+        parts = extract_lz_posts_html(html, limit=1)
+        body = parts[0] if parts else ""
+    if not body.strip():
+        return 0
+    return len(iter_subresource_title_spans(body))
+
+
+def should_scan_lz_multi_floor(html: str) -> bool:
+    """单资源看楼主多楼；多资源只看一楼。
+
+    **先有名称、再抽链：** 一楼名称标签 0～1 → 单资源（可二楼补链）；
+    ≥2 → 多资源（名称已齐，链/切块均不扫二楼及以后）。
+    """
+    return first_floor_name_label_count(html) <= 1
+
+
+def extract_link_corpus_html(
+    html: str, *, limit: int = 5, multi_floor: bool | None = None
+) -> str:
+    """链接语料：单资源=楼主各层（含二楼补链）；多资源=仅一楼 + 附件。
+
+    multi_floor:
+      - None：按一楼名称标签数自动判定（0～1 开多楼，≥2 关）
+      - True / False：强制开/关多楼
 
     路人回帖默认不参与；仅当下列情形且楼主正文无 magnet/ed2k 时，
     才补入含目标链的回帖（避免讨论帖/网盘帖被回帖链误入库）：
@@ -792,7 +904,9 @@ def extract_link_corpus_html(html: str, *, limit: int = 5) -> str:
 
     已注入附件且附件内含目标链时：链语料以附件为准（正文样例链不并入）。
     """
-    lz_parts: list[str] = list(extract_lz_posts_html(html, limit=limit))
+    use_multi = should_scan_lz_multi_floor(html) if multi_floor is None else bool(multi_floor)
+    floor_limit = max(1, int(limit or 5)) if use_multi else 1
+    lz_parts: list[str] = list(extract_lz_posts_html(html, limit=floor_limit))
     if not lz_parts:
         # PHPWind：#read_tpc / .tpc_content（无 Discuz postmessage_*）
         pw = _phpwind_post_html(html or "")
@@ -903,9 +1017,15 @@ def _clip_field_value(
 ) -> str:
     """裁掉粘在后面的下一结构标签、附件区与楼层噪声。
 
-    非片名：遇任意开闭括号标签即截（自动识别【】［］[] 等，不问标签文字）。
-    片名：已知结构字段，或「开…闭+分隔」形态（保留无分隔的装饰【合集】）。
+    下一字段按「结构卡片开标签」切（任意角色/带分隔的未知标签），不靠白名单。
+    片名保留无分隔的装饰【合集】。
+    密码字段走 clip_password_value（保留换行结束边界）。
     """
+    if password:
+        return clip_password_value(value or "")
+
+    from parsers.structure_cards import find_next_structure_field_start
+
     # 2048/转帖常见：变体选择符、全角冒号前缀
     val = (value or "").replace("\r", "\n")
     val = re.sub(r"[\ufe0e\ufe0f\u200d\u200b\u200c\u200d]", "", val)
@@ -913,39 +1033,38 @@ def _clip_field_value(
     val = val.lstrip(":：︰.").strip()
     if not val:
         return ""
-    # 片名截断前折叠下一字段标签字间空，便于字面 _LABEL_ALT 命中
+
+    is_size = label in _SIZE_FIELD_LABELS or label in SIZE_FIELD_FORMS
+    # 大小值常再包装饰【4.92GB/8V/8配额】：须先剥壳，再跑下一【标签】截断，
+    # 否则 _NEXT_FIELD_RE 在起点把整段切空（tid=3659150）
+    if is_size:
+        from parsers.magnet import unwrap_decorative_capacity_value
+
+        val = unwrap_decorative_capacity_value(val)
+        if not val:
+            return ""
+
+    # 片名截断前折叠下一字段标签字间空
     if _is_title_field_label(label):
         val = collapse_structure_label_gaps(val)
-    # 名称可含嵌套装饰【标签】；其它字段遇到任意开闭括号标签即截
-    next_re = _KNOWN_NEXT_FIELD_RE if _is_title_field_label(label) else _NEXT_FIELD_RE
-    m = next_re.search(val)
-    if m:
-        val = val[: m.start()].strip()
+        cut = find_next_structure_field_start(val, min_start=1)
+        if cut is not None and cut > 0:
+            val = val[:cut].strip()
+    elif not is_size:
+        # 非片名/非大小：遇任意开闭括号标签即截（装饰【】也断开说明/格式等短字段）
+        m = _NEXT_FIELD_RE.search(val)
+        if m:
+            val = val[: m.start()].strip()
     noise = _FIELD_NOISE_RE.search(val)
     if noise:
         val = val[: noise.start()].strip()
-    if password:
-        # 附件名粘在密码后：MyBigDick@x.txt 18OnlyGirls.rar (42.29 KB,
-        m_att = re.search(
-            r"\s+\S+\.(?:rar|zip|7z|txt|docx?|xlsx?|xls|torrent)\b",
-            val,
-            re.I,
-        )
-        if m_att:
-            val = val[: m_att.start()].strip()
-        # 密码通常是单 token；后面若跟中文说明再硬切
-        m2 = re.search(r"\s+[\u4e00-\u9fff]", val)
-        if m2:
-            val = val[: m2.start()].strip()
-        if len(val) > 120:
-            val = val[:120].strip()
-    elif short_enum:
+    if short_enum:
         m3 = _SHORT_ENUM_VALUE_RE.match(val)
         if m3:
             val = m3.group(1).strip()
         if len(val) > 32:
             val = val[:32].rstrip()
-    elif label in _SIZE_FIELD_LABELS or label in SIZE_FIELD_FORMS:
+    elif is_size:
         # 大小后常跟博主导语 / rmdown URL / 【验証码】hash，只留容量串
         m4 = _SIZE_VALUE_RE.match(val)
         if m4:
@@ -991,18 +1110,29 @@ def _is_bogus_meta_value(key: str, val: str) -> bool:
             and not re.fullmatch(r"\d{1,3}", v)
         ):
             return True
-    if any(h in k for h in ("预览", "預覽", "截图", "截圖")):
+    if any(h in k for h in ("预览", "預覽", "截图", "截圖", "缩略图", "縮略圖")):
         if _BOGUS_PREVIEW_META_RE.search(v):
+            return True
+        # 附件区文件名行：98 (3).png / xxx.rar (1.01 MB
+        if re.search(r"\.\w{2,4}\s*\(\s*[\d.]+\s*[KMGT]?B?", v, re.I):
             return True
     return False
 
 
-def _canonicalize_meta_key(key: str, aliases: dict[str, str] | None = None) -> str:
+def _canonicalize_meta_key(
+    key: str,
+    aliases: dict[str, str] | None = None,
+    *,
+    keep_keys: set[str] | frozenset[str] | None = None,
+) -> str:
     k = (key or "").strip()
     if not k:
         return ""
     if aliases and k in aliases:
         return aliases[k]
+    # 板块 profile 已列出的展示键勿被全局别名改掉（如 BT 的【影片容量】）
+    if keep_keys and k in keep_keys:
+        return k
     if k in DESCRIPTION_LABEL_ALIASES:
         return DESCRIPTION_LABEL_ALIASES[k]
     return k
@@ -1055,6 +1185,7 @@ def normalize_metadata_for_board(
     """按板块别名把繁简/异写键归一；去掉明显脏值。便于片名/大小精准入库。"""
     profile = description_profile_for_board(board_fid)
     aliases = dict(profile.get("aliases") or {})
+    keep_keys = frozenset(profile.get("labels") or ())
     # 2048：额外并入全局别名里「大小/密码」类，避免漏繁体
     if str(board_fid or "").split(":", 1)[0] in _PW_2048_FIDS:
         for src, dst in DESCRIPTION_LABEL_ALIASES.items():
@@ -1075,7 +1206,7 @@ def normalize_metadata_for_board(
     for raw_key, raw_val in (metadata or {}).items():
         if _is_bogus_meta_value(raw_key, raw_val):
             continue
-        key = _canonicalize_meta_key(raw_key, aliases)
+        key = _canonicalize_meta_key(raw_key, aliases, keep_keys=keep_keys)
         if not key or any(h in key for h in _HASH_META_LABEL_HINTS):
             # 裸 hash 标签只用于转磁力，不进结构化元数据
             continue
@@ -1105,14 +1236,16 @@ def normalize_metadata_for_board(
 
 
 def extract_metadata(text: str) -> dict[str, str]:
-    # 只折叠括号内标签字间空，保留取值里的「真·名」；再用字面标签匹配。
-    blob = collapse_structure_label_gaps(text or "")
+    """结构字段：先切卡片再取值（不依赖巨型标签白名单才能切开）。"""
+    from parsers.structure_cards import cards_to_metadata_dict, parse_structure_cards
+
+    cards = parse_structure_cards(text or "")
+    raw = cards_to_metadata_dict(cards)
     meta: dict[str, str] = {}
-    for m in LABEL_RE.finditer(blob):
-        key = normalize_structure_label_key(m.group(1) or "")
-        is_pwd = key in _PASSWORD_LABELS
+    for key, raw_val in raw.items():
+        is_pwd = key in _PASSWORD_LABELS or "密码" in key or "密碼" in key
         val = _clip_field_value(
-            m.group(2),
+            raw_val,
             password=is_pwd,
             short_enum=key in _SHORT_ENUM_LABELS,
             label=key,
@@ -1120,6 +1253,69 @@ def extract_metadata(text: str) -> dict[str, str]:
         if key and val and not _is_bogus_meta_value(key, val):
             meta[key] = val
     return meta
+
+
+def clip_password_value(raw: str) -> str:
+    """人写密码：标签后的口令吃到结束信号为止（完整提取、不吞说明）。
+
+    结束信号：换行、下一【结构标签】、中英文标点、ed2k/magnet、
+    附件 UI、空格+中文说明、粘在口令后的中文说明等。
+    """
+    if not (raw or "").strip():
+        return ""
+    val = (raw or "").replace("\r", "\n")
+    val = re.sub(r"[\ufe0e\ufe0f\u200b\u200c\u200d]", "", val)
+    # HTML 常把 www.98T.la 与 @ 拆成两行/两段
+    val = re.sub(r"((?:www\.)?98[Tt]\.la)\s*\n\s*@", r"\1@", val)
+    # 1) 换行结束（密码几乎总是单行；上一步已粘回跨行 @）
+    val = val.split("\n", 1)[0].strip()
+    if not val:
+        return ""
+    # 2) 去掉值前残留的冒号/系词（「是/为」在标签侧已剥，这里再兜底）
+    val = re.sub(r"^[:：︰=.]+", "", val).strip()
+    if val.startswith(("是", "为")) and len(val) > 1:
+        val = val[1:].lstrip(":：︰= ").strip()
+    if not val:
+        return ""
+
+    # 3) 优先整段 98T / xxx@98T.la（站方惯用）
+    m98 = _PASSWORD_98T_HEAD_RE.match(val)
+    if m98:
+        head = m98.group(1)
+        rest = val[m98.end() :]
+        # 后面立刻是结束信号或结束 → 收下完整 98T
+        if not rest or _PASSWORD_END_RE.match(rest) or rest[0] in " \t【":
+            return _normalize_password_value(head)
+        # 后面是字母数字续写（极少）再往下走统一截断
+
+    # 4) 统一结束切点
+    m_end = _PASSWORD_END_RE.search(val)
+    if m_end and m_end.start() > 0:
+        val = val[: m_end.start()].strip()
+    elif m_end and m_end.start() == 0:
+        return ""
+
+    # 5) 下一结构字段（任意【…】开标签）
+    try:
+        from parsers.structure_cards import find_next_structure_field_start
+
+        cut = find_next_structure_field_start(val, min_start=1)
+        if cut is not None and cut > 0:
+            val = val[:cut].strip()
+    except Exception:
+        m_br = re.search(r"【", val)
+        if m_br and m_br.start() > 0:
+            val = val[: m_br.start()].strip()
+
+    # 6) 字段噪声（楼层/附件壳）
+    noise = _FIELD_NOISE_RE.search(val)
+    if noise and noise.start() > 0:
+        val = val[: noise.start()].strip()
+
+    val = _normalize_password_value(val)
+    if len(val) > 80:
+        val = val[:80].rstrip()
+    return val
 
 
 def _is_bogus_password(value: str) -> bool:
@@ -1136,15 +1332,25 @@ def _is_bogus_password(value: str) -> bool:
     # 「密码是 xxx」误把系词当成密码
     if re.fullmatch(r"[是为的了吧啊喔呢]", v):
         return True
+    if v in _BOGUS_PASSWORD_WORDS:
+        return True
+    if re.search(
+        r"(?:错误|不对|私信|看图|看圖|见下|見下|忘记|忘記|积分|積分|金币|金幣)",
+        v,
+    ):
+        return True
     # 明显把半页正文吞进来了
-    if len(v) > 120:
+    if len(v) > 80:
         return True
     if v.count("【") >= 1:
         return True
     if "下载附件" in v or "ed2k://" in v.lower() or "magnet:?" in v.lower():
         return True
     chinese = len(re.findall(r"[\u4e00-\u9fff]", v))
-    if chinese >= 6:
+    # 短中文口令人一眼能认；带句式虚词/过长才当说明文
+    if chinese >= 1 and re.search(r"[的了吗呢吧啊喔，。；;]", v):
+        return True
+    if chinese >= 16:
         return True
     return False
 
@@ -1159,37 +1365,93 @@ def _normalize_password_value(value: str) -> str:
     compact = re.sub(r"\s+", "", v)
     if re.fullmatch(r"(?:www\.)?98[Tt]\.la@?", compact, flags=re.I):
         return compact
+    # 1998@www.98T.la 类：去掉符号两侧多余空白
+    compact2 = re.sub(r"\s*@\s*", "@", compact)
+    if re.fullmatch(
+        r"[0-9A-Za-z._\-]+@(?:www\.)?98[Tt]\.la",
+        compact2,
+        flags=re.I,
+    ):
+        return compact2
     return v
 
 
+def _accept_password_candidate(raw: str) -> str:
+    """标签后的候选值 → 按人眼结束边界裁切 → 校验。"""
+    val = clip_password_value(raw or "")
+    if val and not _is_bogus_password(val):
+        return val
+    return ""
+
+
 def extract_password(text: str, metadata: dict[str, str] | None = None) -> str:
+    """单段语料抽密码（兼容旧调用）；多源请用 harvest_extract_password。"""
+    return harvest_extract_password(text or "", metadata=metadata)
+
+
+def harvest_extract_password(
+    *parts: str,
+    metadata: dict[str, str] | None = None,
+) -> str:
+    """多源收解压密码，避免只出现在文中某处时被漏掉。
+
+    只认「标注后的口令」，不做裸 98T 猜测（预览附件名常带 www.98T.la@ 水印）。
+    取值经 clip_password_value：吃到换行/下一标签/标点/链/附件 UI/中文说明为止。
+    优先级（高→低）：
+      1. metadata / 结构卡片 password 角色
+      2. 「解压/提取/资源密码」标注
+      3. 「密码：/密码是/密码xxx」（人一眼能认的提示）
+      4. 「解压用/解压请用」+ ASCII/98T
+      5. 「码/密码」+ 98T.la@
+    语料会先走 _clean_text（还原 CF 邮箱混淆）。
+    """
     meta = metadata or {}
     for key in _PASSWORD_META_KEYS:
-        val = _normalize_password_value(
-            _clip_field_value(meta.get(key) or "", password=True)
-        )
-        # 【解压密码】：是www.xxx → 剥掉行首系词
-        if val.startswith(("是", "为")) and len(val) > 1:
-            val = _normalize_password_value(
-                _clip_field_value(val[1:], password=True)
-            )
-        if val and not _is_bogus_password(val):
-            return val
-    blob = text or ""
-    m = PASSWORD_RE.search(blob)
-    if m:
-        val = _normalize_password_value(
-            _clip_field_value(m.group(1), password=True)
-        )
-        if val and not _is_bogus_password(val):
-            return val
-    m2 = PASSWORD_BARE_98T_RE.search(blob)
-    if m2:
-        val = _normalize_password_value(
-            _clip_field_value(m2.group(1), password=True)
-        )
-        if val and not _is_bogus_password(val):
-            return val
+        hit = _accept_password_candidate(meta.get(key) or "")
+        if hit:
+            return hit
+
+    cleaned_parts: list[str] = []
+    for part in parts:
+        if not part or not str(part).strip():
+            continue
+        # 已是纯文本则 _clean_text 也安全；含 HTML 则还原 CF + 换行
+        cleaned_parts.append(_clean_text(str(part)))
+    blob = "\n".join(cleaned_parts)
+    if not blob.strip():
+        return ""
+    # 标签与 98T/@ 被 HTML 拆开时先粘回，便于完整提取
+    blob = re.sub(r"((?:www\.)?98[Tt]\.la)\s*\n\s*@", r"\1@", blob)
+    blob = re.sub(r"((?:www\.)?98[Tt]\.la)\s+@", r"\1@", blob)
+
+    # 结构卡片里的 password 角色（任意位置【解压密码】等）
+    try:
+        from parsers.structure_cards import parse_structure_cards
+
+        for card in parse_structure_cards(blob):
+            if card.role != "password":
+                continue
+            hit = _accept_password_candidate(card.value or "")
+            if hit:
+                return hit
+    except Exception:
+        pass
+
+    for cre in (
+        PASSWORD_RE,
+        PASSWORD_GENERIC_RE,
+        PASSWORD_UNZIP_USE_RE,
+        PASSWORD_BARE_98T_RE,
+    ):
+        m = cre.search(blob)
+        if not m:
+            continue
+        # 从捕获起点往后多取一段，再统一 clip（防正则 token 截短/吞说明）
+        start = m.start(1)
+        tail = blob[start : start + 160]
+        hit = _accept_password_candidate(tail)
+        if hit:
+            return hit
     return ""
 
 
@@ -1242,7 +1504,9 @@ def build_structured_description(
         picked["解压密码"] = pwd
 
     if title_as in allowed and title_as not in picked:
-        t = " ".join((title or "").split()).strip()
+        from parsers.resource_names import unwrap_subject_film_title
+
+        t = unwrap_subject_film_title(" ".join((title or "").split()).strip())
         # 2048：title_as 用去版头后的标题；若已有资源名称则不再灌影片名称（交给 exclusive）
         if str(board_fid or "").split(":", 1)[0] in _PW_2048_FIDS:
             if "资源名称" in picked:
@@ -1315,8 +1579,10 @@ def _img_tag_is_noise(attrs: str) -> bool:
     return False
 
 
-def extract_preview_images(html: str, limit: int = 5, *, base_url: str = "") -> list[str]:
-    """提取帖内预览图：有几张取几张，最多 limit（默认 5）；过滤表情/头像/二维码/论坛图标。
+def extract_preview_images(
+    html: str, limit: int = PREVIEW_IMAGE_LIMIT, *, base_url: str = ""
+) -> list[str]:
+    """提取帖内预览图：有几张取几张，最多 limit（默认 PREVIEW_IMAGE_LIMIT）；过滤表情/头像/二维码/论坛图标。
 
     属性优先级：Discuz zoomfile/file → PHPWind data-original 等懒加载 → src。
     若存在 inpost/aid/zoomfile 正文图，只收这类，避免签名档/侧栏装饰图。
@@ -1728,7 +1994,7 @@ def _catalog_title_matching_torrent(text: str | None, torr_title: str) -> str:
 
 @dataclass(slots=True)
 class SubresourceBlock:
-    """合集中一条完整子资源块（名称→大小→格式→说明→截图→种子→磁力）。"""
+    """合集中一条完整子资源块（先切块，再块内卡片）。"""
 
     infohash: str
     title: str
@@ -1738,6 +2004,7 @@ class SubresourceBlock:
     torrent_name: str = ""
     preview_images: list[str] = field(default_factory=list)
     description: str = ""
+    metadata: dict[str, str] = field(default_factory=dict)
 
 
 def _title_label_kind(scope: str, t_start: int, t_end: int) -> str:
@@ -1751,7 +2018,6 @@ def _title_label_kind(scope: str, t_start: int, t_end: int) -> str:
         return "resource"
     if lab in film_keys:
         return "film"
-    # 片名是「影片名称」子串，不能用 contains；仅完整标签兜底
     if any(x in lab for x in ("资源", "資源", "作品")):
         return "resource"
     return "film"
@@ -1778,9 +2044,240 @@ def _build_block_description(
     if fmt:
         lines.append(f"【{fmt_k}】：{fmt}")
     if note:
-        # 是否有码等短枚举仍用原文键更贴切时，统一进说明行
         lines.append(f"【{note_k}】：{note}")
     return "\n".join(lines)
+
+
+@dataclass(slots=True)
+class BlockCardEnrichment:
+    """块内卡片识别结果。"""
+
+    title: str = ""
+    size: int = 0
+    size_label: str = ""
+    format: str = ""
+    note: str = ""
+    torrent_name: str = ""
+    metadata: dict[str, str] = field(default_factory=dict)
+    description: str = ""
+
+
+def enrich_block_with_cards(
+    chunk_text: str,
+    *,
+    fallback_name: str = "",
+    thread_title: str = "",
+    kind: str = "film",
+    board_fid: str | int | None = None,
+) -> BlockCardEnrichment:
+    """对单个资源块文本跑结构卡片，产出名/大小/描述等。"""
+    from parsers.magnet import parse_capacity_bytes
+    from parsers.resource_names import (
+        clip_subresource_display_name,
+        is_decoration_only_filename,
+        is_dirty_filename,
+        is_hard_dirty_filename,
+        is_weak_subresource_name,
+    )
+    from parsers.structure_cards import (
+        cards_to_metadata_dict,
+        name_values_from_cards,
+        parse_structure_cards,
+    )
+
+    text = _clean_text(chunk_text or "")
+    cards = parse_structure_cards(text)
+    raw_meta = cards_to_metadata_dict(cards)
+    # 块内再 clip（与 extract_metadata 对齐）
+    meta: dict[str, str] = {}
+    for key, raw_val in raw_meta.items():
+        is_pwd = key in _PASSWORD_LABELS or "密码" in key or "密碼" in key
+        val = _clip_field_value(
+            raw_val,
+            password=is_pwd,
+            short_enum=key in _SHORT_ENUM_LABELS,
+            label=key,
+        )
+        if is_pwd:
+            val = _normalize_password_value(val)
+            if _is_bogus_password(val):
+                continue
+        if key and val and not _is_bogus_meta_value(key, val):
+            meta[key] = val
+    meta = normalize_metadata_for_board(meta, board_fid)
+
+    names = name_values_from_cards(cards)
+    title = ""
+    if names:
+        # 影片/资源口径：优先对应键
+        if kind == "resource":
+            for k in ("资源名称", "資源名稱", "作品名称", "套图名称", "套圖名稱"):
+                if meta.get(k):
+                    title = meta[k]
+                    break
+        else:
+            for k in ("影片名称", "影片名稱", "影片名", "视频名称", "視頻名稱"):
+                if meta.get(k):
+                    title = meta[k]
+                    break
+        if not title:
+            title = names[0]
+    title = clip_subresource_display_name(title) or (title or "").strip()
+
+    size_label = ""
+    for k in (
+        "资源大小",
+        "資源大小",
+        "影片大小",
+        "影片容量",
+        "文件大小",
+        "檔案大小",
+    ):
+        if meta.get(k):
+            size_label = meta[k]
+            break
+    if not size_label:
+        for c in cards:
+            if c.role == "size" and (c.value or "").strip():
+                size_label = _clip_field_value(c.value, label="影片大小")
+                break
+    size = parse_capacity_bytes(size_label) if size_label else 0
+    if size <= 0:
+        size = parse_capacity_bytes(text)
+    # 字节已从正文扫到、但标签值先前被装饰括号误切空：再 clip 一次补回 label→meta/描述
+    if size > 0 and not size_label:
+        for c in cards:
+            if c.role != "size" or not (c.value or "").strip():
+                continue
+            recovered = _clip_field_value(c.value, label="影片大小")
+            if recovered:
+                size_label = recovered
+                break
+    if size_label:
+        if kind == "resource":
+            meta.setdefault("资源大小", size_label)
+        else:
+            meta.setdefault("影片大小", size_label)
+            meta.setdefault("资源大小", size_label)
+
+    fmt = ""
+    if kind == "resource":
+        fmt_keys = ("资源类型", "資源類型", "文件格式", "文件类型", "影片格式")
+    else:
+        fmt_keys = ("影片格式", "文件格式", "文件类型", "资源类型", "資源類型")
+    for k in fmt_keys:
+        if meta.get(k):
+            fmt = meta[k]
+            break
+    note = meta.get("是否有码") or meta.get("影片说明") or meta.get("资源说明") or ""
+
+    torrent = ""
+    for c in cards:
+        if c.role == "torrent" and (c.value or "").strip():
+            torrent = (c.value or "").strip()
+            break
+    torr_title = _torrent_name_as_title(torrent)
+
+    fb = (fallback_name or "").strip()
+    post = (thread_title or "").strip()
+    if not title or is_decoration_only_filename(title) or is_hard_dirty_filename(title):
+        title = ""
+    # 切块已抽出的名称（fallback）优先于块内种子名；仅当 fallback 弱名时才用种子名
+    if title and is_weak_subresource_name(title, post_title=post):
+        if fb and not is_weak_subresource_name(fb, post_title=post):
+            title = fb
+        elif torr_title:
+            title = torr_title
+    if not title:
+        title = (
+            clip_subresource_display_name(fb)
+            or fb
+            or torr_title
+            or clip_subresource_display_name(post)
+            or post
+        )
+    # 卡片名弱、但切段名强：仍用切段名（块文本常从标签后起，不含【影片名称】行）
+    if (
+        title
+        and fb
+        and is_weak_subresource_name(title, post_title=post)
+        and not is_weak_subresource_name(fb, post_title=post)
+    ):
+        title = fb
+    if (
+        torr_title
+        and title
+        and title == torr_title
+        and fb
+        and not is_weak_subresource_name(fb, post_title=post)
+        and fb != torr_title
+    ):
+        # 勿让同块后段【种子名称】盖掉本段【影片名称】
+        title = fb
+    title = clip_subresource_display_name(title) or title
+    if title and (is_dirty_filename(title) or is_hard_dirty_filename(title)):
+        alt = (
+            clip_subresource_display_name(fb)
+            or fb
+            or torr_title
+            or clip_subresource_display_name(post)
+            or post
+        )
+        if alt and not is_hard_dirty_filename(alt):
+            title = alt
+    title = (title or "")[:255]
+
+    # 切段名常落在标签之后，块内 cards 可能没有 name 键 → 补进 meta 供帖级描述
+    if title:
+        if kind == "resource":
+            meta.setdefault("资源名称", title)
+        else:
+            meta.setdefault("影片名称", title)
+            meta.setdefault("资源名称", title)
+
+    # 片名装饰里的 [MP4/1.9GB]
+    if not size_label and size <= 0 and title:
+        emb = re.search(
+            r"\[\s*(?:MP4|MKV|AVI|WMV|MOV|FLV|TS|ISO)?\s*/\s*([0-9.]+)\s*([KMGT])B?\s*\]",
+            title,
+            re.I,
+        )
+        if emb:
+            size_label = f"{emb.group(1)}{emb.group(2).upper()}"
+            size = parse_capacity_bytes(size_label)
+
+    # 块描述：有板口径用 profile；密码从块 meta 带入
+    block_pwd = extract_password("", meta)
+    if board_fid is not None:
+        desc = build_structured_description(
+            meta,
+            extract_password=block_pwd,
+            title=title,
+            board_fid=board_fid,
+        )
+    else:
+        desc = ""
+    if not desc:
+        desc = _build_block_description(
+            title=title,
+            size_label=size_label,
+            fmt=fmt,
+            note=note,
+            kind=kind,
+        )
+        if block_pwd and "解压密码" not in desc and "解壓密碼" not in desc:
+            desc = (desc + f"\n【解压密码】：{block_pwd}").strip()
+
+    return BlockCardEnrichment(
+        title=title,
+        size=int(size or 0),
+        size_label=size_label or "",
+        format=fmt or "",
+        note=note or "",
+        torrent_name=torrent or "",
+        metadata=meta,
+        description=desc,
+    )
 
 
 def _assemble_subresource_block(
@@ -1795,54 +2292,36 @@ def _assemble_subresource_block(
     base_url: str,
     preview_chunk: str | None = None,
     thread_title: str = "",
+    board_fid: str | int | None = None,
 ) -> SubresourceBlock:
     raw_chunk = scope[field_lo:field_hi]
-    text_chunk = re.sub(r"<[^>]+>", " ", raw_chunk or "")
-    text_chunk = re.sub(r"&nbsp;", " ", text_chunk, flags=re.I)
-    size = _size_from_subresource_block(scope, field_lo, field_hi)
-    size_label = _block_field(text_chunk, *SIZE_FIELD_FORMS)
-    if size_label:
-        # 再裁一次：字间插空未折叠 / 未知尾字段时，只留容量串
-        size_label = _clip_field_value(size_label, label="影片大小")
-    if not size_label and size > 0:
-        emb = re.search(
-            r"\[\s*(?:MP4|MKV|AVI|WMV|MOV|FLV|TS|ISO)?\s*/\s*([0-9.]+)\s*([KMGT])B?\s*\]",
-            name,
-            re.I,
-        )
-        if emb:
-            size_label = f"{emb.group(1)}{emb.group(2).upper()}"
-    fmt = _block_field(text_chunk, *FORMAT_FIELD_FORMS)
-    note = _block_field(text_chunk, *NOTE_FIELD_FORMS)
-    torrent = _block_field(text_chunk, *TORRENT_FIELD_FORMS)
-    # 【影片标题】若只是合集帖标题/专辑头，改用【种子名称】真名
-    # （tid=23485940 / 23486061：subject 可能被改成单片名，专辑头≠帖标题）
-    from parsers.resource_names import is_weak_subresource_name
-
-    torr_title = _torrent_name_as_title(torrent)
-    if torr_title and is_weak_subresource_name(name, post_title=thread_title):
-        name = torr_title
+    # 传入原始 HTML 块：enrich 内 _clean_text 会还原 CF 邮箱密码后再切卡片
+    enriched = enrich_block_with_cards(
+        raw_chunk,
+        fallback_name=name,
+        thread_title=thread_title,
+        kind=kind,
+        board_fid=board_fid,
+    )
+    # 容量：卡片优先，否则回落块内扫
+    size = int(enriched.size or 0)
+    if size <= 0:
+        size = _size_from_subresource_block(scope, field_lo, field_hi)
     imgs = extract_preview_images(
         preview_chunk if preview_chunk is not None else raw_chunk,
         limit=lim,
         base_url=base_url,
     )
-    desc = _build_block_description(
-        title=name,
-        size_label=size_label,
-        fmt=fmt,
-        note=note,
-        kind=kind,
-    )
     return SubresourceBlock(
         infohash=paired,
-        title=name,
+        title=enriched.title or (name or "")[:255],
         size=size,
-        format=fmt,
-        note=note,
-        torrent_name=torrent,
+        format=enriched.format,
+        note=enriched.note,
+        torrent_name=enriched.torrent_name,
         preview_images=imgs,
-        description=desc,
+        description=enriched.description,
+        metadata=dict(enriched.metadata or {}),
     )
 
 
@@ -1887,8 +2366,9 @@ def extract_subresource_blocks(
     infohashes: list[str] | None = None,
     *,
     base_url: str = "",
-    limit_per: int = 5,
+    limit_per: int = PREVIEW_IMAGE_LIMIT,
     fallback_title: str = "",
+    board_fid: str | int | None = None,
 ) -> list[SubresourceBlock]:
     """按子标题切段挂资源链。返回 blocks；布局码见 extract_subresource_blocks_ex。"""
     blocks, _layout = extract_subresource_blocks_ex(
@@ -1897,6 +2377,7 @@ def extract_subresource_blocks(
         base_url=base_url,
         limit_per=limit_per,
         fallback_title=fallback_title,
+        board_fid=board_fid,
     )
     return blocks
 
@@ -1906,8 +2387,9 @@ def extract_subresource_blocks_ex(
     infohashes: list[str] | None = None,
     *,
     base_url: str = "",
-    limit_per: int = 5,
+    limit_per: int = PREVIEW_IMAGE_LIMIT,
     fallback_title: str = "",
+    board_fid: str | int | None = None,
 ) -> tuple[list[SubresourceBlock], str]:
     """同 extract_subresource_blocks，并返回 layout 码。
 
@@ -1920,9 +2402,19 @@ def extract_subresource_blocks_ex(
       - size_then_magnet
       - empty
     """
-    # 楼主各层（一楼元数据 + 二楼补链）拼成切段语料；路人回帖仍排除
-    lz_parts = extract_lz_posts_html(html, limit=5)
-    scope = "\n".join(lz_parts) if lz_parts else (extract_first_postmessage_html(html) or (html or ""))
+    # 单资源：楼主各层（一楼元数据 + 二楼补链）；多资源：只看一楼，避免二楼串链
+    if should_scan_lz_multi_floor(html):
+        lz_parts = extract_lz_posts_html(html, limit=5)
+        scope = (
+            "\n".join(lz_parts)
+            if lz_parts
+            else (extract_first_postmessage_html(html) or (html or ""))
+        )
+    else:
+        scope = extract_first_postmessage_html(html) or ""
+        if not scope.strip():
+            lz_parts = extract_lz_posts_html(html, limit=1)
+            scope = lz_parts[0] if lz_parts else (html or "")
     if not scope.strip():
         scope = html or ""
     scope = _repair_missing_structure_open_brackets(scope)
@@ -1940,7 +2432,7 @@ def extract_subresource_blocks_ex(
         return [], "empty"
 
     titles = iter_subresource_title_spans(scope)
-    lim = max(1, int(limit_per or 5))
+    lim = max(1, int(limit_per or PREVIEW_IMAGE_LIMIT))
     out: list[SubresourceBlock] = []
     seen: set[str] = set()
     name_fallback = (fallback_title or "").strip()[:255]
@@ -1993,6 +2485,7 @@ def extract_subresource_blocks_ex(
                         lim=lim,
                         base_url=base_url,
                         thread_title=name_fallback,
+                        board_fid=board_fid,
                     )
                 )
                 for h, _s, _e in in_seg[1:]:
@@ -2010,6 +2503,7 @@ def extract_subresource_blocks_ex(
                             torrent_name=last.torrent_name,
                             preview_images=list(last.preview_images),
                             description=last.description,
+                            metadata=dict(last.metadata or {}),
                         )
                     )
             if out:
@@ -2029,6 +2523,7 @@ def extract_subresource_blocks_ex(
                             torrent_name=last.torrent_name,
                             preview_images=list(last.preview_images),
                             description=last.description,
+                            metadata=dict(last.metadata or {}),
                         )
                     )
                 return out, "size_then_magnet"
@@ -2040,15 +2535,23 @@ def extract_subresource_blocks_ex(
         # 大合集无子标题：一名共享预览，禁止逐链装配（962 链可从数十秒降到毫秒级）
         _PACK_FAST_MIN = 48
         if len(link_pos) >= _PACK_FAST_MIN and name_fallback:
-            pack_size = _size_from_subresource_block(scope, 0, min(len(scope), 8000))
             previews = extract_preview_images(scope, limit=lim, base_url=base_url)
-            from parsers.resource_names import clip_subresource_display_name
-
-            name = clip_subresource_display_name(name_fallback) or name_fallback
-            name = name[:255]
-            desc = _build_block_description(
+            # 整帖一块：块内卡片（单资源大包）
+            enriched = enrich_block_with_cards(
+                scope[: min(len(scope), 24_000)],
+                fallback_name=name_fallback,
+                thread_title=name_fallback,
+                kind="film",
+                board_fid=board_fid,
+            )
+            name = (enriched.title or name_fallback)[:255]
+            pack_size = int(enriched.size or 0) or _size_from_subresource_block(
+                scope, 0, min(len(scope), 8000)
+            )
+            desc = enriched.description or _build_block_description(
                 title=name, size_label="", fmt="", note="", kind="film"
             )
+            meta = dict(enriched.metadata or {})
             for h, _s, _e in link_pos:
                 if h in seen:
                     continue
@@ -2058,11 +2561,12 @@ def extract_subresource_blocks_ex(
                         infohash=h,
                         title=name,
                         size=pack_size,
-                        format="",
-                        note="",
-                        torrent_name="",
+                        format=enriched.format,
+                        note=enriched.note,
+                        torrent_name=enriched.torrent_name,
                         preview_images=list(previews),
                         description=desc,
+                        metadata=meta,
                     )
                 )
             return out, "no_subtitle_pack"
@@ -2116,6 +2620,7 @@ def extract_subresource_blocks_ex(
                     base_url=base_url,
                     preview_chunk=preview_chunk,
                     thread_title=name_fallback,
+                    board_fid=board_fid,
                 )
             )
             prev_end = end
@@ -2153,6 +2658,7 @@ def extract_subresource_blocks_ex(
                     base_url=base_url,
                     preview_chunk=preview_chunk,
                     thread_title=name_fallback,
+                    board_fid=board_fid,
                 )
             )
         # 多出的链接挂到最后一个已配对名称
@@ -2172,6 +2678,7 @@ def extract_subresource_blocks_ex(
                         torrent_name=last.torrent_name,
                         preview_images=list(last.preview_images),
                         description=last.description,
+                        metadata=dict(last.metadata or {}),
                     )
                 )
         return out, "names_then_links"
@@ -2218,6 +2725,7 @@ def extract_subresource_blocks_ex(
             lim=lim,
             base_url=base_url,
             thread_title=name_fallback,
+            board_fid=board_fid,
         )
         out.append(head)
         prev_end = first_end
@@ -2241,6 +2749,7 @@ def extract_subresource_blocks_ex(
                         lim=lim,
                         base_url=base_url,
                         thread_title=name_fallback,
+                        board_fid=board_fid,
                     )
                 )
             else:
@@ -2254,6 +2763,7 @@ def extract_subresource_blocks_ex(
                         torrent_name=head.torrent_name,
                         preview_images=list(head.preview_images),
                         description=head.description,
+                        metadata=dict(head.metadata or {}),
                     )
                 )
             prev_end = e
@@ -2350,7 +2860,7 @@ def extract_preview_images_by_infohash(
     infohashes: list[str],
     *,
     base_url: str = "",
-    limit_per: int = 5,
+    limit_per: int = PREVIEW_IMAGE_LIMIT,
 ) -> dict[str, list[str]]:
     """按子资源块挂预览图（与名称/大小/磁力同一块）。"""
     out: dict[str, list[str]] = {}
@@ -2404,6 +2914,13 @@ def parse_thread_content(html: str, tid: int = 0, *, base_url: str = "") -> Thre
             block = extract_blockcode_text(corpus)
     combined = f"{plain}\n{block}"
     metadata = extract_metadata(combined)
+    # 密码：一楼字段 + 楼主多层语料（二楼补链旁常写密码）一起收，免漏
+    lz_corpus = extract_link_corpus_html(html)
+    pwd = harvest_extract_password(
+        combined,
+        lz_corpus or "",
+        metadata=metadata,
+    )
     return ThreadContent(
         tid=extract_tid(html, fallback=tid),
         title=title,
@@ -2411,6 +2928,8 @@ def parse_thread_content(html: str, tid: int = 0, *, base_url: str = "") -> Thre
         blockcode_text=block,
         metadata=metadata,
         # 优先一楼/楼主正文，避免扫进页眉页脚 UI 图（PHPWind 尤其明显）
-        preview_images=extract_preview_images(op_html or html, limit=5, base_url=base_url),
-        extract_password=extract_password(combined, metadata),
+        preview_images=extract_preview_images(
+            op_html or html, limit=PREVIEW_IMAGE_LIMIT, base_url=base_url
+        ),
+        extract_password=pwd,
     )

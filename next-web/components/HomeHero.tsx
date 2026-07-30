@@ -14,7 +14,7 @@ function SearchFallback() {
   return (
     <div
       aria-hidden
-      className="h-10 w-full rounded-md bg-default-100/80 ring-1 ring-default-200/60 dark:bg-slate-800/60 dark:ring-slate-600/50"
+      className="home-search-fallback h-12 w-full rounded-2xl bg-default-100/80 ring-1 ring-default-200/60 dark:bg-slate-800/60 dark:ring-slate-600/50"
     />
   );
 }
@@ -29,43 +29,43 @@ export function HomeHero() {
   };
 
   return (
-    <header className="home-bar relative w-full overflow-hidden">
-      <div aria-hidden className="home-bar__wash" />
-      <div
-        aria-hidden
-        className="pointer-events-none absolute inset-x-0 bottom-0 h-px bg-gradient-to-r from-transparent via-primary/30 to-transparent"
-      />
+    <header className="home-hero relative z-[1] flex w-full flex-col">
+      <div className="home-hero__stage relative flex min-h-0 flex-1 flex-col">
+        <span aria-hidden className="home-hero__brand-bg" />
 
-      <div className="home-bar__row relative z-[1] flex flex-col gap-3 sm:flex-row sm:items-center sm:gap-4 md:gap-5">
-        <button
-          type="button"
-          className="home-bar__brand group inline-flex shrink-0 items-center gap-2.5 self-start outline-none sm:self-auto"
-          title={siteConfig.name}
-          onPointerDown={doClickAnimation}
-        >
-          <Ed2kLogo
-            className={clsx(
-              "block h-9 w-9 shrink-0 text-primary transition-transform duration-400 md:h-10 md:w-10",
-              "group-hover:scale-[1.05]",
-              isAnimating && "animate-pop",
-            )}
-          />
-          <span className="home-brand-title text-lg font-bold tracking-[0.04em] text-foreground md:text-xl">
-            {siteConfig.name}
-          </span>
-        </button>
-
-        <div className="home-bar__search min-w-0 flex-1">
-          <Suspense fallback={<SearchFallback />}>
-            <SearchInput variant="hero" />
-          </Suspense>
-        </div>
-
-        <div className="home-bar__tools flex shrink-0 items-center justify-end gap-0.5 self-end sm:self-auto">
+        <div className="home-hero__tools relative z-[2] flex w-full shrink-0 items-center justify-end gap-0.5">
           <SettingsNavLink noBg />
           <SwitchLanguage noBg />
           <ToggleTheme noBg />
         </div>
+
+        <div className="home-hero__brand relative z-[1] flex min-h-0 flex-1 flex-col items-center justify-center text-center">
+          <button
+            type="button"
+            className="group relative z-[1] inline-flex flex-row items-center gap-2.5 outline-none sm:gap-3.5"
+            title={siteConfig.name}
+            onPointerDown={doClickAnimation}
+          >
+            <span className="home-hero__mark relative inline-flex shrink-0">
+              <Ed2kLogo
+                className={clsx(
+                  "home-hero__logo relative block text-primary transition-transform duration-400",
+                  "group-hover:scale-[1.04]",
+                  isAnimating && "animate-pop",
+                )}
+              />
+            </span>
+            <h1 className="home-brand-title text-left font-bold leading-none tracking-[0.04em] text-foreground">
+              {siteConfig.name}
+            </h1>
+          </button>
+        </div>
+      </div>
+
+      <div className="home-hero__search relative z-[1] mx-auto w-full shrink-0">
+        <Suspense fallback={<SearchFallback />}>
+          <SearchInput variant="hero" />
+        </Suspense>
       </div>
     </header>
   );

@@ -455,7 +455,9 @@ def persist_dual_parse(
             (u for u in uris if u),
             (head.uri or "").strip(),
         )
-        previews = list(row.previews[:5])
+        from parsers.content import PREVIEW_IMAGE_LIMIT
+
+        previews = list(row.previews[:PREVIEW_IMAGE_LIMIT])
         desc = head.description or parsed.description or ""
         for asset in row.members:
             if asset.description:

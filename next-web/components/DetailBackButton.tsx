@@ -8,4 +8,5 @@ export {
   DetailBackButton,
   saveDetailReturnUrl,
   goBackOrHome,
+  HIDE_GLOBAL_BACK_ATTR,
 } from "@/components/PageBackButton";

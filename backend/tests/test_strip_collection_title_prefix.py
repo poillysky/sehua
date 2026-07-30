@@ -87,7 +87,7 @@ def test_film_title_is_post_title_use_torrent_name():
 
 
 def test_album_header_when_subject_is_film_name():
-    """tid=23486061：subject=单片名，首条【影片标题】仍是专辑头 → 帖标题恢复专辑头，子名用种子名。"""
+    """subject 是单片名就按页面显示存；子资源名仍用种子名。"""
     from parsers.content import extract_title
     from parsers.links import parse_thread_dual
 
@@ -113,8 +113,8 @@ def test_album_header_when_subject_is_film_name():
     </div>
     </body></html>
     """
-    assert "最强優片" in extract_title(html)
+    assert extract_title(html) == "All Over Your Body"
     dual = parse_thread_dual(html, tid=23486061, preferred_link="magnet", board_fid="2048")
-    assert "最强優片" in (dual.title or "")
+    assert (dual.title or "") == "All Over Your Body"
     assert "A Dress Fit For Fucking" in (dual.assets[0].filename or "")
     assert dual.assets[0].filename != dual.title

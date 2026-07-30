@@ -4,9 +4,12 @@ import Link from "next/link";
 import { useEffect, useState } from "react";
 import clsx from "clsx";
 
-import { ChevronRightIcon } from "@/components/BrowseIcons";
 import { PreviewImage } from "@/components/PreviewImage";
-import { codeSearchHref, isFc2Code } from "@/utils/av-code";
+import {
+  codeSearchHref,
+  isFc2Code,
+  isFullCoverCode,
+} from "@/utils/av-code";
 
 /** 日本分区番号链：带 jp=1，搜索页才套用中文/破解偏好 */
 export function JapanCodeSearchLink({
@@ -14,11 +17,18 @@ export function JapanCodeSearchLink({
   coverUrl,
   coverUrls,
   className,
+  loading = "lazy",
+  fetchPriority,
+  landscapeCover,
 }: {
   code: string;
   coverUrl?: string | null;
   coverUrls?: string[];
   className?: string;
+  loading?: "lazy" | "eager";
+  fetchPriority?: "high" | "low" | "auto";
+  /** 强制横图（无码厂牌列表） */
+  landscapeCover?: boolean;
 }) {
   const [href, setHref] = useState(() => codeSearchHref(code));
   const candidates =
@@ -27,7 +37,8 @@ export function JapanCodeSearchLink({
       : coverUrl
         ? [coverUrl]
         : [];
-  const fc2 = isFc2Code(code);
+  const fullCover =
+    landscapeCover || isFc2Code(code) || isFullCoverCode(code);
 
   useEffect(() => {
     setHref(codeSearchHref(code, { japanPrefs: true }));
@@ -35,33 +46,35 @@ export function JapanCodeSearchLink({
 
   return (
     <Link className={className} href={href}>
-      <span className="flex min-w-0 items-center gap-3">
-        <span
+      <span
+        className={clsx(
+          "relative block w-full overflow-hidden bg-default-100 dark:bg-slate-800",
+          fullCover ? "aspect-[16/10]" : "aspect-[2/3]",
+        )}
+      >
+        <PreviewImage
+          alt={code}
           className={clsx(
-            "relative shrink-0 overflow-hidden rounded-md bg-default-100 dark:bg-slate-800",
-            fc2 ? "h-10 w-[4.5rem]" : "h-14 w-10",
+            "h-full w-full object-cover transition-transform duration-300 group-hover:scale-[1.03]",
+            fullCover
+              ? "object-center origin-center"
+              : "object-right-top origin-right",
           )}
-        >
-          <PreviewImage
-            alt={code}
-            className={clsx(
-              "h-full w-full object-cover",
-              fc2 ? "object-center" : "object-right",
-            )}
-            loading="lazy"
-            preferLandscape={fc2}
-            preferProxy
-            srcs={candidates}
-          />
-        </span>
-        <span className="truncate text-sm font-semibold tracking-wide text-foreground group-hover:text-primary">
-          {code}
-        </span>
+          loading={loading}
+          fetchPriority={fetchPriority}
+          maxSources={2}
+          preferLandscape={fullCover}
+          srcs={candidates.slice(0, 2)}
+          style={fullCover ? undefined : { objectPosition: "right top" }}
+        />
+        <span
+          aria-hidden
+          className="pointer-events-none absolute inset-x-0 bottom-0 h-1/3 bg-gradient-to-t from-black/25 to-transparent opacity-0 transition-opacity group-hover:opacity-100"
+        />
       </span>
-      <ChevronRightIcon
-        className="shrink-0 text-default-300 transition-transform group-hover:translate-x-0.5 group-hover:text-primary"
-        size={16}
-      />
+      <span className="block break-all px-1 py-1.5 text-center text-[11px] font-semibold leading-snug tracking-wide text-foreground transition-colors group-hover:text-primary sm:px-2 sm:py-2 sm:text-sm">
+        {code}
+      </span>
     </Link>
   );
 }

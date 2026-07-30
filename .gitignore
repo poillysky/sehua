@@ -28,8 +28,24 @@ data/collector/
 data/backend/
 backend/data/
 deploy/data/
+scrape-web/data/
 *.log
 crawl-run.log
+
+# 本地临时产物 / Agent 调试（勿入库）
+_tmp*/
+_tmp_*
+**/_tmp*/
+**/_tmp_*
+artifacts/
+backend/scripts/scratch/
+backend/scripts/_*.py
+.cursor/
+
+# 过大的排查导出（可本地保留，不进主仓）
+docs/gap_threads/*.csv
+docs/gap_threads/*.csv.gz
+*.sql.gz
 
 # IDE / OS
 .idea/
@@ -52,4 +68,3 @@ ed2k/**/node_modules/
 
 # local archive tools (do not ship binaries)
 backend/.tools/
-

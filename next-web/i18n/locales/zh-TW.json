@@ -38,7 +38,7 @@
     "title": "分類瀏覽",
     "filtered_subtitle": "目前分區 / 板塊下的收錄資源",
     "loading": "正在載入資源...",
-    "refresh": "換一批",
+    "refresh": "隨機一頁",
     "empty": "暫無資源",
     "page_of": "第 {page} / {total} 頁",
     "total_count": "共 {count} 條"
@@ -54,7 +54,7 @@
     "subtype_count": "{count} 個子類",
     "whole_board": "整板瀏覽",
     "all_children": "全部",
-    "back_nav": "返回分區目錄",
+    "back_nav": "返回上一層",
     "home": "首頁",
     "sidebar_title": "分區導航",
     "show_nav": "打開導航",
@@ -84,14 +84,26 @@
   },
   "Search": {
     "placeholder": "搜尋你想要的...",
+    "placeholderActress": "搜尋女優…",
     "action": "搜尋",
     "translate": "翻譯為英文",
     "filterLabel": {
       "sortType": "排序方式",
       "filterTime": "按時間過濾",
       "filterSize": "按大小過濾",
-      "matchMode": "搜索模式"
+      "matchMode": "搜索模式",
+      "searchKind": "搜尋類型"
     },
+    "mode": {
+      "resource": "資源",
+      "actress": "女優"
+    },
+    "actress_empty": "未找到該女優的番號（需已刮削女優資訊）",
+    "actress_results": "{name} · {count} 部",
+    "actress_prev": "上一頁",
+    "actress_next": "下一頁",
+    "empty": "無匹配資源，可試模糊匹配或縮短關鍵詞",
+    "page_of": "第 {page} / {total} 頁",
     "sortType": {
       "default": "默認排序",
       "size": "文件大小",

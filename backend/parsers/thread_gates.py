@@ -260,10 +260,11 @@ RE_TERABOX_SHARE = re.compile(
     re.I,
 )
 
-# 标题含目标资源暗示：有 115 / ed2k / 磁力时，不因「百度」等字样判网盘跳过。
+# 标题含目标资源暗示：有 115 / ed2k / magnet / 磁力时，不因「百度/迅雷/夸克/度盘」
+# 等裸网盘字样判跳过（【百度】【115eD2k】、【迅雷+磁力】等并存 → 继续识别）。
 # 注意：勿把容量「115G / 115GB」误认成 115 资源暗示。
 _TITLE_HAS_TARGET_HINT_RE = re.compile(
-    r"ed2k|magnet|磁力|电驴|种子|torrent|"
+    r"ed2k|magnet|磁力|磁[链鏈]|电驴|電驢|种子|種子|torrent|"
     r"(?<![0-9.])115(?!(?:\.\d+)?\s*[GMTgmt][Bb]?\b)",
     re.I,
 )
@@ -299,7 +300,8 @@ SKIP_CLOUD_SHARE_SPECS: tuple[CloudShareSpec, ...] = (
         "xunlei",
         "迅雷云盘",
         RE_XUNLEI_SHARE,
-        re.compile(r"迅雷\s*(?:云盘|网盘|雲盤|網盤)", re.I),
+        # 裸「迅雷」也算（【迅雷】帖）；无 115/ed2k/磁力时由 match_skip_cloud_share_title 直接跳过
+        re.compile(r"迅雷(?:\s*(?:云盘|网盘|雲盤|網盤))?", re.I),
         try_attachments=True,
     ),
     CloudShareSpec(
@@ -313,7 +315,8 @@ SKIP_CLOUD_SHARE_SPECS: tuple[CloudShareSpec, ...] = (
         "baidu",
         "百度网盘",
         RE_BAIDU_SHARE,
-        re.compile(r"百度\s*(?:网盘|雲盤|云盘|網盤)|百度云", re.I),
+        # 裸「百度」「度盘」也算；「百度+115eD2k」等并存由 title_has_target 挡住
+        re.compile(r"百度(?:\s*(?:网盘|雲盤|云盘|網盤))?|百度云|度盘|度盤", re.I),
         try_attachments=True,
     ),
     CloudShareSpec(
@@ -485,8 +488,10 @@ def match_skip_cloud_share_link(text: str) -> CloudShareSpec | None:
 
 
 def match_skip_cloud_share_title(title: str) -> CloudShareSpec | None:
-    """标题「只点名一种网盘、且无 115/ed2k/磁力」→ 可跳过。
+    """标题「只点名一种网盘、且无 115/ed2k/magnet/磁力」→ 可跳过。
 
+    裸写【迅雷】【百度】【度盘】【夸克】也算对应网盘；
+    与 ed2k / 115 / magnet / 磁力 等同时出现 → 不判。
     【百度网盘+115eD2k】/【百度+夸克】这类并存 → 不判。
     """
     t = (title or "").strip()
@@ -847,12 +852,81 @@ def title_recognizable(title: str) -> bool:
     return True
 
 
+_LIST_TRUNC_END_RE = re.compile(r"(?:\.{3}|…)\s*$")
+_LIST_TRUNC_BEFORE_CAP_RE = re.compile(r"(?:\.{3}|…)【")
+
+# 末尾未闭合容量段：【8V/2配额 → 自动补】
+_OPEN_CAPACITY_TAIL_RE = re.compile(r"[【［\[]([^【［\[】］\]]*)$")
+_CAPACITY_TAIL_COMPLETE_RE = re.compile(
+    r"(?:"
+    r"配额|配額"
+    r"|\d+(?:\.\d+)?\s*(?:[Vv]|[ＧGｇg][ＢBｂb]?|[ＰPｐp])"
+    r")\s*$",
+    re.I,
+)
+
+
+def close_trailing_capacity_bracket(title: str) -> str:
+    """标题末尾容量/配额括号未闭合时补后括号。
+
+    例：``…【5V/2.49GB/5配额`` → ``…【5V/2.49GB/5配额】``
+    非容量未闭合（如 ``【苗条细腰``）不动。
+    """
+    t = (title or "").rstrip()
+    if not t:
+        return title or ""
+    if t[-1:] in "】］]":
+        return t
+    m = _OPEN_CAPACITY_TAIL_RE.search(t)
+    if not m:
+        return t
+    inner = (m.group(1) or "").strip()
+    if not inner or not _CAPACITY_TAIL_COMPLETE_RE.search(inner):
+        return t
+    # 与开括号配对的闭括号
+    opener = t[m.start()]
+    closer = {"【": "】", "［": "］", "[": "]"}.get(opener, "】")
+    return t + closer
+
+
+def title_looks_list_truncated(title: str) -> bool:
+    """列表页/异常截断标题：末尾 … / ...【容量 被砍 / 未闭合括号收尾。
+
+    文案中间的「爱上…私下」不算截断（后面还有完整句子）。
+    """
+    t = close_trailing_capacity_bracket(title or "").strip()
+    if not t:
+        return False
+    if _LIST_TRUNC_END_RE.search(t):
+        return True
+    if _LIST_TRUNC_BEFORE_CAP_RE.search(t):
+        return True
+    if t[-1:] in "【［[（(":
+        return True
+    return False
+
+
 def coalesce_thread_title(*candidates: str) -> str:
-    """取第一个可识别标题；过滤「提示信息」等系统伪标题。"""
+    """帖标题以列表扫描为准：调用方须把 list_title 放第一位。
+
+    列表可识别则直接用（补未闭合容量括号、剥「影片名称」标签）；
+    仅当列表空/伪标题时，才用后续帖页候选兜底。
+    不再用帖内更长 subject/正文覆盖列表，避免污染。
+    """
+    from parsers.resource_names import unwrap_subject_film_title
+
     for c in candidates:
-        if title_recognizable(c):
-            return (c or "").strip()
+        t = (c or "").strip()
+        if not t or not title_recognizable(t):
+            continue
+        return close_trailing_capacity_bracket(unwrap_subject_film_title(t))
     return ""
+
+
+def prefer_fuller_title(subject: str, body_name: str) -> str:
+    """兼容旧调用：帖标题不再用正文补全，始终保留 subject。"""
+    s = (subject or "").strip()
+    return s if s else (body_name or "").strip()
 
 
 def is_safe_or_soft_shell(html: str) -> bool:

@@ -53,7 +53,7 @@ export const viewport: Viewport = {
   ],
   colorScheme: "light dark",
   width: "device-width",
-  height: "device-height",
+  // 勿设 height: device-height —— iOS Safari 下易导致页底滚不到 / 视口异常
   initialScale: 1,
   maximumScale: 1,
   userScalable: false,
@@ -73,7 +73,8 @@ export default async function RootLayout({
       <head />
       <body
         className={clsx(
-          "h-full bg-background font-sans antialiased",
+          /* 勿加 h-full：会覆盖 style.css 的 height:auto，导致 iOS Safari 滚不到页底 */
+          "min-h-dvh bg-background font-sans antialiased",
           fontSans.variable,
           fontMono.variable,
           locale.startsWith("zh") ? fontNoto.className : "",
@@ -89,10 +90,10 @@ export default async function RootLayout({
           >
             <IosStandalone />
             <SafariChromeTint />
-            <div className="app-shell relative flex h-full min-h-[100dvh] flex-col">
+            <div className="app-shell relative flex min-h-[100dvh] flex-col">
               <DemoMode />
               <GlobalBackButton />
-              <main className="container z-10 mx-auto w-full max-w-6xl flex-grow md:w-4/5">
+              <main className="container z-10 mx-auto flex w-full max-w-6xl flex-grow flex-col md:w-4/5">
                 {children}
               </main>
             </div>

@@ -40,7 +40,7 @@
     "title": "Browse",
     "filtered_subtitle": "Resources in this category / board",
     "loading": "Loading resources...",
-    "refresh": "Shuffle",
+    "refresh": "Random page",
     "empty": "No resources yet",
     "page_of": "Page {page} / {total}",
     "total_count": "{count} items"
@@ -56,7 +56,7 @@
     "subtype_count": "{count} subtypes",
     "whole_board": "Whole board",
     "all_children": "All",
-    "back_nav": "Back to categories",
+    "back_nav": "Back to parent",
     "home": "Home",
     "sidebar_title": "Browse",
     "show_nav": "Open nav",
@@ -86,14 +86,26 @@
   },
   "Search": {
     "placeholder": "Search what you want...",
+    "placeholderActress": "Search actress…",
     "action": "Search",
     "translate": "Translate to English",
     "filterLabel": {
       "sortType": "Sort by",
       "filterTime": "Filter by time",
       "filterSize": "Filter by size",
-      "matchMode": "Search mode"
+      "matchMode": "Search mode",
+      "searchKind": "Search type"
     },
+    "mode": {
+      "resource": "Resources",
+      "actress": "Actress"
+    },
+    "actress_empty": "No titles found for this actress (needs scraped actress metadata)",
+    "actress_results": "{name} · {count}",
+    "actress_prev": "Previous",
+    "actress_next": "Next",
+    "empty": "No matching resources. Try fuzzy match or a shorter keyword",
+    "page_of": "Page {page} / {total}",
     "sortType": {
       "default": "Default sorting",
       "size": "File size",

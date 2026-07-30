@@ -25,7 +25,7 @@ from parsers.skip_outcomes import (
     SKIP_META_AD,
     SKIP_MISSING,
     SKIP_MOD_BLOCKED,
-    SKIP_NO_ACCESS,
+    SKIP_NO_ACCESS_NO_TITLE,
     SKIP_NO_TARGET,
     SKIP_NON_RESOURCE,
     SKIP_PURCHASE,
@@ -190,10 +190,10 @@ def judge_thread_html(
     min_age = int(getattr(pol, "min_thread_age_days", 0) or 0)
 
     page_tit = page_title(html)
-    # 展示用：页内伪标题时回落到列表标题；无权占位也可用列表标题登记
-    title = page_tit
-    if not title_recognizable(title) and title_recognizable(list_title):
-        title = list_title
+    # 展示用标题：只认列表扫描；列表空/伪标题才用帖页
+    title = coalesce_thread_title(list_title, page_tit) or (
+        (list_title or "").strip() or page_tit or ""
+    )
 
     # 2048 白名单各板：回家指南 / 来访者必看 / 地址发布器等版务帖
     if forum_id == "2048":
@@ -288,7 +288,7 @@ def judge_thread_html(
             return ThreadOutcome("stub", "无阅读权限 · 占位入库", link_kind, page_tit)
         return ThreadOutcome(
             "skipped",
-            SKIP_NO_ACCESS,
+            SKIP_NO_ACCESS_NO_TITLE,
             link_kind,
             list_title or page_tit or title,
         )
@@ -382,8 +382,8 @@ def judge_thread_html(
 
     # Body has target link? 仅认楼主语料（与 parse_thread_dual 一致）
     # 回帖/侧栏误检到的链不走进「有链无主资源」误杀。
-    # 正文有链：先按正文 import；入库验收「不合格*」时由 pipeline 再下附件复判
-    # （勿在此抢先 need_attachments，否则永远走不到「先正文后附件」）。
+    # 正文有链：先按正文 import；入库验收「不合格*」时由 pipeline 切块后再下附件复判。
+    # 正文无链但有附件区：标 need_attachments（仅挂起）；下载在切块+卡片之后。
     if has_lz_target:
         # 已因不合格下过附件：无权/空 → 占位，勿用正文残链当真入库
         # （tid=3395138：正文仅部分链，完整链在无权附件里）
@@ -409,8 +409,8 @@ def judge_thread_html(
         if parsed.primary_link_kind != "none" and parsed.assets:
             # 报表用实际主链类型（含：磁力板仅有 115 分享码 → 115share）
             outcome_kind = parsed.primary_link_kind
-            # parsed.title 可能是「提示信息」：勿盖过已回落的列表标题
-            display_title = coalesce_thread_title(title, parsed.title) or title
+            # 帖标题只认列表；parsed.title 可能是「提示信息」勿盖过
+            display_title = coalesce_thread_title(list_title, title, parsed.title) or title
             if display_title and not title_recognizable(parsed.title):
                 parsed.title = display_title
             # 附件注入后再判成功：文案标「附件」，避免误成「正文含目标链接」

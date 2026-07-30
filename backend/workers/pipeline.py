@@ -139,7 +139,7 @@ async def _outcome_from_heavy_attachment(
     )
     if merged.primary_link_kind != "none" and merged.assets:
         display = coalesce_thread_title(list_title, prior.title, merged.title) or (
-            prior.title or list_title or merged.title or ""
+            list_title or prior.title or merged.title or ""
         )
         if display and not coalesce_thread_title(merged.title):
             merged.title = display
@@ -425,24 +425,97 @@ async def process_thread(
         attachment_text = ""
         attach_tried = False
         attach_queued = False
-        if outcome.verdict == "need_attachments":
+        # 切块+卡片后再下附件：judge 的 need_attachments 只作挂起信号
+        pending_need_attach = outcome.verdict == "need_attachments"
+        pending_attach_kind = (attachment_kind or "").strip()
+
+        if outcome.parsed is not None:
+            parsed = outcome.parsed
+            log.info(
+                "tid=%s reuse judge.parsed assets=%s (skip 2nd parse)",
+                tid,
+                len(parsed.assets),
+            )
+        else:
+            parsed = await _parse_dual(
+                html,
+                tid=tid,
+                preferred_link=link_pref,
+                extra_text=attachment_text,
+                base_url=thread_url,
+                board_fid=board_fid,
+            )
+        if attach_tried and attachment_text:
+            parsed.had_attachments = True
+        # 仅「附件」文案不够：attachments_already_tried 时空附件也会写成「附件解析出…」
+        if (
+            outcome.verdict == "import"
+            and "附件" in str(outcome.outcome or "")
+            and bool(attachment_text)
+        ):
+            parsed.had_attachments = True
+        if adapter.engine == "phpwind":
+            from crawler.parser_phpwind import parse_thread_phpwind
+
+            detail = parse_thread_phpwind(html, tid=tid)
+            if detail.title and not (parsed.title or "").strip():
+                parsed.title = detail.title
+        # 帖标题只认列表扫描；无权页 extract 常为「提示信息」时才用帖页兜底
+        from parsers.thread_gates import coalesce_thread_title, title_recognizable
+
+        good_title = coalesce_thread_title(list_title, outcome.title, parsed.title)
+        if good_title:
+            parsed.title = good_title
+        elif not title_recognizable(parsed.title):
+            parsed.title = ""
+        # 确保描述按本板结构卡片重算（含 outcome.parsed 来自 judge 的路径）
+        from parsers.content import build_structured_description
+
+        parsed.description = await asyncio.to_thread(
+            build_structured_description,
+            parsed.metadata,
+            extract_password=parsed.extract_password,
+            title=parsed.title,
+            board_fid=board_fid,
+        )
+
+        # —— 切块+卡片+试算之后：统一决定是否下附件 ——
+        from workers.attach_trigger import plan_attachment_fetch
+
+        attach_plan = plan_attachment_fetch(
+            parsed=parsed,
+            html=html,
+            outcome=outcome,
+            attach_tried=attach_tried,
+            link_pref=link_pref,
+            thread_url=thread_url,
+            list_title=list_title or "",
+            persist=persist,
+            pending_need_attach=pending_need_attach,
+            pending_kind=pending_attach_kind,
+        )
+
+        if attach_plan and attach_plan.should_fetch:
             from crawler.attachments import fetch_attachments_for_outcome
             from parsers.attachments import inject_attachment_text
             from workers.attach_queue import (
                 ATTACH_QUEUE_OUTCOME,
-                ATTACH_QUEUE_VERDICT,
                 forum_uses_attach_daily_queue,
                 is_attach_daily_limit_hit,
                 mark_attach_daily_limit_hit,
             )
 
-            # 2048：当日已触日限则不再试下附件，直接入附件队列等次日
-            if forum_uses_attach_daily_queue(forum_id) and is_attach_daily_limit_hit(
+            attachment_kind = attach_plan.attachment_kind
+            use_queue = attach_plan.queue_on_daily_limit
+            daily_hit = forum_uses_attach_daily_queue(forum_id) and is_attach_daily_limit_hit(
                 str(forum_id or "")
-            ):
+            )
+
+            if daily_hit and use_queue:
                 log.info(
-                    "tid=%s need_attachments but daily limit already hit — queue",
+                    "tid=%s attach plan=%s but daily limit hit — queue",
                     tid,
+                    attach_plan.mode,
                 )
                 attach_queued = True
                 outcome = ThreadOutcome(
@@ -451,11 +524,19 @@ async def process_thread(
                     outcome.link_kind,
                     outcome.title or list_title,
                 )
+            elif daily_hit and not use_queue:
+                log.info(
+                    "tid=%s attach plan=%s daily limit — keep body outcome",
+                    tid,
+                    attach_plan.mode,
+                )
             else:
                 log.info(
-                    "tid=%s need_attachments kind=%s — download & parse",
+                    "tid=%s attach after cards mode=%s kind=%s — %s",
                     tid,
+                    attach_plan.mode,
                     attachment_kind,
+                    attach_plan.reason,
                 )
                 attach_timeout = float(cfg.get("web_crawler_timeout") or 45)
                 attach_res = await fetch_attachments_for_outcome(
@@ -465,32 +546,48 @@ async def process_thread(
                     attachment_kind=attachment_kind,
                     timeout=max(15.0, attach_timeout),
                     preferred_link=link_pref,
+                    quota_stop=attach_plan.quota_stop,
                 )
                 attach_tried = True
                 attachment_text = attach_res.text or ""
+
                 if (
                     forum_uses_attach_daily_queue(forum_id)
                     and getattr(attach_res, "daily_limited", False)
                 ):
                     mark_attach_daily_limit_hit(str(forum_id or ""))
-                    log.info("tid=%s attachment daily limited — queue for tomorrow", tid)
-                    attach_queued = True
-                    outcome = ThreadOutcome(
-                        "skipped",
-                        ATTACH_QUEUE_OUTCOME,
-                        outcome.link_kind,
-                        outcome.title or list_title,
-                    )
+                    if use_queue:
+                        log.info(
+                            "tid=%s attachment daily limited — queue for tomorrow", tid
+                        )
+                        attach_queued = True
+                        outcome = ThreadOutcome(
+                            "skipped",
+                            ATTACH_QUEUE_OUTCOME,
+                            outcome.link_kind,
+                            outcome.title or list_title,
+                        )
+                    else:
+                        log.info(
+                            "tid=%s attach rejudge hit daily limit — keep body outcome",
+                            tid,
+                        )
                 elif attachment_text and should_skip_as_115sha_only(attachment_text):
-                    log.info("tid=%s attachment has 115sha — skip", tid)
-                    outcome = ThreadOutcome(
-                        "skipped",
-                        "115sha（跳过）",
-                        outcome.link_kind,
-                        outcome.title or list_title,
-                    )
-                else:
-                    # 轻附件主进程注入再判；大包（≥24KB）直接 parse，跳过整页注入+judge
+                    if attach_plan.mode == "no_link":
+                        log.info("tid=%s attachment has 115sha — skip", tid)
+                        outcome = ThreadOutcome(
+                            "skipped",
+                            "115sha（跳过）",
+                            outcome.link_kind,
+                            outcome.title or list_title,
+                        )
+                    else:
+                        log.info(
+                            "tid=%s attachment rejudge hit 115sha — keep body import",
+                            tid,
+                        )
+                elif attach_plan.mode == "no_link":
+                    # 无链路径：下载后重判（含 kind 回退、大包快路径）
                     heavy_attach = len(attachment_text) >= 24_000
                     login_req = bool(getattr(attach_res, "login_required", False))
                     if (
@@ -540,7 +637,6 @@ async def process_thread(
                             attachment_text=attachment_text if heavy_attach else "",
                         )
                     # 电驴板：txt/zip/excel 无果再试种子；磁力/双链：种子无果再试 txt/excel
-                    # stub/无权/需登录不再二轮（已能判定）；仅 retry/failed / 空壳种子 才回退
                     _empty_tor_skip = (
                         outcome.verdict == "skipped"
                         and "种子大小为0" in str(outcome.outcome or "")
@@ -573,6 +669,7 @@ async def process_thread(
                             attachment_kind=next_kind,
                             timeout=max(15.0, attach_timeout),
                             preferred_link=link_pref,
+                            quota_stop=attach_plan.quota_stop,
                         )
                         if (
                             forum_uses_attach_daily_queue(forum_id)
@@ -680,170 +777,68 @@ async def process_thread(
                                     attachment_text=attachment_text if heavy2 else "",
                                 )
                         attachment_kind = f"{attachment_kind}+{next_kind}"
-                # 附件语料可能已含链但 judge 走了非 import：再双解析一次补全
-                # skipped（含 115sha）不再抬升为 import
-                if (
-                    not attach_queued
-                    and outcome.verdict not in {"import", "skipped"}
-                    and attachment_text
-                ):
-                    merged = await _parse_dual(
-                        html,
-                        tid=tid,
-                        preferred_link=link_pref,
-                        extra_text=attachment_text,
-                        base_url=thread_url,
+                    # 附件语料可能已含链但 judge 走了非 import：再双解析一次补全
+                    if (
+                        not attach_queued
+                        and outcome.verdict not in {"import", "skipped"}
+                        and attachment_text
+                    ):
+                        merged = await _parse_dual(
+                            html,
+                            tid=tid,
+                            preferred_link=link_pref,
+                            extra_text=attachment_text,
+                            base_url=thread_url,
+                            board_fid=board_fid,
+                        )
+                        if merged.primary_link_kind != "none" and merged.assets:
+                            display = coalesce_thread_title(
+                                list_title, outcome.title, merged.title
+                            ) or (list_title or outcome.title or merged.title or "")
+                            if display and not coalesce_thread_title(merged.title):
+                                merged.title = display
+                            outcome = ThreadOutcome(
+                                "import",
+                                "成功：附件解析出目标链接",
+                                outcome.link_kind,
+                                display,
+                                parsed=merged,
+                            )
+                    # 无链路径重判后刷新 parsed
+                    if outcome.parsed is not None:
+                        parsed = outcome.parsed
+                    elif attachment_text and outcome.verdict == "import":
+                        parsed = await _parse_dual(
+                            html,
+                            tid=tid,
+                            preferred_link=link_pref,
+                            extra_text=attachment_text,
+                            base_url=thread_url,
+                            board_fid=board_fid,
+                        )
+                    if attach_tried and attachment_text:
+                        parsed.had_attachments = True
+                    if outcome.verdict == "import" and attachment_text:
+                        parsed.had_attachments = True
+                    good_title = coalesce_thread_title(
+                        list_title, outcome.title, parsed.title
+                    )
+                    if good_title:
+                        parsed.title = good_title
+                    parsed.description = await asyncio.to_thread(
+                        build_structured_description,
+                        parsed.metadata,
+                        extract_password=parsed.extract_password,
+                        title=parsed.title,
                         board_fid=board_fid,
                     )
-                    if merged.primary_link_kind != "none" and merged.assets:
-                        from parsers.thread_gates import coalesce_thread_title
-
-                        display = coalesce_thread_title(
-                            list_title, outcome.title, merged.title
-                        ) or (outcome.title or list_title or merged.title or "")
-                        if display and not coalesce_thread_title(merged.title):
-                            merged.title = display
-                        outcome = ThreadOutcome(
-                            "import",
-                            "成功：附件解析出目标链接",
-                            outcome.link_kind,
-                            display,
-                            parsed=merged,
-                        )
-
-        if outcome.parsed is not None:
-            parsed = outcome.parsed
-            log.info(
-                "tid=%s reuse judge.parsed assets=%s (skip 2nd parse)",
-                tid,
-                len(parsed.assets),
-            )
-        else:
-            parsed = await _parse_dual(
-                html,
-                tid=tid,
-                preferred_link=link_pref,
-                extra_text=attachment_text,
-                base_url=thread_url,
-                board_fid=board_fid,
-            )
-        if attach_tried and attachment_text:
-            parsed.had_attachments = True
-        # 仅「附件」文案不够：attachments_already_tried 时空附件也会写成「附件解析出…」
-        if (
-            outcome.verdict == "import"
-            and "附件" in str(outcome.outcome or "")
-            and bool(attachment_text)
-        ):
-            parsed.had_attachments = True
-        if adapter.engine == "phpwind":
-            from crawler.parser_phpwind import parse_thread_phpwind
-
-            detail = parse_thread_phpwind(html, tid=tid)
-            if detail.title and not (parsed.title or "").strip():
-                parsed.title = detail.title
-        # 无权/登录页 extract_title 常为「提示信息」，列表标题优先；伪标题一律清空
-        from parsers.thread_gates import coalesce_thread_title, title_recognizable
-
-        good_title = coalesce_thread_title(list_title, outcome.title, parsed.title)
-        if good_title:
-            parsed.title = good_title
-        elif not title_recognizable(parsed.title):
-            parsed.title = ""
-        # 确保描述按本板结构卡片重算（含 outcome.parsed 来自 judge 的路径）
-        from parsers.content import build_structured_description
-
-        parsed.description = await asyncio.to_thread(
-            build_structured_description,
-            parsed.metadata,
-            extract_password=parsed.extract_password,
-            title=parsed.title,
-            board_fid=board_fid,
-        )
-
-        # 正文有链已判 import，但填槽会不合格，且尚未下附件 → 再下附件复判
-        # 附件轮询：115 / 98 / 「一分也是爱」文件名优先；每下一个试算一次，合格即停并正常入库
-        if (
-            persist
-            and outcome.verdict == "import"
-            and not attach_tried
-            and looks_like_attachment_zone(html)
-            and parsed.assets
-        ):
-            from db.persist import preview_frame_outcome
-
-            body_preview = preview_frame_outcome(
-                parsed, import_outcome=str(outcome.outcome or "")
-            )
-            if body_preview.startswith("不合格"):
-                from crawler.attachments import fetch_attachments_for_outcome
-                from parsers.attachments import (
-                    inject_attachment_text,
-                    pick_ed2k_attachment_kind,
-                    pick_magnet_attachment_kind,
-                )
-                from workers.attach_queue import (
-                    forum_uses_attach_daily_queue,
-                    is_attach_daily_limit_hit,
-                    mark_attach_daily_limit_hit,
-                )
-
-                # 2048 当日已日限：跳过附件复判，保留正文结果（不入附件队列）
-                if forum_uses_attach_daily_queue(forum_id) and is_attach_daily_limit_hit(
-                    str(forum_id or "")
-                ):
-                    log.info(
-                        "tid=%s body unqualified but attach daily limit hit — skip rejudge",
-                        tid,
-                    )
-                    retry_kind = ""
                 else:
-                    retry_kind = (attachment_kind or "").strip()
-                if not retry_kind and not (
-                    forum_uses_attach_daily_queue(forum_id)
-                    and is_attach_daily_limit_hit(str(forum_id or ""))
-                ):
-                    if link_pref == "ed2k":
-                        retry_kind = pick_ed2k_attachment_kind(thread_url, html)
-                    else:
-                        retry_kind = pick_magnet_attachment_kind(
-                            thread_url, html, title=str(outcome.title or list_title or "")
-                        )
-                if retry_kind:
-                    log.info(
-                        "tid=%s body import unqualified (%s) — attachment rejudge kind=%s",
-                        tid,
-                        body_preview.split(" · ", 1)[0],
-                        retry_kind or "?",
-                    )
-                    attach_timeout = float(cfg.get("web_crawler_timeout") or 45)
-                    attach_res = await fetch_attachments_for_outcome(
-                        session,
-                        html=html,
-                        thread_url=thread_url,
-                        attachment_kind=retry_kind,
-                        timeout=max(15.0, attach_timeout),
-                        preferred_link=link_pref,
-                    )
-                    attach_tried = True
-                    attachment_text = attach_res.text or ""
-                    attachment_kind = retry_kind
-                    if (
-                        forum_uses_attach_daily_queue(forum_id)
-                        and getattr(attach_res, "daily_limited", False)
-                    ):
-                        mark_attach_daily_limit_hit(str(forum_id or ""))
-                        log.info(
-                            "tid=%s attach rejudge hit daily limit — keep body outcome",
-                            tid,
-                        )
-                    elif attachment_text and not should_skip_as_115sha_only(
-                        attachment_text
-                    ):
-                        heavy = len(attachment_text) >= 24_000
-                        html_for_merge = html
-                        if not heavy:
-                            html_for_merge = inject_attachment_text(html, attachment_text)
+                    # 正文有链不合格 / 多资源缺链：附件复判；仍不合格保留正文
+                    heavy = len(attachment_text) >= 24_000
+                    html_for_merge = html
+                    if attachment_text and not heavy:
+                        html_for_merge = inject_attachment_text(html, attachment_text)
+                    if attachment_text:
                         merged = await _parse_dual(
                             html_for_merge,
                             tid=tid,
@@ -853,11 +848,11 @@ async def process_thread(
                             board_fid=board_fid,
                         )
                         if merged.assets:
-                            from parsers.thread_gates import coalesce_thread_title
+                            from db.persist import preview_frame_outcome
 
                             display = coalesce_thread_title(
                                 list_title, outcome.title, merged.title
-                            ) or (outcome.title or list_title or merged.title or "")
+                            ) or (list_title or outcome.title or merged.title or "")
                             if display and not coalesce_thread_title(merged.title):
                                 merged.title = display
                             merged.had_attachments = True
@@ -871,6 +866,7 @@ async def process_thread(
                             attach_preview = preview_frame_outcome(
                                 merged,
                                 import_outcome="成功：附件复判目标链接",
+                                post_title=display,
                             )
                             log.info(
                                 "tid=%s attachment rejudge → %s",
@@ -892,11 +888,29 @@ async def process_thread(
                                     "tid=%s attachment still unqualified — keep body import",
                                     tid,
                                 )
-                    elif attachment_text and should_skip_as_115sha_only(attachment_text):
-                        log.info(
-                            "tid=%s attachment rejudge hit 115sha — keep body import",
-                            tid,
-                        )
+
+        # 挂起 need_attachments 却未下成（无 zone / 日限外失败）：勿把挂起态留给 runner
+        if (
+            pending_need_attach
+            and outcome.verdict == "need_attachments"
+            and not attach_queued
+        ):
+            if attach_tried and not attachment_text:
+                outcome = ThreadOutcome(
+                    "stub",
+                    "无权限下载附件",
+                    outcome.link_kind,
+                    outcome.title or list_title,
+                )
+            elif not attach_tried:
+                from parsers.skip_outcomes import SKIP_NO_TARGET
+
+                outcome = ThreadOutcome(
+                    "skipped",
+                    SKIP_NO_TARGET,
+                    outcome.link_kind,
+                    outcome.title or list_title,
+                )
 
         # 附件无权占位：把附件名写入描述，便于账号重爬识别
         if outcome.verdict == "stub" and "附件" in str(outcome.outcome or ""):
@@ -945,7 +959,7 @@ async def process_thread(
             "attachment_chars": attach_chars,
             "soft_browser_retried": soft_browser_retried or outcome.soft_browser_retried,
             "title": coalesce_thread_title(list_title, outcome.title, parsed.title)
-            or (parsed.title or outcome.title or list_title),
+            or (list_title or parsed.title or outcome.title),
             "magnets": len(parsed.magnets),
             "ed2k": len(parsed.ed2k_links),
             "asset_count": len(parsed.assets),

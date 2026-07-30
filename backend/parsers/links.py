@@ -6,14 +6,15 @@ from dataclasses import dataclass, field
 from typing import Literal
 
 from parsers.content import (
+    PREVIEW_IMAGE_LIMIT,
     ThreadContent,
     attachment_corpus_has_target_links,
     build_structured_description,
     extract_blockcode_text,
     extract_link_corpus_html,
-    extract_password as extract_post_password,
     extract_subresource_blocks,
     extract_subresource_blocks_ex,
+    harvest_extract_password,
     parse_thread_content,
 )
 from parsers.ed2k import Ed2kLink, parse_ed2k_text, pick_primary_ed2k
@@ -188,13 +189,14 @@ def parse_thread_dual(
     board_fid: str | int | None = None,
 ) -> DualParseResult:
     """
-    Full dual parse: HTML → structured content + magnet + ed2k (+ 115 分享) assets.
+    Full dual parse: HTML → 先定资源名（单/多）→ 再定楼层抽链 → 切块挂链 → 块内卡片 → ParsedAsset。
 
     preferred_link: board policy — 'magnet' | 'ed2k' | 'both'
     extra_text: 附件解析出的文本（txt/zip/rar 内链或 torrent→magnet）并入语料
     board_fid: 用于按板块结构卡片筛选描述字段
 
-    元数据仍取主贴字段；链接/子资源认楼主各层（含二楼补链），路人回帖不参与。
+    顺序：一楼名称标签 0～1=单资源（可扫楼主多楼补链），≥2=多资源（只一楼）。
+    认 magnet/ed2k 之前已有资源名结论；路人回帖不参与。
     """
     content = parse_thread_content(html, tid=tid, base_url=base_url)
     # 2048 等板：繁简标签归一、丢掉裸 hash/残片种子名，便于片名与大小精准入库
@@ -202,7 +204,12 @@ def parse_thread_dual(
         from parsers.content import normalize_metadata_for_board
 
         content.metadata = normalize_metadata_for_board(content.metadata, board_fid)
-    link_html = extract_link_corpus_html(html)
+
+    # ① 先有资源名称结论（一楼标签数）→ ② 再选抽链楼层 → ③ 才认 magnet/ed2k
+    from parsers.content import should_scan_lz_multi_floor
+
+    multi_floor = should_scan_lz_multi_floor(html)  # 名称≤1 才扫楼主多楼
+    link_html = extract_link_corpus_html(html, multi_floor=multi_floor)
     link_block = extract_blockcode_text(link_html) if link_html else ""
     # 附件已含目标链：抽链不再并入正文 plain/blockcode（避免正文样例链污染）
     if attachment_corpus_has_target_links(html):
@@ -212,6 +219,7 @@ def parse_thread_dual(
             if part
         )
     else:
+        # 多资源：正文 plain 仍可能来自一楼；链语料已按 multi_floor 收窄
         corpus = "\n".join(
             part
             for part in (
@@ -270,7 +278,7 @@ def parse_thread_dual(
                             if asset.link_kind in {"magnet", "ed2k"}:
                                 asset.filename = cleaned[:255]
                 # 帖级预览挂到主链资产（其余名共享由 persist/frame 回落）
-                previews = list(content.preview_images or [])[:5]
+                previews = list(content.preview_images or [])[:PREVIEW_IMAGE_LIMIT]
                 if previews:
                     for asset in assets:
                         if asset.is_primary:
@@ -282,8 +290,9 @@ def parse_thread_dual(
                 html,
                 hashes,
                 base_url=base_url,
-                limit_per=5,
+                limit_per=PREVIEW_IMAGE_LIMIT,
                 fallback_title=content.title or "",
+                board_fid=board_fid,
             )
             if blocks:
                 # 同 hash 可能对应多条不同文件名 URI（配额份）；按 URI 保活，勿 hash 字典压成一条
@@ -340,9 +349,15 @@ def parse_thread_dual(
                             ):
                                 asset.filename = salvaged[:255]
                             elif post_title:
-                                # 切段名脏：回退帖标题，勿把 HTML/附件 UI 硬截断入库
+                                # 切段名脏：回退帖标题；标题字段可含【影片名称】原文，资源名仍 unwrap
+                                from parsers.resource_names import unwrap_subject_film_title
+
                                 fb = (
-                                    clip_subresource_display_name(post_title) or post_title
+                                    clip_subresource_display_name(
+                                        unwrap_subject_film_title(post_title) or post_title
+                                    )
+                                    or unwrap_subject_film_title(post_title)
+                                    or post_title
                                 )
                                 if (
                                     fb
@@ -375,23 +390,71 @@ def parse_thread_dual(
                         kept_uris.add(u)
                     assets = ordered
                     primary_kind = ordered[0].link_kind  # type: ignore[assignment]
+
+                # 帖级 meta/desc：单资源名用唯一块卡片；多资源明细在 asset.description
+                name_keys = {
+                    (b.title or "").strip() for b in blocks if (b.title or "").strip()
+                }
+                if len(name_keys) <= 1 and blocks[0].metadata:
+                    # 块 meta 为主；保留一楼已有而块内缺失的键（切段名/密码等）
+                    merged = dict(content.metadata or {})
+                    merged.update(blocks[0].metadata)
+                    if blocks[0].title:
+                        if "资源名称" not in merged and "影片名称" not in merged:
+                            merged["资源名称"] = blocks[0].title
+                    content.metadata = merged
+                    block_pwd = harvest_extract_password("", metadata=content.metadata)
+                    if block_pwd:
+                        content.extract_password = block_pwd
+                elif len(name_keys) > 1:
+                    # 多资源：避免整帖卡片名盖住分块
+                    content.metadata = {}
     extract_password = content.extract_password
-    if not extract_password and link_html:
-        extract_password = extract_post_password(link_html) or ""
-    if not extract_password and extra_text:
-        extract_password = extract_post_password(extra_text) or ""
+    # 多源再收一遍：一楼/块 meta + 楼主语料 + 附件（密码常写在文末或附件里）
+    harvested = harvest_extract_password(
+        content.plain_text or "",
+        content.blockcode_text or "",
+        link_html or "",
+        extra_text or "",
+        metadata=content.metadata,
+    )
+    if harvested:
+        extract_password = harvested
+    elif not extract_password and content.metadata:
+        extract_password = harvest_extract_password("", metadata=content.metadata) or ""
     if primary_kind == "115share":
         primary = next((a for a in assets if a.is_primary), None)
         if primary and primary.access_code:
             extract_password = primary.access_code
 
     # 描述在最终密码确定后再拼（附件语料里的解压密码也要进描述）
-    description = build_structured_description(
-        content.metadata,
-        extract_password=extract_password,
-        title=content.title,
-        board_fid=board_fid,
+    # 单资源：优先块描述（切段名准），再补密码；多资源：明细在 asset.description
+    primary_asset = next((a for a in assets if a.is_primary), None)
+    single_name = (
+        len(
+            {
+                (a.filename or "").strip()
+                for a in assets
+                if a.link_kind in {"magnet", "ed2k"} and (a.filename or "").strip()
+            }
+        )
+        <= 1
     )
+    if primary_asset and (primary_asset.description or "").strip() and (
+        not content.metadata or single_name
+    ):
+        description = primary_asset.description
+        if extract_password and "解压密码" not in description and "解壓密碼" not in description:
+            description = (
+                description.rstrip() + f"\n【解压密码】：{extract_password}"
+            ).strip()
+    else:
+        description = build_structured_description(
+            content.metadata,
+            extract_password=extract_password,
+            title=content.title,
+            board_fid=board_fid,
+        )
 
     from parsers.resource_frame import count_http_host_media_links, count_post_quota_links
 

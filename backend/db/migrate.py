@@ -123,6 +123,8 @@ RESOURCE_DB_MIGRATIONS = {
     "020_ed2k_resources_stub_index.sql",
     "022_ed2k_resources_updated_at_index.sql",
     "023_resource_sources_unqual_index.sql",
+    "024_av_metadata.sql",
+    "025_av_metadata_title_actress.sql",
 }
 
 

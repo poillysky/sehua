@@ -321,6 +321,7 @@ def test_parse_bare_infohash_verify_full_code_2048():
 def test_extract_title_strips_2048_board_suffix():
     from parsers.content import extract_title
 
+    # <title> 去站名/板块后缀
     assert (
         extract_title("<title>♀合集♀[06.13] | 最新合集</title>")
         == "♀合集♀[06.13]"
@@ -331,9 +332,10 @@ def test_extract_title_strips_2048_board_suffix():
         )
         == "★●亚洲无码[06.13]"
     )
+    # thread_subject 按页面原文，不去「| 最新合集」
     assert (
         extract_title('<a id="thread_subject">片名 | 最新合集</a>')
-        == "片名"
+        == "片名 | 最新合集"
     )
 
 

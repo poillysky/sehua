@@ -4,22 +4,23 @@
 #   docker-compose.search.yml
 #   data/search/
 #   data/search-cache/
+#   data/scrape-covers/
 #
 # 前提：主栈已 up，postgres 在同一 Docker 网络里（默认 sehuatang-network）。
+# 资源库若是独立实例，把 POSTGRES_* 改成实际可达地址（如 172.17.0.1:5435）。
 #
 # 启动:
 #   docker compose -f docker-compose.search.yml pull
 #   docker compose -f docker-compose.search.yml up -d
-# 访问: http://NAS_IP:3010
+# 访问: http://NAS_IP:3010  刮削: http://NAS_IP:9209/health
 #
 # 若主栈网络名不是 sehuatang-network，改下方 networks.default.name。
-# 若 postgres 不在同网络，把 POSTGRES_* 改成宿主机可达地址（如 172.17.0.1:5433）。
 
 name: sehuatang-search
 
 services:
   search:
-    image: poillysky/sehuatang-search:1.2.2
+    image: poillysky/sehuatang-search:1.2.3
     container_name: sehuatang-search
     restart: always
     ports:
@@ -35,10 +36,14 @@ services:
       POSTGRES_DB_URL: postgres://postgres:postgres@postgres:5432/ed2k
       TRANSLATE_API_URL: ""
       TRANSLATE_FALLBACK: "1"
+      # 容器内反代刮削封面
+      SCRAPE_ORIGIN: http://scrape-web:9209
       NODE_OPTIONS: "--dns-result-order=ipv4first"
     dns:
       - 223.5.5.5
       - 8.8.8.8
+    depends_on:
+      - scrape-web
     volumes:
       - /vol1/1000/Docker/sehuatang/data/search:/app/data
       - /vol1/1000/Docker/sehuatang/data/search-cache:/app/.next/cache
@@ -50,6 +55,43 @@ services:
         reservations:
           cpus: "0.25"
           memory: 256M
+
+  scrape-web:
+    image: poillysky/sehuatang-scrape:1.0.0
+    container_name: sehuatang-scrape
+    restart: always
+    ports:
+      - "9209:9209"
+    environment:
+      TZ: Asia/Shanghai
+      PORT: "9209"
+      COVERS_DIR: /data/covers
+      # 必须与 next-web 同一「资源库」（本机常为宿主机 :5435）
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: ed2k
+      POSTGRES_DB_URL: postgres://postgres:postgres@postgres:5432/ed2k
+      # 若资源库独立端口，改为例如:
+      # POSTGRES_DB_URL: postgres://postgres:postgres@172.17.0.1:5435/ed2k
+      SCRAPE_CONCURRENCY: "2"
+      SCRAPE_DELAY_MS: "800"
+      # HTTPS_PROXY: http://host.docker.internal:7890
+      NODE_OPTIONS: "--dns-result-order=ipv4first"
+    dns:
+      - 223.5.5.5
+      - 8.8.8.8
+    volumes:
+      - /vol1/1000/Docker/sehuatang/data/scrape-covers:/data/covers
+    deploy:
+      resources:
+        limits:
+          cpus: "1"
+          memory: 512M
+        reservations:
+          cpus: "0.1"
+          memory: 128M
 
 networks:
   default:

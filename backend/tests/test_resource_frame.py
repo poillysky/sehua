@@ -384,8 +384,8 @@ def test_magnet_quota_mismatch_soft():
 
 
 def test_magnet_quota_match_ok_even_name_eq_title():
-    """磁力：链数 ≥ 配额，资源名=帖标题 → 合格。"""
-    title = "国产合集【3V/3配额】"
+    """磁力：链数 ≥ 配额（V≠配额），资源名=帖标题 → 合格。"""
+    title = "国产合集【30V/3配额】"
     links = [
         _asset(("A" * 39 + str(i))[-40:], title, size=1, prev=["http://a.jpg"] if i == 0 else None)
         for i in range(3)
@@ -436,8 +436,8 @@ def test_single_xn_title_no_hard_fail():
 
 
 def test_single_one_link_quota_mismatch_soft():
-    """单资源单链接：标题 3配额 但只有 1 链 → 待核。"""
-    title = "合集【10G/3V/3配额】"
+    """单资源单链接：标题 V≠配额且链不足 → 待核（V≈配额回声见 test_quota_echoes_v）。"""
+    title = "合集【10G/50V/3配额】"
     a = _ed2k_asset("A" * 32, title, size=1, prev=["http://a.jpg"])
     frame = build_resource_frame(
         DualParseResult(
@@ -460,9 +460,51 @@ def test_single_one_link_quota_mismatch_soft():
     assert format_frame_outcome("成功：已提取主链", frame).startswith("不合格：待核")
 
 
+def test_single_one_link_quota_echoes_v_ok():
+    """单链 + 22V/22配额 + size≈标题容量 → 片数回声，勿待核（tid=3136385）。"""
+    title = "【搬运】【115eD2K】Hamezo 合集【235G/22V/22配额】"
+    a = _ed2k_asset("A" * 32, "Hamezo", size=int(235 * 1024**3), prev=["http://a.jpg"])
+    frame = build_resource_frame(
+        DualParseResult(
+            tid=3136385,
+            title=title,
+            description="【资源大小】：235G/22V/22配额",
+            metadata={},
+            preview_images=["http://a.jpg"],
+            extract_password="",
+            assets=[a],
+            primary_link_kind="ed2k",
+            layout="",
+            had_attachments=True,
+        ),
+        named_groups=[("Hamezo", a, [a])],
+        had_attachments=True,
+    )
+    assert "info:pack_quota_soft" in frame.verdict.tags
+    assert format_frame_outcome("成功：附件解析出目标链接", frame).startswith("成功")
+
+
+def test_title_count_over_names_not_hard_fail():
+    """多资源：入库名数 > 标题×N → 不是漏名，勿结构失败（tid=23485940）。"""
+    assets = [
+        _asset(f"{i:040X}", f"片{i}", size=1, prev=[f"http://{i}.jpg"])
+        for i in range(5)
+    ]
+    groups = [(f"片{i}", a, [a]) for i, a in enumerate(assets)]
+    frame = build_resource_frame(
+        _parsed("精选合集 ×3", assets), named_groups=groups
+    )
+    assert frame.spec.kind == "multi"
+    assert frame.verdict.status == "ok"
+    assert "info:title_count_over_names" in frame.verdict.tags
+    assert "warn:title_count_mismatch" not in frame.verdict.tags
+    assert not any("漏资源名" in e for e in frame.verdict.hard_errors)
+    assert format_frame_outcome("成功：已提取主链", frame).startswith("成功")
+
+
 def test_single_multi_link_quota_match_ok():
-    """单资源多链接：配额与链数相符（即使资源名=帖标题）→ 结构合格。"""
-    title = "「磁力丨整理」国产AV 合集【3V/3配额】"
+    """单资源多链接：V≠配额且链数=配额 → piece_count_match。"""
+    title = "「磁力丨整理」国产AV 合集【30V/3配额】"
     a = _asset("A" * 40, title, size=1, prev=["http://a.jpg"])
     b = _asset("B" * 40, title, size=1)
     c = _asset("C" * 40, title, size=1)
@@ -480,8 +522,8 @@ def test_single_multi_link_quota_match_ok():
 
 
 def test_single_multi_link_more_links_than_quota_ok():
-    """单资源多链接：链数多于标题配额 → 仍结构合格。"""
-    title = "「磁力丨整理」国产AV 合集【3V/3配额】"
+    """单资源多链接：链数多于标题配额（V≠配额）→ 仍结构合格。"""
+    title = "「磁力丨整理」国产AV 合集【30V/3配额】"
     links = [
         _asset(
             ("A" * 39 + str(i)),
@@ -741,7 +783,7 @@ def test_film_and_resource_name_labels_not_multi():
 
 
 def test_repeated_film_name_labels_ok_for_single():
-    """名数=1 但正文两个【影片名称】= 多资源漏切成单名 → 不合格：资源名。"""
+    """名数=1 但正文两个不同【影片名称】= 多资源漏切成单名 → 不合格：资源名。"""
     title = "合集帖"
     desc = "【影片名称】：甲\n【影片大小】：1G\n【影片名称】：乙\n【影片大小】：2G\n"
     a = _asset("A" * 40, "甲", size=int(1 * 1024**3), prev=["http://a.jpg"])
@@ -757,6 +799,25 @@ def test_repeated_film_name_labels_ok_for_single():
     text = format_frame_outcome("成功：已提取主链", frame)
     assert text.startswith("不合格：资源名")
     assert "形态:单资源" in text
+
+
+def test_nested_duplicate_film_name_label_not_split_collapse():
+    """嵌套重复【影片名称】：同值 → 不当事漏切（tid=2156323）。"""
+    title = "【影片名称】：真实良家偷拍，【推油少年】，女大学生"
+    desc = (
+        "【影片名称】：【影片名称】：真实良家偷拍，【推油少年】，女大学生\n"
+        "【影片大小】：677M\n"
+    )
+    a = _asset("A" * 40, title, size=int(677 * 1024**2), prev=["http://a.jpg"])
+    frame = build_resource_frame(
+        _parsed(title, [a], description=desc),
+        named_groups=[(title, a, [a])],
+    )
+    assert frame.spec.kind == "single"
+    assert frame.verdict.status == "ok"
+    assert "warn:split_collapse_suspect" not in frame.verdict.tags
+    assert "info:multi_label_same_value" in frame.verdict.tags
+    assert format_frame_outcome("成功：已提取主链", frame).startswith("成功")
 
 
 def test_title_xn_single_collapse_soft():

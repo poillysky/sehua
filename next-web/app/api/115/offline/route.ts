@@ -37,7 +37,7 @@ export async function POST(request: Request) {
       {
         status: 400,
         data: null,
-        message: "尚未配置 115，请先打开「115设置」填写 Cookie",
+        message: "尚未配置 115，请先打开「设置」填写 Cookie",
       },
       { status: 400 },
     );

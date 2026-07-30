@@ -102,7 +102,7 @@ export const ToggleTheme = ({ noBg = false }: { noBg?: boolean }) => {
         "flex justify-center items-center rounded-medium cursor-pointer transition-all text-stone-600",
         !noBg
           ? "w-[50px] h-[50px] bg-gray-100 dark:bg-slate-800 hover:bg-gray-50 dark:hover:bg-slate-700"
-          : "w-[32px] h-[32px]",
+          : "w-[44px] h-[44px] md:w-[32px] md:h-[32px]",
       )}
       onClick={() => setTheme(colorScheme === "dark" ? "light" : "dark")}
     >
@@ -141,7 +141,7 @@ export const SwitchLanguage = ({ noBg = false }: { noBg?: boolean }) => {
               "flex justify-center items-center rounded-medium cursor-pointer transition-all text-stone-600",
               !noBg
                 ? "w-[50px] h-[50px] bg-gray-100 dark:bg-slate-800 hover:bg-gray-50 dark:hover:bg-slate-700"
-                : "w-[32px] h-[32px]",
+                : "w-[44px] h-[44px] md:w-[32px] md:h-[32px]",
             )}
           >
             <LangFilledIcon />

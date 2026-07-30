@@ -428,6 +428,11 @@ def test_baidu_pan_share_skips():
     assert has_baidu_share_link("pan.baidu.com/s/abc_123") is True
     assert title_is_baidu_pan_without_ed2k_magnet("【自转】【百度网盘】合集") is True
     assert title_is_baidu_pan_without_ed2k_magnet("【百度网盘】【ed2k】合集") is False
+    # 裸「百度」「度盘」独占 → 直接百度网盘跳过
+    assert title_is_baidu_pan_without_ed2k_magnet("【自转】【百度】合集【10V】") is True
+    assert title_is_baidu_pan_without_ed2k_magnet("【度盘】资源合集") is True
+    assert title_is_baidu_pan_without_ed2k_magnet("【百度】【115eD2k】合集") is False
+    assert title_is_baidu_pan_without_ed2k_magnet("【度盘+磁力】合集") is False
 
     html = f"""
     <html><head><title>【自转】【百度网盘】合集 - 论坛</title></head>
@@ -451,6 +456,48 @@ def test_baidu_pan_share_skips():
     )
     assert out.verdict == "skipped"
     assert "百度网盘（跳过）" in out.outcome
+    assert out.need_attachments is False
+
+
+def test_bare_xunlei_quark_title_skips():
+    from parsers.thread_gates import (
+        match_skip_cloud_share_title,
+        title_is_quark_without_ed2k_magnet,
+        title_is_xunlei_cloud_without_ed2k_magnet,
+    )
+
+    assert title_is_xunlei_cloud_without_ed2k_magnet("【自转】【迅雷】合集") is True
+    assert title_is_xunlei_cloud_without_ed2k_magnet("【迅雷】【ed2k】合集") is False
+    assert title_is_xunlei_cloud_without_ed2k_magnet("【迅雷】【magnet】合集") is False
+    assert title_is_xunlei_cloud_without_ed2k_magnet("【迅雷】【磁力】合集") is False
+    assert title_is_quark_without_ed2k_magnet("【夸克】合集") is True
+    assert title_is_quark_without_ed2k_magnet("【夸克】【115】合集") is False
+    assert match_skip_cloud_share_title("【百度+夸克】合集") is None
+    assert match_skip_cloud_share_title("【迅雷】【百度】合集") is None
+    assert match_skip_cloud_share_title("【度盘】【磁链】合集") is None
+
+    html = """
+    <html><head><title>【自转】【迅雷】合集 - 论坛</title></head>
+    <body>
+    <span id="thread_subject">【自转】【迅雷】合集</span>
+    <div id="postlist">
+      <div id="post_1">
+        <div class="authi"><em>1#</em><img src="ico_lz.png" alt="楼主"/></div>
+        <div id="postmessage_1">请看网盘</div>
+      </div>
+    </div>
+    Powered by Discuz!
+    </body></html>
+    """
+    html = html + ("<!-- pad -->" * 900)
+    out = judge_thread_html(
+        html,
+        board_fid="95:716",
+        list_title="【自转】【迅雷】合集",
+        preferred_link="ed2k",
+    )
+    assert out.verdict == "skipped"
+    assert "迅雷" in (out.outcome or "")
     assert out.need_attachments is False
 
 

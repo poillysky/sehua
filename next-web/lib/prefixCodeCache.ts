@@ -18,7 +18,7 @@ const cache = new Map<string, CacheEntry>();
 const inflight = new Map<string, Promise<PrefixCodeIndex>>();
 
 /** 番号索引：扫描较重，缓存稍长；改归并/封面规则时升版本 */
-const CACHE_VER = "v11-fc2-landscape";
+const CACHE_VER = "v14-prefix-like";
 const TTL_MS = 10 * 60 * 1000;
 const MAX_ENTRIES = 300;
 

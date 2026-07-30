@@ -13,7 +13,12 @@ const nextConfig = {
   experimental: {
     serverComponentsExternalPackages: [
       '@node-rs/jieba'
-    ]
+    ],
+    // 前进/后退短时复用客户端 RSC 缓存，减轻「返回厂牌页又卡一下」
+    staleTimes: {
+      dynamic: 30,
+      static: 180,
+    },
   },
   ...(isDockerBuild && {
     eslint: { ignoreDuringBuilds: true },
@@ -38,6 +43,19 @@ const nextConfig = {
       { source: "/b/151/:path*", destination: "/c/1", permanent: false },
       { source: "/b/160", destination: "/c/1", permanent: false },
       { source: "/b/160/:path*", destination: "/c/1", permanent: false },
+    ];
+  },
+  async rewrites() {
+    const scrapeOrigin = (
+      process.env.SCRAPE_ORIGIN ||
+      process.env.COVER_ORIGIN ||
+      "http://127.0.0.1:9209"
+    ).replace(/\/$/, "");
+    return [
+      {
+        source: "/covers/:path*",
+        destination: `${scrapeOrigin}/covers/:path*`,
+      },
     ];
   },
 }

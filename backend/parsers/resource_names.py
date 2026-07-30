@@ -647,30 +647,7 @@ def sanitize_filename_markup(raw: str | None) -> str:
     return text
 
 
-# 仍含这些痕迹 → 视为脏名，入库时回退帖标题
-_DIRTY_FILENAME_RE = re.compile(
-    r"(?is)"
-    r"("
-    r"<[^>]+>"
-    r"|</?a\b"
-    r"|target\s*=\s*[\"']?_blank"
-    r"|data-cfemail"
-    r"|cdn-cgi/l/email-protection"
-    r"|__cf_email__"
-    r"|\[/?url"
-    r"|\[/?backcolor"
-    r"|htmlspecialchars\s*\("
-    r"|innerHTML\s*="
-    r"|下载次数\s*:"
-    r"|下載次數\s*:"
-    r"|下载附件"
-    r"|下載附件"
-    r"|【资源介绍】"
-    r"|【資源介紹】"
-    r")"
-)
-
-# HTML / BBCode / 附件区 UI：整段不可信（勿只裁掉尾巴留下 gif hash 前缀）
+# HTML / BBCode：整段不可信（勿只裁尾留下前缀）
 _HARD_DIRTY_FILENAME_RE = re.compile(
     r"(?is)"
     r"("
@@ -684,14 +661,10 @@ _HARD_DIRTY_FILENAME_RE = re.compile(
     r"|\[/?backcolor"
     r"|htmlspecialchars\s*\("
     r"|innerHTML\s*="
-    r"|下载次数\s*:"
-    r"|下載次數\s*:"
-    r"|下载附件"
-    r"|下載附件"
     r")"
 )
 
-# 论坛附件区 UI 粘进片名
+# 论坛附件区 UI 粘进片名（判定丢弃 + clip 裁尾共用）
 _FILENAME_ATTACH_UI_RE = re.compile(
     r"(?is)"
     r"("
@@ -703,6 +676,9 @@ _FILENAME_ATTACH_UI_RE = re.compile(
     r"|\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}\s+上传"
     r")"
 )
+
+# 可裁尾的「资源介绍」—— dirty 但不 hard（clip 后可保留片名）
+_SOFT_DIRTY_INTRO_RE = re.compile(r"【\s*资源介绍\s*】|【\s*資源介紹\s*】")
 
 # 日文贩卖页元数据尾巴（须像字段标签：前空白 + 冒号），勿误伤 [スタジオVG] 等片名前缀
 _FILENAME_JP_META_TAIL_RE = re.compile(
@@ -716,34 +692,38 @@ _FILENAME_JP_META_TAIL_RE = re.compile(
 FILENAME_SOFT_MAX = 200
 
 
-def is_dirty_filename(filename: str | None) -> bool:
-    """HTML/BBCode/附件 UI / 资源介绍等粘进片名。"""
-    text = (filename or "").strip()
-    if not text:
-        return False
-    if _DIRTY_FILENAME_RE.search(text):
-        return True
-    if _FILENAME_ATTACH_UI_RE.search(text):
-        return True
-    return False
-
-
 def is_hard_dirty_filename(filename: str | None) -> bool:
     """整段应丢弃的脏名（HTML/BBCode/附件 UI），不可裁尾保留前缀。"""
     text = (filename or "").strip()
     if not text:
         return False
-    if _HARD_DIRTY_FILENAME_RE.search(text):
+    return bool(
+        _HARD_DIRTY_FILENAME_RE.search(text) or _FILENAME_ATTACH_UI_RE.search(text)
+    )
+
+
+def is_dirty_filename(filename: str | None) -> bool:
+    """脏名：hard，或粘了【资源介绍】（可先 clip 再判）。"""
+    text = (filename or "").strip()
+    if not text:
+        return False
+    if is_hard_dirty_filename(text):
         return True
-    if _FILENAME_ATTACH_UI_RE.search(text):
-        return True
-    return False
+    return bool(_SOFT_DIRTY_INTRO_RE.search(text))
 
 
 def pick_subresource_title(window: str, *, prefer_last: bool) -> str:
-    """从窗口取真正子标题值；标签优先级见 SUBRESOURCE_TITLE_LABELS。"""
+    """从窗口取真正子标题值；优先名称角色卡片，再回落历史标签表。"""
     if not window:
         return ""
+    from parsers.structure_cards import name_values_from_cards, parse_structure_cards
+
+    names = name_values_from_cards(parse_structure_cards(window))
+    if names:
+        name = names[-1] if prefer_last else names[0]
+        name = _clean_label_value(name)
+        if name:
+            return name
     text = collapse_structure_label_gaps(window)
     for cre in _SUBRESOURCE_NAME_RES:
         hits = list(cre.finditer(text))
@@ -792,10 +772,35 @@ def context_subresource_title(
 
 
 def subtitle_from_description(description: str | None) -> str:
-    """从结构化 description 取第一条【资源名称】/【影片名称】（含繁体异写）。"""
-    text = collapse_structure_label_gaps((description or "").strip())
+    """从结构化 description 取子名：影片类标签优先于资源类（2048 双名互斥另议）。"""
+    text = (description or "").strip()
     if not text:
         return ""
+    from parsers.structure_cards import parse_structure_cards
+
+    cards = parse_structure_cards(text)
+    by_lab = {
+        c.raw_label: (c.value or "").strip()
+        for c in cards
+        if c.role == "name" and (c.value or "").strip()
+    }
+    if by_lab:
+        res_key = normalize_structure_label_key("资源名称")
+        film_key = normalize_structure_label_key("影片名称")
+        res = by_lab.get(res_key)
+        film = by_lab.get(film_key)
+        if res and film and film != res and (
+            film.startswith("2048") or (res in film and len(res) + 4 <= len(film))
+        ):
+            return res
+        for lab in SUBRESOURCE_TITLE_MATCH_FORMS:
+            key = normalize_structure_label_key(lab)
+            if key in by_lab:
+                return by_lab[key]
+        # 其它名称角色（作品名称等已在 MATCH_FORMS；兜底任意 name）
+        return next(iter(by_lab.values()))
+
+    text = collapse_structure_label_gaps(text)
     wanted = {normalize_structure_label_key(x) for x in SUBRESOURCE_TITLE_MATCH_FORMS}
     found: dict[str, str] = {}
     for m in _DESC_LABEL_LINE_RE.finditer(text):
@@ -803,7 +808,6 @@ def subtitle_from_description(description: str | None) -> str:
         val = _clean_label_value(m.group(2) or "")
         if lab in wanted and val and lab not in found:
             found[lab] = val
-    # 2048 常见：影片名称=帖标题（含「2048独家合集」），资源名称=真名 → 优先资源名称
     res_key = normalize_structure_label_key("资源名称")
     film_key = normalize_structure_label_key("影片名称")
     if res_key in found and film_key in found:
@@ -923,6 +927,51 @@ def clip_subresource_display_name(text: str | None) -> str:
     return _clip_filename_structure_tail(text)
 
 
+# 国产原创常见：把结构字段整段塞进帖标题
+# 「B 【影片名称】：真名 【出演女优】：…」（tid=1475266）→ 真名
+# 「【影片名称】：真名」（tid=2156323）→ 真名
+_SUBJECT_NAME_LABEL_RE = re.compile(
+    rf"{STRUCTURE_FIELD_OPEN}\s*"
+    rf"(?:影片名称|影片名稱|资源名称|資源名稱|影片名|视频名称|視頻名稱|作品名称|作品名稱)"
+    rf"\s*{STRUCTURE_FIELD_CLOSE}\s*{_STRUCTURE_SEP}\s*",
+    re.I,
+)
+_SUBJECT_BOARD_LETTER_RE = re.compile(
+    rf"^[A-Za-z]\s+(?={STRUCTURE_FIELD_OPEN}\s*"
+    rf"(?:影片名称|影片名稱|资源名称|資源名稱|影片名))"
+)
+
+
+def unwrap_subject_film_title(title: str | None) -> str:
+    """帖标题内嵌【影片名称】/【资源名称】时还原为片名。
+
+    正文常不再重复写片名；若原样入库会把前缀 ``B`` 裁成资源名，或整段带标签污染。
+    无此类标签时原样返回（不去掉无关的前导字母）。
+    """
+    t = " ".join((title or "").split()).strip()
+    if not t:
+        return ""
+    if not _SUBJECT_NAME_LABEL_RE.search(t):
+        return t
+    t = _SUBJECT_BOARD_LETTER_RE.sub("", t).strip()
+    m = _SUBJECT_NAME_LABEL_RE.search(t)
+    if not m:
+        return t
+    val = t[m.end() :].strip()
+    # 剥嵌套「【影片名称】：【影片名称】：真名」
+    while True:
+        m2 = _SUBJECT_NAME_LABEL_RE.match(val)
+        if not m2:
+            break
+        val = val[m2.end() :].strip()
+    val = _clip_filename_structure_tail(val)
+    val = re.sub(r"\s*【\s*\.\.\.\s*】?\s*$", "", val).strip()
+    val = re.sub(r"\s*\.\.\.\s*$", "", val).strip()
+    if val and len(val) >= 2:
+        return val
+    return t
+
+
 def _soft_truncate_filename(val: str, *, limit: int = FILENAME_SOFT_MAX) -> str:
     """超长时在空格/】处回退截断，避免硬切到 255。"""
     text = (val or "").strip()
@@ -939,35 +988,17 @@ def _soft_truncate_filename(val: str, *, limit: int = FILENAME_SOFT_MAX) -> str:
 def _clip_filename_structure_tail(text: str | None) -> str:
     """去掉片名后粘连的结构字段 / 购买提示 / 影讯元数据（长度顶到上限前先语义截断）。
 
-    切分不依赖逐个「学会」标签名：已知白名单边界 + 任意「开括号…闭括号+分隔」均截。
+    下一字段按结构卡片开标签切（角色 stem 或「开闭+分隔」），不依赖边界白名单。
     """
+    from parsers.structure_cards import find_next_structure_field_start
+
     val = sanitize_filename_markup(text)
     if not val:
         return ""
     val = _FILENAME_LEADING_DASH_RE.sub("", val).strip()
-    # 折叠括号内标签字间空后用字面边界（避免巨型 flexible alt）
     val = collapse_structure_label_gaps(val)
-    cut_at: int | None = None
-    m = re.search(
-        rf"\s*{STRUCTURE_FIELD_OPEN}\s*(?:{_STRUCTURE_BOUNDARY_ALT})\s*{STRUCTURE_FIELD_CLOSE}",
-        val,
-        re.I,
-    )
-    # 仅截「片名后」的结构尾巴；开头命中多为装饰前缀（勿裁空）
-    if m and m.start() > 0:
-        cut_at = m.start()
-    m_gen = None
-    for cand in _LABELED_STRUCTURE_FIELD_RE.finditer(val):
-        if _is_media_capacity_labeled_field(cand.group(0)):
-            continue
-        # 【白菜妹妹】-正文 / 【91晚晚】-…：前缀昵称+分隔，不是结构字段
-        if cand.start() == 0:
-            continue
-        m_gen = cand
-        break
-    if m_gen and (cut_at is None or m_gen.start() < cut_at):
-        cut_at = m_gen.start()
-    if cut_at is not None:
+    cut_at = find_next_structure_field_start(val, min_start=1)
+    if cut_at is not None and cut_at > 0:
         kept = val[:cut_at].strip()
         # 裁空则放弃本次截断，避免回落帖标题（tid=22924760）
         if kept:

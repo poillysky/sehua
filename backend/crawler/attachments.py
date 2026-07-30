@@ -1340,13 +1340,15 @@ class AttachmentDownloader:
         max_files: int = MAX_ATTACHMENTS_PER_THREAD,
         timeout: float = 45,
         preferred_link: str | None = None,
+        quota_stop: bool = True,
     ) -> AttachmentFetchResult:
         """正文无链 / 正文不合格复判：按优先序逐个轮询附件。
 
         硬规则：每下完一个有链附件即试算入库；
         - 合格 → 可停；
         - 不合格 → 必须继续下一个，直到附件全部判断完或变为合格。
-        标题 N配额未齐时也继续（防 cloud_soft「成功」误停）。
+        单资源（quota_stop=True）：标题 N配额未齐也继续（防 cloud_soft「成功」误停）。
+        多资源（quota_stop=False）：不做额度匹配，认全链即可。
         例外：附件日限（今天下载请明天再来）立刻停，入附件队列。
         """
         if not self.session._ready:
@@ -1364,7 +1366,7 @@ class AttachmentDownloader:
         if passwords:
             log.info("Archive extract passwords from post: %s", passwords[0])
 
-        quota_expect = _quota_expect_from_html(html)
+        quota_expect = _quota_expect_from_html(html) if quota_stop else None
         chunks: list[str] = []
         any_denied = False
         any_login = False
@@ -1444,14 +1446,18 @@ class AttachmentDownloader:
                     )
                     break
 
-                # 硬规则：不合格必须继续；配额未齐也继续（即使 cloud_soft 写成「成功」）
+                # 硬规则：不合格必须继续；单资源配额未齐也继续（即使 cloud_soft 写成「成功」）
                 still_unqual = _attach_merge_still_unqualified(
                     html,
                     merged,
                     preferred_link=preferred_link,
                     base_url=base_url,
                 )
-                short_quota = bool(quota_expect) and have < int(quota_expect)
+                short_quota = (
+                    bool(quota_stop)
+                    and bool(quota_expect)
+                    and have < int(quota_expect)
+                )
                 if still_unqual or short_quota:
                     why = (
                         f"不合格"
@@ -1518,6 +1524,7 @@ class AttachmentDownloader:
         max_files: int = MAX_ATTACHMENTS_PER_THREAD,
         timeout: float = 45,
         preferred_link: str | None = None,
+        quota_stop: bool = True,
     ) -> AttachmentFetchResult:
         """与 download_tail 相同：全类型附件按板块频次逐个轮询。"""
         return await self.download_tail(
@@ -1526,6 +1533,7 @@ class AttachmentDownloader:
             max_files=max_files,
             timeout=timeout,
             preferred_link=preferred_link or "magnet",
+            quota_stop=quota_stop,
         )
 
 
@@ -1537,6 +1545,7 @@ async def fetch_attachments_for_outcome(
     attachment_kind: str,
     timeout: float = 45,
     preferred_link: str | None = None,
+    quota_stop: bool = True,
 ) -> AttachmentFetchResult:
     """按判定 kind 下载：txt_tail | torrent；轮询顺序跟板块主链。"""
     downloader = AttachmentDownloader(session)
@@ -1579,10 +1588,18 @@ async def fetch_attachments_for_outcome(
 
     if attachment_kind == "torrent":
         return await downloader.download_torrents(
-            html, thread_url, timeout=timeout, preferred_link=link_pref
+            html,
+            thread_url,
+            timeout=timeout,
+            preferred_link=link_pref,
+            quota_stop=quota_stop,
         )
     if attachment_kind == "txt_tail":
         return await downloader.download_tail(
-            html, thread_url, timeout=timeout, preferred_link=link_pref
+            html,
+            thread_url,
+            timeout=timeout,
+            preferred_link=link_pref,
+            quota_stop=quota_stop,
         )
     return AttachmentFetchResult(failed=True)

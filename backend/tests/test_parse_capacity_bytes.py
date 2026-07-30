@@ -65,3 +65,51 @@ def test_bare_number_in_film_size_assumes_gb():
     # 过大裸数不瞎猜
     assert parse_capacity_bytes("【影片大小】：159") == 0
 
+
+def test_glued_volume_and_decorative_brackets():
+    """色花堂人写：【资源大小】：【1V299m】（tid=3659339）。"""
+    expect = 299 * 1024**2
+    assert parse_capacity_bytes("1V299m") == expect
+    assert parse_capacity_bytes("【1V299m】") == expect
+    assert parse_capacity_bytes("【资源大小】：【1V299m】") == expect
+    blob = (
+        "【资源名称】：demo\n"
+        "【资源类型】：视频\n"
+        "【是否有码】：无码\n"
+        "【资源大小】：【1V299m】\n"
+        "【资源链接】：magnet:?xt=urn:btih:" + ("a" * 40)
+    )
+    assert parse_capacity_bytes(blob) == expect
+
+
+def test_glued_volume_size_and_quota():
+    """粘写配额：1V200m2配额 / 1V200m/2配额 ≈ 1V/200m/2配额。"""
+    expect = 200 * 1024**2
+    assert parse_capacity_bytes("1V200m2配额") == expect
+    assert parse_capacity_bytes("1V200m/2配额") == expect
+    assert parse_capacity_bytes("【1V200m2配额】") == expect
+    assert parse_capacity_bytes("【1V200m/2配额】") == expect
+    assert parse_capacity_bytes("【资源大小】：【1V200m2配额】") == expect
+    assert parse_capacity_bytes("【资源大小】：1V200m/2配额") == expect
+    from parsers.content import extract_metadata, enrich_block_with_cards
+
+    blob = (
+        "【资源名称】：demo\n"
+        "【资源大小】：【1V200m2配额】\n"
+        "【资源类型】：视频\n"
+    )
+    assert extract_metadata(blob).get("资源大小") == "1V200m2配额"
+    en = enrich_block_with_cards(blob, fallback_name="demo", thread_title="")
+    assert en.size == expect
+    assert en.size_label == "1V200m2配额"
+
+    blob2 = (
+        "【资源名称】：demo\n"
+        "【资源大小】：1V200m/2配额\n"
+        "【资源类型】：视频\n"
+    )
+    assert extract_metadata(blob2).get("资源大小") == "1V200m/2配额"
+    en2 = enrich_block_with_cards(blob2, fallback_name="demo", thread_title="")
+    assert en2.size == expect
+    assert en2.size_label == "1V200m/2配额"
+

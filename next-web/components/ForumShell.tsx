@@ -44,6 +44,7 @@ function SidebarLeaf({
             : "text-default-600 hover:bg-default-100 dark:text-slate-300 dark:hover:bg-slate-800"
         }`}
         href={boardBrowseHref(child)}
+        prefetch={false}
       >
         {parent.name}
       </Link>
@@ -59,6 +60,7 @@ function SidebarLeaf({
             : "text-default-600 hover:bg-default-100 dark:text-slate-300 dark:hover:bg-slate-800"
         }`}
         href={fid ? boardPath(fid) : categoryHref(categoryIndex)}
+        prefetch={false}
       >
         {parent.name}
       </Link>
@@ -193,6 +195,7 @@ function SidebarParent({
                     : "text-default-500 hover:text-primary"
                 }`}
                 href={boardBrowseHref(c)}
+                prefetch={false}
               >
                 {c.type_name || c.name}
               </Link>
@@ -210,12 +213,15 @@ export function ForumShell({
   activeFid,
   activeTypeid,
   activeCategoryIndex,
+  /** 手机：占满 MobileViewportScroll 剩余高度，供封面内滚 + 底栏翻页 */
+  fillMobile,
 }: {
   children: React.ReactNode;
   crumbs: ForumCrumb[];
   activeFid?: string;
   activeTypeid?: string;
   activeCategoryIndex?: number;
+  fillMobile?: boolean;
 }) {
   const t = useTranslations();
   const pathname = usePathname();
@@ -263,8 +269,14 @@ export function ForumShell({
   );
 
   return (
-    <div className="forum-shell mx-auto flex w-full flex-col gap-4 px-3 py-3 md:max-w-6xl md:gap-5 md:px-4 md:py-5 lg:max-w-7xl">
-      <div className="flex flex-col gap-3">
+    <div
+      className={`forum-shell mx-auto flex w-full flex-col gap-4 px-3 py-3 md:max-w-6xl md:gap-5 md:px-4 md:py-5 lg:max-w-7xl ${
+        fillMobile
+          ? "max-md:min-h-0 max-md:flex-1 max-md:gap-2 max-md:overflow-hidden max-md:pb-0"
+          : ""
+      }`}
+    >
+      <div className="flex shrink-0 flex-col gap-2 max-md:pb-1">
         <div className="flex items-start justify-between gap-3">
           <ForumBreadcrumb items={crumbs} />
           {isJapanBrowseContext(activeFid, activeTypeid) ? (
@@ -279,19 +291,30 @@ export function ForumShell({
           {mobileNavOpen ? t("Boards.hide_nav") : t("Boards.show_nav")}
         </button>
         {mobileNavOpen ? (
-          <div className="rounded-2xl border border-default-200/80 bg-content1 p-3.5 md:hidden dark:border-slate-700 dark:bg-slate-900/50">
+          <div className="max-h-[40vh] overflow-y-auto rounded-2xl border border-default-200/80 bg-content1 p-3.5 md:hidden dark:border-slate-700 dark:bg-slate-900/50">
             {sidebar}
           </div>
         ) : null}
       </div>
 
-      <div className="flex gap-5 lg:gap-7">
+      <div
+        className={`flex gap-5 lg:gap-7 ${
+          fillMobile ? "max-md:min-h-0 max-md:flex-1 max-md:overflow-hidden" : ""
+        }`}
+      >
         <div className="hidden w-52 shrink-0 md:block lg:w-60">
           <div className="forum-sidebar sticky top-4 max-h-[calc(100vh-2rem)] overflow-y-auto rounded-2xl border border-default-200/70 bg-content1/95 p-3.5 shadow-sm dark:border-slate-700/70 dark:bg-slate-900/55">
             {sidebar}
           </div>
         </div>
-        <div className="min-w-0 flex-1" key={pathname}>
+        <div
+          className={`min-w-0 flex-1 ${
+            fillMobile
+              ? "max-md:flex max-md:min-h-0 max-md:flex-col max-md:overflow-hidden"
+              : ""
+          }`}
+          key={pathname}
+        >
           {children}
         </div>
       </div>

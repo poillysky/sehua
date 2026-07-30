@@ -10,16 +10,20 @@ export function BrowsePageToolbar({
   loading = false,
   totalCount,
   boardLabel,
+  backHref,
   onRefresh,
 }: {
   loading?: boolean;
   totalCount?: number;
   boardLabel?: string;
+  /** 返回父版 / 分区；缺省回首页 */
+  backHref?: string;
   onRefresh?: () => void;
 }) {
   const t = useTranslations();
   const hasCount = typeof totalCount === "number" && totalCount > 0;
   const title = boardLabel || t("Browse.title");
+  const parentHref = backHref || "/";
 
   return (
     <header className="group relative overflow-hidden rounded-2xl border border-default-200/70 bg-content1 shadow-sm dark:border-slate-700/70">
@@ -65,7 +69,7 @@ export function BrowsePageToolbar({
             <div className="mt-2 flex flex-wrap items-center gap-2">
               <Link
                 className="text-xs text-primary hover:underline"
-                href="/"
+                href={parentHref}
               >
                 {t("Boards.back_nav")}
               </Link>

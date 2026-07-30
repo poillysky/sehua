@@ -8,10 +8,14 @@ import { useIsSSR } from "@react-aria/ssr";
 
 import { BrowsePageToolbar } from "@/components/BrowsePageToolbar";
 import { BrowseResourceListSkeleton } from "@/components/BrowseResourceListSkeleton";
+import { IosBrowserUiPad } from "@/components/IosBrowserUiPad";
 import { ResourceFeedItem } from "@/components/ResourceFeedItem";
 import { Ed2kResourceProps } from "@/types";
 import { $env } from "@/utils";
+import { resolveSectionParentHref } from "@/config/boards";
 import { BROWSE_PAGE_MAX, BROWSE_PAGE_SIZE } from "@/config/constant";
+
+
 
 async function fetchBrowsePage(
   page: number,
@@ -98,6 +102,8 @@ export function BrowsePageContent({
     ""
   ).trim();
   const filterLabel = activeBoard || activeParent || undefined;
+  const backHref = resolveSectionParentHref(pathname || "/");
+
   const browseFilter = {
     board_fid: activeBoardFid || undefined,
     board: activeBoard || undefined,
@@ -210,6 +216,7 @@ export function BrowsePageContent({
   return (
     <div className="flex flex-col gap-4 md:gap-5">
       <BrowsePageToolbar
+        backHref={backHref}
         boardLabel={filterLabel}
         loading={loading}
         totalCount={totalCount}
@@ -237,8 +244,8 @@ export function BrowsePageContent({
       )}
 
       {!isSSR && totalPages > 1 ? (
-        <div className="sticky bottom-3 z-20 mx-auto w-full max-w-xl">
-          <div className="flex flex-col items-center gap-2 rounded-2xl border border-default-200/90 bg-white/90 px-3 py-3 shadow-lg backdrop-blur-md dark:border-slate-700 dark:bg-slate-900/90 md:px-4">
+        <>
+          <div className="mt-2 flex flex-col items-center gap-2 border-t border-default-200/70 pt-4 dark:border-slate-700/70">
             <Pagination
               className="flex justify-center"
               classNames={{
@@ -250,7 +257,7 @@ export function BrowsePageContent({
               page={page}
               showControls={$env.isDesktop}
               siblings={$env.isMobile ? 1 : 3}
-              size={$env.isMobile ? "lg" : "md"}
+              size={$env.isMobile ? "md" : "md"}
               total={totalPages}
               onChange={goToPage}
             />
@@ -258,7 +265,8 @@ export function BrowsePageContent({
               {t("Browse.page_of", { page, total: totalPages })}
             </p>
           </div>
-        </div>
+          <IosBrowserUiPad />
+        </>
       ) : null}
     </div>
   );

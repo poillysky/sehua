@@ -416,6 +416,75 @@ def _title_quota_count(blob: str) -> int | None:
     return best
 
 
+def _quota_echoes_v(blob: str) -> bool:
+    """标题「NV/N配额」且 V≈配额 → 配额是片数回声，不是下载链数。
+
+    真链数信号是 V 与配额明显分家，如 ``1169V/7配额``。
+    ``22V/22配额`` / ``253V/254配额`` 常见于单包或多分包合集，勿当漏链。
+    """
+    v = _title_v_count(blob)
+    q = _title_quota_count(blob)
+    if v is None or q is None:
+        return False
+    if int(v) == int(q):
+        return True
+    # 大合集允许 off-by-1（253V/254配额）；小数字 2V/3配额 不算回声
+    qn = int(q)
+    return qn >= 20 and abs(int(v) - qn) <= max(1, qn // 50)
+
+
+def _desc_name_label_value_map(desc: str) -> dict[str, list[str]]:
+    """正文名称类标签 → 去重取值（剥嵌套重复标签）。
+
+    - ``【影片名称】：【影片名称】：xxx``（tid=2156323）同键同值计 1
+    - ``【影片名称】`` + ``【资源名称】`` 分键，单资源模板并存不当事漏切
+    """
+    from parsers.resource_names import (
+        SUBRESOURCE_TITLE_MATCH_FORMS,
+        normalize_structure_label_key,
+    )
+
+    wanted = {
+        normalize_structure_label_key(x) for x in SUBRESOURCE_TITLE_MATCH_FORMS
+    }
+    label_re = re.compile(
+        r"[【［〖「『\[]\s*([^】］〗」』\]]{1,40})\s*[】］〗」』\]]\s*[:：]?\s*"
+    )
+    out: dict[str, list[str]] = {}
+    seen_by_key: dict[str, set[str]] = {}
+    for m in label_re.finditer(desc or ""):
+        key = normalize_structure_label_key(m.group(1))
+        if key not in wanted:
+            continue
+        raw = re.split(r"[\n\r]", (desc or "")[m.end() :], maxsplit=1)[0].strip()
+        while True:
+            m2 = label_re.match(raw)
+            if not m2:
+                break
+            if normalize_structure_label_key(m2.group(1)) not in wanted:
+                break
+            raw = raw[m2.end() :].strip()
+        raw = re.split(r"\s*[【［〖「『\[]", raw, maxsplit=1)[0].strip()
+        raw = re.sub(r"\s+", " ", raw).strip()
+        # 单字中文片名也算有效取值（测试/短名）；空串跳过
+        if not raw:
+            continue
+        bucket = seen_by_key.setdefault(key, set())
+        if raw in bucket:
+            continue
+        bucket.add(raw)
+        out.setdefault(key, []).append(raw)
+    return out
+
+
+def _desc_max_same_key_distinct_names(desc: str) -> int:
+    """同一名称标签键下不同取值的最大个数（漏切口径）。"""
+    mp = _desc_name_label_value_map(desc)
+    if not mp:
+        return 0
+    return max(len(vs) for vs in mp.values())
+
+
 def _primary_link_kind(parsed: DualParseResult, rows: list[FrameRow]) -> str:
     kind = str(getattr(parsed, "primary_link_kind", "") or "").strip().lower()
     if kind in {"magnet", "ed2k", "115share", "both"}:
@@ -437,6 +506,9 @@ def _piece_count_expect(
     - 标题在但无配额字样 → **不**回落描述脏配额（避免「标题写2配额」误报）
     - 无标题、仅 blob 有 → 用 blob
     - 无配额 → None（不做强制链数判断；magnet/ed2k 相同）
+
+    注：V≈配额（片数回声）不在此处吞掉期望；由 validate_frame 在
+    **容量对齐** 时打 ``info:pack_quota_soft``（防 3148293 只入 22/66 却放行）。
     返回 (数量, 来源标签)：来源为「标题」/「正文」/""。
     link_kind 保留兼容调用方，不参与口径选择。
     """
@@ -451,6 +523,36 @@ def _piece_count_expect(
     if q is not None:
         return q, "正文"
     return None, ""
+
+
+def _rows_capacity_aligned(
+    title: str, pack_blob: str, rows: Sequence[FrameRow]
+) -> bool:
+    """链上 xl 合计是否与标题容量大致对齐（±15%）。
+
+    优先用 member size。多链时禁止用行 size（行 size 常从标题回填，会把
+    22/66 半截当齐）。仅 **单链且链上完全无 size**（磁力无 xl）才回退行 size，
+    覆盖 tid=3136385；链上有占位 size=1 不算无 size，勿用行 size 假对齐。
+    """
+    cap = _title_capacity_bytes(title) or _title_capacity_bytes(pack_blob)
+    if not cap or cap <= 0:
+        return False
+    got = sum(_member_size_sum(r.members) for r in rows)
+    if got <= 0:
+        n_members = sum(len(r.members or []) for r in rows)
+        if n_members != 1:
+            return False
+        raw_sizes = [
+            int(getattr(a, "size", 0) or 0)
+            for r in rows
+            for a in (r.members or [])
+        ]
+        if any(s > 0 for s in raw_sizes):
+            return False
+        got = sum(_effective_size(r.size) for r in rows)
+    if got <= 0:
+        return False
+    return abs(int(got) - int(cap)) / float(cap) <= 0.15
 
 
 def _preview_tuple(imgs: Sequence[str] | None) -> tuple[str, ...]:
@@ -667,7 +769,7 @@ def fill_rows(
     *,
     post_title: str = "",
 ) -> list[FrameRow]:
-    """按资源名逐行填槽：名 / 链 / 图≤5 / 大小；记录槽位与归因。"""
+    """按资源名逐行填槽：名 / 链 / 图≤PREVIEW_IMAGE_LIMIT / 大小；记录槽位与归因。"""
     title = (post_title or parsed.title or "").strip()
     desc = (parsed.description or "").strip()
     meta_size = _meta_size_text(parsed)
@@ -700,7 +802,9 @@ def fill_rows(
                 if img and img not in previews:
                     previews.append(img)
         raw_preview_n = len(previews)
-        previews = previews[:5]
+        from parsers.content import PREVIEW_IMAGE_LIMIT
+
+        previews = previews[:PREVIEW_IMAGE_LIMIT]
 
         # 容量：有【影片/资源大小】等文案时以文案为准（合集标签 55GB 勿被残缺 magnet xl 盖掉）
         row_desc = ""
@@ -748,17 +852,17 @@ def fill_rows(
             slots.append(SlotFill("links", False, "", cause, msg))
             slot_errors.append(f"【{CAUSE_LABEL[cause]}】{msg}")
 
-        # 图片槽：≤5；缺图/未分图不进合格硬门（只记 info）
+        # 图片槽：≤PREVIEW_IMAGE_LIMIT；缺图/未分图不进合格硬门（只记 info）
         if previews:
             summary = f"{len(previews)}张"
-            if raw_preview_n > 5:
+            if raw_preview_n > PREVIEW_IMAGE_LIMIT:
                 slots.append(
                     SlotFill(
                         "previews",
                         True,
                         summary,
                         None,
-                        f"预览超过5张已截断（原{raw_preview_n}张）",
+                        f"预览超过{PREVIEW_IMAGE_LIMIT}张已截断（原{raw_preview_n}张）",
                     )
                 )
             else:
@@ -970,6 +1074,8 @@ def validate_frame(
         if key in wanted_labels:
             label_hits[key] += 1
     label_repeat = max(label_hits.values(), default=0)
+    distinct_name_n = _desc_max_same_key_distinct_names(desc or "")
+    metrics["desc_name_distinct"] = distinct_name_n
     if label_repeat >= 2:
         metrics["desc_name_labels"] = int(sum(label_hits.values()))
         metrics["desc_name_label_max_repeat"] = int(label_repeat)
@@ -977,8 +1083,9 @@ def validate_frame(
     if shape_ab == "B" and n_groups >= 2:
         # ---------- 多资源第一判断：别漏资源名 ----------
         name_split_noted = False
-        # 1) 标题 ×N 与入库名数
-        if expect_n is not None and n_groups != expect_n:
+        # 1) 标题 ×N 与入库名数：只把「名数 < ×N」当漏名；
+        # 名数 > ×N 常见于 ×N 假阳性/包内片数，不是漏识别（tid=23485940）
+        if expect_n is not None and n_groups < int(expect_n):
             _note(
                 tags,
                 hard,
@@ -987,17 +1094,22 @@ def validate_frame(
                 cause="parse",
             )
             name_split_noted = True
-        # 2) 正文同名标签次数 > 入库名数 → 漏名
-        if label_repeat >= 2 and n_groups < int(label_repeat):
+        elif expect_n is not None and n_groups > int(expect_n):
+            tags.append("info:title_count_over_names")
+            metrics["title_expect_over_names"] = True
+        # 2) 正文不同片名取值 > 入库名数 → 漏名（同值嵌套标签不计）
+        if distinct_name_n >= 2 and n_groups < int(distinct_name_n):
             _note(
                 tags,
                 hard,
                 "warn:multi_label_under_split",
-                f"正文有{label_repeat}个重复的资源名称标签，"
+                f"正文有{distinct_name_n}个不同资源名称，"
                 f"实际只入库{n_groups}个资源名（漏资源名）",
                 cause="parse",
             )
             name_split_noted = True
+        elif label_repeat >= 2 and distinct_name_n <= 1:
+            tags.append("info:multi_label_same_value")
         # 3) 每个资源名下须有链（有名无链也算该名未立住）
         empty_link_n = sum(1 for r in rows if not r.links)
         if empty_link_n > 0:
@@ -1179,19 +1291,20 @@ def validate_frame(
         name_eq_title = bool(title) and (r0.filename or "").strip() == title
         if name_eq_title:
             tags.append("info:pack_name_is_title")
-        if label_repeat >= 2:
+        if distinct_name_n >= 2:
             tags.append("info:multi_label_skip_single")
-            # 正文同名标签≥2 却只认出 1 名 = 多资源漏切成单名
-            # 归多资源「别漏资源名」硬门（不合格：资源名），不是单资源待核
-            # 标题 ×N 常表示包内片数，不作漏切线索
+            # 正文有≥2 个不同片名取值却只认出 1 名 = 多资源漏切成单名
+            # 嵌套重复【影片名称】：【影片名称】：同值（tid=2156323）不当事漏切
             _note(
                 tags,
                 hard,
                 "warn:split_collapse_suspect",
-                f"正文重复名称标签×{label_repeat}，却只认出1个资源名"
+                f"正文重复名称标签×{distinct_name_n}，却只认出1个资源名"
                 "（多资源漏切成单名）",
                 cause="parse",
             )
+        elif label_repeat >= 2:
+            tags.append("info:multi_label_same_value")
 
         # 单资源核心：别漏链 —— 有 N配额才对照链数（单链/多链都核；无配额不强制；不用 V）
         link_kind_a = _primary_link_kind(parsed, rows)
@@ -1237,6 +1350,28 @@ def validate_frame(
                 # 压缩包单链：标题 N配额 ≠ 漏链（包内多份/115额度口径）
                 if member_n == 1 and _PACK_IN_TITLE_RE.search(pack_blob or ""):
                     tags.append("info:pack_quota_soft")
+                else:
+                    # 链数对齐标题 V、配额虚高（如 2V/3配额 实 2 链）→ 脏配额，勿待核
+                    v_title = _title_v_count(title or "")
+                    if (
+                        v_title
+                        and _count_matches(member_n, int(v_title))
+                        and int(expect_pieces_a) > int(v_title)
+                    ):
+                        tags.append("info:pack_quota_soft")
+                        tags.append("info:quota_over_v_soft")
+                    # V≈配额 仅当容量也对齐才当片数回声；否则是附件未下全
+                    # （tid=3148293：66配额附件有66链，库仅22且 xl≪标题容量）
+                    elif _quota_echoes_v(title or pack_blob) and _rows_capacity_aligned(
+                        title or "", pack_blob or "", rows
+                    ):
+                        tags.append("info:pack_quota_soft")
+                        tags.append("info:quota_echoes_v")
+                    elif member_n == 1 and _rows_capacity_aligned(
+                        title or "", pack_blob or "", rows
+                    ):
+                        tags.append("info:pack_quota_soft")
+                        tags.append("info:quota_echoes_v")
             _note(tags, soft, code, msg, cause="parse")
 
     for r in rows:
@@ -1244,7 +1379,7 @@ def validate_frame(
             if s.slot != "previews":
                 continue
             if s.ok and s.message and "截断" in s.message:
-                # 预览上限 5 张是产品口径，截断本身不算识别错误 / 不合格
+                # 预览上限是产品口径，截断本身不算识别错误 / 不合格
                 tags.append("info:preview_truncated")
             # 缺图/未分图：不计合格，仅 info（见上方 multi/single 预览口径）
 

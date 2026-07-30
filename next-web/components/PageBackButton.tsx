@@ -1,5 +1,6 @@
 "use client";
 
+import { useEffect, useState } from "react";
 import { usePathname, useRouter } from "next/navigation";
 import { useTranslations } from "next-intl";
 import clsx from "clsx";
@@ -8,6 +9,9 @@ import { PrevIcon } from "@/components/icons";
 import { resolveSectionParentHref } from "@/config/boards";
 
 export const DETAIL_RETURN_URL_KEY = "ed2k-detail-return-url";
+
+/** BrowsePageContent 挂载时设置，仅资源流 sticky 底栏页隐藏全局返回 */
+export const HIDE_GLOBAL_BACK_ATTR = "data-hide-global-back";
 
 export function saveDetailReturnUrl() {
   if (typeof window === "undefined") {
@@ -20,7 +24,28 @@ export function saveDetailReturnUrl() {
   );
 }
 
-/** 分区层级后退；详情优先回到进入前的列表页 */
+/** 当前会话内是否还能浏览器后退（Next App Router 会写 history.state.idx） */
+function canUseHistoryBack(): boolean {
+  if (typeof window === "undefined") return false;
+  const state = window.history.state as { idx?: number } | null;
+  if (typeof state?.idx === "number") {
+    return state.idx > 0;
+  }
+  try {
+    if (document.referrer) {
+      return new URL(document.referrer).origin === window.location.origin;
+    }
+  } catch {
+    /* ignore */
+  }
+  return false;
+}
+
+/**
+ * 优先浏览器历史后退；无历史时：
+ * - 详情 → sessionStorage 列表页 → 首页
+ * - 其它 → 分区父级路径
+ */
 export function goBackOrHome(
   router: ReturnType<typeof useRouter>,
   pathname?: string,
@@ -28,6 +53,11 @@ export function goBackOrHome(
   const path =
     pathname ||
     (typeof window !== "undefined" ? window.location.pathname : "/");
+
+  if (canUseHistoryBack()) {
+    router.back();
+    return;
+  }
 
   if (path.startsWith("/detail")) {
     if (typeof window !== "undefined") {
@@ -63,13 +93,33 @@ export function DetailBackButton() {
   );
 }
 
-/** 全局悬浮后退：除首页外默认展示；按分区层级上溯 */
+/** 全局悬浮后退：除首页外默认展示；资源流 sticky 分页页由 BrowsePageContent 声明隐藏 */
 export function GlobalBackButton() {
   const pathname = usePathname();
   const router = useRouter();
   const t = useTranslations();
+  const [hideForSticky, setHideForSticky] = useState(false);
+
+  useEffect(() => {
+    const sync = () => {
+      setHideForSticky(
+        document.documentElement.getAttribute(HIDE_GLOBAL_BACK_ATTR) === "1",
+      );
+    };
+    sync();
+    const mo = new MutationObserver(sync);
+    mo.observe(document.documentElement, {
+      attributes: true,
+      attributeFilter: [HIDE_GLOBAL_BACK_ATTR],
+    });
+    return () => mo.disconnect();
+  }, [pathname]);
 
   if (!pathname || pathname === "/") {
+    return null;
+  }
+
+  if (hideForSticky) {
     return null;
   }
 

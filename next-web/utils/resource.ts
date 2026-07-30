@@ -226,7 +226,11 @@ export function filterPreviewImages(images?: string[] | null): string[] {
         return false;
       }
 
-      return IMAGE_EXT_RE.test(lower) || lower.includes("/tupian/forum/");
+      return (
+        IMAGE_EXT_RE.test(lower) ||
+        lower.includes("/tupian/forum/") ||
+        lower.startsWith("/covers/")
+      );
     })
     .sort((a, b) => coverHostPriority(b) - coverHostPriority(a))
     .slice(0, MAX_PREVIEW_IMAGES);

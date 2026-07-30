@@ -161,7 +161,7 @@ export const Toast = {
   warn(content: string, duration?: number) {
     this.show("warn", content, duration);
   },
-  error(content: string, duration?: number) {
+  error(content: string, duration = 4500) {
     this.show("error", content, duration);
   },
 };

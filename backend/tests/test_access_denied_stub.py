@@ -56,7 +56,7 @@ def test_coalesce_drops_tip_title_for_persist():
     out = judge_thread_html(
         html, board_fid="95", list_title=list_title, preferred_link="ed2k"
     )
-    # 与 pipeline 一致：列表标题优先于页内「提示信息」
+    # 与 pipeline 一致：列表标题优先，页内「提示信息」被丢掉
     fixed = coalesce_thread_title(list_title, out.title, parsed.title)
     assert fixed == list_title
     assert "提示信息" not in fixed

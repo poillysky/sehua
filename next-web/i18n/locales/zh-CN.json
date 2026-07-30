@@ -38,7 +38,7 @@
     "title": "分类浏览",
     "filtered_subtitle": "当前分区 / 版块下的收录资源",
     "loading": "正在加载资源...",
-    "refresh": "换一批",
+    "refresh": "随机一页",
     "empty": "暂无资源",
     "page_of": "第 {page} / {total} 页",
     "total_count": "共 {count} 条"
@@ -54,7 +54,7 @@
     "subtype_count": "{count} 个子类",
     "whole_board": "整板浏览",
     "all_children": "全部",
-    "back_nav": "返回分区",
+    "back_nav": "返回上级",
     "home": "首页",
     "sidebar_title": "分区导航",
     "show_nav": "打开导航",
@@ -84,14 +84,26 @@
   },
   "Search": {
     "placeholder": "搜索色花堂资源…",
+    "placeholderActress": "搜索女优…",
     "action": "搜索",
     "translate": "翻译为英文",
     "filterLabel": {
       "sortType": "排序方式",
       "filterTime": "按时间过滤",
       "filterSize": "按大小过滤",
-      "matchMode": "搜索模式"
+      "matchMode": "搜索模式",
+      "searchKind": "搜索类型"
     },
+    "mode": {
+      "resource": "资源",
+      "actress": "女优"
+    },
+    "actress_empty": "未找到该女优的番号（需已刮削女优信息）",
+    "actress_results": "{name} · {count} 部",
+    "actress_prev": "上一页",
+    "actress_next": "下一页",
+    "empty": "无匹配资源，可试模糊匹配或缩短关键词",
+    "page_of": "第 {page} / {total} 页",
     "sortType": {
       "default": "默认排序",
       "size": "文件大小",

@@ -32,7 +32,7 @@ export function MakerGroupCard({
         </div>
       </div>
 
-      <div className="grid grid-cols-1 gap-px bg-default-100 sm:grid-cols-2 dark:bg-slate-800/80">
+      <div className="grid grid-cols-2 gap-2.5 p-3 sm:grid-cols-3 sm:gap-3 sm:p-3.5 md:grid-cols-4 lg:grid-cols-5">
         {items.map((child) => {
           const code = child.type_name || child.name;
           const note = prefixNote(maker, code);
@@ -40,17 +40,20 @@ export function MakerGroupCard({
             <Link
               key={child.key}
               title={note || code}
-              className="group flex items-baseline justify-between gap-2 bg-content1 px-4 py-3 transition-colors hover:bg-primary/[0.04] dark:bg-slate-900/45 dark:hover:bg-primary/10"
+              prefetch={false}
+              className="group flex min-h-[5.25rem] flex-col justify-between rounded-xl border border-default-200/80 bg-default-50/60 p-3 shadow-sm transition-[border-color,box-shadow,transform,background-color] duration-200 hover:-translate-y-0.5 hover:border-primary/40 hover:bg-content1 hover:shadow-md dark:border-slate-700/70 dark:bg-slate-800/40 dark:hover:border-primary/35 dark:hover:bg-slate-800/70"
               href={boardBrowseHref(child)}
             >
-              <span className="shrink-0 text-sm font-semibold tracking-wide text-foreground group-hover:text-primary">
+              <span className="text-[15px] font-semibold tracking-wide text-foreground group-hover:text-primary">
                 {code}
               </span>
               {note ? (
-                <span className="min-w-0 truncate text-right text-xs leading-relaxed text-default-400 group-hover:text-default-500">
+                <span className="mt-2 line-clamp-2 text-[11px] leading-snug text-default-500 dark:text-slate-400">
                   {note}
                 </span>
-              ) : null}
+              ) : (
+                <span className="mt-2 min-h-[1.375rem]" aria-hidden />
+              )}
             </Link>
           );
         })}

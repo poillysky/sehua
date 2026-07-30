@@ -36,6 +36,39 @@ const DEFAULT_ALLOWED_IMAGE_HOSTS = [
   "pid505st.cc",
 ];
 
+/** Discuz 图床镜像：同路径在某一台上 404 时换主机常仍可取（如 tid=3657635） */
+export const FORUM_TU_CDN_HOSTS = [
+  "tu.ewrewej.la",
+  "tu.ymawv.la",
+  "tu.ldkms.la",
+] as const;
+
+const FORUM_TU_CDN_HOST_RE = /^tu\.(?:ewrewej|ymawv|ldkms)\.la$/i;
+
+/**
+ * 色花堂 tu.* 图床：保留原 URL，再追加其它镜像主机（同 path）。
+ * 非该类 URL 原样返回单元素数组。
+ */
+export function expandForumCdnUrls(url: string): string[] {
+  try {
+    const parsed = new URL(url);
+    const host = parsed.hostname.toLowerCase();
+    if (!FORUM_TU_CDN_HOST_RE.test(host)) return [url];
+    if (!parsed.pathname.includes("/tupian/forum/")) return [url];
+    const out: string[] = [url];
+    const seen = new Set([host]);
+    for (const alt of FORUM_TU_CDN_HOSTS) {
+      if (seen.has(alt)) continue;
+      seen.add(alt);
+      const next = new URL(url);
+      next.hostname = alt;
+      out.push(next.toString());
+    }
+    return out;
+  } catch {
+    return [url];
+  }
+}
 function getAllowedImageHosts() {
   const extra = process.env.IMAGE_PROXY_ALLOWED_HOSTS?.split(",")
     .map((host) => host.trim())
@@ -104,9 +137,10 @@ export function isForumCoverHost(url: string) {
   );
 }
 
-/** 封面排序分：色花堂图床 > 其他可代理图 > 不稳定外链 */
+/** 封面排序分：本地刮削封面 > 色花堂图床 > 其他可代理图 > 不稳定外链 */
 export function coverHostPriority(url: string | null | undefined): number {
   if (!url) return 0;
+  if (url.startsWith("/covers/")) return 5;
   if (isUnreliableCoverHost(url)) return 1;
   if (isForumCoverHost(url)) return 3;
   return 2;
