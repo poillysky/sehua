@@ -102,6 +102,8 @@ class AttachmentFetchResult:
     empty_torrent: bool = False
     # 附件 Not Found / 404 / 空壳文件 → 跳过「附件为空跳过」
     empty_attachment: bool = False
+    # 本轮实际尝试下载的附件名（供 kind 回退去重）
+    tried_names: list[str] | None = None
 
 
 def is_attachment_login_required(html: str) -> bool:
@@ -534,6 +536,7 @@ def filter_all_link_attachments(
     *,
     limit: int = MAX_ATTACHMENTS_PER_THREAD,
     preferred_link: str | None = None,
+    skip_names: list[str] | set[str] | tuple[str, ...] | None = None,
 ) -> list[DownloadAttachment]:
     """全部可抽链附件：先按文件名优先级，再按板块主链类型，逐个轮询。
 
@@ -542,13 +545,16 @@ def filter_all_link_attachments(
     - 磁力/双链：torrent → excel/doc/txt → zip/rar
     - 文件名含「目录树」：硬跳过（不下、不试算）
     - 其它目录类 txt（含「目录」「文件夹」等）排在同批末尾，仍纳入轮询
+    - skip_names：kind 回退时跳过上一轮已试附件
     每下完一个有链附件即试算；合格则停；不合格必须继续直到判完或合格。
     """
+    skip = {str(n).strip() for n in (skip_names or []) if str(n or "").strip()}
     candidates = [
         item
         for item in attachments
         if item.kind in ("txt", "excel", "doc", "zip", "rar", "torrent")
         and not is_directory_tree_attachment_name(item.name)
+        and item.name not in skip
     ]
     primary = [
         item

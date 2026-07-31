@@ -767,153 +767,182 @@ async def process_thread(
                         next_kind = (
                             "torrent" if attachment_kind == "txt_tail" else "txt_tail"
                         )
-                        log.info("tid=%s fallback attachments kind=%s", tid, next_kind)
-                        attach_res2 = await fetch_attachments_for_outcome(
-                            session,
-                            html=html,
-                            thread_url=thread_url,
-                            attachment_kind=next_kind,
-                            timeout=max(15.0, attach_timeout),
-                            preferred_link=link_pref,
-                            quota_stop=attach_plan.quota_stop,
+                        tried_names = list(
+                            getattr(attach_res, "tried_names", None) or []
                         )
-                        if (
-                            forum_uses_attach_daily_queue(forum_id)
-                            and getattr(attach_res2, "daily_limited", False)
-                        ):
-                            mark_attach_daily_limit_hit(str(forum_id or ""))
-                            attach_queued = True
-                            outcome = ThreadOutcome(
-                                "skipped",
-                                ATTACH_QUEUE_OUTCOME,
-                                outcome.link_kind,
-                                outcome.title or list_title,
+                        from parsers.attachments import (
+                            extract_download_attachments,
+                            filter_all_link_attachments,
+                        )
+
+                        remaining = filter_all_link_attachments(
+                            extract_download_attachments(thread_url, html),
+                            preferred_link=(
+                                "magnet" if next_kind == "torrent" else "ed2k"
+                            ),
+                            skip_names=tried_names,
+                        )
+                        if not remaining:
+                            log.info(
+                                "tid=%s skip fallback kind=%s — no untried attachments",
+                                tid,
+                                next_kind,
                             )
-                        elif (
-                            attach_res2.text
-                            and should_skip_as_115sha_only(attach_res2.text)
-                            and not attach_res2.denied
-                            and not getattr(attach_res2, "login_required", False)
-                            and not attach_res.denied
-                            and not getattr(attach_res, "login_required", False)
-                        ):
-                            attachment_text = (
-                                attachment_text + "\n" + attach_res2.text
-                            ).strip()
-                            outcome = ThreadOutcome(
-                                "skipped",
-                                "115sha（跳过）",
-                                outcome.link_kind,
-                                outcome.title or list_title,
+                        else:
+                            log.info(
+                                "tid=%s fallback attachments kind=%s skip=%s remain=%s",
+                                tid,
+                                next_kind,
+                                len(tried_names),
+                                len(remaining),
                             )
-                        elif attach_res2.text:
-                            attachment_text = (
-                                attachment_text + "\n" + attach_res2.text
-                            ).strip()
-                            heavy2 = len(attachment_text) >= 24_000
-                            login2 = bool(
-                                getattr(attach_res, "login_required", False)
-                                or getattr(attach_res2, "login_required", False)
+                            attach_res2 = await fetch_attachments_for_outcome(
+                                session,
+                                html=html,
+                                thread_url=thread_url,
+                                attachment_kind=next_kind,
+                                timeout=max(15.0, attach_timeout),
+                                preferred_link=link_pref,
+                                quota_stop=attach_plan.quota_stop,
+                                skip_names=tried_names,
                             )
                             if (
-                                heavy2
-                                and attachment_text
-                                and not (attach_res.denied or attach_res2.denied)
-                                and not login2
+                                forum_uses_attach_daily_queue(forum_id)
+                                and getattr(attach_res2, "daily_limited", False)
                             ):
-                                log.info(
-                                    "tid=%s heavy attachment fast-path (fallback) chars=%s",
-                                    tid,
-                                    len(attachment_text),
+                                mark_attach_daily_limit_hit(str(forum_id or ""))
+                                attach_queued = True
+                                outcome = ThreadOutcome(
+                                    "skipped",
+                                    ATTACH_QUEUE_OUTCOME,
+                                    outcome.link_kind,
+                                    outcome.title or list_title,
                                 )
-                                outcome = await _outcome_from_heavy_attachment(
-                                    html,
-                                    tid=tid,
-                                    list_title=list_title,
-                                    prior=outcome,
-                                    preferred_link=link_pref,
-                                    base_url=thread_url,
-                                    board_fid=board_fid,
-                                    attachment_text=attachment_text,
+                            elif (
+                                attach_res2.text
+                                and should_skip_as_115sha_only(attach_res2.text)
+                                and not attach_res2.denied
+                                and not getattr(attach_res2, "login_required", False)
+                                and not attach_res.denied
+                                and not getattr(attach_res, "login_required", False)
+                            ):
+                                attachment_text = (
+                                    attachment_text + "\n" + attach_res2.text
+                                ).strip()
+                                outcome = ThreadOutcome(
+                                    "skipped",
+                                    "115sha（跳过）",
+                                    outcome.link_kind,
+                                    outcome.title or list_title,
                                 )
-                            else:
-                                if not heavy2:
-                                    html = inject_attachment_text(html, attachment_text)
-                                outcome = await _judge_html(
-                                    html,
-                                    board_fid=board_fid,
-                                    list_title=list_title,
-                                    base_url=thread_url,
-                                    soft_browser_retried=soft_browser_retried,
-                                    attachments_already_tried=True,
-                                    attachment_denied=attach_res.denied
-                                    or attach_res2.denied,
-                                    attachment_login_required=login2,
-                                    attachment_failed=(
-                                        (
+                            elif attach_res2.text:
+                                attachment_text = (
+                                    attachment_text + "\n" + attach_res2.text
+                                ).strip()
+                                heavy2 = len(attachment_text) >= 24_000
+                                login2 = bool(
+                                    getattr(attach_res, "login_required", False)
+                                    or getattr(attach_res2, "login_required", False)
+                                )
+                                if (
+                                    heavy2
+                                    and attachment_text
+                                    and not (attach_res.denied or attach_res2.denied)
+                                    and not login2
+                                ):
+                                    log.info(
+                                        "tid=%s heavy attachment fast-path (fallback) chars=%s",
+                                        tid,
+                                        len(attachment_text),
+                                    )
+                                    outcome = await _outcome_from_heavy_attachment(
+                                        html,
+                                        tid=tid,
+                                        list_title=list_title,
+                                        prior=outcome,
+                                        preferred_link=link_pref,
+                                        base_url=thread_url,
+                                        board_fid=board_fid,
+                                        attachment_text=attachment_text,
+                                    )
+                                else:
+                                    if not heavy2:
+                                        html = inject_attachment_text(html, attachment_text)
+                                    outcome = await _judge_html(
+                                        html,
+                                        board_fid=board_fid,
+                                        list_title=list_title,
+                                        base_url=thread_url,
+                                        soft_browser_retried=soft_browser_retried,
+                                        attachments_already_tried=True,
+                                        attachment_denied=attach_res.denied
+                                        or attach_res2.denied,
+                                        attachment_login_required=login2,
+                                        attachment_failed=(
                                             (
-                                                attach_res.failed
-                                                and not attach_res.downloaded
-                                                and not getattr(
-                                                    attach_res, "empty_torrent", False
+                                                (
+                                                    attach_res.failed
+                                                    and not attach_res.downloaded
+                                                    and not getattr(
+                                                        attach_res, "empty_torrent", False
+                                                    )
+                                                    and not getattr(
+                                                        attach_res,
+                                                        "empty_attachment",
+                                                        False,
+                                                    )
                                                 )
-                                                and not getattr(
-                                                    attach_res,
-                                                    "empty_attachment",
-                                                    False,
+                                                or (
+                                                    attach_res2.failed
+                                                    and not attach_res2.downloaded
+                                                    and not getattr(
+                                                        attach_res2, "empty_torrent", False
+                                                    )
+                                                    and not getattr(
+                                                        attach_res2,
+                                                        "empty_attachment",
+                                                        False,
+                                                    )
                                                 )
                                             )
-                                            or (
-                                                attach_res2.failed
-                                                and not attach_res2.downloaded
-                                                and not getattr(
+                                            and not (
+                                                getattr(attach_res, "empty_torrent", False)
+                                                or getattr(
                                                     attach_res2, "empty_torrent", False
                                                 )
-                                                and not getattr(
-                                                    attach_res2,
-                                                    "empty_attachment",
-                                                    False,
+                                                or getattr(
+                                                    attach_res, "empty_attachment", False
+                                                )
+                                                or getattr(
+                                                    attach_res2, "empty_attachment", False
                                                 )
                                             )
+                                        ),
+                                        attachment_empty_torrent=bool(
+                                            getattr(attach_res, "empty_torrent", False)
+                                            or getattr(attach_res2, "empty_torrent", False)
                                         )
                                         and not (
-                                            getattr(attach_res, "empty_torrent", False)
-                                            or getattr(
-                                                attach_res2, "empty_torrent", False
-                                            )
-                                            or getattr(
-                                                attach_res, "empty_attachment", False
-                                            )
+                                            attach_res2.downloaded
+                                            or bool(attachment_text)
+                                        ),
+                                        attachment_empty_attachment=bool(
+                                            getattr(attach_res, "empty_attachment", False)
                                             or getattr(
                                                 attach_res2, "empty_attachment", False
                                             )
                                         )
-                                    ),
-                                    attachment_empty_torrent=bool(
-                                        getattr(attach_res, "empty_torrent", False)
-                                        or getattr(attach_res2, "empty_torrent", False)
+                                        and not (
+                                            attach_res2.downloaded
+                                            or bool(attachment_text)
+                                        ),
+                                        had_attachments=True,
+                                        preferred_link=link_pref,
+                                        forum_id=forum_id,
+                                        tid=tid,
+                                        attachment_text=attachment_text if heavy2 else "",
                                     )
-                                    and not (
-                                        attach_res2.downloaded
-                                        or bool(attachment_text)
-                                    ),
-                                    attachment_empty_attachment=bool(
-                                        getattr(attach_res, "empty_attachment", False)
-                                        or getattr(
-                                            attach_res2, "empty_attachment", False
-                                        )
-                                    )
-                                    and not (
-                                        attach_res2.downloaded
-                                        or bool(attachment_text)
-                                    ),
-                                    had_attachments=True,
-                                    preferred_link=link_pref,
-                                    forum_id=forum_id,
-                                    tid=tid,
-                                    attachment_text=attachment_text if heavy2 else "",
-                                )
-                        attachment_kind = f"{attachment_kind}+{next_kind}"
+                            attachment_kind = f"{attachment_kind}+{next_kind}"
                     # 附件语料可能已含链但 judge 走了非 import：再双解析一次补全
                     if (
                         not attach_queued

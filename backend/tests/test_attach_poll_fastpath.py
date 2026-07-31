@@ -100,6 +100,7 @@ async def test_download_tail_empty_streak_stops(monkeypatch):
     html = "<html><body><div id='postmessage_1'>x</div>Powered by Discuz!</body></html>"
     res = await downloader.download_tail(html, "http://example/thread")
     assert tried == ["f0.txt", "f1.txt", "f2.txt"]
+    assert res.tried_names == ["f0.txt", "f1.txt", "f2.txt"]
     assert res.empty_attachment is True
     assert res.failed is False
 
@@ -111,6 +112,7 @@ async def test_skip_flare_after_first_miss(monkeypatch):
 
     class FakeSession:
         _ready = True
+        cookies: dict = {}
 
         async def run_on_page(self, fn, *, timeout=None):
             return None, False, False, False, False
@@ -136,3 +138,70 @@ async def test_skip_flare_after_first_miss(monkeypatch):
     assert downloader._skip_flare is True
     await downloader._download_one(a2, 10)
     assert flare_calls["n"] == 1
+
+
+@pytest.mark.asyncio
+async def test_skip_flare_when_cf_clearance_present(monkeypatch):
+    """浏览器已有 cf_clearance：fetch 空也不打 Flare。"""
+    from crawler import attachments as mod
+    from parsers.attachments import DownloadAttachment as DA
+
+    class FakeSession:
+        _ready = True
+        cookies = {"cf_clearance": "abc"}
+
+        async def run_on_page(self, fn, *, timeout=None):
+            return None, False, False, False, False
+
+    downloader = mod.AttachmentDownloader(FakeSession())  # type: ignore[arg-type]
+    flare_calls = {"n": 0}
+
+    def fake_flare(url):
+        flare_calls["n"] += 1
+        return None, False, False, False, False
+
+    monkeypatch.setattr(downloader, "_fetch_bytes_via_flare", fake_flare)
+
+    async def fake_ui(*_a, **_k):
+        return None, False, False, False, False
+
+    monkeypatch.setattr(downloader, "_download_raw_via_ui", fake_ui)
+
+    await downloader._download_one(DA(name="a.txt", url="http://x/1", kind="txt"), 10)
+    assert flare_calls["n"] == 0
+
+
+def test_attach_fetch_ms_shorter_than_page_op():
+    from crawler import attachments as mod
+
+    assert mod.ATTACH_FETCH_MS == 12_000
+    assert mod.ATTACH_FETCH_MS < int(mod.ATTACH_PAGE_OP_SEC * 1000) - 2000
+
+
+def test_filter_all_link_attachments_skip_names():
+    from parsers.attachments import DownloadAttachment, filter_all_link_attachments
+
+    atts = [
+        DownloadAttachment("a.txt", "u1", "txt"),
+        DownloadAttachment("seed.torrent", "u2", "torrent"),
+        DownloadAttachment("b.txt", "u3", "txt"),
+    ]
+    got = filter_all_link_attachments(
+        atts, preferred_link="magnet", skip_names=["a.txt", "b.txt"]
+    )
+    assert [a.name for a in got] == ["seed.torrent"]
+
+
+def test_archive_member_link_name_priority():
+    from crawler.attachments import _link_member_names_in_archive
+
+    names = [
+        "readme.txt",
+        "合集115ed2k.txt",
+        "notes.txt",
+        "backup.zip",  # not a link member type for this helper's groups
+    ]
+    got = _link_member_names_in_archive(names)
+    assert got[0] == "合集115ed2k.txt"
+    assert "readme.txt" in got
+    assert got.index("合集115ed2k.txt") < got.index("readme.txt")

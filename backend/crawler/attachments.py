@@ -43,6 +43,8 @@ log = logging.getLogger(__name__)
 ATTACH_POLL_WALL_SEC = 180.0
 ATTACH_ONE_WALL_SEC = 55.0
 ATTACH_PAGE_OP_SEC = 30.0
+# 页内 fetch AbortSignal（与页操作/UI 解耦，空等勿拖满 28s）
+ATTACH_FETCH_MS = 12_000
 ATTACH_FLARE_HTTP_SEC = 35.0
 ATTACH_FLARE_MAX_TIMEOUT_MS = 25_000
 ATTACH_EXTRACT_SEC = 45.0
@@ -208,15 +210,32 @@ def _doc_names_in_archive(names: list[str]) -> list[str]:
     ]
 
 
-def _link_member_names_in_archive(names: list[str]) -> list[str]:
-    """压缩包内待试文件：txt → excel/csv → doc → torrent（逐个轮询）。"""
-    ordered = (
-        _txt_names_in_archive(names)
-        + _excel_names_in_archive(names)
-        + _csv_names_in_archive(names)
-        + _doc_names_in_archive(names)
-        + _torrent_names_in_archive(names)
+def _archive_member_name_sort_key(name: str) -> tuple:
+    """组内优先：115/ed2k/98/一分也是爱/magnet 文件名，再字母序。"""
+    from parsers.attachments import _attach_name_priority
+
+    raw = name or ""
+    n = raw.casefold()
+    magnet_boost = 0 if "magnet" in n else 1
+    return (
+        _attach_name_priority(raw, preferred_link="ed2k"),
+        magnet_boost,
+        raw,
     )
+
+
+def _link_member_names_in_archive(names: list[str]) -> list[str]:
+    """压缩包内待试文件：txt → excel/csv → doc → torrent；组内链文件名优先。"""
+    groups = (
+        _txt_names_in_archive(names),
+        _excel_names_in_archive(names),
+        _csv_names_in_archive(names),
+        _doc_names_in_archive(names),
+        _torrent_names_in_archive(names),
+    )
+    ordered: list[str] = []
+    for group in groups:
+        ordered.extend(sorted(group, key=_archive_member_name_sort_key))
     if len(ordered) > MAX_ARCHIVE_LINK_MEMBERS:
         log.info(
             "Archive has %s link members — only try first %s",
@@ -1177,8 +1196,8 @@ class AttachmentDownloader:
         async def _on_page(page: Any) -> tuple[bytes | None, bool, bool, bool, bool]:
             try:
                 # Content-Length / 实际体积超限则不 btoa，避免 2～3× 峰值
-                # AbortSignal：避免 fetch 挂起拖满整帖墙钟
-                fetch_ms = max(5000, int(ATTACH_PAGE_OP_SEC * 1000) - 2000)
+                # AbortSignal：短超时，失败快落入 Flare/UI（勿拖满页操作 30s）
+                fetch_ms = int(ATTACH_FETCH_MS)
                 result = await page.evaluate(
                     """
                     async ({ targetUrl, maxBytes, fetchMs }) => {
@@ -1329,8 +1348,8 @@ class AttachmentDownloader:
 
             # 无权弹窗很常见：下载事件常永不触发。先短等下载，再弹窗确认，
             # 避免每个附件空等满 timeout（可达 45–60s）才判无权。
-            dl_ms = max(4000, min(int(timeout * 1000), 10000))
-            popup_ms = max(5000, min(int(timeout * 1000), 12000))
+            dl_ms = max(4000, min(int(timeout * 1000), 8000))
+            popup_ms = max(5000, min(int(timeout * 1000), 10000))
             try:
                 async with page.expect_download(timeout=dl_ms) as download_info:
                     await locator.click(timeout=5000)
@@ -1484,10 +1503,14 @@ class AttachmentDownloader:
                 )
 
         # Playwright 页无 clearance 时，页面 fetch 常空：改走 FlareSolverr 同出口
+        # 已有 cf_clearance：跳过 Flare（省 25–35s），直去 UI
         # 同帖若已试 Flare 无收获，后续附件跳过 Flare（多附件防串行卡死）
+        cookies = getattr(self.session, "cookies", None) or {}
+        has_cf = bool(str(cookies.get("cf_clearance") or "").strip())
         if (
             not data
             and not self._skip_flare
+            and not has_cf
             and not (fetch_denied or fetch_login or fetch_limited or fetch_empty)
         ):
             (
@@ -1609,6 +1632,7 @@ class AttachmentDownloader:
         timeout: float = 45,
         preferred_link: str | None = None,
         quota_stop: bool = True,
+        skip_names: list[str] | set[str] | tuple[str, ...] | None = None,
     ) -> AttachmentFetchResult:
         """正文无链 / 正文不合格复判：按优先序逐个轮询附件。
 
@@ -1635,9 +1659,10 @@ class AttachmentDownloader:
             extract_download_attachments(base_url, html),
             limit=max_files,
             preferred_link=preferred_link,
+            skip_names=skip_names,
         )
         if not attachments:
-            return AttachmentFetchResult()
+            return AttachmentFetchResult(tried_names=[])
 
         passwords = _archive_password_candidates(html)
         if passwords:
@@ -1645,6 +1670,7 @@ class AttachmentDownloader:
 
         quota_expect = _quota_expect_from_html(html) if quota_stop else None
         chunks: list[str] = []
+        tried_names: list[str] = []
         any_downloaded = False
         any_daily_limited = False
         any_empty_torrent = False
@@ -1670,6 +1696,10 @@ class AttachmentDownloader:
                 return True
             return False
 
+        def _result(**kwargs: Any) -> AttachmentFetchResult:
+            kwargs.setdefault("tried_names", list(tried_names))
+            return AttachmentFetchResult(**kwargs)
+
         for idx, attachment in enumerate(attachments):
             if is_directory_tree_attachment_name(attachment.name):
                 log.info("Attachment skip directory-tree name: %s", attachment.name)
@@ -1685,6 +1715,7 @@ class AttachmentDownloader:
                     len(attachments),
                 )
                 break
+            tried_names.append(attachment.name)
             one_timeout = min(
                 float(ATTACH_ONE_WALL_SEC),
                 max(0.5, remain_wall if remain_wall > 0 else float(ATTACH_ONE_WALL_SEC)),
@@ -1742,7 +1773,7 @@ class AttachmentDownloader:
                         attachment.name,
                         "login required" if login_required else "denied",
                     )
-                    return AttachmentFetchResult(
+                    return _result(
                         text="",
                         downloaded=any_downloaded,
                         denied=True,
@@ -1835,7 +1866,7 @@ class AttachmentDownloader:
         result_text = _pick_best_archive_texts(chunks)
         # 日限：优先标 daily_limited，供上层入附件队列
         if any_daily_limited:
-            return AttachmentFetchResult(
+            return _result(
                 text="",
                 downloaded=any_downloaded or bool(result_text),
                 denied=True,
@@ -1843,31 +1874,31 @@ class AttachmentDownloader:
                 daily_limited=True,
             )
         if result_text and _text_has_importable_link(result_text):
-            return AttachmentFetchResult(
+            return _result(
                 text=result_text, downloaded=True, denied=False, login_required=False
             )
         # 墙钟耗尽 / 超时连击仍无可用链 → 失败待重试
         if (hit_wall or (hit_empty_streak and streak_had_timeout)) and not (
             result_text and _text_has_importable_link(result_text)
         ):
-            return AttachmentFetchResult(
+            return _result(
                 text=result_text or "",
                 downloaded=any_downloaded or bool(result_text),
                 failed=True,
             )
         if result_text:
-            return AttachmentFetchResult(text=result_text, downloaded=True)
+            return _result(text=result_text, downloaded=True)
         if any_downloaded:
-            return AttachmentFetchResult(downloaded=True)
+            return _result(downloaded=True)
         # 空壳 / Not Found（含连续空附件早停）：跳过，勿「附件下载失败」重试
         if any_empty_attachment or any_empty_torrent:
-            return AttachmentFetchResult(
+            return _result(
                 empty_attachment=True,
                 empty_torrent=any_empty_torrent,
             )
         if hit_empty_streak:
-            return AttachmentFetchResult(failed=True)
-        return AttachmentFetchResult(failed=True)
+            return _result(failed=True)
+        return _result(failed=True)
 
     async def download_torrents(
         self,
@@ -1878,6 +1909,7 @@ class AttachmentDownloader:
         timeout: float = 45,
         preferred_link: str | None = None,
         quota_stop: bool = True,
+        skip_names: list[str] | set[str] | tuple[str, ...] | None = None,
     ) -> AttachmentFetchResult:
         """与 download_tail 相同：全类型附件按板块频次逐个轮询。"""
         return await self.download_tail(
@@ -1887,6 +1919,7 @@ class AttachmentDownloader:
             timeout=timeout,
             preferred_link=preferred_link or "magnet",
             quota_stop=quota_stop,
+            skip_names=skip_names,
         )
 
 
@@ -1899,6 +1932,7 @@ async def fetch_attachments_for_outcome(
     timeout: float = 45,
     preferred_link: str | None = None,
     quota_stop: bool = True,
+    skip_names: list[str] | set[str] | tuple[str, ...] | None = None,
 ) -> AttachmentFetchResult:
     """按判定 kind 下载：txt_tail | torrent；轮询顺序跟板块主链。"""
     downloader = AttachmentDownloader(session)
@@ -1960,6 +1994,7 @@ async def fetch_attachments_for_outcome(
             timeout=timeout,
             preferred_link=link_pref,
             quota_stop=quota_stop,
+            skip_names=skip_names,
         )
     if attachment_kind == "txt_tail":
         return await downloader.download_tail(
@@ -1968,5 +2003,6 @@ async def fetch_attachments_for_outcome(
             timeout=timeout,
             preferred_link=link_pref,
             quota_stop=quota_stop,
+            skip_names=skip_names,
         )
     return AttachmentFetchResult(failed=True)
