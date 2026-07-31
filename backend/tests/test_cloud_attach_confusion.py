@@ -223,7 +223,7 @@ def test_cloud_attach_denied_stubs_not_cloud_skip():
         attachment_denied=True,
     )
     assert out.verdict == "stub", out.outcome
-    assert "无权限" in out.outcome
+    assert "附件无权" in out.outcome
     assert "蓝奏" not in out.outcome
 
 
@@ -269,5 +269,5 @@ def test_tid3341941_115_denied_baidu_txt_not_lanzou_skip():
         attachment_denied=True,
     )
     assert out.verdict == "stub", out.outcome
-    assert "无权限" in out.outcome
+    assert "附件无权" in out.outcome
     assert "蓝奏" not in out.outcome

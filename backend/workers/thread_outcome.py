@@ -28,7 +28,9 @@ from parsers.skip_outcomes import (
     SKIP_NO_ACCESS_NO_TITLE,
     SKIP_NO_TARGET,
     SKIP_NON_RESOURCE,
+    SKIP_ATTACH_EMPTY,
     SKIP_PURCHASE,
+    STUB_ATTACH_DENIED,
     age_skip_tip,
 )
 from parsers.thread_gates import (
@@ -160,6 +162,7 @@ def judge_thread_html(
     attachment_login_required: bool = False,
     attachment_failed: bool = False,
     attachment_empty_torrent: bool = False,
+    attachment_empty_attachment: bool = False,
     had_attachments: bool = False,
     attachments_already_tried: bool = False,
     soft_browser_retried: bool = False,
@@ -293,6 +296,14 @@ def judge_thread_html(
             list_title or page_tit or title,
         )
 
+    # 附件下载已确认无权/需登录，且正文无目标链：优先占位。
+    # 勿被语料里的 115://（115sha）抢成跳过；115ed2k 与 115sha 是两类链，互不推断。
+    if (
+        (attachment_denied or attachment_login_required)
+        and not has_lz_target
+    ):
+        return ThreadOutcome("stub", STUB_ATTACH_DENIED, link_kind, title)
+
     # 楼主区明示附件无权（PHPWind「用户组无法下载」）。
     # 勿扫全页：2048 打赏脚本含「请先登录再打赏」会误伤无附件磁链帖；
     # 仍有种子/txt 附件时先下，不要在此提前 stub。
@@ -303,7 +314,7 @@ def judge_thread_html(
         and thread_body_shows_attach_denied(html)
         and (attachments_already_tried or not looks_like_attachment_zone(html))
     ):
-        return ThreadOutcome("stub", "无权限下载附件", link_kind, title)
+        return ThreadOutcome("stub", STUB_ATTACH_DENIED, link_kind, title)
 
     # 龄期板（网友原创区等）：未满龄一律跳过，不占位、不抓附件
     if min_age > 0:
@@ -398,7 +409,7 @@ def judge_thread_html(
                 or not had_attachments
             )
         ):
-            return ThreadOutcome("stub", "无权限下载附件", link_kind, title)
+            return ThreadOutcome("stub", STUB_ATTACH_DENIED, link_kind, title)
         parsed = parse_thread_dual(
             html,
             tid=0,
@@ -504,9 +515,9 @@ def judge_thread_html(
                 attachment_kind=attach_kind,
             )
 
-    # 附件无权 / 下载落到登录提示页：占位「无权限下载附件」（账号可重爬）
-    if attachment_denied or attachment_login_required:
-        return ThreadOutcome("stub", "无权限下载附件", link_kind, title)
+    # 附件 Not Found / 404 / 空壳：跳过，勿重试、勿占位
+    if attachment_empty_attachment:
+        return ThreadOutcome("skipped", SKIP_ATTACH_EMPTY, link_kind, title)
     # 空壳种子（HTTP 200 但 body=0）：附件本身坏了，跳过勿重试
     if attachment_empty_torrent:
         return ThreadOutcome("skipped", "种子大小为0", link_kind, title)
@@ -518,8 +529,9 @@ def judge_thread_html(
         and not had_attachments
         and looks_like_attachment_zone(html)
     ):
-        return ThreadOutcome("stub", "无权限下载附件", link_kind, title)
+        return ThreadOutcome("stub", STUB_ATTACH_DENIED, link_kind, title)
     # 附件已下载但抽不出 ed2k/磁力 → 区分 115sha，勿一律「未解析到」
+    # （无权已在上方提前占位；此处仅「真下到了 115sha 语料」才跳过）
     if had_attachments or attachments_already_tried:
         if should_skip_as_115sha_only(link_corpus):
             return ThreadOutcome(

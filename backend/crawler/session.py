@@ -369,6 +369,96 @@ class SessionManager:
         await self._sync_cookies_from_context()
         return html
 
+    async def rebind_browser_identity(
+        self,
+        *,
+        user_agent: str = "",
+        cookies: dict[str, str] | None = None,
+    ) -> None:
+        """FlareSolverr 过关后：用其 UA + cf_clearance 重建浏览器上下文。
+
+        clearance 绑定求解时的 UA；只 add_cookies 不换 UA 时，附件页仍会被 CF 打回。
+        """
+        await run_on_pw_loop(
+            self._rebind_browser_identity_on_loop(
+                user_agent=user_agent, cookies=cookies
+            )
+        )
+
+    async def _rebind_browser_identity_on_loop(
+        self,
+        *,
+        user_agent: str = "",
+        cookies: dict[str, str] | None = None,
+    ) -> None:
+        ua = (user_agent or self.user_agent or DEFAULT_UA).strip() or DEFAULT_UA
+        if ua != self.user_agent:
+            log.info("Rebind browser UA after CF solve: %s…", ua[:72])
+            self.user_agent = ua
+        jar = dict(cookies) if cookies is not None else dict(self.cookies)
+        jar.setdefault("safe", "1")
+        self.update(jar)
+
+        await self._ensure_browser()
+        assert self._browser is not None
+
+        # 关掉旧 context/page，保留 browser 进程
+        for obj in (self._page, self._context):
+            if obj is None:
+                continue
+            try:
+                await obj.close()
+            except Exception:
+                pass
+        self._page = None
+        self._context = None
+
+        context_kwargs: dict[str, Any] = {
+            "user_agent": self.user_agent,
+            "locale": "zh-CN",
+            "viewport": {"width": 1366, "height": 768},
+        }
+        if self.proxy:
+            context_kwargs["proxy"] = {"server": self.proxy}
+        self._context = await self._browser.new_context(**context_kwargs)
+        await self._context.add_init_script(
+            "Object.defineProperty(navigator, 'webdriver', {get: () => undefined});"
+        )
+        # 此处必须注入 cf_clearance（与 FlareSolverr UA 成对）
+        await self._set_context_cookies(jar)
+
+        page = await self._context.new_page()
+
+        async def _route(route: Any) -> None:
+            req = route.request
+            url = (req.url or "").lower()
+            if any(
+                k in url
+                for k in (
+                    "cloudflare",
+                    "turnstile",
+                    "cdn-cgi",
+                    "cf-challenge",
+                    "challenge-platform",
+                )
+            ):
+                await route.continue_()
+                return
+            if req.resource_type in {"image", "media", "font"}:
+                await route.abort()
+                return
+            await route.continue_()
+
+        await page.route("**/*", _route)
+        self._page = page
+        self._ready = True
+        log.info(
+            "Browser identity rebound · ua=%s… · cookies=%d · has_cf=%s",
+            (self.user_agent or "")[:48],
+            len(jar),
+            bool(jar.get("cf_clearance")),
+        )
+
     async def close(self) -> None:
         await run_on_pw_loop(self._close_on_loop())
 

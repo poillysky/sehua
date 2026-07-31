@@ -2859,6 +2859,8 @@ def _subresource_title_value(
     # 保留换行，便于去掉「帖标题\n真片名」双行污染
     chunk = re.sub(r"<br\s*/?>", "\n", chunk or "", flags=re.I)
     chunk = re.sub(r"<[^>]+>", " ", chunk)
+    # Discuz 截断的未闭合标签（`<font size="2`）勿漏进片名
+    chunk = re.sub(r"</?[A-Za-z][^<\n]*", " ", chunk)
     chunk = re.sub(r"&nbsp;", " ", chunk, flags=re.I)
     chunk = collapse_structure_label_gaps(chunk)
     m = _SUBRESOURCE_TITLE_VALUE_RE.match(chunk.strip())

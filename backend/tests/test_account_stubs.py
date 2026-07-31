@@ -13,14 +13,16 @@ from workers import recrawl as rc
 def test_priority_outcomes_include_login_perm_attach_exclude_reply_purchase():
     assert "帖子需论坛登录" in ACCOUNT_STUB_OUTCOMES
     assert "无阅读权限 · 占位入库" in ACCOUNT_STUB_OUTCOMES
+    assert "附件无权（占位入库）" in ACCOUNT_STUB_OUTCOMES
     assert "无权限下载附件" in ACCOUNT_STUB_OUTCOMES
     assert "0元购买贴" in ACCOUNT_STUB_OUTCOMES
     assert "需回复贴" not in ACCOUNT_STUB_OUTCOMES
     assert "需购买贴" not in ACCOUNT_STUB_OUTCOMES
     assert ACCOUNT_STUB_OUTCOMES[0] == "帖子需论坛登录"
     assert ACCOUNT_STUB_OUTCOMES[1] == "无阅读权限 · 占位入库"
-    assert ACCOUNT_STUB_OUTCOMES[2] == "无权限下载附件"
-    assert ACCOUNT_STUB_OUTCOMES[3] == "0元购买贴"
+    assert ACCOUNT_STUB_OUTCOMES[2] == "附件无权（占位入库）"
+    assert ACCOUNT_STUB_OUTCOMES[3] == "无权限下载附件"
+    assert ACCOUNT_STUB_OUTCOMES[4] == "0元购买贴"
 
 
 def test_list_priority_sql_filters_outcomes_and_stub_prefix(monkeypatch):
@@ -242,7 +244,7 @@ async def test_recrawl_account_stubs_keeps_stub_on_still_stub(monkeypatch):
             {
                 "hash": "stubhash2",
                 "source_url": "https://www.sehuatang.net/thread-99-1-1.html",
-                "import_outcome": "无权限下载附件",
+                "import_outcome": "附件无权（占位入库）",
                 "board_fid": "36",
                 "board_name": "板",
                 "title": "t",
@@ -261,7 +263,7 @@ async def test_recrawl_account_stubs_keeps_stub_on_still_stub(monkeypatch):
     monkeypatch.setattr(
         rc,
         "process_thread",
-        AsyncMock(return_value={"verdict": "stub", "outcome": "无权限下载附件"}),
+        AsyncMock(return_value={"verdict": "stub", "outcome": "附件无权（占位入库）"}),
     )
     monkeypatch.setattr(
         rc,

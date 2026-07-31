@@ -162,6 +162,7 @@ def test_download_tail_multi_ignores_short_quota(monkeypatch):
             False,
             False,
             False,
+            False,
         )
 
     monkeypatch.setattr(downloader, "_download_one", fake_one)

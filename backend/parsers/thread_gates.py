@@ -671,8 +671,9 @@ def has_115_sha_link(text: str) -> bool:
 
 
 def should_skip_as_115sha_only(text: str) -> bool:
-    """附件语料含 115sha，且没有可入库的 magnet/ed2k/115分享 时才整帖跳过。
+    """语料含 115sha（115:// 或裸 sha1 管线），且无 magnet/ed2k/115分享 时才整帖跳过。
 
+    与标题/文件名「115ed2k」无关——那是电驴链标，不能凭文件名推断为 115sha。
     同一压缩包内常同时有 Excel 磁力与 sha1.txt；有磁力则不应因 115sha 丢弃。
     """
     raw = text or ""
@@ -815,18 +816,30 @@ def title_is_115_share_without_ed2k_magnet(title: str) -> bool:
     return True
 
 
+def title_has_115ed2k_hint(title: str) -> bool:
+    """标题是否标明 115ed2k / 115eD2k（指电驴链，与 115sha / 115:// 无关）。"""
+    lower = re.sub(r"\s+", "", (title or "").lower())
+    return "115ed2k" in lower
+
+
 def title_is_115sha_without_ed2k_magnet(title: str) -> bool:
-    """标题标明 115sha / 【sha1】，且未写 ed2k / magnet / 磁力 / 电驴 → 直接跳过。"""
+    """标题标明 115sha / 【sha1】，且未写 ed2k / magnet / 磁力 / 电驴 → 直接跳过。
+
+    与【115ed2k】无关：后者是电驴资源标，即使带「115」也不得按 115sha 跳过。
+    """
     t = (title or "").strip()
     if not t:
         return False
+    # 115ed2k ≠ 115sha（两种链）；标题含 115ed2k 一律不当 115sha 帖
+    if title_has_115ed2k_hint(t):
+        return False
     lower = re.sub(r"\s+", "", t.lower())
-    has_115 = (
+    has_sha = (
         "115sha" in lower
         or bool(re.search(r"\[?\s*115\s*sha", t, re.I))
         or bool(re.search(r"[【\[]\s*sha1\s*[】\]]", t, re.I))
     )
-    if not has_115:
+    if not has_sha:
         return False
     if any(x in lower for x in ("ed2k", "magnet")):
         return False

@@ -427,6 +427,39 @@ def _title_quota_count(blob: str) -> int | None:
     return best
 
 
+_ATTACH_V_IN_NAME_RE = re.compile(
+    r"(?<![0-9])(\d{1,5})\s*[Vv](?![a-zA-Z])",
+)
+_ATTACH_V_SKIP_NAME = ("备用", "備份", "封面", "目录", "目錄", "失败", "失敗")
+
+
+def _attach_filename_v_counts(names: Sequence[str] | None) -> list[int]:
+    """各可用附件文件名里的 Nv（如 ``… 96v .txt``）；跳过备用/封面/目录。"""
+    out: list[int] = []
+    for raw in names or []:
+        name = (raw or "").strip()
+        if not name:
+            continue
+        if any(s in name for s in _ATTACH_V_SKIP_NAME):
+            continue
+        # 每个文件名只取一个 Nv（避免「96v 96V」重复计）
+        m = _ATTACH_V_IN_NAME_RE.search(name)
+        if not m:
+            continue
+        n = int(m.group(1))
+        if 2 <= n <= 20000:
+            out.append(n)
+    return out
+
+
+def _attach_filename_v_sum(names: Sequence[str] | None) -> int | None:
+    """全部可用附件文件名 Nv 合计（楼主分卷口径）；无则 None。"""
+    vs = _attach_filename_v_counts(names)
+    if not vs:
+        return None
+    return int(sum(vs))
+
+
 def _quota_echoes_v(blob: str) -> bool:
     """标题「NV/N配额」且 V≈配额 → 配额是片数回声，不是下载链数。
 
@@ -1335,27 +1368,86 @@ def validate_frame(
         metrics["http_media_count"] = max(
             0, post_n - member_n
         )  # 提供数相对入库去重的差额（展示用）
-        if expect_pieces_a is None:
+        # 额度梳理：标题 N配额 ↔ 全部可用附件/正文提供链数；附件文件名 Nv 合计作辅证
+        att_names = getattr(parsed, "attachment_names", None) or []
+        att_vs = _attach_filename_v_counts(att_names)
+        att_v_sum = _attach_filename_v_sum(att_names)
+        metrics["attach_filename_v"] = att_vs
+        metrics["attach_filename_v_sum"] = att_v_sum
+        provided_n = post_n
+        attach_sum_match = bool(
+            att_v_sum
+            and (
+                _count_matches(member_n, int(att_v_sum))
+                or _count_matches(provided_n, int(att_v_sum))
+            )
+        )
+        title_match = bool(
+            expect_pieces_a is not None
+            and (
+                _count_matches(member_n, expect_pieces_a)
+                or _count_matches(provided_n, expect_pieces_a)
+            )
+        )
+
+        if expect_pieces_a is None and not att_v_sum:
             tags.append("info:no_quota_skip_count")
-        elif _count_matches(member_n, expect_pieces_a) or _count_matches(
-            post_n, expect_pieces_a
-        ):
+        elif title_match:
             tags.append("info:piece_count_match")
             metrics["piece_count_match"] = True
-            if post_n > member_n and not _count_matches(member_n, expect_pieces_a):
+            if provided_n > member_n and not _count_matches(member_n, expect_pieces_a):
                 tags.append("info:post_links_fill_quota")
+        elif attach_sum_match:
+            # 全部附件文件名 Nv 合计 = 实链（tid=2178766：96v 对齐 96），标题更高 → 虚标软过
+            tags.append("info:piece_count_match")
+            tags.append("info:attach_filename_v_match")
+            metrics["piece_count_match"] = True
+            if expect_pieces_a is not None:
+                tags.append("info:title_quota_overclaim_soft")
+                tags.append("info:pack_quota_soft")
+        elif (
+            att_v_sum
+            and provided_n < int(att_v_sum)
+            and not _count_matches(provided_n, int(att_v_sum))
+        ):
+            # 附件文件名宣称合计 > 实得链 → 更像漏下分卷，待核
+            src_zh = "附件" if spec.source == "attach" else "正文"
+            msg = (
+                f"附件文件名合计{att_v_sum}份，{src_zh}实得链数仅{provided_n}"
+                f"（漏链，待核）"
+            )
+            if expect_pieces_a is not None:
+                msg = (
+                    f"标题写{expect_pieces_a}配额·附件名合计{att_v_sum}份，"
+                    f"{src_zh}实得链数仅{provided_n}（漏链，待核）"
+                )
+            _note(
+                tags,
+                soft,
+                "warn:piece_count_mismatch_attach_short",
+                msg,
+                cause="parse",
+            )
+            tags.append("info:attach_links_short_of_filename_v")
+        elif expect_pieces_a is None:
+            tags.append("info:no_quota_skip_count")
         else:
             quota_src = piece_unit_a or "标题"
             src_zh = "附件" if spec.source == "attach" else "正文"
             msg = (
-                f"{quota_src}写{expect_pieces_a}配额，{src_zh}提供链数仅{post_n}"
+                f"{quota_src}写{expect_pieces_a}配额，{src_zh}提供链数仅{provided_n}"
                 f"（漏链，待核）"
             )
+            if att_v_sum:
+                msg = (
+                    f"{quota_src}写{expect_pieces_a}配额·附件名合计{att_v_sum}份，"
+                    f"{src_zh}提供链数仅{provided_n}（漏链，待核）"
+                )
             code = "warn:piece_count_mismatch_soft"
             if _CLOUD_SHARE_IN_TITLE_RE.search(pack_blob or ""):
                 code = "warn:piece_count_mismatch_cloud"
                 tags.append("info:cloud_quota_soft")
-            elif post_n < int(expect_pieces_a):
+            elif provided_n < int(expect_pieces_a):
                 code = "warn:piece_count_mismatch_title_over"
                 tags.append("info:title_quota_overclaim_soft")
                 # 压缩包单链：标题 N配额 ≠ 漏链（包内多份/115额度口径）

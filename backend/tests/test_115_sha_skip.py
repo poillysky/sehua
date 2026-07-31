@@ -64,6 +64,49 @@ def test_should_skip_as_115sha_only_skips_regex_when_magnet_present():
     assert time.perf_counter() - t0 < 0.2
 
 
+def test_attach_denied_with_115sha_corpus_stubs_not_115sha_skip():
+    """附件无权时即使语料含 115://（115sha），应占位；与文件名是否 115ed2k 无关。"""
+    html = """
+    <html><head><title>【ED2K】【整理】PKF合集【15V/15配额】 - 论坛</title></head>
+    <body>
+    <div id="postmessage_1">链接见附件</div>
+    <div class="tattl"><ignore_js_op>
+      <a href="forum.php?mod=attachment&aid=1">目录树.txt</a>
+      <a href="forum.php?mod=attachment&aid=2">合集 115ed2k.txt</a>
+    </ignore_js_op></div>
+    Powered by Discuz!
+    </body></html>
+    """
+    html = html + ("x" * 15000)
+    html2 = inject_attachment_text(html, SAMPLE_115)
+    out = judge_thread_html(
+        html2,
+        board_fid="95:716",
+        forum_id="sehuatang",
+        list_title="【ED2K】【整理】PKF合集【15V/15配额】",
+        preferred_link="ed2k",
+        tid=2543692,
+        attachments_already_tried=True,
+        attachment_denied=True,
+        had_attachments=True,
+    )
+    assert out.verdict == "stub"
+    assert out.outcome == "附件无权（占位入库）"
+
+
+def test_115ed2k_title_never_counts_as_115sha():
+    """【115ed2k】是电驴标，不得按 115sha 标题跳过。"""
+    from parsers.thread_gates import (
+        title_has_115ed2k_hint,
+        title_is_115sha_without_ed2k_magnet,
+    )
+
+    assert title_has_115ed2k_hint("【自转】【115eD2k】示例") is True
+    assert title_is_115sha_without_ed2k_magnet("【自转】【115eD2k】示例") is False
+    assert title_is_115sha_without_ed2k_magnet("【115sha1】【115ed2k】并存") is False
+    assert title_is_115sha_without_ed2k_magnet("【115sha1】仅 sha") is True
+
+
 def test_judge_skips_bare_sha1_attach_corpus():
     """附件解出无协议头 sha1 管线 → 115sha 跳过（勿落成「未解析到」）。"""
     html = """
@@ -189,6 +232,7 @@ def test_title_115sha_only_skips_without_trying_attachments():
     assert title_is_115sha_without_ed2k_magnet("【115SHA1】欧美合集 37V") is True
     assert title_is_115sha_without_ed2k_magnet("【sha1】(fc3046937) 回収") is True
     assert title_is_115sha_without_ed2k_magnet("【115sha1】【ed2k】合集") is False
+    assert title_is_115sha_without_ed2k_magnet("【115eD2k】合集") is False
     assert title_is_115sha_without_ed2k_magnet("【磁力】合集") is False
 
     html = """

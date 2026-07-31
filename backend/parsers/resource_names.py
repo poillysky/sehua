@@ -924,7 +924,16 @@ def _is_media_capacity_labeled_field(matched: str) -> bool:
 
 def clip_subresource_display_name(text: str | None) -> str:
     """公开入口：清洗子资源展示名（结构尾巴 / 演职员元数据 / 前导破折号）。"""
-    return _clip_filename_structure_tail(text)
+    import re
+
+    raw = (text or "").strip()
+    if not raw:
+        return ""
+    # 入库前再剥一次残缺 HTML（切块偶发漏网）
+    raw = re.sub(r"<[^>]*>", " ", raw)
+    raw = re.sub(r"</?[A-Za-z][^<\n]*", " ", raw)
+    raw = re.sub(r"\s+", " ", raw).strip()
+    return _clip_filename_structure_tail(raw)
 
 
 # 国产原创常见：把结构字段整段塞进帖标题

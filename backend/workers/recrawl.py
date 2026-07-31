@@ -316,6 +316,7 @@ async def _open_forum_session(
         conn.close()
     session = session_from_config(
         forum_cfg,
+        proxy=str(forum_cfg.get("web_crawler_proxy") or "").strip(),
         cookie_override=cookie_override,
         account_jar=account_jar,
         forum_id=forum_id,
@@ -323,7 +324,11 @@ async def _open_forum_session(
     entries = resolve_forum_entry_urls(forum_cfg, forum_id)
     probe = bootstrap_probe_for_forum(forum_cfg, forum_id)
     await session.bootstrap(entry_urls=entries or None, probe_url=probe)
-    fetcher = fetcher_from_config(session, forum_cfg)
+    fetcher = fetcher_from_config(
+        session,
+        forum_cfg,
+        proxy=str(forum_cfg.get("web_crawler_proxy") or "").strip(),
+    )
     return forum_cfg, session, fetcher
 
 
@@ -692,11 +697,19 @@ async def recrawl_imported_resources(hashes: list[str]) -> dict[str, Any]:
                 forum_cfg = _load_crawler_cfg(conn_cfg, forum_id)
             finally:
                 conn_cfg.close()
-            session = session_from_config(forum_cfg, forum_id=forum_id)
+            session = session_from_config(
+                forum_cfg,
+                forum_id=forum_id,
+                proxy=str(forum_cfg.get("web_crawler_proxy") or "").strip(),
+            )
             entries = resolve_forum_entry_urls(forum_cfg, forum_id)
             probe = bootstrap_probe_for_forum(forum_cfg, forum_id)
             await session.bootstrap(entry_urls=entries or None, probe_url=probe)
-            fetcher = fetcher_from_config(session, forum_cfg)
+            fetcher = fetcher_from_config(
+                session,
+                forum_cfg,
+                proxy=str(forum_cfg.get("web_crawler_proxy") or "").strip(),
+            )
             try:
                 for i, prepared in enumerate(items):
                     if THROTTLE.should_stop():

@@ -107,6 +107,29 @@ async def lifespan(_app: FastAPI):
         raise
 
     try:
+        from crawler.cf_bypass import (
+            DEFAULT_FLARESOLVERR_URL,
+            apply_flaresolverr_setting,
+            normalize_flaresolverr_url,
+        )
+        from db.settings_store import get_setting, set_setting
+
+        conn = connect()
+        try:
+            flare = normalize_flaresolverr_url(
+                get_setting(conn, "flaresolverr_url", "")
+            )
+            if not flare:
+                flare = DEFAULT_FLARESOLVERR_URL
+                set_setting(conn, "flaresolverr_url", flare)
+            apply_flaresolverr_setting(flare)
+            logger.info("FlareSolverr setting: %s", flare)
+        finally:
+            conn.close()
+    except Exception:
+        logger.exception("FlareSolverr setting load failed")
+
+    try:
         if using_separate_resource_db():
             # 独立资源库：空库补齐资源表；已有库只跑未应用的加性迁移
             from db.migrate import ensure_resource_db_schema

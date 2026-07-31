@@ -82,3 +82,84 @@ def test_attach_short_quota_is_soft_review():
     out = format_frame_outcome("成功：附件解析出目标链接", frame)
     assert out.startswith("不合格：待核")
     assert any("附件" in w and ("不一致" in w or "待核" in w) for w in frame.verdict.soft_warnings)
+
+
+def test_attach_filename_v_sum_matches_links_not_review():
+    """全部可用附件名 Nv 合计=实链；标题更高配额 → 按附件合计对齐，勿待核。
+
+    tid=2178766：标题 589配额，主附件 96v，实链 96（备用/封面不计 Nv）。
+    """
+    title = "【自整理】【磁力】Emily.Thorne【589v/577g/589配额】"
+    sz = 10 * 1024 * 1024
+    assets = [
+        ParsedAsset(
+            link_kind="magnet",
+            hash=f"{i:040X}",
+            filename=title,
+            size=sz,
+            uri=f"magnet:?xt=urn:btih:{i:040x}",
+            preview_images=["http://a.jpg"] if i == 0 else [],
+        )
+        for i in range(96)
+    ]
+    parsed = DualParseResult(
+        tid=2178766,
+        title=title,
+        description="",
+        metadata={},
+        preview_images=["http://a.jpg"],
+        extract_password="",
+        assets=assets,
+        primary_link_kind="magnet",
+        layout="pack_attach_fast",
+        had_attachments=True,
+        attachment_names=[
+            "www.98T.la  Emily.Thorne  备用链接，离线失败.txt",
+            "封面女优.txt",
+            "www.98T.la  Emily.Thorne  96v .txt",
+        ],
+    )
+    frame = build_resource_frame(
+        parsed,
+        named_groups=[(title, assets[0], assets)],
+        had_attachments=True,
+    )
+    assert frame.verdict.metrics.get("attach_filename_v_sum") == 96
+    assert "info:attach_filename_v_match" in frame.verdict.tags
+    assert "info:piece_count_match" in frame.verdict.tags
+    assert "info:pack_quota_soft" in frame.verdict.tags
+    out = format_frame_outcome("成功：附件解析出目标链接", frame)
+    assert out.startswith("成功")
+    assert "不合格：待核" not in out
+
+
+def test_attach_filename_v_sum_short_of_links_is_review():
+    """附件名合计 100，实得仅 40 → 漏下分卷，待核。"""
+    title = "合集【100配额】"
+    sz = 10 * 1024 * 1024
+    assets = [
+        _ed2k(f"{i:032X}", f"v{i}.mp4", sz, prev=(i == 0)) for i in range(40)
+    ]
+    parsed = DualParseResult(
+        tid=2,
+        title=title,
+        description="",
+        metadata={},
+        preview_images=["http://a.jpg"],
+        extract_password="",
+        assets=assets,
+        primary_link_kind="ed2k",
+        layout="pack_attach_fast",
+        had_attachments=True,
+        attachment_names=["A 60v.txt", "B 40v.txt"],
+    )
+    frame = build_resource_frame(
+        parsed,
+        named_groups=[(title, assets[0], assets)],
+        had_attachments=True,
+    )
+    assert frame.verdict.metrics.get("attach_filename_v_sum") == 100
+    assert "info:attach_links_short_of_filename_v" in frame.verdict.tags
+    out = format_frame_outcome("成功：附件解析出目标链接", frame)
+    assert out.startswith("不合格：待核")
+    assert any("附件文件名合计" in w or "附件名合计" in w for w in frame.verdict.soft_warnings)

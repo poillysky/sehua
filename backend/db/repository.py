@@ -1020,7 +1020,8 @@ def update_board_meta_by_tids(
 ACCOUNT_STUB_OUTCOMES: tuple[str, ...] = (
     "帖子需论坛登录",
     "无阅读权限 · 占位入库",
-    "无权限下载附件",
+    "附件无权（占位入库）",
+    "无权限下载附件",  # 旧文案，账号队列仍捞
     "0元购买贴",
 )
 
@@ -1087,7 +1088,7 @@ def list_priority_account_stubs(
     reason: str | None = None,
     forum_id: str | None = None,
 ) -> list[dict[str, Any]]:
-    """捞出需登录 / 无阅读权限 / 无权限下载附件的占位帖，供账号重爬。"""
+    """捞出需登录 / 无阅读权限 / 附件无权占位帖，供账号重爬。"""
     _ensure_resource_schema(conn)
     n = max(1, int(limit or 1))
     off = max(0, int(offset or 0))
@@ -1720,7 +1721,8 @@ def list_frame_fail_posts(
     from db.queue import tid_from_url
 
     _ensure_resource_schema(conn)
-    n = max(1, min(200, int(limit or 50)))
+    # 批量重爬/全选会要到数千条；旧硬顶 200 会漏掉较旧多资源不合格帖
+    n = max(1, min(5000, int(limit or 50)))
     off = max(0, int(offset or 0))
     where_sql, params = _frame_fail_where(status=status, forum_id=forum_id)
     text = (q or "").strip()
@@ -1923,6 +1925,77 @@ def list_frame_fail_tids(
             continue
         seen.add(n)
         out.append({"tid": n, "hash": hash_key, "source_url": row.get("source_url") or ""})
+    return out
+
+
+def resolve_frame_fail_hashes_by_tids(
+    conn: Any,
+    tids: list[int],
+    *,
+    forum_id: str | None = None,
+) -> list[dict[str, Any]]:
+    """按 tid 直接解析不合格帖代表 hash（不依赖明细分页，避免漏掉较旧多资源帖）。
+
+    每帖只取一条 hash（同帖重爬会整帖覆盖，无需按子资源逐个 hash）。
+    """
+    from db.queue import tid_from_url
+
+    clean = sorted({int(t) for t in tids if t is not None and int(t) > 0})
+    if not clean:
+        return []
+    _ensure_resource_schema(conn)
+    focus = (forum_id or "").strip()
+    forum_sql = ""
+    forum_params: list[Any] = []
+    if focus:
+        forum_sql = "AND COALESCE(NULLIF(BTRIM(forum_id), ''), 'sehuatang') = %s"
+        forum_params = [focus]
+    out: list[dict[str, Any]] = []
+    seen_tid: set[int] = set()
+    with conn.cursor() as cur:
+        for tid in clean:
+            cur.execute(
+                f"""
+                SELECT BTRIM(source_url) AS source_url, hash
+                FROM resource_sources
+                WHERE NULLIF(BTRIM(COALESCE(source_url, '')), '') IS NOT NULL
+                  AND (
+                    import_outcome LIKE %s
+                    OR import_outcome LIKE %s
+                    OR import_outcome LIKE %s
+                  )
+                  {forum_sql}
+                  AND (
+                    source_url LIKE %s
+                    OR source_url LIKE %s
+                    OR source_url LIKE %s
+                  )
+                ORDER BY created_at DESC NULLS LAST
+                LIMIT 8
+                """,
+                (
+                    "不合格%",
+                    "待核：%",
+                    "待核:%",
+                    *forum_params,
+                    f"%thread-{tid}-%",
+                    f"%tid={tid}%",
+                    f"%tid={tid}&%",
+                ),
+            )
+            for source_url, hash_key in cur.fetchall() or []:
+                url = str(source_url or "").strip()
+                h = str(hash_key or "").strip()
+                if len(h) < 8 or not url:
+                    continue
+                # 防 LIKE 误伤 tid=34198200
+                if tid_from_url(url) != tid:
+                    continue
+                if tid in seen_tid:
+                    break
+                seen_tid.add(tid)
+                out.append({"tid": tid, "hash": h, "source_url": url})
+                break
     return out
 
 

@@ -30,6 +30,14 @@ SKIP_NO_ACCESS_NO_TITLE = "无阅读权限（无有效标题，跳过）"
 SKIP_PURCHASE = "需购买贴（跳过）"
 SKIP_LOGIN_NO_TITLE = "需登录（无有效标题，跳过）"
 
+# 附件无权占位（账号可重爬）；含 Discuz「只有特定用户可以下载本站附件」
+STUB_ATTACH_DENIED = "附件无权（占位入库）"
+# 旧文案（库内历史行 / 账号队列仍认）
+STUB_ATTACH_DENIED_LEGACY = "无权限下载附件"
+
+# 附件 404 / Not Found / 0 字节空壳 → 跳过（勿重试、勿占位）
+SKIP_ATTACH_EMPTY = "附件为空跳过"
+
 # 旧「网盘（跳过）：盘名」前缀（曾用，归并时识别）
 _LEGACY_CLOUD_PREFIX = "网盘（跳过）"
 

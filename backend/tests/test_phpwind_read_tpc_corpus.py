@@ -66,4 +66,4 @@ def test_attachment_group_denied_stubs():
         _ATTACH_DENIED, board_fid="318", forum_id="2048", preferred_link="magnet", tid=2
     )
     assert out.verdict == "stub"
-    assert "无权限下载附件" in (out.outcome or "")
+    assert "附件无权（占位入库）" in (out.outcome or "")

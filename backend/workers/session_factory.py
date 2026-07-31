@@ -165,6 +165,7 @@ def session_from_config(
     cookie_override：显式 Cookie（账号批次传入）。
     account_jar=True：读写 cookies_account.json，与普通爬虫 jar 隔离。
     forum_id：选择站点适配器的 cookie 文件与域名。
+    proxy：空则回落 cfg.web_crawler_proxy（与通用设置 / 连续调度一致）。
     """
     adapter = get_site_adapter(forum_id)
     ua = str(cfg.get("web_crawler_ua") or "").strip() or DEFAULT_UA
@@ -176,10 +177,11 @@ def session_from_config(
     else:
         cookie_file = adapter.cookie_file()
     domains = adapter.cookie_domains(entry0)
+    proxy_eff = (proxy or str(cfg.get("web_crawler_proxy") or "") or "").strip()
     session = SessionManager(
         user_agent=ua,
         cookie_file=cookie_file,
-        proxy=proxy,
+        proxy=proxy_eff,
         cookie_domains=domains,
     )
     if cookie_override is not None:
@@ -205,7 +207,13 @@ def fetcher_from_config(
     proxy: str = "",
 ) -> Fetcher:
     timeout = float(cfg.get("web_crawler_timeout") or 30)
-    return Fetcher(session, timeout=max(5.0, timeout), proxy=proxy or session.proxy)
+    proxy_eff = (
+        proxy
+        or getattr(session, "proxy", "")
+        or str(cfg.get("web_crawler_proxy") or "")
+        or ""
+    ).strip()
+    return Fetcher(session, timeout=max(5.0, timeout), proxy=proxy_eff)
 
 
 def bootstrap_start_url(cfg: dict[str, Any], forum_id: str = "", *, proxy: str = "") -> str:

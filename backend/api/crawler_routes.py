@@ -1227,9 +1227,8 @@ async def post_frame_fail_recrawl_tids(
     _user: dict = Depends(require_permission("crawl.run")),
 ) -> dict:
     """勾选的不合格帖：按代表 hash 走已入库重爬（空闲后台抓；连续调度则入队）。"""
-    from db.queue import tid_from_url
-    from db.repository import list_frame_fail_posts
     from db.resource_db import connect_resource
+    from db.repository import resolve_frame_fail_hashes_by_tids
     from workers.recrawl import recrawl_imported_resources
     from workers.runner import recover_stuck_after_stop
 
@@ -1251,31 +1250,39 @@ async def post_frame_fail_recrawl_tids(
         raise HTTPException(status_code=400, detail="请至少选择一条有效 tid")
 
     focus = _resolve_crawler_forum_id()
-    want_set = set(want)
     rconn = connect_resource()
     try:
-        # 拉足够多的不合格帖，再按 tid 命中（通常不合格量远小于 5000）
-        catalog = list_frame_fail_posts(
-            rconn, status="all", forum_id=focus, limit=5000, offset=0
+        # 按 tid 直查代表 hash（单选/多选同一路径；勿扫明细分页，旧硬顶会漏掉较旧帖）
+        resolved = resolve_frame_fail_hashes_by_tids(
+            rconn, want, forum_id=focus
         )
+        # 焦点论坛过滤落空时再放宽一次，避免「列表能看见、重爬却报不在不合格」
+        if not resolved and focus:
+            resolved = resolve_frame_fail_hashes_by_tids(
+                rconn, want, forum_id=None
+            )
     finally:
         rconn.close()
 
     hashes: list[str] = []
     seen_h: set[str] = set()
     matched = 0
-    for row in catalog:
-        tid = int(row.get("tid") or tid_from_url(str(row.get("source_url") or "")) or 0)
+    for row in resolved:
         h = str(row.get("hash") or "").strip()
-        if tid not in want_set or len(h) < 8 or h in seen_h:
+        if len(h) < 8 or h in seen_h:
             continue
         seen_h.add(h)
         hashes.append(h)
         matched += 1
     if not hashes:
+        sample = "、".join(str(t) for t in want[:5])
+        more = f" 等 {len(want)} 条" if len(want) > 5 else ""
         raise HTTPException(
             status_code=400,
-            detail="所选 tid 均不在不合格列表（可能已重爬合格）",
+            detail=(
+                f"所选 tid（{sample}{more}）当前库中无不合格/待核 outcome"
+                "（可能已重爬合格，或未写入 resource_sources）"
+            ),
         )
 
     if body.start_crawl is False:

@@ -516,3 +516,82 @@ def test_replace_keeps_writable_not_group_primary(monkeypatch):
     assert out["count"] == 1
     assert purged[0] == {"B" * 40}
     assert name_row_hash(mine, name) not in purged[0]
+
+
+def test_heart_vs_and_html_tail_not_false_multi():
+    """tid=3419820：单【资源名称】+2配额；❤/❤️ 与 <font 残片勿拆成多资源。"""
+    clean = (
+        "【自转】【百度/115eD2k】 ❤ 4月最新 ❤ 027绿帽「西安小白杨」23部 "
+        "丰乳肥臀骚妻被小鲜肉单男前后夹击 ✚ ❤stripchat❤校花美女Abiutmm "
+        "乳夹 窥阴 倒刺阳具喷水 【24V/2.01G/2配额】"
+    )
+    dirty = (
+        "【自转】【百度/115eD2k】 ❤️ 4月最新 ❤️ 027绿帽「西安小白杨」23部 "
+        "丰乳肥臀骚妻被小鲜肉单男前后夹击 ✚ ❤️stripchat❤️校花美女Abiutmm "
+        "乳夹 窥阴 倒刺阳具喷水 【24V/2.01G/2配额】 <font size=\"2"
+    )
+    assets = [
+        ParsedAsset(
+            link_kind="ed2k",
+            hash="4BE3D553D076AB2E66D9DA27B7DA0E88",
+            filename=clean,
+            size=1678819064,
+            uri=(
+                "ed2k://|file|www.98T.la@stripchat.zip|1678819064|"
+                "4BE3D553D076AB2E66D9DA27B7DA0E88|/"
+            ),
+            is_primary=True,
+            description="【资源名称】：" + clean + "\n【资源大小】：24V/2.01G/2配额",
+        ),
+        ParsedAsset(
+            link_kind="ed2k",
+            hash="3B8E34B1F4BBF80FAAEB513DF70E13DE",
+            filename=dirty,
+            size=487911731,
+            uri=(
+                "ed2k://|file|www.98T.la@xian.zip|487911731|"
+                "3B8E34B1F4BBF80FAAEB513DF70E13DE|/"
+            ),
+        ),
+    ]
+    title = clean.replace(" ", "")
+    parsed = _parsed(*assets, title=title)
+    parsed.description = "【资源名称】：" + clean + "\n【资源大小】：24V/2.01G/2配额"
+    parsed.layout = "title_then_magnet"
+    frame = persist_mod.build_parse_frame(parsed, post_title=title)
+    assert frame is not None
+    assert frame.kind == "single"
+    assert len(frame.rows) == 1
+    assert "<font" not in (frame.rows[0].filename or "")
+    assert "形态:多资源" not in persist_mod.preview_frame_outcome(
+        parsed, post_title=title
+    )
+
+
+def test_one_name_card_forces_single_even_if_ed2k_names_differ():
+    """人一眼：只有一张【资源名称】卡片 → 两条不同 zip 名也是单资源多链。"""
+    pack = "合集包名【24V/2.01G/2配额】"
+    assets = [
+        ParsedAsset(
+            link_kind="ed2k",
+            hash="A" * 32,
+            filename="www.98T.la@甲.zip",
+            size=100,
+            uri="ed2k://|file|www.98T.la@甲.zip|100|" + "A" * 32 + "|/",
+            is_primary=True,
+        ),
+        ParsedAsset(
+            link_kind="ed2k",
+            hash="B" * 32,
+            filename="www.98T.la@乙.zip",
+            size=50,
+            uri="ed2k://|file|www.98T.la@乙.zip|50|" + "B" * 32 + "|/",
+        ),
+    ]
+    parsed = _parsed(*assets, title=pack)
+    parsed.description = f"【资源名称】：{pack}\n【文件大小】：24V/2.01G/2配额"
+    frame = persist_mod.build_parse_frame(parsed, post_title=pack)
+    assert frame is not None
+    assert frame.kind == "single"
+    assert len(frame.rows) == 1
+    assert len(frame.rows[0].links) == 2

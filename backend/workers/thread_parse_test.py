@@ -241,9 +241,13 @@ async def parse_thread_for_admin(
                 attach_res.failed
                 and not attach_res.downloaded
                 and not getattr(attach_res, "empty_torrent", False)
+                and not getattr(attach_res, "empty_attachment", False)
             )
             attachment_empty_torrent = bool(
                 getattr(attach_res, "empty_torrent", False)
+            )
+            attachment_empty_attachment = bool(
+                getattr(attach_res, "empty_attachment", False)
             )
             attachment_downloaded = attach_res.downloaded
             attachment_text = attach_res.text or ""
@@ -268,13 +272,14 @@ async def parse_thread_for_admin(
                     attachment_login_required=attachment_login_required,
                     attachment_failed=attachment_failed,
                     attachment_empty_torrent=attachment_empty_torrent,
+                    attachment_empty_attachment=attachment_empty_attachment,
                     had_attachments=attachment_downloaded or bool(attachment_text),
                     preferred_link=preferred_link,
                 )
                 # 双链/磁力：种子失败再试 Excel/文本；电驴板：txt/zip/excel 无果再试种子
-                _empty_tor_skip = (
-                    outcome.verdict == "skipped"
-                    and "种子大小为0" in str(outcome.outcome or "")
+                _empty_tor_skip = outcome.verdict == "skipped" and any(
+                    x in str(outcome.outcome or "")
+                    for x in ("种子大小为0", "附件为空跳过")
                 )
                 if (
                     (
@@ -309,9 +314,14 @@ async def parse_thread_for_admin(
                         attach_res2.failed
                         and not attach_res2.downloaded
                         and not getattr(attach_res2, "empty_torrent", False)
+                        and not getattr(attach_res2, "empty_attachment", False)
                     )
                     attachment_empty_torrent = attachment_empty_torrent or bool(
                         getattr(attach_res2, "empty_torrent", False)
+                    )
+                    attachment_empty_attachment = (
+                        attachment_empty_attachment
+                        or bool(getattr(attach_res2, "empty_attachment", False))
                     )
                     attachment_downloaded = attachment_downloaded or attach_res2.downloaded
                     if attach_res2.text and should_skip_as_115sha_only(attach_res2.text):
@@ -337,6 +347,7 @@ async def parse_thread_for_admin(
                             attachment_login_required=attachment_login_required,
                             attachment_failed=attachment_failed,
                             attachment_empty_torrent=False,
+                            attachment_empty_attachment=False,
                             had_attachments=True,
                             preferred_link=preferred_link,
                         )
@@ -350,6 +361,18 @@ async def parse_thread_for_admin(
                             attachment_login_required=attachment_login_required,
                             attachment_failed=attachment_failed,
                             attachment_empty_torrent=attachment_empty_torrent,
+                            attachment_empty_attachment=attachment_empty_attachment,
+                            had_attachments=attachment_downloaded or bool(attachment_text),
+                            preferred_link=preferred_link,
+                        )
+                    elif attachment_empty_attachment or attachment_empty_torrent:
+                        outcome = judge_thread_html(
+                            html,
+                            board_fid=board_fid_int,
+                            soft_browser_retried=soft_browser_retried,
+                            attachments_already_tried=True,
+                            attachment_empty_torrent=attachment_empty_torrent,
+                            attachment_empty_attachment=attachment_empty_attachment,
                             had_attachments=attachment_downloaded or bool(attachment_text),
                             preferred_link=preferred_link,
                         )

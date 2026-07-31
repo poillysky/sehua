@@ -1117,7 +1117,13 @@ export function CrawlerPage() {
     }
     const isFrameFail = queueModal === 'frame_fail'
     const ok = await confirmDialog({
-      title: isFrameFail ? '不合格批量重爬' : '批量重爬',
+      title: isFrameFail
+        ? tids.length === 1
+          ? '不合格重爬'
+          : '不合格批量重爬'
+        : tids.length === 1
+          ? '重爬'
+          : '批量重爬',
       message: isFrameFail
         ? `将按已入库路径重爬选中的 ${tids.length} 条不合格帖（同帖覆盖写入）。连续调度开启时仅入队。确定？`
         : `将直接重爬选中的 ${tids.length} 条未入库帖（失败＝未见正文 / 跳过＝见正文不入库）。连续调度开启时仅入队。确定？`,

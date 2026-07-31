@@ -332,13 +332,21 @@ class Fetcher:
             self.last_cf_solved = True
             log.info("CF solved via FlareSolverr: %s", url)
             try:
-                from crawler.pw_runtime import run_on_pw_loop
-
-                await run_on_pw_loop(
-                    self.session._set_context_cookies(dict(self.session.cookies))
+                # clearance 与 FlareSolverr UA 绑定：必须重建浏览器上下文，否则附件下不了
+                await self.session.rebind_browser_identity(
+                    user_agent=self.session.user_agent,
+                    cookies=dict(self.session.cookies),
                 )
-            except Exception:
-                pass
+            except Exception as exc:
+                log.warning("Rebind browser after FlareSolverr failed: %s", exc)
+                try:
+                    from crawler.pw_runtime import run_on_pw_loop
+
+                    await run_on_pw_loop(
+                        self.session._set_context_cookies(dict(self.session.cookies))
+                    )
+                except Exception:
+                    pass
             return solved
 
         # 2) Playwright 整页导航 + 等待（交互式缩短，避免空等 45s）

@@ -351,7 +351,7 @@ def test_judge_stubs_when_second_attachment_denied():
         preferred_link="ed2k",
     )
     assert out.verdict == "stub"
-    assert out.outcome == "无权限下载附件"
+    assert out.outcome == "附件无权（占位入库）"
 
 
 def test_judge_tries_attachments_when_html_has_decoy_ed2k():
@@ -392,7 +392,7 @@ def test_judge_tries_attachments_when_html_has_decoy_ed2k():
         had_attachments=False,
     )
     assert denied.verdict == "stub"
-    assert denied.outcome == "无权限下载附件"
+    assert denied.outcome == "附件无权（占位入库）"
 
 
 def test_ed2k_board_picks_torrent_when_only_torrent_attach():
@@ -586,7 +586,7 @@ def test_filter_all_link_attachments_order_and_limit():
 
 
 def test_filter_all_link_attachments_prefers_115_name():
-    """文件名含 115 的附件优先于同类型其它文件。"""
+    """文件名含 115 / 115ed2k 的附件优先于同类型其它文件。"""
     from parsers.attachments import filter_all_link_attachments, DownloadAttachment
 
     atts = [
@@ -603,6 +603,25 @@ def test_filter_all_link_attachments_prefers_115_name():
     assert "百度网盘下载链接.txt" in names
     assert names.index("115ED2K下载链接.txt") < names.index("百度网盘下载链接.txt")
     assert names.index("115备份.zip") < names.index("other.zip")
+
+
+def test_filter_ed2k_board_prefers_115ed2k_over_115sha_name():
+    """电驴板：115ed2k 与 115sha 分档，勿先下 sha 名附件。"""
+    from parsers.attachments import filter_all_link_attachments, DownloadAttachment
+
+    atts = [
+        DownloadAttachment("合集_115sha1.txt", "u", "txt"),
+        DownloadAttachment("防失效备用版.txt", "u", "txt"),
+        DownloadAttachment("合集 115ed2k.txt", "u", "txt"),
+        DownloadAttachment("目录树.txt", "u", "txt"),
+    ]
+    got = filter_all_link_attachments(atts, preferred_link="ed2k")
+    names = [a.name for a in got]
+    assert names[0] == "合集 115ed2k.txt"
+    assert names.index("合集 115ed2k.txt") < names.index("防失效备用版.txt")
+    assert names.index("防失效备用版.txt") < names.index("合集_115sha1.txt")
+    # 目录树仍在末尾
+    assert names[-1] == "目录树.txt"
 
 
 def test_filter_all_link_attachments_prefers_yifen_name():
@@ -769,32 +788,40 @@ def test_nested_zip_prefers_excel_magnet_over_115_txt():
     assert "115://" not in text
 
 
-def test_push_member_text_stops_on_magnet():
+def test_push_member_text_appends_all():
     from crawler.attachments import _push_member_text
 
     chunks: list[str] = []
-    assert _push_member_text(chunks, "only 115sha noise") is None
-    early = _push_member_text(
+    _push_member_text(chunks, "only 115sha noise")
+    _push_member_text(
         chunks,
         "magnet:?xt=urn:btih:dddddddddddddddddddddddddddddddddddddddd",
     )
-    assert early is not None
-    assert "magnet:?xt=urn:btih:" in early
+    assert len(chunks) == 2
+    assert "magnet:?xt=urn:btih:" in chunks[1]
 
 
-def test_zip_stops_after_first_member_with_magnet():
-    """压缩包内先遇到目标链即可返回，不必扫完后续成员。"""
-    from crawler.attachments import _extract_txt_from_archive
+def test_zip_merges_all_members_with_magnet():
+    """同包多分卷 txt 必须全部合并（tid=2204368：早停会漏第二份）。"""
+    from crawler.attachments import _count_importable_links, _extract_txt_from_archive
+    from parsers.resource_frame import count_post_quota_links
 
+    m1 = "\n".join(
+        f"magnet:?xt=urn:btih:{i:040x}&dn=" for i in range(1, 4)
+    )
+    m2 = "\n".join(
+        f"magnet:?xt=urn:btih:{i:040x}&dn=" for i in range(10, 12)
+    )
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w") as z:
-        z.writestr(
-            "1.txt",
-            "magnet:?xt=urn:btih:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
-        )
-        z.writestr("2.txt", "should not be required\n" + ("noise\n" * 200))
+        z.writestr("part_incomplete.txt", m1)
+        z.writestr("part_rest.txt", m2)
+        z.writestr("readme.txt", "no links here")
     text = _extract_txt_from_archive(buf.getvalue(), "zip")
-    assert "magnet:?xt=urn:btih:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee" in text
+    assert count_post_quota_links(text) == 5
+    assert _count_importable_links(text) == 5
+    assert f"{1:040x}" in text
+    assert f"{11:040x}" in text
 
 
 def test_oversized_attachment_bytes_skipped():
@@ -1074,7 +1101,7 @@ def test_attach_preferred_denied_stubs_not_body_import():
         had_attachments=False,
     )
     assert out.verdict == "stub"
-    assert out.outcome == "无权限下载附件"
+    assert out.outcome == "附件无权（占位入库）"
 
 
 def test_password_in_attachment_text_fills_field_and_description():

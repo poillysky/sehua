@@ -54,7 +54,7 @@ def test_baidu_pan_with_tip_jar_skips_not_attach_stub():
     )
     assert out.verdict == "skipped"
     assert "百度" in (out.outcome or "")
-    assert "无权限下载附件" not in (out.outcome or "")
+    assert "附件无权（占位入库）" not in (out.outcome or "")
 
 
 def test_torrent_attach_with_tip_jar_tries_attachment():
@@ -112,11 +112,43 @@ def test_real_group_denied_still_stubs():
         tid=2,
     )
     assert out.verdict == "stub"
-    assert "无权限下载附件" in (out.outcome or "")
+    assert "附件无权（占位入库）" in (out.outcome or "")
+
+
+def test_discuz_specific_user_attach_tip_stubs():
+    """tid=2365987：Discuz「只有特定用户可以下载本站附件」→ 占位，勿跳过。"""
+    tip = (
+        "<html><head><title>提示信息</title></head><body>"
+        "<div>抱歉，只有特定用户可以下载本站附件</div>"
+        "<form>用户登录</form></body></html>"
+    )
+    assert is_attachment_denied(tip) is True
+
+    html = (
+        "<html><body>"
+        + (_PAD * 40)
+        + '<div id="postmessage_1">'
+        "【自转】demo<br>"
+        '<ignore_js_op><a href="forum.php?mod=attachment&aid=1">资源.txt</a></ignore_js_op>'
+        "</div></body></html>"
+    )
+    out = judge_thread_html(
+        html,
+        board_fid="95:716",
+        forum_id="sehuatang",
+        list_title="【自转】demo",
+        preferred_link="ed2k",
+        tid=2365987,
+        base_url="https://www.sehuatang.net/",
+        attachments_already_tried=True,
+        attachment_denied=True,
+    )
+    assert out.verdict == "stub"
+    assert out.outcome == "附件无权（占位入库）"
 
 
 def test_attach_download_login_tip_stubs_as_attach_denied():
-    """tid=27424341：附件直链落到「请先登录」提示页 → 占位「无权限下载附件」，勿跳过。"""
+    """tid=27424341：附件直链落到「请先登录」提示页 → 占位「附件无权（占位入库）」，勿跳过。"""
     tip = """
 <html><head><title>提示信息</title></head><body>
 <div class="f14">登录提示</div>
@@ -145,7 +177,7 @@ def test_attach_download_login_tip_stubs_as_attach_denied():
         attachment_login_required=True,
     )
     assert out.verdict == "stub"
-    assert out.outcome == "无权限下载附件"
+    assert out.outcome == "附件无权（占位入库）"
 
     # 有附件区已试仍无链（未带 denied 标志）也按无权占位，勿「未解析到…跳过」
     out2 = judge_thread_html(
@@ -159,7 +191,7 @@ def test_attach_download_login_tip_stubs_as_attach_denied():
         attachments_already_tried=True,
     )
     assert out2.verdict == "stub"
-    assert out2.outcome == "无权限下载附件"
+    assert out2.outcome == "附件无权（占位入库）"
 
 
 def test_attach_daily_limit_tip_is_denied():
@@ -194,7 +226,7 @@ def test_attach_daily_limit_tip_is_denied():
         attachment_denied=True,
     )
     assert out.verdict == "stub"
-    assert out.outcome == "无权限下载附件"
+    assert out.outcome == "附件无权（占位入库）"
 
 
 def test_login_tip_deep_in_html_still_detected():

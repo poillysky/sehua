@@ -61,6 +61,8 @@ class DualParseResult:
     quota_link_count: int = 0
     # 兼容旧字段：HTTP 媒体直链数
     http_media_count: int = 0
+    # 帖面附件文件名（含未下载的）；供额度对照「96v.txt」等口径
+    attachment_names: list[str] = field(default_factory=list)
 
     @property
     def search_string(self) -> str:
@@ -461,6 +463,17 @@ def parse_thread_dual(
     quota_n = count_post_quota_links(corpus)
     http_n = count_http_host_media_links(corpus)
 
+    att_names: list[str] = []
+    try:
+        from parsers.attachments import extract_download_attachments
+
+        for item in extract_download_attachments(base_url or "", html):
+            name = (item.name or "").strip()
+            if name and name not in att_names:
+                att_names.append(name)
+    except Exception:
+        att_names = []
+
     return DualParseResult(
         tid=content.tid or tid,
         title=content.title,
@@ -476,4 +489,5 @@ def parse_thread_dual(
         layout=layout,
         quota_link_count=quota_n,
         http_media_count=http_n,
+        attachment_names=att_names,
     )

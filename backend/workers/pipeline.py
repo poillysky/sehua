@@ -43,6 +43,7 @@ async def _judge_html(
     attachment_login_required: bool = False,
     attachment_failed: bool = False,
     attachment_empty_torrent: bool = False,
+    attachment_empty_attachment: bool = False,
     had_attachments: bool = False,
     attachment_text: str = "",
 ) -> ThreadOutcome:
@@ -58,6 +59,7 @@ async def _judge_html(
         "attachment_login_required": attachment_login_required,
         "attachment_failed": attachment_failed,
         "attachment_empty_torrent": attachment_empty_torrent,
+        "attachment_empty_attachment": attachment_empty_attachment,
         "had_attachments": had_attachments,
         "preferred_link": preferred_link,
         "forum_id": forum_id,
@@ -572,7 +574,13 @@ async def process_thread(
                             "tid=%s attach rejudge hit daily limit — keep body outcome",
                             tid,
                         )
-                elif attachment_text and should_skip_as_115sha_only(attachment_text):
+                elif (
+                    attachment_text
+                    and should_skip_as_115sha_only(attachment_text)
+                    and not attach_res.denied
+                    and not getattr(attach_res, "login_required", False)
+                ):
+                    # 附件无权时即使语料里有 115://（目录树/提示页）也勿抢先 115sha 跳过
                     if attach_plan.mode == "no_link":
                         log.info("tid=%s attachment has 115sha — skip", tid)
                         outcome = ThreadOutcome(
@@ -625,9 +633,13 @@ async def process_thread(
                             attachment_login_required=login_req,
                             attachment_failed=attach_res.failed
                             and not attach_res.downloaded
-                            and not getattr(attach_res, "empty_torrent", False),
+                            and not getattr(attach_res, "empty_torrent", False)
+                            and not getattr(attach_res, "empty_attachment", False),
                             attachment_empty_torrent=bool(
                                 getattr(attach_res, "empty_torrent", False)
+                            ),
+                            attachment_empty_attachment=bool(
+                                getattr(attach_res, "empty_attachment", False)
                             ),
                             had_attachments=attach_res.downloaded
                             or bool(attachment_text),
@@ -637,9 +649,9 @@ async def process_thread(
                             attachment_text=attachment_text if heavy_attach else "",
                         )
                     # 电驴板：txt/zip/excel 无果再试种子；磁力/双链：种子无果再试 txt/excel
-                    _empty_tor_skip = (
-                        outcome.verdict == "skipped"
-                        and "种子大小为0" in str(outcome.outcome or "")
+                    _empty_tor_skip = outcome.verdict == "skipped" and any(
+                        x in str(outcome.outcome or "")
+                        for x in ("种子大小为0", "附件为空跳过")
                     )
                     if (
                         not attach_queued
@@ -683,8 +695,13 @@ async def process_thread(
                                 outcome.link_kind,
                                 outcome.title or list_title,
                             )
-                        elif attach_res2.text and should_skip_as_115sha_only(
+                        elif (
                             attach_res2.text
+                            and should_skip_as_115sha_only(attach_res2.text)
+                            and not attach_res2.denied
+                            and not getattr(attach_res2, "login_required", False)
+                            and not attach_res.denied
+                            and not getattr(attach_res, "login_required", False)
                         ):
                             attachment_text = (
                                 attachment_text + "\n" + attach_res2.text
@@ -746,12 +763,22 @@ async def process_thread(
                                                 and not getattr(
                                                     attach_res, "empty_torrent", False
                                                 )
+                                                and not getattr(
+                                                    attach_res,
+                                                    "empty_attachment",
+                                                    False,
+                                                )
                                             )
                                             or (
                                                 attach_res2.failed
                                                 and not attach_res2.downloaded
                                                 and not getattr(
                                                     attach_res2, "empty_torrent", False
+                                                )
+                                                and not getattr(
+                                                    attach_res2,
+                                                    "empty_attachment",
+                                                    False,
                                                 )
                                             )
                                         )
@@ -760,11 +787,27 @@ async def process_thread(
                                             or getattr(
                                                 attach_res2, "empty_torrent", False
                                             )
+                                            or getattr(
+                                                attach_res, "empty_attachment", False
+                                            )
+                                            or getattr(
+                                                attach_res2, "empty_attachment", False
+                                            )
                                         )
                                     ),
                                     attachment_empty_torrent=bool(
                                         getattr(attach_res, "empty_torrent", False)
                                         or getattr(attach_res2, "empty_torrent", False)
+                                    )
+                                    and not (
+                                        attach_res2.downloaded
+                                        or bool(attachment_text)
+                                    ),
+                                    attachment_empty_attachment=bool(
+                                        getattr(attach_res, "empty_attachment", False)
+                                        or getattr(
+                                            attach_res2, "empty_attachment", False
+                                        )
                                     )
                                     and not (
                                         attach_res2.downloaded
@@ -896,9 +939,11 @@ async def process_thread(
             and not attach_queued
         ):
             if attach_tried and not attachment_text:
+                from parsers.skip_outcomes import STUB_ATTACH_DENIED
+
                 outcome = ThreadOutcome(
                     "stub",
-                    "无权限下载附件",
+                    STUB_ATTACH_DENIED,
                     outcome.link_kind,
                     outcome.title or list_title,
                 )

@@ -42,9 +42,19 @@ _NAME_PUNCT_TRANS = str.maketrans(
 )
 
 
+def _strip_html_noise(text: str) -> str:
+    """剥完整/残缺标签与变体选择符（Discuz 常把 ❤/❤️、<font 拆进片名）。"""
+    t = html.unescape(text or "")
+    t = re.sub(r"<[^>]*>", " ", t)
+    # 未闭合残片：`<font size="2` / `</font`
+    t = re.sub(r"</?[A-Za-z][^<\n]*", " ", t)
+    t = t.replace("\ufe0e", "").replace("\ufe0f", "")
+    return t
+
+
 def _norm_resource_name_key(name: str) -> str:
-    """分组键：解实体 + 全角冒号/＆ 归一，避免假多资源名。"""
-    text = html.unescape((name or "").strip()).translate(_NAME_PUNCT_TRANS)
+    """分组键：解实体 + 去 HTML/VS + 全角冒号/＆ 归一，避免假多资源名。"""
+    text = _strip_html_noise(name).translate(_NAME_PUNCT_TRANS)
     return re.sub(r"\s+", " ", text).strip()
 
 
@@ -165,10 +175,8 @@ def _is_truncated_resource_name(short: str, long: str) -> bool:
 
 
 def _normalize_resource_name_key(name: str) -> str:
-    """合并用：去掉警告 emoji / 变体选择符，避免 ⚠ vs ⚠️ 切成双名。"""
-    import re
-
-    t = (name or "").strip().replace("\ufe0f", "")
+    """合并用：去 HTML/警告 emoji/变体选择符，避免 ⚠ vs ⚠️、❤ vs ❤️ 切成双名。"""
+    t = _strip_html_noise(name)
     t = re.sub(r"[⚠⚠︎]", "", t)
     t = re.sub(r"\s+", "", t)
     return t
@@ -178,6 +186,22 @@ def _names_emoji_equivalent(a: str, b: str) -> bool:
     ka = _normalize_resource_name_key(a)
     kb = _normalize_resource_name_key(b)
     return bool(ka) and ka == kb and (a or "").strip() != (b or "").strip()
+
+
+def _prefer_clean_display_name(a: str, b: str) -> str:
+    """两名等价时优先无 HTML/残片、无 VS 噪音的展示名。"""
+    a0 = (a or "").strip()
+    b0 = (b or "").strip()
+    if not a0:
+        return b0
+    if not b0:
+        return a0
+    score = lambda s: (
+        0 if ("<" in s or ">" in s) else 1,
+        0 if "\ufe0f" in s else 1,
+        len(_strip_html_noise(s).strip()),
+    )
+    return a0 if score(a0) >= score(b0) else b0
 
 
 def _merge_truncated_name_groups(
@@ -194,9 +218,9 @@ def _merge_truncated_name_groups(
         if _is_truncated_resource_name(n1, n0):
             members = m0 + m1
             return [(n0, _pick_group_primary(members), members)]
-        # 仅警告符差异（⚠ / ⚠️）→ 并入较长名
+        # 仅警告符 / 爱心 VS / HTML 残片差异 → 并入干净展示名
         if _names_emoji_equivalent(n0, n1):
-            keep = n0 if len(n0) >= len(n1) else n1
+            keep = _prefer_clean_display_name(n0, n1)
             members = m0 + m1
             return [(keep, _pick_group_primary(members), members)]
         return groups
@@ -228,6 +252,45 @@ def _merge_truncated_name_groups(
         members = by_name[key]
         out.append((key, _pick_group_primary(members), members))
     return out
+
+
+def _post_level_name_label_count(parsed: DualParseResult) -> int:
+    """帖级（非逐块）【资源名称】/【影片名称】标签数——人一眼判单/多的硬信号。"""
+    from parsers.content import iter_subresource_title_spans
+    from parsers.structure_cards import name_values_from_cards, parse_structure_cards
+
+    parts: list[str] = []
+    desc = (getattr(parsed, "description", None) or "").strip()
+    if desc:
+        parts.append(desc)
+    meta = getattr(parsed, "metadata", None) or {}
+    for key, val in meta.items():
+        k = (key or "").strip()
+        v = (val or "").strip()
+        if not k or not v:
+            continue
+        if any(x in k for x in ("名称", "片名", "標題", "标题")):
+            parts.append(f"【{k}】：{v}")
+    blob = "\n".join(parts)
+    if not blob:
+        return 0
+    spans = iter_subresource_title_spans(blob)
+    if spans:
+        return len(spans)
+    return len(name_values_from_cards(parse_structure_cards(blob)))
+
+
+def _collapse_groups_to_single(
+    groups: list[tuple[str, ParsedAsset, list[ParsedAsset]]],
+) -> list[tuple[str, ParsedAsset, list[ParsedAsset]]]:
+    if len(groups) <= 1:
+        return groups
+    members: list[ParsedAsset] = []
+    keep = (groups[0][0] or "").strip()
+    for name, _head, mem in groups:
+        members.extend(mem)
+        keep = _prefer_clean_display_name(keep, name)
+    return [(keep, _pick_group_primary(members), members)]
 
 
 def _group_assets_by_resource_name(
@@ -309,6 +372,9 @@ def build_parse_frame(
         uniq, post_title=title, parsed=parsed
     )
     named_groups = _merge_truncated_name_groups(raw_groups)
+    # 人一眼：帖级只有 1 个名称标签 → 单资源多链；禁止脏文件名/爱心 VS 拆成多资源
+    if len(named_groups) > 1 and _post_level_name_label_count(parsed) == 1:
+        named_groups = _collapse_groups_to_single(named_groups)
     truncated_merged = len(named_groups) < len(raw_groups)
     return build_resource_frame(
         parsed,

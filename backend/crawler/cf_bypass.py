@@ -52,6 +52,34 @@ _FLARE_CANDIDATES = (
 )
 _flare_discovered: Optional[str] = None
 _flare_probe_at: float = 0.0
+# 通用设置（collector_settings）里的地址；进程内缓存，保存时刷新
+_flare_from_settings: Optional[str] = None
+
+DEFAULT_FLARESOLVERR_URL = "http://127.0.0.1:8191/v1"
+
+
+def normalize_flaresolverr_url(raw: str) -> str:
+    """空 → 空；补齐 /v1。"""
+    s = (raw or "").strip().rstrip("/")
+    if not s:
+        return ""
+    if not s.endswith("/v1"):
+        s = f"{s}/v1"
+    return s
+
+
+def apply_flaresolverr_setting(url: str | None) -> str:
+    """写入进程缓存，并同步到 SHT_FLARESOLVERR_URL（供已有 Fetcher 解析）。"""
+    global _flare_from_settings, _flare_discovered
+    normalized = normalize_flaresolverr_url(url or "")
+    _flare_from_settings = normalized or None
+    if normalized:
+        os.environ["SHT_FLARESOLVERR_URL"] = normalized
+        # 显式配置优先于自动探测缓存
+        _flare_discovered = None
+    else:
+        os.environ.pop("SHT_FLARESOLVERR_URL", None)
+    return normalized
 
 
 def extract_title(html: str) -> str:
@@ -113,11 +141,15 @@ def is_cf_challenge(html: str, status: int = 200) -> bool:
 
 
 def resolve_flaresolverr_url(explicit: str | None = None) -> Optional[str]:
-    """环境变量优先；遇 CF 时可自动探测本机 FlareSolverr（默认开）。"""
+    """显式 → 环境变量 → 通用设置 → 本机自动探测。"""
     global _flare_discovered, _flare_probe_at
-    raw = (explicit or os.environ.get("SHT_FLARESOLVERR_URL") or "").strip()
+    raw = (explicit or "").strip()
+    if not raw:
+        raw = (os.environ.get("SHT_FLARESOLVERR_URL") or "").strip()
+    if not raw and _flare_from_settings:
+        raw = _flare_from_settings
     if raw:
-        return raw.rstrip("/")
+        return normalize_flaresolverr_url(raw)
     autodisc = (os.environ.get("SHT_FLARESOLVERR_AUTODISCOVER") or "1").strip().lower()
     if autodisc in {"0", "false", "no", "off"}:
         return None

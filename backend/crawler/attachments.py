@@ -30,6 +30,7 @@ from parsers.attachments import (
     is_attachment_denied,
     is_attachment_download_limited,
     is_attachment_login_required,
+    is_attachment_not_found,
 )
 from parsers.torrent import parse_torrent_bytes
 
@@ -297,14 +298,14 @@ def _attach_merge_still_unqualified(
         return True
 
 
-def _push_member_text(member_texts: list[str], text: str) -> str | None:
-    """追加成员语料；已含 magnet/ed2k 则返回合并结果供提前结束。"""
-    if not (text or "").strip():
-        return None
-    member_texts.append(text)
-    if _text_has_importable_link(text):
-        return _pick_best_archive_texts(member_texts)
-    return None
+def _push_member_text(member_texts: list[str], text: str) -> None:
+    """追加非空成员语料。
+
+    同包多 txt/excel/torrent 必须全部合并后再返回（tid=2204368：分卷 993+137≈1131配额；
+    早停会只拿到第一份「不全」txt 误判漏链）。
+    """
+    if (text or "").strip():
+        member_texts.append(text)
 
 
 def _text_from_archive_member(name: str, data: bytes) -> str:
@@ -434,9 +435,7 @@ def _extract_via_7z(
                 if raw_member is None:
                     continue
                 text = _text_from_archive_member(path.name, raw_member)
-                early = _push_member_text(member_texts, text)
-                if early:
-                    return early
+                _push_member_text(member_texts, text)
                 if text.strip():
                     log.debug("7z member %s → %s chars", path.name, len(text))
             # 内层 zip/rar：逐个再解
@@ -470,9 +469,7 @@ def _extract_via_7z(
                 text = _extract_txt_from_archive(
                     nested, kind, passwords=pwds, depth=depth + 1
                 )
-                early = _push_member_text(member_texts, text)
-                if early:
-                    return early
+                _push_member_text(member_texts, text)
             best = _pick_best_archive_texts(member_texts)
             if best.strip():
                 return best
@@ -526,9 +523,7 @@ def _extract_zip_pyzipper(
                     if raw_member is None:
                         continue
                     text = _text_from_archive_member(name, raw_member)
-                    early = _push_member_text(member_texts, text)
-                    if early:
-                        return early
+                    _push_member_text(member_texts, text)
                 for name, kind in _nested_archive_members(names):
                     nested = _zip_member_bytes(
                         archive, name, limit=MAX_ATTACHMENT_BYTES
@@ -538,9 +533,7 @@ def _extract_zip_pyzipper(
                     text = _extract_txt_from_archive(
                         nested, kind, passwords=pwds, depth=depth + 1
                     )
-                    early = _push_member_text(member_texts, text)
-                    if early:
-                        return early
+                    _push_member_text(member_texts, text)
                 best = _pick_best_archive_texts(member_texts)
                 if best.strip():
                     return best
@@ -597,9 +590,7 @@ def _extract_rar_text(
                                 if raw_member is None:
                                     continue
                                 text = _text_from_archive_member(name, raw_member)
-                                early = _push_member_text(member_texts, text)
-                                if early:
-                                    return early
+                                _push_member_text(member_texts, text)
                             for name, kind in _nested_archive_members(names):
                                 try:
                                     nested = archive.read(name)
@@ -615,9 +606,7 @@ def _extract_rar_text(
                                 text = _extract_txt_from_archive(
                                     nested, kind, passwords=pwds, depth=depth + 1
                                 )
-                                early = _push_member_text(member_texts, text)
-                                if early:
-                                    return early
+                                _push_member_text(member_texts, text)
                             best = _pick_best_archive_texts(member_texts)
                             if best.strip():
                                 return best
@@ -671,13 +660,8 @@ def _extract_zip_txt(
                     continue
                 text = _text_from_archive_member(name, raw)
                 if text.strip():
-                    # 同包多 .torrent：全部转磁力；txt/excel 仍可早停
-                    if _is_torrent_filename(name):
-                        member_texts.append(text)
-                        break
-                    early = _push_member_text(member_texts, text)
-                    if early:
-                        return early
+                    # 同包多 txt/excel/torrent：全部合并（分卷勿早停）
+                    _push_member_text(member_texts, text)
                     break
         for name, kind in _nested_archive_members(names):
             for pwd in pwd_attempts:
@@ -690,9 +674,7 @@ def _extract_zip_txt(
                     nested, kind, passwords=pwds, depth=depth + 1
                 )
                 if text.strip():
-                    early = _push_member_text(member_texts, text)
-                    if early:
-                        return early
+                    _push_member_text(member_texts, text)
                     break
         best = _pick_best_archive_texts(member_texts)
         if best.strip():
@@ -1060,9 +1042,9 @@ class AttachmentDownloader:
     async def _fetch_bytes_via_page(
         self, url: str
     ) -> tuple[bytes | None, bool, bool, bool, bool]:
-        """返回 (bytes, denied, login_required, daily_limited, empty_file)。
+        """返回 (bytes, denied, login_required, daily_limited, empty_or_missing)。
 
-        empty_file：HTTP 200 + 附件头/octet-stream 但 body 长度为 0（空壳种子常见）。
+        empty_or_missing：0 字节空壳 / HTTP 404 / Not Found 提示页。
         """
 
         async def _on_page(page: Any) -> tuple[bytes | None, bool, bool, bool, bool]:
@@ -1120,7 +1102,13 @@ class AttachmentDownloader:
                 log.debug("Attachment page fetch failed %s: %s", url, exc)
                 return None, False, False, False, False
 
-            if not result or result.get("status") != 200:
+            if not result:
+                return None, False, False, False, False
+            status = int(result.get("status") or 0)
+            if status == 404:
+                log.info("Attachment HTTP 404: %s", url)
+                return None, False, False, False, True
+            if status != 200:
                 return None, False, False, False, False
 
             if result.get("skipped") == "too_large":
@@ -1152,6 +1140,9 @@ class AttachmentDownloader:
             if "text/html" in content_type or data.startswith(b"<!DOCTYPE") or data.startswith(b"<html"):
                 # 提示页导航很长，登录/日限文案常在 8KB+；勿只看前 4KB
                 html = _decode_bytes(data[:65536])
+                if is_attachment_not_found(html):
+                    log.info("Attachment not found tip: %s", url)
+                    return None, False, False, False, True
                 if is_attachment_login_required(html):
                     log.info("Attachment login required: %s", url)
                     return None, False, True, False, False
@@ -1228,6 +1219,9 @@ class AttachmentDownloader:
                 popup = await popup_info.value
                 await popup.wait_for_load_state("domcontentloaded", timeout=popup_ms)
                 html = await popup.content()
+                if is_attachment_not_found(html):
+                    log.info("Attachment popup not found: %s", attachment.name)
+                    return None, False, False, False, True
                 if is_attachment_login_required(html):
                     log.info("Attachment popup login required: %s", attachment.name)
                     return None, False, True, False, False
@@ -1276,13 +1270,14 @@ class AttachmentDownloader:
         timeout: float,
         *,
         passwords: list[str] | None = None,
-    ) -> tuple[str, bool, bool, bool, bool, bool]:
-        """返回 (text, denied, downloaded, login_required, daily_limited, empty_torrent)。"""
+    ) -> tuple[str, bool, bool, bool, bool, bool, bool]:
+        """返回 (text, denied, downloaded, login_required, daily_limited, empty_torrent, empty_attachment)。"""
         denied = False
         login_required = False
         daily_limited = False
         downloaded = False
         empty_torrent = False
+        empty_attachment = False
         (
             data,
             fetch_denied,
@@ -1293,21 +1288,47 @@ class AttachmentDownloader:
         denied = denied or fetch_denied
         login_required = login_required or fetch_login
         daily_limited = daily_limited or fetch_limited
-        if fetch_empty and attachment.kind == "torrent":
-            empty_torrent = True
+        if fetch_empty:
+            empty_attachment = True
+            if attachment.kind == "torrent":
+                empty_torrent = True
         if data:
             downloaded = True
             text = _text_from_attachment_bytes(attachment, data, passwords=passwords)
             if text.strip():
-                return text, denied, downloaded, login_required, daily_limited, False
+                return (
+                    text,
+                    denied,
+                    downloaded,
+                    login_required,
+                    daily_limited,
+                    False,
+                    False,
+                )
 
         # 页面直链已明确无权/需登录/日限且无字节：UI 再点一次通常同样失败，省一轮
         if (fetch_denied or fetch_login or fetch_limited) and not data:
-            return "", fetch_denied, downloaded, fetch_login, fetch_limited, empty_torrent
+            return (
+                "",
+                fetch_denied,
+                downloaded,
+                fetch_login,
+                fetch_limited,
+                empty_torrent,
+                empty_attachment,
+            )
 
-        # 空壳种子：fetch 已确认 0 字节，UI 再点多半同样空，直接返回
-        if empty_torrent and not data:
-            return "", denied, downloaded, login_required, daily_limited, True
+        # 空壳 / Not Found：fetch 已确认，UI 再点多半同样空，直接返回
+        if empty_attachment and not data:
+            return (
+                "",
+                denied,
+                downloaded,
+                login_required,
+                daily_limited,
+                empty_torrent,
+                True,
+            )
 
         suffix = _attachment_ui_suffix(attachment)
         (
@@ -1322,15 +1343,33 @@ class AttachmentDownloader:
         denied = denied or ui_denied
         login_required = login_required or ui_login
         daily_limited = daily_limited or ui_limited
-        if ui_empty and attachment.kind == "torrent":
-            empty_torrent = True
+        if ui_empty:
+            empty_attachment = True
+            if attachment.kind == "torrent":
+                empty_torrent = True
         if ui_data:
             downloaded = True
             text = _text_from_attachment_bytes(attachment, ui_data, passwords=passwords)
             if text.strip():
-                return text, denied, downloaded, login_required, daily_limited, False
+                return (
+                    text,
+                    denied,
+                    downloaded,
+                    login_required,
+                    daily_limited,
+                    False,
+                    False,
+                )
 
-        return "", denied, downloaded, login_required, daily_limited, empty_torrent
+        return (
+            "",
+            denied,
+            downloaded,
+            login_required,
+            daily_limited,
+            empty_torrent,
+            empty_attachment,
+        )
 
     async def download_tail(
         self,
@@ -1345,10 +1384,10 @@ class AttachmentDownloader:
         """正文无链 / 正文不合格复判：按优先序逐个轮询附件。
 
         硬规则：每下完一个有链附件即试算入库；
-        - 合格 → 可停；
-        - 不合格 → 必须继续下一个，直到附件全部判断完或变为合格。
-        单资源（quota_stop=True）：标题 N配额未齐也继续（防 cloud_soft「成功」误停）。
-        多资源（quota_stop=False）：不做额度匹配，认全链即可。
+        - 不合格 → 必须继续下一个；
+        - 单资源有标题 N配额（quota_stop=True）：**扫完所有可用附件**后再与额度对比
+          （分卷/备用 txt 勿因中途「成功」早停）；配额已齐仍扫完其余可用附件。
+        - 多资源（quota_stop=False）：不做额度匹配；试算合格且无剩余必要时可停。
         例外：附件日限（今天下载请明天再来）立刻停，入附件队列。
         """
         if not self.session._ready:
@@ -1373,6 +1412,7 @@ class AttachmentDownloader:
         any_downloaded = False
         any_daily_limited = False
         any_empty_torrent = False
+        any_empty_attachment = False
         for idx, attachment in enumerate(attachments):
             try:
                 (
@@ -1382,13 +1422,15 @@ class AttachmentDownloader:
                     login_required,
                     daily_limited,
                     empty_torrent,
+                    empty_attachment,
                 ) = await self._download_one(
                     attachment, timeout, passwords=passwords
                 )
-                if empty_torrent:
-                    any_empty_torrent = True
+                if empty_torrent or empty_attachment:
+                    any_empty_torrent = any_empty_torrent or empty_torrent
+                    any_empty_attachment = True
                     log.info(
-                        "Attachment %s empty torrent (0 bytes) — continue next",
+                        "Attachment %s empty/missing — continue next",
                         attachment.name,
                     )
                     continue
@@ -1466,12 +1508,15 @@ class AttachmentDownloader:
                     and bool(quota_expect)
                     and provided < int(quota_expect)
                 )
-                if still_unqual or short_quota:
-                    why = (
-                        f"不合格"
-                        if still_unqual
-                        else f"提供链数{provided}<配额{quota_expect}"
-                    )
+                # 有标题额度：必须扫完所有可用附件再与额度对比（分卷/备用 txt 勿早停）
+                exhaust_for_quota = bool(quota_stop) and bool(quota_expect) and bool(rest)
+                if still_unqual or short_quota or exhaust_for_quota:
+                    if exhaust_for_quota and not still_unqual and not short_quota:
+                        why = f"额度对照需扫完附件 (已提供{provided}/配额{quota_expect})"
+                    elif still_unqual:
+                        why = "不合格"
+                    else:
+                        why = f"提供链数{provided}<配额{quota_expect}"
                     log.info(
                         "Attachment %s (%s) → %s — continue next (%s left)",
                         attachment.name,
@@ -1519,9 +1564,12 @@ class AttachmentDownloader:
             return AttachmentFetchResult(text=result_text, downloaded=True)
         if any_downloaded:
             return AttachmentFetchResult(downloaded=True)
-        # 空壳种子（0 字节）：跳过，勿「附件下载失败」重试
-        if any_empty_torrent:
-            return AttachmentFetchResult(empty_torrent=True)
+        # 空壳 / Not Found：跳过，勿「附件下载失败」重试
+        if any_empty_attachment or any_empty_torrent:
+            return AttachmentFetchResult(
+                empty_attachment=True,
+                empty_torrent=any_empty_torrent,
+            )
         return AttachmentFetchResult(failed=True)
 
     async def download_torrents(
