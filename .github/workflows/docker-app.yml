@@ -65,15 +65,14 @@ jobs:
           username: ${{ env.DOCKERHUB_USER }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      # 分仓推送：双 registry 同一步偶发只落到 GHCR，Hub 仍 404 但步骤仍绿
+      # 分仓推送。勿关 provenance：纯 OCI single-manifest 时
+      # registry 有 tag，但 hub.docker.com 标签 API/网页常不同步（1.2.33 已验证）。
       - name: Build and push GHCR
         uses: docker/build-push-action@v6
         with:
           context: .
           file: deploy/app/Dockerfile
           push: true
-          provenance: false
-          sbom: false
           tags: |
             ${{ env.GHCR }}/${{ github.repository_owner }}/sehuatang-app:${{ steps.ver.outputs.tag }}
             ${{ env.GHCR }}/${{ github.repository_owner }}/sehuatang-app:latest
@@ -87,24 +86,26 @@ jobs:
           context: .
           file: deploy/app/Dockerfile
           push: true
-          provenance: false
-          sbom: false
           tags: |
             ${{ env.DOCKERHUB_USER }}/sehuatang-app:${{ steps.ver.outputs.tag }}
             ${{ env.DOCKERHUB_USER }}/sehuatang-app:latest
           cache-from: type=gha,scope=app
           platforms: linux/amd64
 
-      - name: Verify Docker Hub tag
+      - name: Verify Docker Hub registry tag
         run: |
           set -euo pipefail
           TAG="${{ steps.ver.outputs.tag }}"
-          URL="https://hub.docker.com/v2/repositories/${{ env.DOCKERHUB_USER }}/sehuatang-app/tags/${TAG}/"
-          echo "verify $URL"
+          REPO="${{ env.DOCKERHUB_USER }}/sehuatang-app"
+          # 以 registry-1.docker.io 为准（docker pull 实际读这里），勿只信 hub.docker.com 网页 API
+          TOKEN=$(curl -fsS "https://auth.docker.io/token?service=registry.docker.io&scope=repository:${REPO}:pull" | jq -r .token)
           ok=0
-          for i in $(seq 1 18); do
-            code=$(curl -sS -o /tmp/hub_tag.json -w "%{http_code}" "$URL" || true)
-            echo "attempt $i -> HTTP $code"
+          for i in $(seq 1 12); do
+            code=$(curl -sS -o /tmp/reg_manifest.json -w "%{http_code}" \
+              -H "Authorization: Bearer ${TOKEN}" \
+              -H "Accept: application/vnd.oci.image.index.v1+json,application/vnd.oci.image.manifest.v1+json,application/vnd.docker.distribution.manifest.list.v2+json,application/vnd.docker.distribution.manifest.v2+json" \
+              "https://registry-1.docker.io/v2/${REPO}/manifests/${TAG}" || true)
+            echo "registry attempt $i -> HTTP $code"
             if [ "$code" = "200" ]; then
               ok=1
               break
@@ -112,8 +113,12 @@ jobs:
             sleep 5
           done
           if [ "$ok" != "1" ]; then
-            echo "::error::Docker Hub missing tag ${TAG} after dedicated Hub push. Check DOCKERHUB_TOKEN write scope / Hub repo permissions."
-            cat /tmp/hub_tag.json || true
+            echo "::error::registry-1.docker.io missing ${REPO}:${TAG}"
+            cat /tmp/reg_manifest.json || true
             exit 1
           fi
-          echo "Docker Hub has ${TAG}"
+          echo "registry has ${REPO}:${TAG}"
+          # 网页 API 仅提示，不作为失败条件
+          hub=$(curl -sS -o /dev/null -w "%{http_code}" \
+            "https://hub.docker.com/v2/repositories/${REPO}/tags/${TAG}/" || true)
+          echo "hub.docker.com tags API -> HTTP $hub (200=网页可见；404=网页索引滞后，不影响 pull)"
