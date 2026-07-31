@@ -444,20 +444,23 @@ _PASSWORD_ASCII_TOKEN = (
 _PASSWORD_CN_TOKEN = r"[\u4e00-\u9fffA-Za-z0-9@._\-]{2,16}"
 _PASSWORD_NOT_HINT = r"(?!(?:错误|不对|忘記|忘记|私信|看图|看圖|见下|見下|同上|没有|沒有))"
 
+# 分隔符含中/英逗号：帖内常见「解压密码，Z@www.98t.la」（tid=3146779）
+_PASSWORD_SEP = r"(?:[:：=，,]|是|为)?"
 PASSWORD_RE = re.compile(
-    r"(?:解压|提取|资源|解壓|資源)\s*密?\s*码\s*】?\s*(?:[:：=]|是|为)?\s*"
+    r"(?:解压|提取|资源|解壓|資源)\s*密?\s*码\s*】?\s*"
+    rf"{_PASSWORD_SEP}\s*"
     rf"{_PASSWORD_NOT_HINT}"
     rf"({_PASSWORD_ASCII_TOKEN}|[^\s【】\n，,。；;]+)",
     re.I,
 )
 # 帖内常见：单独「密码/码」后跟 www.98T.la@（无解压/提取前缀，常夹在 font 标签里）
 PASSWORD_BARE_98T_RE = re.compile(
-    rf"(?:密码|密碼|码|碼)\s*(?:[:：=]|是|为)?\s*((?:www\.)?98[Tt]\.la\s*@?)",
+    rf"(?:密码|密碼|码|碼)\s*{_PASSWORD_SEP}\s*((?:www\.)?98[Tt]\.la\s*@?)",
     re.I,
 )
 # 人一眼能认：密码：/密码是/密码 sakura / 密码sakura99（可无冒号，但值须像口令）
 PASSWORD_GENERIC_RE = re.compile(
-    rf"(?:密码|密碼|pass(?:word)?|pwd)\s*(?:[:：=]|是|为)?\s*"
+    rf"(?:密码|密碼|pass(?:word)?|pwd)\s*{_PASSWORD_SEP}\s*"
     rf"{_PASSWORD_NOT_HINT}"
     rf"({_PASSWORD_ASCII_TOKEN}|{_PASSWORD_CN_TOKEN})",
     re.I,
@@ -524,6 +527,19 @@ _BOGUS_PASSWORD_WORDS = frozenset(
         "這個",
         "那个",
         "那個",
+        # 标签词本身（勿把「密码\n密码」互吞当口令）
+        "密码",
+        "密碼",
+        "解压密码",
+        "解壓密碼",
+        "提取密码",
+        "提取密碼",
+        "资源密码",
+        "資源密碼",
+        "解压码",
+        "解壓碼",
+        "提取码",
+        "提取碼",
     }
 )
 # 优先 zoomfile / file（Discuz 高清）、data-original（PHPWind 懒加载），再 src

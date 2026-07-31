@@ -309,3 +309,20 @@ def test_resource_password_label():
     content = parse_thread_content(html, tid=2254351)
     assert content.extract_password == "sakurakun"
     assert content.metadata.get("资源密码") == "sakurakun"
+
+
+def test_password_chinese_comma_mailto_98t():
+    """「解压密码，Z@www.98t.la」中文逗号 + mailto（tid=3146779）。"""
+    assert extract_password("解压密码，Z@www.98t.la") == "Z@www.98t.la"
+    assert extract_password("解压密码， Z@www.98t.la") == "Z@www.98t.la"
+    html = """
+    <html><body>
+      <div id="postmessage_1">
+        <font color="#ff00"><font size="4">解压密码，</font></font>
+        <font size="4"><a href="mailto:Z@www.98T.la" target="_blank">Z@www.98t.la</a></font>
+        <br>喜欢还请点个免费的评分
+      </div>
+    </body></html>
+    """
+    content = parse_thread_content(html, tid=3146779)
+    assert content.extract_password == "Z@www.98t.la"
