@@ -371,13 +371,56 @@ def count_http_host_media_links(text: str) -> int:
     return len(list(_HTTP_HOST_MEDIA_RE.finditer(text)))
 
 
-def count_post_quota_links(text: str) -> int:
-    """帖内/附件**提供**的下载向链接条数（按出现次数，不按 hash 去重）。
+def _looks_like_html_link_corpus(text: str) -> bool:
+    return bool(re.search(r"<\s*a\b|href\s*=", text or "", re.I))
 
-    口径：标题 N配额 对的是「提供了多少条链接」（含重复张贴的同一 btih），
-    不是入库不重复有效链数。残链/HTTP 直链也计。
+
+def _quota_plain_from_html(html: str) -> str:
+    """HTML → 额度计数用纯文本：可见正文 + 仅出现在 href 的链。
+
+    额度按**出现次数、不去重**。Discuz 常把同一 URI 写在 href 与锚点文字里，
+    若直接对 HTML 正则会 ×2；这里只保留可见文本中的出现，href 仅在正文未写出时补上。
+    同链在正文贴两行仍算 2。
+    """
+    raw = html or ""
+    if not raw.strip():
+        return ""
+    try:
+        from bs4 import BeautifulSoup
+
+        soup = BeautifulSoup(raw, "lxml")
+        visible = soup.get_text("\n", strip=False)
+        extras: list[str] = []
+        for a in soup.select("a[href]"):
+            href = (a.get("href") or "").strip()
+            if not href:
+                continue
+            if not (
+                href.lower().startswith(("ed2k:", "magnet:", "thunder:", "ftp:"))
+                or _HTTP_HOST_MEDIA_RE.search(href)
+            ):
+                continue
+            # 可见区已含该 URI → 不重复加 href（避免 ×2）；未写出才补
+            if href not in visible:
+                extras.append(href)
+        if extras:
+            return visible + "\n" + "\n".join(extras)
+        return visible
+    except Exception:
+        return raw
+
+
+def count_post_quota_links(text: str) -> int:
+    """帖内/附件**提供**的下载向链接条数（按出现次数，**不去重**）。
+
+    口径：同 btih/同 ed2k 贴两行算 2（对齐 N配额），不是入库去重链数。
+    传入 HTML 时先抽可见文本再数，避免 ``href``+锚点文字把 1 条计成 2。
+    调用方仍应尽量用单源（附件文本 / 正文 plain），勿叠 link_html+plain+blockcode。
     """
     if not (text or "").strip():
+        return 0
+    blob = _quota_plain_from_html(text) if _looks_like_html_link_corpus(text) else text
+    if not (blob or "").strip():
         return 0
     n = 0
     for cre in (
@@ -386,7 +429,7 @@ def count_post_quota_links(text: str) -> int:
         _THUNDER_QUOTA_RE,
         _HTTP_HOST_MEDIA_RE,
     ):
-        n += sum(1 for _ in cre.finditer(text))
+        n += sum(1 for _ in cre.finditer(blob))
     return n
 
 

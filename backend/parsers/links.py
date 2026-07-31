@@ -460,8 +460,18 @@ def parse_thread_dual(
 
     from parsers.resource_frame import count_http_host_media_links, count_post_quota_links
 
-    quota_n = count_post_quota_links(corpus)
-    http_n = count_http_host_media_links(corpus)
+    # 额度只认正文 plain + 附件文本（出现次数、不去重）。
+    # 有附件目标链时只计附件，避免正文样例链再叠一层；绝不回落 HTML/叠语料。
+    body_plain = (content.plain_text or "").strip()
+    attach_text = (extra_text or "").strip()
+    if attach_text and attachment_corpus_has_target_links(html):
+        quota_src = attach_text
+    elif body_plain and attach_text:
+        quota_src = f"{body_plain}\n{attach_text}"
+    else:
+        quota_src = body_plain or attach_text
+    quota_n = count_post_quota_links(quota_src) if quota_src else 0
+    http_n = count_http_host_media_links(quota_src) if quota_src else 0
 
     att_names: list[str] = []
     try:

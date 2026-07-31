@@ -35,6 +35,36 @@ def test_count_http_host_media_links():
     assert count_post_quota_links(blob) == 4
 
 
+def test_html_href_and_text_not_double_counted():
+    """Discuz ``<a href=ed2k>ed2k</a>``：额度按出现次数，但同一锚点 href+文字只计 1。"""
+    u1 = "ed2k://|file|a1.rar|1|DEA33131F76ECF406DC869805FD50B8B|/"
+    u2 = "ed2k://|file|a2.rar|2|0F6A83BE78184FE1784F3AB25AE64DF6|/"
+    html = f'<a href="{u1}">{u1}</a>\n<a href="{u2}">{u2}</a>'
+    assert count_post_quota_links(html) == 2
+    # 可见区同链贴两行 → 不去重，算 2
+    plain_dup = f"{u1}\n{u1}"
+    assert count_post_quota_links(plain_dup) == 2
+    # 叠语料（抽链用）若误传入仍会偏高——调用方应单源；此处仅文档化风险
+    stacked = html + "\n" + u1 + "\n" + u2
+    assert count_post_quota_links(stacked) >= 2
+
+
+def test_plain_text_duplicate_lines_still_count_occurrences():
+    """附件 txt 同链贴多行仍按出现次数（对齐 N配额），勿按 hash 去重。"""
+    h = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+    line = f"magnet:?xt=urn:btih:{h}&dn=x"
+    blob = "\n".join([line] * 5)
+    assert count_post_quota_links(blob) == 5
+    assert "<" not in blob
+
+
+def test_href_only_anchor_still_counts():
+    """锚点文字不是链、链只在 href 时仍要计入提供数。"""
+    u = "ed2k://|file|a.rar|1|DEA33131F76ECF406DC869805FD50B8B|/"
+    html = f'<a href="{u}">点击下载</a>'
+    assert count_post_quota_links(html) == 1
+
+
 def test_post_links_fill_quota_without_all_importable():
     """42 可入库 + 帖内共 56 链 ≈ 57配额（V≠配额）→ 对齐，勿待核。"""
     title = "【整理】【115ED2K】【原档】熟女系列【260.29GB/120V/57配额】"
