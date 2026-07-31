@@ -1,4 +1,4 @@
-# 仅用于 backend/app 镜像构建（上下文=仓库根）时缩小上传体积
+# 仓库根作为 Docker context（app / search 共用）时缩小上传体积
 .git/
 .github/
 **/.venv/
@@ -6,8 +6,7 @@
 **/.next/
 **/dist/
 **/out/
-# frontend/admin 需打进 sehuatang-app，勿排除整个 frontend/
-next-web/
+# frontend/admin → sehuatang-app；next-web + scrape-web → sehuatang-search（勿整目录排除）
 ed2k/
 docs/
 deploy/data/
@@ -21,3 +20,4 @@ backend/_tmp_*
 backend/scripts/_tmp_*
 *.md
 start.bat
+start-search.bat

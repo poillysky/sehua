@@ -13,6 +13,7 @@ on:
       - "deploy/search/**"
       - "deploy/docker-compose.search.yml"
       - "VERSION.search"
+      - ".dockerignore"
       - ".github/workflows/docker-search.yml"
     tags:
       - "search-v*"
