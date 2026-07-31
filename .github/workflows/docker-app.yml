@@ -67,13 +67,45 @@ jobs:
             type=raw,value=${{ steps.ver.outputs.tag }}
             type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v') }}
 
+      - name: Show image tags
+        run: |
+          echo "sehua VERSION=${{ steps.ver.outputs.tag }}"
+          echo "tags:"
+          printf '%s\n' "${{ steps.meta.outputs.tags }}"
+
       - uses: docker/build-push-action@v6
         with:
           context: .
           file: deploy/app/Dockerfile
           push: true
+          # multi-registry + 默认 provenance 偶发只落到 GHCR；Hub 无新 tag
+          provenance: false
+          sbom: false
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha,scope=app
           cache-to: type=gha,mode=max,scope=app
           platforms: linux/amd64
+
+      - name: Verify Docker Hub tag
+        run: |
+          set -euo pipefail
+          TAG="${{ steps.ver.outputs.tag }}"
+          URL="https://hub.docker.com/v2/repositories/${{ env.DOCKERHUB_USER }}/sehuatang-app/tags/${TAG}/"
+          echo "verify $URL"
+          ok=0
+          for i in $(seq 1 18); do
+            code=$(curl -sS -o /tmp/hub_tag.json -w "%{http_code}" "$URL" || true)
+            echo "attempt $i -> HTTP $code"
+            if [ "$code" = "200" ]; then
+              ok=1
+              break
+            fi
+            sleep 5
+          done
+          if [ "$ok" != "1" ]; then
+            echo "::error::Docker Hub missing tag ${TAG} (Actions push reported ok but Hub 404). Check DOCKERHUB_TOKEN write scope."
+            cat /tmp/hub_tag.json || true
+            exit 1
+          fi
+          echo "Docker Hub has ${TAG}"
