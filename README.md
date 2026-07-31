@@ -27,8 +27,7 @@ flowchart LR
   end
 
   subgraph Search["Compose 搜索 search.yml"]
-    NW["next-web"]
-    SW["scrape-web"]
+    NW["sehuatang-search · Next+刮削"]
   end
 
   Forum["目标论坛"]
@@ -36,20 +35,17 @@ flowchart LR
 
   S --> NW
   A --> APP
-  C --> SW
+  C --> NW
   NW --> PG
-  NW -->|"/covers"| SW
-  SW --> PG
   APP --> PG
   APP <--> Forum
-  SW <--> Meta
+  NW <--> Meta
 ```
 
 | 组件 | 职责 | 生产端口 |
 |------|------|----------|
 | **sehua-app** | 爬虫入库 + 管理 SPA（合并容器） | **8082** |
-| **next-web** | 搜索 / 浏览 / 详情；刮削设置 UI | **3010** |
-| **scrape-web** | 番号元数据刮削、封面落盘、队列 worker | **9209** |
+| **sehuatang-search** | Next 搜索 + scrape-web 刮削（合一容器） | **3010** / **9209** |
 | **PostgreSQL 16** | 资源、来源元数据、爬虫队列、`av_metadata` | **5433** |
 
 ---
@@ -86,14 +82,14 @@ flowchart LR
 | 产品 | 版本文件 | 镜像 | 发版触发 |
 |------|----------|------|----------|
 | **sehua**（API+管理） | [`VERSION`](./VERSION) | [`poillysky/sehuatang-app`](https://hub.docker.com/r/poillysky/sehuatang-app) | 改主栈代码 / `VERSION`，或打标签 `v1.2.0`；或手动 Run [docker-app](./.github/workflows/docker-app.yml) |
-| **search**（搜索站） | [`VERSION.search`](./VERSION.search) | [`poillysky/sehuatang-search`](https://hub.docker.com/r/poillysky/sehuatang-search) | 改 `next-web` / `VERSION.search`，或打标签 `search-v1.2.0`；或手动 Run [docker-search](./.github/workflows/docker-search.yml) |
+| **search**（搜索+刮削） | [`VERSION.search`](./VERSION.search) | [`poillysky/sehuatang-search`](https://hub.docker.com/r/poillysky/sehuatang-search) | 改 `next-web` / `scrape-web` / `VERSION.search`，或打标签 `search-v1.2.0`；或手动 Run [docker-search](./.github/workflows/docker-search.yml) |
 
 当前钉版：
 
 | 产品 | 标签 |
 |------|------|
 | sehua | [`1.2.24`](https://hub.docker.com/r/poillysky/sehuatang-app/tags)（见 `deploy/docker-compose.nas.yml`） |
-| search | [`1.2.4`](https://hub.docker.com/r/poillysky/sehuatang-search/tags)（见 `deploy/docker-compose.search.yml`） |
+| search | [`1.2.5`](https://hub.docker.com/r/poillysky/sehuatang-search/tags)（见 `deploy/docker-compose.search.yml`；含 scrape） |
 
 - 发 sehua **不会**自动打 search
 - 发 search **不会**自动打 sehua
@@ -103,7 +99,7 @@ flowchart LR
 
 ```text
 ghcr.io/poillysky/sehuatang-app:1.2.24
-ghcr.io/poillysky/sehuatang-search:1.2.4
+ghcr.io/poillysky/sehuatang-search:1.2.5
 ```
 
 ---
@@ -260,7 +256,7 @@ Backend 启动时自动执行待跑 SQL 迁移。
 仓库：https://github.com/poillysky/sehua
 
 发 **sehua**：改 `VERSION` + `deploy/docker-compose.nas.yml` 镜像标签，提交；打 `v1.2.0` 或 path 触发 [docker-app](./.github/workflows/docker-app.yml)（也可手动 Run）。  
-发 **search**：改 `VERSION.search` + `deploy/docker-compose.search.yml` 镜像标签，提交；打 `search-v1.2.0`（或 `v1.2.0-search`）或 path 触发 [docker-search](./.github/workflows/docker-search.yml)。  
+发 **search**：改 `VERSION.search` + `deploy/docker-compose.search.yml` 镜像标签，提交；打 `search-v1.2.0`（或 `v1.2.0-search`）或 path 触发 [docker-search](./.github/workflows/docker-search.yml)。自 **1.2.5** 起 search 镜像内含 scrape-web，不再单独推 `sehuatang-scrape`。  
 两者版本号可不同；一次发版只动其中一个即可。Hub / GHCR 保留历史标签；各产品的 `latest` 各自更新。
 
 ---

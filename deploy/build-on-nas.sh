@@ -43,19 +43,23 @@ docker build -f "$SRC/deploy/app/Dockerfile" \
   "$SRC"
 
 if [ "${BUILD_SEARCH:-0}" = "1" ]; then
-  echo "[search] 独立搜索镜像..."
+  echo "[search] next-web + scrape-web 合一镜像..."
+  SEARCH_TAG="$TAG"
+  if [ -f "$SRC/VERSION.search" ]; then
+    SEARCH_TAG="$(tr -d ' \r\n' < "$SRC/VERSION.search")"
+  fi
   NODE_IMAGE="${NODE_IMAGE:-}"
   if [ -n "$NODE_IMAGE" ]; then
-    docker build -f "$SRC/next-web/Dockerfile" \
+    docker build -f "$SRC/deploy/search/Dockerfile" \
       --build-arg "NODE_IMAGE=$NODE_IMAGE" \
-      -t "poillysky/sehuatang-search:$TAG" \
+      -t "poillysky/sehuatang-search:$SEARCH_TAG" \
       -t "poillysky/sehuatang-search:latest" \
-      "$SRC/next-web"
+      "$SRC"
   else
-    docker build -f "$SRC/next-web/Dockerfile" \
-      -t "poillysky/sehuatang-search:$TAG" \
+    docker build -f "$SRC/deploy/search/Dockerfile" \
+      -t "poillysky/sehuatang-search:$SEARCH_TAG" \
       -t "poillysky/sehuatang-search:latest" \
-      "$SRC/next-web"
+      "$SRC"
   fi
 else
   echo "[search] 跳过（需要时: BUILD_SEARCH=1 ./build-on-nas.sh）"

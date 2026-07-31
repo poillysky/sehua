@@ -1,4 +1,4 @@
-# next-web 独立部署（与主栈 docker-compose.nas.yml 分开）
+# next-web + scrape-web 合一容器（与主栈 docker-compose.nas.yml 分开）
 #
 # 目录示例：/vol1/1000/Docker/sehuatang/
 #   docker-compose.search.yml
@@ -15,18 +15,25 @@
 # 访问: http://NAS_IP:3010  刮削: http://NAS_IP:9209/health
 #
 # 若主栈网络名不是 sehuatang-network，改下方 networks.default.name。
+#
+# 升级自双容器：旧 sehuatang-scrape 会被 --remove-orphans 清掉；封面卷路径不变。
 
 name: sehuatang-search
 
 services:
   search:
-    image: poillysky/sehuatang-search:1.2.4
+    image: poillysky/sehuatang-search:1.2.5
     container_name: sehuatang-search
     restart: always
     ports:
       - "3010:3000"
+      - "9209:9209"
     environment:
       TZ: Asia/Shanghai
+      PORT: "3000"
+      SCRAPE_PORT: "9209"
+      COVERS_DIR: /data/covers
+      META_DIR: /data/meta
       POSTGRES_HOST: postgres
       POSTGRES_PORT: 5432
       POSTGRES_USER: postgres
@@ -36,45 +43,8 @@ services:
       POSTGRES_DB_URL: postgres://postgres:postgres@postgres:5432/ed2k
       TRANSLATE_API_URL: ""
       TRANSLATE_FALLBACK: "1"
-      # 容器内反代刮削封面
-      SCRAPE_ORIGIN: http://scrape-web:9209
-      NODE_OPTIONS: "--dns-result-order=ipv4first"
-    dns:
-      - 223.5.5.5
-      - 8.8.8.8
-    depends_on:
-      - scrape-web
-    volumes:
-      - /vol1/1000/Docker/sehuatang/data/search:/app/data
-      - /vol1/1000/Docker/sehuatang/data/search-cache:/app/.next/cache
-    deploy:
-      resources:
-        limits:
-          cpus: "2"
-          memory: 1G
-        reservations:
-          cpus: "0.25"
-          memory: 256M
-
-  scrape-web:
-    image: poillysky/sehuatang-scrape:1.0.0
-    container_name: sehuatang-scrape
-    restart: always
-    ports:
-      - "9209:9209"
-    environment:
-      TZ: Asia/Shanghai
-      PORT: "9209"
-      COVERS_DIR: /data/covers
-      # 必须与 next-web 同一「资源库」（本机常为宿主机 :5435）
-      POSTGRES_HOST: postgres
-      POSTGRES_PORT: 5432
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
-      POSTGRES_DB: ed2k
-      POSTGRES_DB_URL: postgres://postgres:postgres@postgres:5432/ed2k
-      # 若资源库独立端口，改为例如:
-      # POSTGRES_DB_URL: postgres://postgres:postgres@172.17.0.1:5435/ed2k
+      # 同容器回环；勿再写 scrape-web 服务名
+      SCRAPE_ORIGIN: http://127.0.0.1:9209
       SCRAPE_CONCURRENCY: "2"
       SCRAPE_DELAY_MS: "800"
       # HTTPS_PROXY: http://host.docker.internal:7890
@@ -83,15 +53,17 @@ services:
       - 223.5.5.5
       - 8.8.8.8
     volumes:
+      - /vol1/1000/Docker/sehuatang/data/search:/app/data
+      - /vol1/1000/Docker/sehuatang/data/search-cache:/app/.next/cache
       - /vol1/1000/Docker/sehuatang/data/scrape-covers:/data/covers
     deploy:
       resources:
         limits:
-          cpus: "1"
-          memory: 512M
+          cpus: "3"
+          memory: 1536M
         reservations:
-          cpus: "0.1"
-          memory: 128M
+          cpus: "0.25"
+          memory: 384M
 
 networks:
   default:

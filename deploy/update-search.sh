@@ -6,8 +6,8 @@ cd "$(dirname "$0")"
 echo "[1/3] pull search..."
 docker compose -f docker-compose.search.yml pull
 
-echo "[2/3] up search..."
-docker compose -f docker-compose.search.yml up -d
+echo "[2/3] up search (remove orphan scrape container if any)..."
+docker compose -f docker-compose.search.yml up -d --remove-orphans
 
 echo "[3/3] prune dangling images..."
 docker image prune -f

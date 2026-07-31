@@ -1,7 +1,7 @@
 name: Build sehua-search image
 
-# 仅构建 / 推送搜索端，与主栈 sehua 完全独立
-# 触发：改 next-web / VERSION.search，或打标签 search-v1.2.4
+# 构建 / 推送搜索合一镜像（next-web + scrape-web），与主栈 sehua 完全独立
+# 触发：改 next-web / scrape-web / deploy/search / VERSION.search，或打标签 search-v*
 # 手动：Actions → Build sehua-search image → Run workflow
 # 注意：不会因 VERSION（主栈）或普通 v* 标签触发
 on:
@@ -9,6 +9,9 @@ on:
     branches: [main]
     paths:
       - "next-web/**"
+      - "scrape-web/**"
+      - "deploy/search/**"
+      - "deploy/docker-compose.search.yml"
       - "VERSION.search"
       - ".github/workflows/docker-search.yml"
     tags:
@@ -37,38 +40,6 @@ jobs:
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
           echo "search VERSION=$TAG"
 
-      - uses: actions/setup-node@v4
-        with:
-          node-version: "20"
-          cache: npm
-          cache-dependency-path: next-web/package-lock.json
-
-      - name: Install & build search
-        working-directory: next-web
-        env:
-          BUILD_MODE: standalone
-          DOCKER_BUILD: "1"
-          NODE_OPTIONS: "--max-old-space-size=4096"
-          npm_config_registry: https://registry.npmjs.org/
-          ACTIONS_ALLOW_USE_UNSECURE_NODE_VERSION: "true"
-        run: |
-          npm install --no-audit --no-fund --legacy-peer-deps
-          node -e "console.log('next', require('next/package.json').version)"
-          node -e "try{require('@node-rs/jieba');console.log('jieba ok')}catch(e){console.warn('jieba',e.message)}"
-          NODE_ENV=production node node_modules/next/dist/bin/next build
-          test -f .next/standalone/server.js
-          test -d .next/static
-
-      - name: Stage runtime context
-        run: |
-          mkdir -p /tmp/search-runtime/public /tmp/search-runtime/.next
-          cp -a next-web/public/. /tmp/search-runtime/public/
-          cp -a next-web/.next/standalone/. /tmp/search-runtime/
-          mkdir -p /tmp/search-runtime/.next/static
-          cp -a next-web/.next/static/. /tmp/search-runtime/.next/static/
-          cp next-web/Dockerfile.runtime /tmp/search-runtime/Dockerfile
-          test -f /tmp/search-runtime/server.js
-
       - uses: docker/setup-buildx-action@v3
 
       - name: Login GHCR
@@ -96,11 +67,11 @@ jobs:
 
       - uses: docker/build-push-action@v6
         with:
-          context: /tmp/search-runtime
-          file: /tmp/search-runtime/Dockerfile
+          context: .
+          file: deploy/search/Dockerfile
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha,scope=search
-          cache-to: type=gha,mode=max,scope=search
+          cache-from: type=gha,scope=search-unified
+          cache-to: type=gha,mode=max,scope=search-unified
           platforms: linux/amd64

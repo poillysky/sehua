@@ -40,7 +40,8 @@ docker compose -f docker-compose.search.yml up -d
 | 地址 | 用途 |
 |------|------|
 | http://NAS_IP:8082 | sehua 管理+API |
-| http://NAS_IP:3010 | 搜索（独立 compose） |
+| http://NAS_IP:3010 | 搜索（独立 compose；镜像内含刮削） |
+| http://NAS_IP:9209/health | 刮削探活（同 search 容器） |
 | NAS:5433 | PostgreSQL（以本机映射为准） |
 
 默认：`postgres`/`postgres` 库 `ed2k`；管理 `admin`/`admin123`。
@@ -57,4 +58,4 @@ BUILD_SEARCH=1 ./build-on-nas.sh 1.2.0
 UP=1 ./build-on-nas.sh 1.2.0
 ```
 
-镜像：`poillysky/sehuatang-app`、`poillysky/sehuatang-search`（分开推送，见仓库 `.github/workflows/`）。
+镜像：`poillysky/sehuatang-app`、`poillysky/sehuatang-search`（search 自 1.2.5 起含 scrape-web；分开推送，见仓库 `.github/workflows/`）。
