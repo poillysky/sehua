@@ -26,6 +26,8 @@ export type ForumCrawlerConfig = {
   web_crawler_cookie: string
   /** 账号登录 Cookie：仅「账号爬占位」用 */
   web_crawler_account_cookie?: string
+  /** 账号重爬每日最多抓帖数；0=不限制；默认 50 */
+  web_crawler_account_stub_daily_limit?: number
   web_crawler_auto_discover: boolean
   web_crawler_max_boards_per_run: number
   web_crawler_list_pages_per_board: number

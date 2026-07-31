@@ -40,6 +40,11 @@ from db.repository import (
 from db.resource_db import connect_resource
 from parsers.thread_gates import title_recognizable
 from db.settings_store import get_setting
+from workers.account_stub_daily import (
+    daily_status,
+    note_daily_attempt,
+    resolve_daily_limit,
+)
 from workers.pipeline import process_thread
 from workers.runner import (
     THROTTLE,
@@ -73,6 +78,17 @@ def _is_reply_or_purchase_outcome(label: str) -> bool:
     )
 
 
+def _account_daily_snapshot(forum_id: str, cfg: dict[str, Any] | None = None) -> dict[str, Any]:
+    use_cfg = cfg
+    if use_cfg is None:
+        conn = connect()
+        try:
+            use_cfg = _load_crawler_cfg(conn, forum_id)
+        finally:
+            conn.close()
+    return daily_status(forum_id, resolve_daily_limit(use_cfg))
+
+
 def _empty_account_stub_progress(*, active: bool = False, remaining: int = 0) -> dict[str, Any]:
     return {
         "active": active,
@@ -85,6 +101,9 @@ def _empty_account_stub_progress(*, active: bool = False, remaining: int = 0) ->
         "skipped_prep": 0,
         "current_tid": None,
         "current_title": "",
+        "daily_limit": 50,
+        "daily_used": 0,
+        "daily_remaining": 50,
     }
 
 
@@ -143,6 +162,7 @@ def _publish_account_stub_progress(
     current_title: str = "",
     exclude_hashes: list[str] | None = None,
     forum_id: str | None = None,
+    cfg: dict[str, Any] | None = None,
 ) -> None:
     if remaining is None:
         try:
@@ -153,6 +173,13 @@ def _publish_account_stub_progress(
             log.exception("count priority stubs for progress")
             remaining = 0
     rem = int(remaining or 0)
+    daily = {}
+    if forum_id:
+        try:
+            daily = _account_daily_snapshot(forum_id, cfg)
+        except Exception:
+            log.exception("account stub daily snapshot")
+            daily = {}
     _STATE["account_stub_progress"] = {
         "active": active,
         "remaining": rem,
@@ -164,6 +191,9 @@ def _publish_account_stub_progress(
         "skipped_prep": int(skipped_prep),
         "current_tid": current_tid,
         "current_title": (current_title or "")[:80],
+        "daily_limit": int(daily.get("limit") or 0),
+        "daily_used": int(daily.get("used") or 0),
+        "daily_remaining": daily.get("remaining"),
     }
 
 
@@ -182,7 +212,7 @@ _account_stub_future: Any = None
 
 
 def start_account_stub_recrawl(*, forum_id: str = "") -> dict[str, Any]:
-    """校验后后台跑账号爬占位（不限数量，直到队列清空或本轮均已尝试）。
+    """校验后后台跑账号爬占位（受每日上限约束，直到队列清空/额度用尽/本轮均已尝试）。
 
     仅处理调度焦点（或显式 forum_id）论坛的未处理/占位，避免跨站 Cookie 串用。
     """
@@ -224,6 +254,30 @@ def start_account_stub_recrawl(*, forum_id: str = "") -> dict[str, Any]:
     finally:
         conn.close()
 
+    daily = _account_daily_snapshot(focus_fid, cfg)
+    if daily.get("exhausted"):
+        lim = int(daily.get("limit") or 0)
+        used = int(daily.get("used") or 0)
+        msg = (
+            f"今日账号重爬已达上限 {lim}（已用 {used}），"
+            "明天自动重置，或到论坛配置调高「账号重爬每日上限」"
+        )
+        _log_activity(f"账号爬占位 · {focus_fid} · {msg}")
+        _publish_account_stub_progress(
+            active=False, remaining=0, forum_id=focus_fid, cfg=cfg
+        )
+        return {
+            "ok": True,
+            "started": False,
+            "reason": "daily_limit",
+            "forum_id": focus_fid,
+            "message": msg,
+            "note": msg,
+            "daily_limit": lim,
+            "daily_used": used,
+            "daily_remaining": 0,
+        }
+
     rconn = connect_resource()
     try:
         stub_remaining = count_priority_account_stubs(rconn, forum_id=focus_fid)
@@ -239,7 +293,9 @@ def start_account_stub_recrawl(*, forum_id: str = "") -> dict[str, Any]:
     remaining = int(stub_remaining) + int(discarded_remaining)
     if remaining <= 0:
         _log_activity(f"账号爬占位 · {focus_fid} · 无优先占位 / 未处理失败·无权跳过可处理")
-        _publish_account_stub_progress(active=False, remaining=0, forum_id=focus_fid)
+        _publish_account_stub_progress(
+            active=False, remaining=0, forum_id=focus_fid, cfg=cfg
+        )
         return {
             "ok": True,
             "started": False,
@@ -250,9 +306,16 @@ def start_account_stub_recrawl(*, forum_id: str = "") -> dict[str, Any]:
             "stub_remaining": 0,
             "discarded_remaining": 0,
             "message": "无「优先占位」或「未处理失败 / 无阅读权限跳过」可处理",
+            "daily_limit": int(daily.get("limit") or 0),
+            "daily_used": int(daily.get("used") or 0),
+            "daily_remaining": daily.get("remaining"),
         }
 
-    _publish_account_stub_progress(active=True, remaining=remaining, forum_id=focus_fid)
+    day_rem = daily.get("remaining")
+    run_cap = remaining if day_rem is None else min(remaining, int(day_rem))
+    _publish_account_stub_progress(
+        active=True, remaining=remaining, forum_id=focus_fid, cfg=cfg
+    )
 
     async def _runner() -> None:
         global _account_stub_task
@@ -266,15 +329,23 @@ def start_account_stub_recrawl(*, forum_id: str = "") -> dict[str, Any]:
             except Exception:
                 rem = 0
             _publish_account_stub_progress(
-                active=False, remaining=rem, forum_id=focus_fid
+                active=False, remaining=rem, forum_id=focus_fid, cfg=cfg
             )
         finally:
             if _account_stub_task is asyncio.current_task():
                 _account_stub_task = None
 
     _account_stub_future = spawn_crawl(_runner(), name="account-stubs")
+    lim = int(daily.get("limit") or 0)
+    used = int(daily.get("used") or 0)
+    quota_tip = (
+        "不限每日额度"
+        if lim <= 0
+        else f"今日额度 {lim} · 已用 {used} · 本轮最多 {run_cap}"
+    )
     _log_activity(
-        f"账号爬占位已启动 · {focus_fid} · 占位 {stub_remaining} · 未处理 {discarded_remaining} · 跑完为止"
+        f"账号爬占位已启动 · {focus_fid} · 占位 {stub_remaining} · "
+        f"未处理 {discarded_remaining} · {quota_tip}"
     )
     return {
         "ok": True,
@@ -284,9 +355,13 @@ def start_account_stub_recrawl(*, forum_id: str = "") -> dict[str, Any]:
         "budget": remaining,
         "stub_remaining": int(stub_remaining),
         "discarded_remaining": int(discarded_remaining),
+        "daily_limit": lim,
+        "daily_used": used,
+        "daily_remaining": daily.get("remaining"),
+        "run_cap": run_cap,
         "message": (
             f"已开始 · {focus_fid} · 占位 {stub_remaining} · "
-            f"未处理失败/无权跳过 {discarded_remaining} · 直至重爬完"
+            f"未处理失败/无权跳过 {discarded_remaining} · {quota_tip}"
         ),
     }
 
@@ -763,7 +838,7 @@ async def recrawl_imported_resources(hashes: list[str]) -> dict[str, Any]:
 
 
 async def recrawl_account_stubs(*, forum_id: str = "") -> dict[str, Any]:
-    """用账号 Cookie 重爬优先占位，不限数量：每次从库取下一条，直至无可再试。
+    """用账号 Cookie 重爬优先占位：受每日上限约束，每次从库取下一条直至无可再试或额度用尽。
 
     仅处理焦点论坛；本轮已尝试过的 hash（含仍占位）不再重复捞取，避免死循环。
     """
@@ -792,7 +867,9 @@ async def recrawl_account_stubs(*, forum_id: str = "") -> dict[str, Any]:
         cfg = _load_crawler_cfg(conn, focus_fid)
         account_cookie = str(cfg.get("web_crawler_account_cookie") or "").strip()
         if not account_cookie:
-            _publish_account_stub_progress(active=False, remaining=0, forum_id=focus_fid)
+            _publish_account_stub_progress(
+                active=False, remaining=0, forum_id=focus_fid, cfg=cfg
+            )
             return {
                 "ok": False,
                 "skipped": True,
@@ -806,6 +883,31 @@ async def recrawl_account_stubs(*, forum_id: str = "") -> dict[str, Any]:
             }
     finally:
         conn.close()
+
+    daily_limit = resolve_daily_limit(cfg)
+    daily0 = daily_status(focus_fid, daily_limit)
+    if daily0.get("exhausted"):
+        msg = (
+            f"今日账号重爬已达上限 {daily_limit}（已用 {daily0.get('used')}）"
+        )
+        _log_activity(f"账号爬占位 · {focus_fid} · {msg}")
+        _publish_account_stub_progress(
+            active=False, remaining=0, forum_id=focus_fid, cfg=cfg
+        )
+        return {
+            "ok": True,
+            "skipped": True,
+            "reason": "daily_limit",
+            "forum_id": focus_fid,
+            "processed": 0,
+            "upgraded": 0,
+            "still_stub": 0,
+            "failed": 0,
+            "note": msg,
+            "daily_limit": daily_limit,
+            "daily_used": int(daily0.get("used") or 0),
+            "daily_remaining": 0,
+        }
 
     rconn = connect_resource()
     try:
@@ -821,7 +923,9 @@ async def recrawl_account_stubs(*, forum_id: str = "") -> dict[str, Any]:
 
     if remaining0 <= 0:
         _log_activity(f"账号爬占位 · {focus_fid} · 无优先占位 / 未处理失败·无权跳过可处理")
-        _publish_account_stub_progress(active=False, remaining=0, forum_id=focus_fid)
+        _publish_account_stub_progress(
+            active=False, remaining=0, forum_id=focus_fid, cfg=cfg
+        )
         return {
             "ok": True,
             "forum_id": focus_fid,
@@ -832,6 +936,9 @@ async def recrawl_account_stubs(*, forum_id: str = "") -> dict[str, Any]:
             "skipped_prep": 0,
             "items": [],
             "note": "无「优先占位」或「未处理失败 / 无阅读权限跳过」可处理",
+            "daily_limit": daily_limit,
+            "daily_used": int(daily0.get("used") or 0),
+            "daily_remaining": daily0.get("remaining"),
         }
 
     lock = try_begin_exclusive("account_stubs")
@@ -859,9 +966,18 @@ async def recrawl_account_stubs(*, forum_id: str = "") -> dict[str, Any]:
     failed = 0
     skipped_prep = 0
     discarded_done = 0
+    hit_daily_limit = False
     attempted: list[str] = []
     attempted_urls: list[str] = []
     session_forum_id = ""
+
+    def _daily_exhausted() -> bool:
+        if daily_limit <= 0:
+            return False
+        return bool(daily_status(focus_fid, daily_limit).get("exhausted"))
+
+    def _note_attempt() -> None:
+        note_daily_attempt(focus_fid)
 
     def _push_progress(*, current_tid: int | None = None, current_title: str = "", active: bool = True) -> None:
         done = upgraded + still_stub + failed + skipped_prep
@@ -877,6 +993,7 @@ async def recrawl_account_stubs(*, forum_id: str = "") -> dict[str, Any]:
             current_title=current_title,
             exclude_hashes=None,
             forum_id=focus_fid,
+            cfg=cfg,
         )
 
     async def _switch_session(target_forum_id: str) -> dict[str, Any]:
@@ -909,9 +1026,17 @@ async def recrawl_account_stubs(*, forum_id: str = "") -> dict[str, Any]:
         return forum_cfg
 
     try:
+        quota_tip = (
+            "不限每日额度"
+            if daily_limit <= 0
+            else (
+                f"今日额度 {daily_limit} · 已用 {daily0.get('used')} · "
+                f"剩余 {daily0.get('remaining')}"
+            )
+        )
         _log_activity(
             f"账号爬占位开始 · {focus_fid} · 占位 {stub_remaining0} · "
-            f"未处理 {discarded_remaining0} · 登录 Cookie"
+            f"未处理 {discarded_remaining0} · 登录 Cookie · {quota_tip}"
         )
         THROTTLE.clear_stop()
         _push_progress(active=True)
@@ -926,6 +1051,12 @@ async def recrawl_account_stubs(*, forum_id: str = "") -> dict[str, Any]:
             while True:
                 if THROTTLE.should_stop():
                     _log_activity("账号爬占位 · 收到停止请求")
+                    break
+                if _daily_exhausted():
+                    hit_daily_limit = True
+                    _log_activity(
+                        f"账号爬占位 · 今日已达上限 {daily_limit}，停止"
+                    )
                     break
 
                 qconn = connect()
@@ -1018,6 +1149,7 @@ async def recrawl_account_stubs(*, forum_id: str = "") -> dict[str, Any]:
                     )
                 except Exception as exc:
                     log.exception("account discarded recrawl tid=%s kind=%s", tid, disc_kind)
+                    _note_attempt()
                     failed += 1
                     discarded_done += 1
                     qconn = connect()
@@ -1032,6 +1164,7 @@ async def recrawl_account_stubs(*, forum_id: str = "") -> dict[str, Any]:
                     await asyncio.sleep(0.8)
                     continue
 
+                _note_attempt()
                 verdict = str(outcome.get("verdict") or "failed")
                 label = str(outcome.get("outcome") or outcome.get("verdict_label") or verdict)
                 qconn = connect()
@@ -1074,13 +1207,17 @@ async def recrawl_account_stubs(*, forum_id: str = "") -> dict[str, Any]:
                 _push_progress(current_tid=int(tid), current_title=title)
                 await asyncio.sleep(0.35)
 
-            if THROTTLE.should_stop():
+            if THROTTLE.should_stop() or hit_daily_limit:
                 break
 
         # ② 再跑资源库优先占位
         while True:
             if THROTTLE.should_stop():
                 _log_activity("账号爬占位 · 收到停止请求")
+                break
+            if _daily_exhausted():
+                hit_daily_limit = True
+                _log_activity(f"账号爬占位 · 今日已达上限 {daily_limit}，停止")
                 break
 
             conn = connect_resource()
@@ -1176,6 +1313,7 @@ async def recrawl_account_stubs(*, forum_id: str = "") -> dict[str, Any]:
                 )
             except Exception as exc:
                 log.exception("account stub recrawl tid=%s", tid)
+                _note_attempt()
                 failed += 1
                 items.append(
                     {
@@ -1192,6 +1330,7 @@ async def recrawl_account_stubs(*, forum_id: str = "") -> dict[str, Any]:
                 await asyncio.sleep(0.8)
                 continue
 
+            _note_attempt()
             verdict = str(outcome.get("verdict") or "failed")
             label = str(outcome.get("outcome") or outcome.get("verdict_label") or verdict)
 
@@ -1316,13 +1455,23 @@ async def recrawl_account_stubs(*, forum_id: str = "") -> dict[str, Any]:
 
     processed = upgraded + still_stub + failed + skipped_prep
     rem_left = _db_priority_remaining(forum_id=focus_fid)
+    daily_end = daily_status(focus_fid, daily_limit)
     _log_activity(
         f"账号爬占位结束 · {focus_fid} · 处理 {processed} · 升级 {upgraded} · "
         f"仍占位 {still_stub} · 失败 {failed}"
         + f" · 未处理已跑 {discarded_done}"
         + f" · 库内剩余 {rem_left}"
         + (f" · 跳过 {skipped_prep}" if skipped_prep else "")
+        + (
+            f" · 今日额度 {daily_limit} 已用 {daily_end.get('used')}"
+            if daily_limit > 0
+            else ""
+        )
+        + (" · 因每日上限停止" if hit_daily_limit else "")
     )
+    note = "含优先占位 + 未处理失败 + 无阅读权限跳过；升级成功会删除旧占位"
+    if hit_daily_limit:
+        note += f"；今日已达上限 {daily_limit}，明日继续或调高配置"
     return {
         "ok": True,
         "forum_id": focus_fid,
@@ -1334,7 +1483,11 @@ async def recrawl_account_stubs(*, forum_id: str = "") -> dict[str, Any]:
         "discarded_done": discarded_done,
         "remaining": rem_left,
         "items": items,
-        "note": "含优先占位 + 未处理失败 + 无阅读权限跳过；升级成功会删除旧占位",
+        "daily_limit": daily_limit,
+        "daily_used": int(daily_end.get("used") or 0),
+        "daily_remaining": daily_end.get("remaining"),
+        "hit_daily_limit": hit_daily_limit,
+        "note": note,
     }
 
 

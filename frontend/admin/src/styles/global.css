@@ -1240,9 +1240,14 @@ a {
 
 .link-list {
   margin: 0;
-  padding-left: 18px;
+  padding-left: 1.6em;
   display: grid;
   gap: 6px;
+  list-style: decimal;
+}
+
+.link-list > li {
+  padding-left: 0.25em;
 }
 
 .tag {

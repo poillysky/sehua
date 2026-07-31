@@ -318,6 +318,20 @@ export function BasicForumConfigModal({
                           onChange={(e) => setDraft({ ...draft, web_crawler_account_cookie: e.target.value })}
                         />
                       </Field>
+                      <Field
+                        label="账号重爬每日上限"
+                        hint="防封号：单日最多用账号 Cookie 抓多少帖；0=不限制；默认 50"
+                      >
+                        <input
+                          type="number"
+                          min={0}
+                          max={5000}
+                          value={draft.web_crawler_account_stub_daily_limit ?? 50}
+                          onChange={(e) =>
+                            setNum('web_crawler_account_stub_daily_limit', e.target.value)
+                          }
+                        />
+                      </Field>
                     </div>
                   </section>
 
@@ -1276,6 +1290,18 @@ function ConfigTab({
                 placeholder="登录态 Cookie：bbs_sid=...; bbs_auth=...;"
                 value={draft.web_crawler_account_cookie || ''}
                 onChange={(e) => setDraft({ ...draft, web_crawler_account_cookie: e.target.value })}
+              />
+            </Field>
+            <Field
+              label="账号重爬每日上限"
+              hint="防封号：单日最多抓帖数；0=不限制；达上限后需明天或调高此值"
+            >
+              <input
+                type="number"
+                min={0}
+                max={5000}
+                value={draft.web_crawler_account_stub_daily_limit ?? 50}
+                onChange={(e) => setNum('web_crawler_account_stub_daily_limit', e.target.value)}
               />
             </Field>
           </div>

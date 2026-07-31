@@ -47,6 +47,8 @@ FORUM_CRAWLER_DEFAULTS: dict[str, Any] = {
     "web_crawler_cookie": "safe=1",
     # 账号登录 Cookie：仅「账号爬占位」使用；普通爬虫仍用 web_crawler_cookie
     "web_crawler_account_cookie": "",
+    # 账号重爬每日最多抓帖数（防封号）；0=不限制
+    "web_crawler_account_stub_daily_limit": 50,
     "web_crawler_auto_discover": False,
     "web_crawler_max_boards_per_run": 1,
     "web_crawler_list_pages_per_board": 15,
@@ -277,6 +279,12 @@ def _normalize_forum_config(
     base["web_crawler_interval_minutes"] = 0
     if int(base.get("web_crawler_max_threads_per_run") or 0) < 0:
         base["web_crawler_max_threads_per_run"] = 0
+    try:
+        base["web_crawler_account_stub_daily_limit"] = max(
+            0, int(base.get("web_crawler_account_stub_daily_limit") or 50)
+        )
+    except (TypeError, ValueError):
+        base["web_crawler_account_stub_daily_limit"] = 50
     crawl_urls = [u.strip() for u in str(base.get("web_crawl_urls") or "").split(",") if u.strip()]
     if not crawl_urls:
         base["web_crawl_urls"] = default_crawl_urls

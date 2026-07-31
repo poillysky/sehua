@@ -1204,6 +1204,14 @@ export function CrawlerPage() {
     metrics?.account_pass_total ??
       priorityStubCount + accessDeniedTitleCount + discardedFailedKindCount,
   )
+  const accountDailyLimit = Number(metrics?.account_stub_daily_limit ?? 50)
+  const accountDailyUsed = Number(metrics?.account_stub_daily_used ?? 0)
+  const accountDailyRemaining =
+    metrics?.account_stub_daily_remaining == null
+      ? accountDailyLimit > 0
+        ? Math.max(0, accountDailyLimit - accountDailyUsed)
+        : null
+      : Number(metrics.account_stub_daily_remaining)
 
   const onRecrawlStubs = async () => {
     if (enabled || looping || running) {
@@ -1212,13 +1220,20 @@ export function CrawlerPage() {
       )
       return
     }
+    const quotaLine =
+      accountDailyLimit <= 0
+        ? '每日额度：不限制。'
+        : `每日额度 ${accountDailyLimit} · 今日已用 ${accountDailyUsed}` +
+          (accountDailyRemaining != null ? ` · 还可跑 ${accountDailyRemaining}` : '') +
+          '。'
     const ok = await confirmDialog({
       title: '账号重爬',
       message:
         `用账号 Cookie 依次处理：① 未入库「未见正文」${discardedFailedKindCount} 条；` +
         `② 未入库「无阅读权限」跳过 ${accessDeniedTitleCount} 条；` +
         `③ 资源库优先占位 ${priorityStubCount} 条（合计 ${accountPassTotal}）。` +
-        `不限数量直至跑完。升级成功会删旧占位；登录后需回复/需购买则跳过并删占位。需先配置账号 Cookie。确定？`,
+        `${quotaLine}` +
+        `达上限即停，防封号（论坛配置可改）。升级成功会删旧占位；登录后需回复/需购买则跳过并删占位。需先配置账号 Cookie。确定？`,
       confirmText: '开始重爬',
     })
     if (!ok) return
@@ -1233,12 +1248,15 @@ export function CrawlerPage() {
         const disc = Number(res.discarded_remaining ?? 0)
         const stubs = Number(res.stub_remaining ?? res.remaining ?? res.budget ?? 0)
         const total = Number(res.remaining ?? res.budget ?? stubs + disc)
+        const runCap = res.run_cap != null ? Number(res.run_cap) : null
         const line =
           `账号重爬进行中：已处理 0 · 库内剩余 ${total}` +
+          (runCap != null && runCap < total ? ` · 本轮最多 ${runCap}` : '') +
           (disc > 0 ? `（含未入库·未见正文/无权跳过 ${disc}）` : '')
         setRunHint(line)
         toast.success(
           `账号重爬已开始 · 共 ${total}` +
+            (runCap != null ? ` · 本轮上限 ${runCap}` : '') +
             (disc > 0 ? ` · 未入库 ${disc}` : '') +
             (stubs > 0 && disc > 0 ? ` · 占位 ${stubs}` : ''),
         )
@@ -1246,7 +1264,8 @@ export function CrawlerPage() {
         stubWasActive.current = false
         const line = res.note || res.message || '无优先占位 / 未入库·未见正文·无权跳过可处理'
         setRunHint(line)
-        toast.info(line)
+        if (res.reason === 'daily_limit') toast.warn(line)
+        else toast.info(line)
       }
       await refresh()
       await loadDiscarded()

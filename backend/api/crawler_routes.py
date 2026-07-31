@@ -403,6 +403,22 @@ def get_crawler_status(
         "board_updated": last.get("board_updated") or 0,
         "imports_per_minute": import_rate.get("per_minute") or 0,
     }
+    try:
+        from workers.account_stub_daily import daily_status, resolve_daily_limit
+
+        _daily = daily_status(
+            str(active or cfg_forum_id or ""),
+            resolve_daily_limit(cfg),
+        )
+        metrics["account_stub_daily_limit"] = int(_daily.get("limit") or 0)
+        metrics["account_stub_daily_used"] = int(_daily.get("used") or 0)
+        metrics["account_stub_daily_remaining"] = _daily.get("remaining")
+    except Exception:
+        metrics["account_stub_daily_limit"] = int(
+            cfg.get("web_crawler_account_stub_daily_limit") or 50
+        )
+        metrics["account_stub_daily_used"] = 0
+        metrics["account_stub_daily_remaining"] = metrics["account_stub_daily_limit"]
     throttle = st.get("throttle") or {}
     runtime = {
         "enabled": bool(cfg.get("web_crawler_enabled")),

@@ -49,6 +49,7 @@ from parsers.thread_gates import (
     is_thread_login_required,
     is_thread_moderator_blocked,
     looks_like_attachment_zone,
+    looks_like_complete_thread_fetch,
     is_empty_tip_page,
     is_missing_thread,
     match_skip_cloud_share_link,
@@ -63,6 +64,31 @@ from parsers.thread_gates import (
     title_recognizable,
     coalesce_thread_title,
 )
+
+_RETRY_INCOMPLETE_FETCH = "页面未完整加载，待重试"
+
+
+def _skip_no_target_or_retry(
+    html: str,
+    *,
+    title: str,
+    list_title: str | None,
+    link_kind: str,
+    attachments_already_tried: bool = False,
+    had_attachments: bool = False,
+) -> ThreadOutcome:
+    """兜底「未解析到目标链」：仅抓取证据完整才永久跳过，否则重试。"""
+    if looks_like_complete_thread_fetch(
+        html,
+        title=title or "",
+        list_title=list_title or "",
+        link_kind=link_kind,
+        attachments_already_tried=attachments_already_tried,
+        had_attachments=had_attachments,
+    ):
+        return ThreadOutcome("skipped", SKIP_NO_TARGET, link_kind, title)
+    # 证据不足（含半载/无页脚/附件未试完）→ 重试，勿永久「未解析跳过」
+    return ThreadOutcome("retry", _RETRY_INCOMPLETE_FETCH, link_kind, title)
 
 Verdict = Literal["import", "stub", "skipped", "failed", "retry", "need_attachments"]
 
@@ -465,7 +491,12 @@ def judge_thread_html(
             cloud_fail = match_skip_cloud_share_link(link_corpus)
             if cloud_fail is not None:
                 return ThreadOutcome("skipped", cloud_fail.skip_tip(), link_kind, title)
-            return ThreadOutcome("skipped", SKIP_NO_TARGET, link_kind, title)
+            return _skip_no_target_or_retry(
+                html,
+                title=title,
+                list_title=list_title,
+                link_kind=link_kind,
+            )
 
     # 0 元购买仍无链（未登录/未解锁）：占位，留给账号爬；勿再走附件/无磁力跳过
     if not has_lz_target and is_free_purchase_post(html):
@@ -546,11 +577,13 @@ def judge_thread_html(
                 link_kind,
                 title,
             )
-        return ThreadOutcome(
-            "skipped",
-            SKIP_NO_TARGET,
-            link_kind,
-            title,
+        return _skip_no_target_or_retry(
+            html,
+            title=title,
+            list_title=list_title,
+            link_kind=link_kind,
+            attachments_already_tried=attachments_already_tried,
+            had_attachments=had_attachments,
         )
 
     if is_non_target_cloud_share(link_kind=link_kind, text=link_corpus) and not title_implies_resource(
@@ -568,10 +601,11 @@ def judge_thread_html(
 
     if wrong_typeid:
         return ThreadOutcome("retry", "非情色分享分类，待复核", link_kind, title)
-    # 正文/附件均无 ed2k、magnet → 跳过（含标题暗示资源）
-    if title_implies_resource(title, link_kind):
-        return ThreadOutcome("skipped", SKIP_NO_TARGET, link_kind, title)
-    if len(html or "") < 8000:
-        return ThreadOutcome("retry", "页面过短/未正常加载", link_kind, title)
 
-    return ThreadOutcome("skipped", SKIP_NO_TARGET, link_kind, title)
+    # 兜底无链：仅完整抓取才「未解析跳过」
+    return _skip_no_target_or_retry(
+        html,
+        title=title,
+        list_title=list_title,
+        link_kind=link_kind,
+    )

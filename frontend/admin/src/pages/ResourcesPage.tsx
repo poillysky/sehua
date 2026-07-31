@@ -1725,22 +1725,22 @@ function DetailTabs({
                 链接{row.assetCount && row.assetCount > 1 ? `（${row.assetCount} 个子资源）` : ''}
               </span>
               {row.assets && row.assets.length > 1 ? (
-                <ul className="link-list">
-                  {row.assets.map((a) => (
-                    <li key={a.hash || a.link}>
+                <ol className="link-list">
+                  {row.assets.map((a, i) => (
+                    <li key={a.hash || a.link || String(i)}>
                       <div className="val">{a.filename || a.hash || '—'}</div>
                       <div className="mono">{a.link || '—'}</div>
                     </li>
                   ))}
-                </ul>
+                </ol>
               ) : row.links?.length ? (
-                <ul className="link-list">
-                  {row.links.map((l) => (
-                    <li key={l} className="mono">
+                <ol className="link-list">
+                  {row.links.map((l, i) => (
+                    <li key={`${i}-${l}`} className="mono">
                       {l}
                     </li>
                   ))}
-                </ul>
+                </ol>
               ) : (
                 <span className="val hint">无链接（stub）</span>
               )}

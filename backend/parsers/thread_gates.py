@@ -1392,6 +1392,167 @@ def thread_typeid_mismatch(html: str, board_fid: str, required_typeid: str | Non
     return actual is not None and actual != str(required_typeid)
 
 
+_ATTACH_INJECT_RE = re.compile(
+    r"""id=['"]postmessage_attach\d*['"][^>]*>(.*?)</div>""",
+    re.I | re.S,
+)
+_ATTACH_INJECT_DIV_RE = re.compile(
+    r"""<div[^>]*id=['"]postmessage_attach\d*['"][^>]*>.*?</div>""",
+    re.I | re.S,
+)
+# 正文指向附件、但附件区未出现在 HTML → 常见半载/截断
+_ATTACH_POINTER_MARKERS = (
+    "见附件",
+    "附件下载",
+    "链接在附件",
+    "下载见附件",
+    "资源在附件",
+    "见第一个附件",
+    "请下载附件",
+    "附件内",
+)
+
+
+def attachment_inject_plain_len(html: str) -> int:
+    """inject_attachment_text 挂入的附件纯文本长度；无注入则 0。"""
+    total = 0
+    for m in _ATTACH_INJECT_RE.finditer(html or ""):
+        total += len(re.sub(r"\s+", " ", m.group(1) or "").strip())
+    return total
+
+
+def looks_like_incomplete_thread_fetch(
+    html: str,
+    *,
+    title: str = "",
+    list_title: str = "",
+    link_kind: str = "both",
+    attachments_already_tried: bool = False,
+    had_attachments: bool = False,
+) -> bool:
+    """高置信「抓取不完整」——应 retry，勿落「未解析到目标链（跳过）」。
+
+    只认可观察的不完整信号；完整长页 / 已注入较长附件文本仍无链 → False
+   （真·无目标链，保持跳过）。
+    """
+    h = html or ""
+    if not h:
+        return True
+    # 与既有「页面过短」对齐
+    if len(h) < 8000:
+        return True
+
+    try:
+        from crawler.cf_bypass import is_cf_challenge
+
+        if is_cf_challenge(h):
+            return True
+    except Exception:
+        pass
+
+    raw_title = page_title(h) or ""
+    pt = normalize_title_core(raw_title)
+    if pt in GENERIC_TITLES or pt.startswith("提示"):
+        return True
+    if any(x in raw_title for x in SOFT_AD_TITLE_HINTS):
+        return True
+
+    lowered = h.lower()
+    has_footer = (
+        "Powered by Discuz" in h
+        or "powered by phpwind" in lowered
+        or 'id="read_tpc"' in lowered
+        or "id='read_tpc'" in lowered
+    )
+    # 有一楼节点、无论坛页脚、整体偏短 → 半载/截断（完整帖几乎都有页脚）
+    if has_thread_post_body(h) and (not has_footer) and len(h) < 25000:
+        return True
+
+    display = (list_title or title or "").strip()
+    implies = title_implies_resource(display, link_kind) or title_implies_resource(
+        title or "", link_kind
+    )
+
+    # 去掉附件注入后再看楼主是否「指向附件」
+    html_wo_attach = _ATTACH_INJECT_DIV_RE.sub("", h)
+    body_lz = (post_text(html_wo_attach) or "").strip()
+    if (
+        implies
+        and any(p in body_lz for p in _ATTACH_POINTER_MARKERS)
+        and not looks_like_attachment_zone(h)
+        and not had_attachments
+    ):
+        return True
+
+    # 附件路径标成已下到内容，但注入极短 / 未挂上 → tip 页或空包被当成成功
+    if attachments_already_tried and had_attachments:
+        inj = attachment_inject_plain_len(h)
+        if inj < 100:
+            return True
+
+    return False
+
+
+def looks_like_complete_thread_fetch(
+    html: str,
+    *,
+    title: str = "",
+    list_title: str = "",
+    link_kind: str = "both",
+    attachments_already_tried: bool = False,
+    had_attachments: bool = False,
+) -> bool:
+    """正证据：本轮抓取足以支撑「未解析到目标链」永久跳过。
+
+    缺任一条件 → 视为证据不足，应 retry（避免网络/半载误成永久跳过）。
+    网盘/115sha/无权等明确种类不走此函数。
+    """
+    if looks_like_incomplete_thread_fetch(
+        html,
+        title=title,
+        list_title=list_title,
+        link_kind=link_kind,
+        attachments_already_tried=attachments_already_tried,
+        had_attachments=had_attachments,
+    ):
+        return False
+
+    h = html or ""
+    if len(h) < 8000:
+        return False
+    if not has_thread_post_body(h):
+        return False
+
+    lowered = h.lower()
+    has_footer = (
+        "Powered by Discuz" in h
+        or "powered by phpwind" in lowered
+        or 'id="read_tpc"' in lowered
+        or "id='read_tpc'" in lowered
+    )
+    if not has_footer:
+        return False
+
+    pt = normalize_title_core(page_title(h) or "")
+    if not (
+        title_recognizable(list_title)
+        or title_recognizable(title)
+        or title_recognizable(pt)
+    ):
+        return False
+
+    # 看得见附件区则必须已试附件且拿到足够文本，否则不能断言「无目标链」
+    if looks_like_attachment_zone(h):
+        if not attachments_already_tried:
+            return False
+        if not had_attachments:
+            return False
+        if attachment_inject_plain_len(h) < 100:
+            return False
+
+    return True
+
+
 def looks_like_attachment_zone(html: str) -> bool:
     """是否有可解析的资源附件（txt/zip/rar/torrent）。预览图不算。
 

@@ -109,6 +109,10 @@ export type CrawlerStatus = {
     discarded_access_denied_title?: number
     discarded_failed_kind?: number
     account_pass_total?: number
+    /** 账号重爬每日上限；0=不限 */
+    account_stub_daily_limit?: number
+    account_stub_daily_used?: number
+    account_stub_daily_remaining?: number | null
     board_updated?: number
     /** 近窗口入库+占位折算 posts/min */
     imports_per_minute?: number
@@ -558,10 +562,15 @@ export function requeueDiscardedTids(body: {
 export type RecrawlStubsResult = {
   message: string
   started?: boolean
+  reason?: string
   remaining?: number
   budget?: number
   stub_remaining?: number
   discarded_remaining?: number
+  run_cap?: number
+  daily_limit?: number
+  daily_used?: number
+  daily_remaining?: number | null
   note?: string
   processed: number
   upgraded: number

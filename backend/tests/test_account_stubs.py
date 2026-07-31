@@ -10,6 +10,23 @@ from db.repository import ACCOUNT_STUB_OUTCOMES
 from workers import recrawl as rc
 
 
+def _patch_account_daily_unlimited(monkeypatch) -> None:
+    monkeypatch.setattr(rc, "resolve_daily_limit", lambda cfg: 0)
+    monkeypatch.setattr(
+        rc,
+        "daily_status",
+        lambda *a, **k: {
+            "limit": 0,
+            "used": 0,
+            "remaining": None,
+            "exhausted": False,
+            "unlimited": True,
+            "date": "2026-07-31",
+        },
+    )
+    monkeypatch.setattr(rc, "note_daily_attempt", lambda *a, **k: 0)
+
+
 def test_priority_outcomes_include_login_perm_attach_exclude_reply_purchase():
     assert "帖子需论坛登录" in ACCOUNT_STUB_OUTCOMES
     assert "无阅读权限 · 占位入库" in ACCOUNT_STUB_OUTCOMES
@@ -117,6 +134,7 @@ async def test_recrawl_account_stubs_upgrade_deletes_stub(monkeypatch):
     monkeypatch.setattr(rc.THROTTLE, "clear_stop", lambda: None)
     monkeypatch.setattr(rc.THROTTLE, "should_stop", lambda: False)
     monkeypatch.setattr(rc, "_publish_account_stub_progress", lambda **kw: None)
+    _patch_account_daily_unlimited(monkeypatch)
     monkeypatch.setattr(
         rc, "_db_priority_remaining", lambda exclude_hashes=None, forum_id=None: 0
     )
@@ -166,7 +184,7 @@ async def test_recrawl_account_stubs_upgrade_deletes_stub(monkeypatch):
         return session
 
     monkeypatch.setattr(rc, "session_from_config", fake_session)
-    monkeypatch.setattr(rc, "fetcher_from_config", lambda session, cfg: MagicMock())
+    monkeypatch.setattr(rc, "fetcher_from_config", lambda *a, **k: MagicMock())
     monkeypatch.setattr(rc, "resolve_forum_entry_urls", lambda *a, **k: [])
     monkeypatch.setattr(rc, "bootstrap_probe_for_forum", lambda *a, **k: "")
 
@@ -215,6 +233,7 @@ async def test_recrawl_account_stubs_keeps_stub_on_still_stub(monkeypatch):
     monkeypatch.setattr(rc.THROTTLE, "clear_stop", lambda: None)
     monkeypatch.setattr(rc.THROTTLE, "should_stop", lambda: False)
     monkeypatch.setattr(rc, "_publish_account_stub_progress", lambda **kw: None)
+    _patch_account_daily_unlimited(monkeypatch)
     monkeypatch.setattr(
         rc, "_db_priority_remaining", lambda exclude_hashes=None, forum_id=None: 1
     )
@@ -257,7 +276,7 @@ async def test_recrawl_account_stubs_keeps_stub_on_still_stub(monkeypatch):
     session.close = AsyncMock()
     session._ready = True
     monkeypatch.setattr(rc, "session_from_config", lambda cfg, **kw: session)
-    monkeypatch.setattr(rc, "fetcher_from_config", lambda session, cfg: MagicMock())
+    monkeypatch.setattr(rc, "fetcher_from_config", lambda *a, **k: MagicMock())
     monkeypatch.setattr(rc, "resolve_forum_entry_urls", lambda *a, **k: [])
     monkeypatch.setattr(rc, "bootstrap_probe_for_forum", lambda *a, **k: "")
     monkeypatch.setattr(
@@ -297,6 +316,7 @@ async def test_recrawl_account_stubs_skips_reply_required(monkeypatch):
     monkeypatch.setattr(rc.THROTTLE, "clear_stop", lambda: None)
     monkeypatch.setattr(rc.THROTTLE, "should_stop", lambda: False)
     monkeypatch.setattr(rc, "_publish_account_stub_progress", lambda **kw: None)
+    _patch_account_daily_unlimited(monkeypatch)
     monkeypatch.setattr(
         rc, "_db_priority_remaining", lambda exclude_hashes=None, forum_id=None: 0
     )
@@ -339,7 +359,7 @@ async def test_recrawl_account_stubs_skips_reply_required(monkeypatch):
     session.close = AsyncMock()
     session._ready = True
     monkeypatch.setattr(rc, "session_from_config", lambda cfg, **kw: session)
-    monkeypatch.setattr(rc, "fetcher_from_config", lambda session, cfg: MagicMock())
+    monkeypatch.setattr(rc, "fetcher_from_config", lambda *a, **k: MagicMock())
     monkeypatch.setattr(rc, "resolve_forum_entry_urls", lambda *a, **k: [])
     monkeypatch.setattr(rc, "bootstrap_probe_for_forum", lambda *a, **k: "")
     monkeypatch.setattr(

@@ -449,7 +449,8 @@ def test_judge_skips_preview_only_no_resource_links():
 
 
 def test_judge_skips_after_attachments_tried_without_link():
-    """附件已下到、仍无 ed2k/磁力 → 跳过（勿占位）。"""
+    """附件已下到足够文本、仍无 ed2k/磁力 → 跳过（勿占位）。"""
+    from parsers.attachments import inject_attachment_text
     from workers.thread_outcome import judge_thread_html
 
     html = """
@@ -464,6 +465,10 @@ def test_judge_skips_after_attachments_tried_without_link():
     </body></html>
     """
     html = html + ("<!-- pad -->" * 900)
+    # 注入足够长且无目标链的附件文本，才允许永久「未解析跳过」
+    html = inject_attachment_text(
+        html, "\n".join(f"说明条目{i} 无下载地址" for i in range(30))
+    )
     out = judge_thread_html(
         html,
         board_fid=95,
