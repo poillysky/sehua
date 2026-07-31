@@ -243,3 +243,50 @@ def test_single_resource_still_reads_lz_second_floor():
     assert should_scan_lz_multi_floor(html) is True
     parsed = parse_thread_dual(html, preferred_link="magnet")
     assert any(a.hash.upper() == h for a in parsed.assets)
+
+
+def test_op_not_truncated_by_nested_resource_table_tbody():
+    """结构卡套表 </tbody> 不得截断一楼；表后 blockcode 链须入库（tid=3229469）。"""
+    from parsers.content import extract_first_postmessage_html
+
+    ed2k = (
+        "ed2k://|file|www.98T.la@盗墓笔记作者周建龙.zip|14844966498|"
+        "44B20280556FB7EC0180099520BA04BA|/"
+    )
+    html = f"""
+    <html><body>
+    <span id="thread_subject">【整理】【ED2K】盗墓笔记</span>
+    <div id="post_1">
+      <div class="authi"><img src="static/image/common/ico_lz.png" />&nbsp;楼主</div>
+      <td id="postmessage_58189186">
+        <table class="t_table"><tbody>
+          <tr><td>【资源名称】：盗墓笔记音频合集</td></tr>
+          <tr><td>【资源链接】：<br><br></td></tr>
+        </tbody></table></td></tr></tbody></table><br>
+        <div class="blockcode"><div id="code_jqA"><ol><li>{ed2k}</li></ol></div>
+        <em>复制代码</em></div>
+      </td>
+    </div>
+    <div id="post_2">
+      <div class="authi">路人</div>
+      <td id="postmessage_999">ed2k://|file|spam.zip|1|AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA|/</td>
+    </div>
+    </body></html>
+    """
+    op = extract_first_postmessage_html(html)
+    assert "blockcode" in op
+    assert "盗墓笔记作者周建龙" in op
+    parsed = parse_thread_dual(html, tid=3229469, preferred_link="ed2k")
+    assert parsed.primary_link_kind == "ed2k"
+    assert any(
+        (a.hash or "").upper() == "44B20280556FB7EC0180099520BA04BA"
+        for a in parsed.assets
+    )
+    assert any(
+        "盗墓笔记作者周建龙" in (e.filename or "") for e in parsed.ed2k_links
+    )
+    outcome = judge_thread_html(
+        html, board_fid=95, preferred_link="ed2k", forum_id="sehuatang", tid=3229469
+    )
+    assert outcome.verdict == "import"
+    assert "成功" in (outcome.outcome or "")

@@ -383,10 +383,11 @@ _HASH_META_LABEL_HINTS = (
 )
 # Discuz 一楼正文起点（仅数字楼 id，跳过 postmessage_attach* 注入）
 _OP_POST_START_RE = re.compile(r'id="postmessage_(\d+)"[^>]*>', re.I)
-# 一楼正文结束：下一帖 / 评论区 / 表尾（切在开标签前，避免残留 `<div`）
+# 一楼正文结束：下一帖 / 评论区 / 帖结束注释。
+# 勿用 </tbody>：情色分享结构卡套表会提前截断，漏掉表后 blockcode 链（tid=3229469）。
 _OP_POST_END_RE = re.compile(
     r'<[^>]+id="postmessage_|<[^>]+id="post_\d+|<[^>]+id="comment_|'
-    r'<!--\s*end\s*post|</tbody>',
+    r'<!--\s*end\s*post',
     re.I,
 )
 # 楼主标记：ico_lz.png 或 authi 里的「楼主」（勿用「只看该作者」，每层都有）
