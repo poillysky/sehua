@@ -545,10 +545,11 @@ def test_filter_all_link_attachments_order_and_limit():
         DownloadAttachment("seed.torrent", "u", "torrent"),
         DownloadAttachment("b.xlsx", "u", "excel"),
         DownloadAttachment("目录树.txt", "u", "txt"),
+        DownloadAttachment("文件目录.txt", "u", "txt"),
         DownloadAttachment("p.zip", "u", "zip"),
         DownloadAttachment("links.docx", "u", "doc"),
     ]
-    # 默认 / 电驴：txt → zip/rar → excel/doc → torrent；目录类 txt 垫底
+    # 默认 / 电驴：txt → zip/rar → excel/doc → torrent；「目录树」硬跳过；其它目录类垫底
     got = filter_all_link_attachments(atts, limit=10, preferred_link="ed2k")
     assert [a.kind for a in got] == [
         "txt",
@@ -566,10 +567,11 @@ def test_filter_all_link_attachments_order_and_limit():
         "b.xlsx",
         "links.docx",
         "seed.torrent",
-        "目录树.txt",
+        "文件目录.txt",
     ]
+    assert not any("目录树" in a.name for a in got)
 
-    # 磁力：torrent → excel/doc/txt → zip/rar；目录类 txt 仍垫底
+    # 磁力：torrent → excel/doc/txt → zip/rar；其它目录类垫底；目录树仍不出现
     got_m = filter_all_link_attachments(atts, limit=10, preferred_link="magnet")
     assert [a.kind for a in got_m] == [
         "torrent",
@@ -581,7 +583,33 @@ def test_filter_all_link_attachments_order_and_limit():
         "txt",
     ]
     assert got_m[0].name == "seed.torrent"
-    assert got_m[-1].name == "目录树.txt"
+    assert got_m[-1].name == "文件目录.txt"
+    assert not any("目录树" in a.name for a in got_m)
+
+
+def test_directory_tree_name_hard_skipped():
+    """文件名含「目录树」任意类型：不下、不垫底、不试算。"""
+    from parsers.attachments import (
+        filter_all_link_attachments,
+        filter_tail_attachments,
+        is_directory_tree_attachment_name,
+        DownloadAttachment,
+    )
+
+    assert is_directory_tree_attachment_name("xxx_目录树.txt")
+    assert is_directory_tree_attachment_name("目錄樹.rar")
+    assert not is_directory_tree_attachment_name("文件目录.txt")
+    assert not is_directory_tree_attachment_name("新建文件夹.rar")
+
+    atts = [
+        DownloadAttachment("目录树.txt", "u", "txt"),
+        DownloadAttachment("xxx_目录树.zip", "u", "zip"),
+        DownloadAttachment("目錄樹.torrent", "u", "torrent"),
+        DownloadAttachment("链接A.txt", "u", "txt"),
+    ]
+    got = filter_all_link_attachments(atts, preferred_link="ed2k")
+    assert [a.name for a in got] == ["链接A.txt"]
+    assert filter_tail_attachments(atts)[0].name == "链接A.txt"
 
 
 def test_filter_all_link_attachments_prefers_115_name():
@@ -619,8 +647,8 @@ def test_filter_ed2k_board_prefers_115ed2k_over_115sha_name():
     assert names[0] == "合集 115ed2k.txt"
     assert names.index("合集 115ed2k.txt") < names.index("防失效备用版.txt")
     assert names.index("防失效备用版.txt") < names.index("合集_115sha1.txt")
-    # 目录树仍在末尾
-    assert names[-1] == "目录树.txt"
+    # 「目录树」硬跳过，不进轮询
+    assert "目录树.txt" not in names
 
 
 def test_filter_all_link_attachments_prefers_yifen_name():

@@ -32,6 +32,7 @@ from parsers.attachments import (
     is_attachment_download_limited,
     is_attachment_login_required,
     is_attachment_not_found,
+    is_directory_tree_attachment_name,
     listing_shows_attach_denied,
 )
 from parsers.torrent import parse_torrent_bytes
@@ -1670,6 +1671,9 @@ class AttachmentDownloader:
             return False
 
         for idx, attachment in enumerate(attachments):
+            if is_directory_tree_attachment_name(attachment.name):
+                log.info("Attachment skip directory-tree name: %s", attachment.name)
+                continue
             remain_wall = deadline - time.monotonic()
             # 至少给第一个附件机会；其后剩余不足则停
             if idx > 0 and remain_wall <= 0:

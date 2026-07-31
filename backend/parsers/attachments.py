@@ -71,6 +71,12 @@ DIRECTORY_ATTACHMENT_MARKERS = (
     "contents",
 )
 
+# 文件名含「目录树」：明确跳过，不下、不试算、不垫底轮询
+DIRECTORY_TREE_NAME_MARKERS = (
+    "目录树",
+    "目錄樹",
+)
+
 _IMAGE_SUFFIXES = (".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp")
 _EXCEL_SUFFIXES = (".xlsx", ".xlsm", ".xls", ".xlsb")
 _DOC_SUFFIXES = (".doc", ".docx")
@@ -244,10 +250,21 @@ def _attachment_kind(name: str) -> str | None:
     return None
 
 
+def is_directory_tree_attachment_name(name: str) -> bool:
+    """文件名含「目录树」→ 附件下载硬跳过（任意类型）。"""
+    raw = name or ""
+    return any(marker in raw for marker in DIRECTORY_TREE_NAME_MARKERS)
+
+
 def _looks_like_directory_attachment(name: str, *, kind: str = "txt") -> bool:
-    """仅对 txt 判断目录树；zip/rar 文件名常带「文件夹」仍是资源包。"""
+    """仅对 txt 判断目录类；zip/rar 文件名常带「文件夹」仍是资源包。
+
+    「目录树」另见 is_directory_tree_attachment_name（硬跳过，不进轮询）。
+    """
     if kind != "txt":
         return False
+    if is_directory_tree_attachment_name(name):
+        return True
     lower = name.lower()
     if lower.endswith("/") or lower.endswith("\\"):
         return True
@@ -467,6 +484,7 @@ def filter_tail_attachments(
         item
         for item in attachments
         if item.kind in ("txt", "excel", "doc", "zip", "rar")
+        and not is_directory_tree_attachment_name(item.name)
     ]
     filtered = [
         item
@@ -474,7 +492,12 @@ def filter_tail_attachments(
         if not _looks_like_directory_attachment(item.name, kind=item.kind)
     ]
     if not filtered:
-        filtered = [item for item in candidates if item.kind == "txt"]
+        # 仅剩普通目录类 txt 时可回退；「目录树」永不进入
+        filtered = [
+            item
+            for item in candidates
+            if item.kind == "txt" and not is_directory_tree_attachment_name(item.name)
+        ]
     order = {"txt": 0, "excel": 1, "doc": 2, "zip": 3, "rar": 4}
     filtered.sort(
         key=lambda a: (
@@ -492,7 +515,11 @@ def filter_torrent_attachments(
     *,
     limit: int = MAX_ATTACHMENTS_PER_THREAD,
 ) -> list[DownloadAttachment]:
-    filtered = [item for item in attachments if item.kind == "torrent"]
+    filtered = [
+        item
+        for item in attachments
+        if item.kind == "torrent" and not is_directory_tree_attachment_name(item.name)
+    ]
     filtered.sort(
         key=lambda a: (_attach_name_priority(a.name, preferred_link="magnet"), a.name)
     )
@@ -513,13 +540,15 @@ def filter_all_link_attachments(
     文件名：115ed2k/ed2k 与 115sha/sha1 分开（电驴板勿先下 sha 名）。
     - 电驴板：txt → zip/rar → excel/doc → torrent
     - 磁力/双链：torrent → excel/doc/txt → zip/rar
-    - 目录类 txt（文件名含「目录」等）排在同批末尾，仍纳入轮询，避免漏判
+    - 文件名含「目录树」：硬跳过（不下、不试算）
+    - 其它目录类 txt（含「目录」「文件夹」等）排在同批末尾，仍纳入轮询
     每下完一个有链附件即试算；合格则停；不合格必须继续直到判完或合格。
     """
     candidates = [
         item
         for item in attachments
         if item.kind in ("txt", "excel", "doc", "zip", "rar", "torrent")
+        and not is_directory_tree_attachment_name(item.name)
     ]
     primary = [
         item
@@ -527,7 +556,7 @@ def filter_all_link_attachments(
         if item.kind == "torrent"
         or not _looks_like_directory_attachment(item.name, kind=item.kind)
     ]
-    # 目录类 txt 放到末尾仍要判断（不合格时必须一个一个判完）
+    # 其它目录类 txt 垫底仍要判断（不含「目录树」）
     directory_txt = [
         item
         for item in candidates
