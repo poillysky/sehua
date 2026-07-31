@@ -106,6 +106,54 @@ async def test_download_tail_empty_streak_stops(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_torrent_empty_streak_still_tries_excel(monkeypatch):
+    """磁力合集：种子连续空转后仍应试 CSV/excel（勿整帖直接失败）。"""
+    from crawler import attachments as mod
+
+    monkeypatch.setattr(mod, "ATTACH_EMPTY_STREAK_STOP", 3)
+    monkeypatch.setattr(mod, "ATTACH_POLL_WALL_SEC", 120.0)
+
+    atts = [
+        DownloadAttachment(name="a.torrent", url="http://x/a", kind="torrent"),
+        DownloadAttachment(name="b.torrent", url="http://x/b", kind="torrent"),
+        DownloadAttachment(name="c.torrent", url="http://x/c", kind="torrent"),
+        DownloadAttachment(name="pack.xlsx", url="http://x/x", kind="excel"),
+    ]
+    tried: list[str] = []
+    monkeypatch.setattr(mod, "extract_download_attachments", lambda *_a, **_k: atts)
+    monkeypatch.setattr(mod, "filter_all_link_attachments", lambda items, **_k: items)
+    monkeypatch.setattr(mod, "listing_shows_attach_denied", lambda *_a, **_k: False)
+
+    class FakeSession:
+        _ready = True
+
+    downloader = mod.AttachmentDownloader(FakeSession())  # type: ignore[arg-type]
+
+    async def one(attachment, timeout, passwords=None):
+        tried.append(attachment.name)
+        if attachment.kind == "torrent":
+            return ("", False, False, False, False, True, True)
+        magnet = "magnet:?xt=urn:btih:" + ("A" * 40)
+        return (magnet, False, True, False, False, False, False)
+
+    monkeypatch.setattr(downloader, "_download_one", one)
+    monkeypatch.setattr(
+        mod,
+        "_attach_merge_still_unqualified",
+        lambda *_a, **_k: False,
+    )
+
+    html = "<html><body><div id='postmessage_1'>x</div>Powered by Discuz!</body></html>"
+    res = await downloader.download_tail(
+        html, "http://example/thread", preferred_link="magnet"
+    )
+    assert tried[:3] == ["a.torrent", "b.torrent", "c.torrent"]
+    assert "pack.xlsx" in tried
+    assert "magnet:?xt=urn:btih:" in (res.text or "")
+    assert res.failed is False
+
+
+@pytest.mark.asyncio
 async def test_skip_flare_after_first_miss(monkeypatch):
     from crawler import attachments as mod
     from parsers.attachments import DownloadAttachment as DA
@@ -141,8 +189,8 @@ async def test_skip_flare_after_first_miss(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_skip_flare_when_cf_clearance_present(monkeypatch):
-    """浏览器已有 cf_clearance：fetch 空也不打 Flare。"""
+async def test_soft_miss_still_tries_flare_with_cf_clearance(monkeypatch):
+    """有 cf_clearance 但 fetch 软空：仍试 Flare（clearance 可能过期）。"""
     from crawler import attachments as mod
     from parsers.attachments import DownloadAttachment as DA
 
@@ -168,14 +216,14 @@ async def test_skip_flare_when_cf_clearance_present(monkeypatch):
     monkeypatch.setattr(downloader, "_download_raw_via_ui", fake_ui)
 
     await downloader._download_one(DA(name="a.txt", url="http://x/1", kind="txt"), 10)
-    assert flare_calls["n"] == 0
+    assert flare_calls["n"] == 1
 
 
 def test_attach_fetch_ms_shorter_than_page_op():
     from crawler import attachments as mod
 
-    assert mod.ATTACH_FETCH_MS == 12_000
-    assert mod.ATTACH_FETCH_MS < int(mod.ATTACH_PAGE_OP_SEC * 1000) - 2000
+    assert mod.ATTACH_FETCH_MS == 18_000
+    assert mod.ATTACH_FETCH_MS < int(mod.ATTACH_PAGE_OP_SEC * 1000)
 
 
 def test_filter_all_link_attachments_skip_names():

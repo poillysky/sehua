@@ -84,6 +84,8 @@ _X_COUNT_RE = re.compile(
 # DB/占位写入的 4KB 等极小 size，不当作真实入库容量
 _PLACEHOLDER_SIZE_MAX = 8 * 1024
 _V_COUNT_RE = re.compile(r"(?<![A-Za-z0-9.])(\d+)\s*V(?![A-Za-z])", re.I)
+# 番号后缀 V（破解标）：START-600V / SSIS-001V，不当片数 Nv
+_PRODUCT_CODE_BEFORE_V_RE = re.compile(r"[A-Za-z]{2,}[-_]$")
 # ed2k 合集常见：70.6G/1169V//7配额 · 20.2g/17V/2配额
 _QUOTA_COUNT_RE = re.compile(r"(\d+)\s*配额", re.I)
 # 标题写「夸克/百度/迅雷/网盘」时，N配额常含云盘份，不全等于入库 ed2k 链数。
@@ -451,9 +453,18 @@ def count_unique_importable_quota_links(text: str) -> int:
     return len(found)
 
 
+def _v_match_is_product_code(blob: str, digit_start: int) -> bool:
+    """``START-600V`` 等番号+破解 V，不是合集片数。"""
+    prefix = (blob or "")[max(0, digit_start - 16) : digit_start]
+    return bool(_PRODUCT_CODE_BEFORE_V_RE.search(prefix))
+
+
 def _title_v_count(blob: str) -> int | None:
     best = None
-    for m in _V_COUNT_RE.finditer(blob or ""):
+    text = blob or ""
+    for m in _V_COUNT_RE.finditer(text):
+        if _v_match_is_product_code(text, m.start(1)):
+            continue
         n = int(m.group(1))
         if 2 <= n <= 20000:
             best = n if best is None else max(best, n)
@@ -477,7 +488,10 @@ _ATTACH_V_SKIP_NAME = ("备用", "備份", "封面", "目录", "目錄", "失败
 
 
 def _attach_filename_v_counts(names: Sequence[str] | None) -> list[int]:
-    """各可用附件文件名里的 Nv（如 ``… 96v .txt``）；跳过备用/封面/目录。"""
+    """各可用附件文件名里的 Nv（如 ``… 96v .txt``）；跳过备用/封面/目录。
+
+    不认番号 ``START-600V``；片数 Nv 仅作有标题配额时的辅证。
+    """
     out: list[int] = []
     for raw in names or []:
         name = (raw or "").strip()
@@ -488,6 +502,8 @@ def _attach_filename_v_counts(names: Sequence[str] | None) -> list[int]:
         # 每个文件名只取一个 Nv（避免「96v 96V」重复计）
         m = _ATTACH_V_IN_NAME_RE.search(name)
         if not m:
+            continue
+        if _v_match_is_product_code(name, m.start(1)):
             continue
         n = int(m.group(1))
         if 2 <= n <= 20000:
@@ -1440,30 +1456,25 @@ def validate_frame(
             metrics["piece_count_match"] = True
             if provided_n > member_n and not _count_matches(member_n, expect_pieces_a):
                 tags.append("info:post_links_fill_quota")
-        elif attach_sum_match:
-            # 全部附件文件名 Nv 合计 = 实链（tid=2178766：96v 对齐 96），标题更高 → 虚标软过
+        elif expect_pieces_a is not None and attach_sum_match:
+            # 有标题配额时：附件名 Nv 合计=实链（tid=2178766：96v 对齐 96），标题更高 → 虚标软过
             tags.append("info:piece_count_match")
             tags.append("info:attach_filename_v_match")
             metrics["piece_count_match"] = True
-            if expect_pieces_a is not None:
-                tags.append("info:title_quota_overclaim_soft")
-                tags.append("info:pack_quota_soft")
+            tags.append("info:title_quota_overclaim_soft")
+            tags.append("info:pack_quota_soft")
         elif (
-            att_v_sum
+            expect_pieces_a is not None
+            and att_v_sum
             and provided_n < int(att_v_sum)
             and not _count_matches(provided_n, int(att_v_sum))
         ):
-            # 附件文件名宣称合计 > 实得链 → 更像漏下分卷，待核
+            # 仅有标题配额时：附件名合计 > 实得链 → 漏分卷待核（无配额不拿 Nv 硬判）
             src_zh = "附件" if spec.source == "attach" else "正文"
             msg = (
-                f"附件文件名合计{att_v_sum}份，{src_zh}实得链数仅{provided_n}"
-                f"（漏链，待核）"
+                f"标题写{expect_pieces_a}配额·附件名合计{att_v_sum}份，"
+                f"{src_zh}实得链数仅{provided_n}（漏链，待核）"
             )
-            if expect_pieces_a is not None:
-                msg = (
-                    f"标题写{expect_pieces_a}配额·附件名合计{att_v_sum}份，"
-                    f"{src_zh}实得链数仅{provided_n}（漏链，待核）"
-                )
             _note(
                 tags,
                 soft,
@@ -1473,6 +1484,7 @@ def validate_frame(
             )
             tags.append("info:attach_links_short_of_filename_v")
         elif expect_pieces_a is None:
+            # 无 N配额：额度对照跳过；附件 Nv / 番号*V 均不单独待核
             tags.append("info:no_quota_skip_count")
         else:
             quota_src = piece_unit_a or "标题"

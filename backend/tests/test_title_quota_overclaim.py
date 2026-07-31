@@ -163,3 +163,73 @@ def test_attach_filename_v_sum_short_of_links_is_review():
     out = format_frame_outcome("成功：附件解析出目标链接", frame)
     assert out.startswith("不合格：待核")
     assert any("附件文件名合计" in w or "附件名合计" in w for w in frame.verdict.soft_warnings)
+
+
+def test_product_code_v_not_quota_review():
+    """番号 START-600V 不是片数 Nv；无配额时额度对照跳过（tid=3640451）。"""
+    from parsers.resource_frame import _attach_filename_v_sum, _title_v_count
+
+    title = "START-600V [无码破解] 【特典版】夏目響 引退"
+    assert _title_v_count(title) is None
+    assert _attach_filename_v_sum([f"{title}.txt", "START-600V.torrent"]) is None
+
+    sz = 2 * 1024 * 1024 * 1024
+    asset = _ed2k("A" * 32, f"{title}.mp4", sz, prev=True)
+    parsed = DualParseResult(
+        tid=3640451,
+        title=title,
+        description="",
+        metadata={},
+        preview_images=["http://a.jpg"],
+        extract_password="",
+        assets=[asset],
+        primary_link_kind="ed2k",
+        layout="",
+        had_attachments=True,
+        attachment_names=[f"{title}.txt"],
+        quota_link_count=1,
+    )
+    frame = build_resource_frame(
+        parsed,
+        named_groups=[(title, asset, [asset])],
+        had_attachments=True,
+    )
+    assert frame.verdict.metrics.get("attach_filename_v_sum") in (None, 0)
+    assert "info:no_quota_skip_count" in frame.verdict.tags
+    assert "info:attach_links_short_of_filename_v" not in frame.verdict.tags
+    out = format_frame_outcome("成功：正文含目标链接", frame)
+    assert out.startswith("成功")
+    assert "不合格：待核" not in out
+
+
+def test_attach_v_without_quota_does_not_review():
+    """无标题配额时，附件名 Nv 短于链数也不作额度待核。"""
+    title = "某合集无配额字样"
+    sz = 10 * 1024 * 1024
+    assets = [
+        _ed2k(f"{i:032X}", f"v{i}.mp4", sz, prev=(i == 0)) for i in range(3)
+    ]
+    parsed = DualParseResult(
+        tid=3,
+        title=title,
+        description="",
+        metadata={},
+        preview_images=["http://a.jpg"],
+        extract_password="",
+        assets=assets,
+        primary_link_kind="ed2k",
+        layout="pack_attach_fast",
+        had_attachments=True,
+        attachment_names=["合集 100v.txt"],
+        quota_link_count=3,
+    )
+    frame = build_resource_frame(
+        parsed,
+        named_groups=[(title, assets[0], assets)],
+        had_attachments=True,
+    )
+    assert frame.verdict.metrics.get("attach_filename_v_sum") == 100
+    assert "info:no_quota_skip_count" in frame.verdict.tags
+    assert "info:attach_links_short_of_filename_v" not in frame.verdict.tags
+    out = format_frame_outcome("成功：附件解析出目标链接", frame)
+    assert out.startswith("成功")

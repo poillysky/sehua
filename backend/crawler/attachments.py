@@ -43,12 +43,12 @@ log = logging.getLogger(__name__)
 ATTACH_POLL_WALL_SEC = 180.0
 ATTACH_ONE_WALL_SEC = 55.0
 ATTACH_PAGE_OP_SEC = 30.0
-# 页内 fetch AbortSignal（与页操作/UI 解耦，空等勿拖满 28s）
-ATTACH_FETCH_MS = 12_000
+# 页内 fetch AbortSignal（与页操作/UI 解耦；过大附件勿过早掐断）
+ATTACH_FETCH_MS = 18_000
 ATTACH_FLARE_HTTP_SEC = 35.0
 ATTACH_FLARE_MAX_TIMEOUT_MS = 25_000
 ATTACH_EXTRACT_SEC = 45.0
-# 连续空/超时多少次后停（多附件空转早停）
+# 连续空/超时多少次后停（同 kind 内早停；换类型重置，避免种子空转扼杀 CSV）
 ATTACH_EMPTY_STREAK_STOP = 3
 # 压缩包内最多尝试的链文件成员（防巨型目录包拖死）
 MAX_ARCHIVE_LINK_MEMBERS = 40
@@ -1502,15 +1502,12 @@ class AttachmentDownloader:
                     False,
                 )
 
-        # Playwright 页无 clearance 时，页面 fetch 常空：改走 FlareSolverr 同出口
-        # 已有 cf_clearance：跳过 Flare（省 25–35s），直去 UI
+        # Playwright 页 fetch 空且非终态：走 FlareSolverr 同出口
+        # 有 cf_clearance 仍可能过期（首爬软失败、复爬才好）→ 软空仍试 Flare
         # 同帖若已试 Flare 无收获，后续附件跳过 Flare（多附件防串行卡死）
-        cookies = getattr(self.session, "cookies", None) or {}
-        has_cf = bool(str(cookies.get("cf_clearance") or "").strip())
         if (
             not data
             and not self._skip_flare
-            and not has_cf
             and not (fetch_denied or fetch_login or fetch_limited or fetch_empty)
         ):
             (
@@ -1679,19 +1676,26 @@ class AttachmentDownloader:
         hit_empty_streak = False
         streak_had_timeout = False
         empty_streak = 0
+        streak_kind = ""
+        skip_kinds: set[str] = set()
         deadline = time.monotonic() + float(ATTACH_POLL_WALL_SEC)
 
-        def _bump_empty_streak(*, timed_out: bool = False) -> bool:
-            """累加空转；达阈值返回 True 表示应停。"""
-            nonlocal empty_streak, hit_empty_streak, streak_had_timeout
+        def _bump_empty_streak(*, kind: str = "", timed_out: bool = False) -> bool:
+            """同 kind 连续空/超时达阈值 → True（跳过该类型余下，改试 CSV/txt 等）。"""
+            nonlocal empty_streak, streak_had_timeout, streak_kind
+            k = (kind or "").strip() or "?"
+            if k != streak_kind:
+                empty_streak = 0
+                streak_had_timeout = False
+                streak_kind = k
             empty_streak += 1
             if timed_out:
                 streak_had_timeout = True
             if empty_streak >= ATTACH_EMPTY_STREAK_STOP:
-                hit_empty_streak = True
                 log.warning(
-                    "Attachment empty/timeout streak %s — stop polling",
+                    "Attachment empty/timeout streak %s kind=%s — skip rest of kind",
                     empty_streak,
+                    streak_kind,
                 )
                 return True
             return False
@@ -1703,6 +1707,8 @@ class AttachmentDownloader:
         for idx, attachment in enumerate(attachments):
             if is_directory_tree_attachment_name(attachment.name):
                 log.info("Attachment skip directory-tree name: %s", attachment.name)
+                continue
+            if attachment.kind in skip_kinds:
                 continue
             remain_wall = deadline - time.monotonic()
             # 至少给第一个附件机会；其后剩余不足则停
@@ -1744,8 +1750,11 @@ class AttachmentDownloader:
                         empty_streak + 1,
                         ATTACH_EMPTY_STREAK_STOP,
                     )
-                    if _bump_empty_streak(timed_out=True):
-                        break
+                    if _bump_empty_streak(kind=attachment.kind, timed_out=True):
+                        skip_kinds.add(attachment.kind)
+                        hit_empty_streak = True
+                        empty_streak = 0
+                        streak_kind = ""
                     continue
                 if empty_torrent or empty_attachment:
                     any_empty_torrent = any_empty_torrent or empty_torrent
@@ -1756,8 +1765,11 @@ class AttachmentDownloader:
                         empty_streak + 1,
                         ATTACH_EMPTY_STREAK_STOP,
                     )
-                    if _bump_empty_streak():
-                        break
+                    if _bump_empty_streak(kind=attachment.kind):
+                        skip_kinds.add(attachment.kind)
+                        hit_empty_streak = True
+                        empty_streak = 0
+                        streak_kind = ""
                     continue
                 if daily_limited:
                     any_daily_limited = True
@@ -1789,10 +1801,15 @@ class AttachmentDownloader:
                         empty_streak + 1,
                         ATTACH_EMPTY_STREAK_STOP,
                     )
-                    if _bump_empty_streak():
-                        break
+                    if _bump_empty_streak(kind=attachment.kind):
+                        skip_kinds.add(attachment.kind)
+                        hit_empty_streak = True
+                        empty_streak = 0
+                        streak_kind = ""
                     continue
                 empty_streak = 0
+                streak_kind = ""
+                streak_had_timeout = False
                 chunks.append(text)
                 if not _text_has_importable_link(text):
                     log.info(
