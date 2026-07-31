@@ -30,6 +30,7 @@ from parsers.skip_outcomes import (
     SKIP_NON_RESOURCE,
     SKIP_ATTACH_EMPTY,
     SKIP_PURCHASE,
+    RETRY_ATTACH_FAILED,
     STUB_ATTACH_DENIED,
     age_skip_tip,
 )
@@ -296,13 +297,18 @@ def judge_thread_html(
             list_title or page_tit or title,
         )
 
-    # 附件下载已确认无权/需登录，且正文无目标链：优先占位。
+    # 附件下载已确认无权/需登录：优先占位（含正文仅有残链的情况）。
     # 勿被语料里的 115://（115sha）抢成跳过；115ed2k 与 115sha 是两类链，互不推断。
-    if (
-        (attachment_denied or attachment_login_required)
-        and not has_lz_target
-    ):
-        return ThreadOutcome("stub", STUB_ATTACH_DENIED, link_kind, title)
+    # 正文已是「多资源结构化且切开」时仍走下方 has_lz_target 分支，避免误 stub。
+    if attachment_denied or attachment_login_required:
+        if not has_lz_target:
+            return ThreadOutcome("stub", STUB_ATTACH_DENIED, link_kind, title)
+        if (
+            attachments_already_tried
+            and looks_like_attachment_zone(html)
+            and not _body_has_multi_structured_targets(link_corpus, link_kind=link_kind)
+        ):
+            return ThreadOutcome("stub", STUB_ATTACH_DENIED, link_kind, title)
 
     # 楼主区明示附件无权（PHPWind「用户组无法下载」）。
     # 勿扫全页：2048 打赏脚本含「请先登录再打赏」会误伤无附件磁链帖；
@@ -522,7 +528,7 @@ def judge_thread_html(
     if attachment_empty_torrent:
         return ThreadOutcome("skipped", "种子大小为0", link_kind, title)
     if attachment_failed:
-        return ThreadOutcome("retry", "附件下载失败，待重试", link_kind, title)
+        return ThreadOutcome("retry", RETRY_ATTACH_FAILED, link_kind, title)
     # 有附件区、已试、却没下到任何内容：登录墙常漏检 → 无权占位，勿跳过
     if (
         attachments_already_tried

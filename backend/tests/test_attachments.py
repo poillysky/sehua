@@ -303,24 +303,18 @@ def test_denied_not_masked_by_baidu_password_txt():
     assert "ed2k://" not in out.text.lower()
 
 
-def test_denied_continues_to_next_then_import_wins():
-    """3 个附件：前两个无权、第三个有链 → 应继续试并成功（denied 不短路）。"""
+def test_denied_stops_all_attaches_immediately():
+    """多附件：任一无权立即停，不再试后续（避免部分链误判合格）。"""
     names = ["a.rar", "b.rar", "c.txt"]
     tried: list[str] = []
-    result_text = ""
-    any_denied = False
+    denied_stop = False
     for name in names:
         tried.append(name)
         if name.endswith(".rar"):
-            any_denied = True
-            continue
-        result_text = "magnet:?xt=urn:btih:AABBCCDDEEFF00112233445566778899"
-        break
-    assert tried == ["a.rar", "b.rar", "c.txt"]
-    assert result_text.startswith("magnet:")
-    # 有可入库文本时，最终不应因 earlier denied 而占位
-    denied_final = False if result_text else any_denied
-    assert denied_final is False
+            denied_stop = True
+            break
+    assert tried == ["a.rar"]
+    assert denied_stop is True
 
 
 def test_judge_stubs_when_second_attachment_denied():

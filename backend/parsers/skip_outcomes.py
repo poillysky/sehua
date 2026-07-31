@@ -38,6 +38,9 @@ STUB_ATTACH_DENIED_LEGACY = "无权限下载附件"
 # 附件 404 / Not Found / 0 字节空壳 → 跳过（勿重试、勿占位）
 SKIP_ATTACH_EMPTY = "附件为空跳过"
 
+# 附件必下却下失败（正文残链复判路径也优先此文案，勿被「待核/漏链」盖住）
+RETRY_ATTACH_FAILED = "附件下载失败，待重试"
+
 # 旧「网盘（跳过）：盘名」前缀（曾用，归并时识别）
 _LEGACY_CLOUD_PREFIX = "网盘（跳过）"
 

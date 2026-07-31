@@ -527,10 +527,18 @@ async def process_thread(
                     outcome.title or list_title,
                 )
             elif daily_hit and not use_queue:
+                # 复判也必须下附件：日限优先于正文「待核/漏链」，勿静默保留正文
                 log.info(
-                    "tid=%s attach plan=%s daily limit — keep body outcome",
+                    "tid=%s attach plan=%s daily limit — prefer attach queue tip",
                     tid,
                     attach_plan.mode,
+                )
+                attach_queued = True
+                outcome = ThreadOutcome(
+                    "skipped",
+                    ATTACH_QUEUE_OUTCOME,
+                    outcome.link_kind,
+                    outcome.title or list_title,
                 )
             else:
                 log.info(
@@ -570,9 +578,17 @@ async def process_thread(
                             outcome.title or list_title,
                         )
                     else:
+                        # 复判路径：日限优先报附件侧，勿闷留正文不合格
                         log.info(
-                            "tid=%s attach rejudge hit daily limit — keep body outcome",
+                            "tid=%s attach rejudge hit daily limit — prefer queue tip",
                             tid,
+                        )
+                        attach_queued = True
+                        outcome = ThreadOutcome(
+                            "skipped",
+                            ATTACH_QUEUE_OUTCOME,
+                            outcome.link_kind,
+                            outcome.title or list_title,
                         )
                 elif (
                     attachment_text
@@ -594,6 +610,84 @@ async def process_thread(
                             "tid=%s attachment rejudge hit 115sha — keep body import",
                             tid,
                         )
+                elif attach_plan.mode != "no_link" and not attach_queued:
+                    # 正文残链复判：无权 > 空/失败 > 合并成功；勿闷留正文待核
+                    from workers.attach_trigger import outcome_from_attach_rejudge_failure
+
+                    fail_out = outcome_from_attach_rejudge_failure(
+                        attach_res,
+                        link_kind=outcome.link_kind,
+                        title=outcome.title or list_title or "",
+                    )
+                    if fail_out is not None:
+                        log.info(
+                            "tid=%s attach rejudge prefer %s (denied=%s failed=%s text=%s)",
+                            tid,
+                            fail_out.outcome,
+                            attach_res.denied,
+                            attach_res.failed,
+                            len(attachment_text or ""),
+                        )
+                        outcome = fail_out
+                    elif attachment_text:
+                        # 有可入库附件语料 → 合并复判（原 else 分支）
+                        heavy = len(attachment_text) >= 24_000
+                        html_for_merge = html
+                        if not heavy:
+                            html_for_merge = inject_attachment_text(
+                                html, attachment_text
+                            )
+                        merged = await _parse_dual(
+                            html_for_merge,
+                            tid=tid,
+                            preferred_link=link_pref,
+                            extra_text=attachment_text,
+                            base_url=thread_url,
+                            board_fid=board_fid,
+                        )
+                        if merged.assets:
+                            from db.persist import preview_frame_outcome
+
+                            display = coalesce_thread_title(
+                                list_title, outcome.title, merged.title
+                            ) or (
+                                list_title or outcome.title or merged.title or ""
+                            )
+                            if display and not coalesce_thread_title(merged.title):
+                                merged.title = display
+                            merged.had_attachments = True
+                            merged.description = await asyncio.to_thread(
+                                build_structured_description,
+                                merged.metadata,
+                                extract_password=merged.extract_password,
+                                title=merged.title,
+                                board_fid=board_fid,
+                            )
+                            attach_preview = preview_frame_outcome(
+                                merged,
+                                import_outcome="成功：附件复判目标链接",
+                                post_title=display,
+                            )
+                            log.info(
+                                "tid=%s attachment rejudge → %s",
+                                tid,
+                                (attach_preview or "成功").split(" · ", 1)[0],
+                            )
+                            if not (attach_preview or "").startswith("不合格"):
+                                html = html_for_merge
+                                parsed = merged
+                                outcome = ThreadOutcome(
+                                    "import",
+                                    "成功：附件复判目标链接",
+                                    outcome.link_kind,
+                                    display,
+                                    parsed=parsed,
+                                )
+                            else:
+                                log.info(
+                                    "tid=%s attachment still unqualified — keep body import",
+                                    tid,
+                                )
                 elif attach_plan.mode == "no_link":
                     # 无链路径：下载后重判（含 kind 回退、大包快路径）
                     heavy_attach = len(attachment_text) >= 24_000
@@ -875,62 +969,6 @@ async def process_thread(
                         title=parsed.title,
                         board_fid=board_fid,
                     )
-                else:
-                    # 正文有链不合格 / 多资源缺链：附件复判；仍不合格保留正文
-                    heavy = len(attachment_text) >= 24_000
-                    html_for_merge = html
-                    if attachment_text and not heavy:
-                        html_for_merge = inject_attachment_text(html, attachment_text)
-                    if attachment_text:
-                        merged = await _parse_dual(
-                            html_for_merge,
-                            tid=tid,
-                            preferred_link=link_pref,
-                            extra_text=attachment_text,
-                            base_url=thread_url,
-                            board_fid=board_fid,
-                        )
-                        if merged.assets:
-                            from db.persist import preview_frame_outcome
-
-                            display = coalesce_thread_title(
-                                list_title, outcome.title, merged.title
-                            ) or (list_title or outcome.title or merged.title or "")
-                            if display and not coalesce_thread_title(merged.title):
-                                merged.title = display
-                            merged.had_attachments = True
-                            merged.description = await asyncio.to_thread(
-                                build_structured_description,
-                                merged.metadata,
-                                extract_password=merged.extract_password,
-                                title=merged.title,
-                                board_fid=board_fid,
-                            )
-                            attach_preview = preview_frame_outcome(
-                                merged,
-                                import_outcome="成功：附件复判目标链接",
-                                post_title=display,
-                            )
-                            log.info(
-                                "tid=%s attachment rejudge → %s",
-                                tid,
-                                (attach_preview or "成功").split(" · ", 1)[0],
-                            )
-                            if not (attach_preview or "").startswith("不合格"):
-                                html = html_for_merge
-                                parsed = merged
-                                outcome = ThreadOutcome(
-                                    "import",
-                                    "成功：附件复判目标链接",
-                                    outcome.link_kind,
-                                    display,
-                                    parsed=parsed,
-                                )
-                            else:
-                                log.info(
-                                    "tid=%s attachment still unqualified — keep body import",
-                                    tid,
-                                )
 
         # 挂起 need_attachments 却未下成（无 zone / 日限外失败）：勿把挂起态留给 runner
         if (

@@ -10,12 +10,55 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Literal
 
+from parsers.attachments import AttachmentFetchResult
 from parsers.links import DualParseResult
+from parsers.skip_outcomes import (
+    RETRY_ATTACH_FAILED,
+    SKIP_ATTACH_EMPTY,
+    STUB_ATTACH_DENIED,
+)
 from parsers.thread_gates import looks_like_attachment_zone
 from workers.thread_outcome import ThreadOutcome
 
 ResourceMode = Literal["single", "multi"]
 AttachMode = Literal["no_link", "single_unqual", "multi_missing"]
+
+
+def outcome_from_attach_rejudge_failure(
+    attach_res: AttachmentFetchResult,
+    *,
+    link_kind: str,
+    title: str,
+) -> ThreadOutcome | None:
+    """正文残链复判：附件侧结果优先于正文「待核/漏链」。
+
+    优先级（高→低）：
+      1. 无权 / 需登录 → stub「附件无权（占位入库）」
+      2. 空附件 / 空种子 → skipped
+      3. 下载失败 / 无可用语料 → retry「附件下载失败」
+    返回 None：已有可入库附件语料，交给合并复判。
+    """
+    tip_title = (title or "").strip()
+    kind = (link_kind or "magnet").strip() or "magnet"
+    text = str(getattr(attach_res, "text", "") or "").strip()
+    # 已抽到可入库链：上层 download_tail 会清掉 denied；此处双保险
+    if text:
+        low = text.lower()
+        if "ed2k://" in low or "magnet:?" in low:
+            return None
+    if attach_res.denied or bool(getattr(attach_res, "login_required", False)):
+        return ThreadOutcome("stub", STUB_ATTACH_DENIED, kind, tip_title)
+    if bool(getattr(attach_res, "empty_attachment", False)):
+        return ThreadOutcome("skipped", SKIP_ATTACH_EMPTY, kind, tip_title)
+    if bool(getattr(attach_res, "empty_torrent", False)):
+        return ThreadOutcome("skipped", "种子大小为0", kind, tip_title)
+    if (
+        attach_res.failed
+        or not attach_res.downloaded
+        or not text
+    ):
+        return ThreadOutcome("retry", RETRY_ATTACH_FAILED, kind, tip_title)
+    return None
 
 
 @dataclass(slots=True)
@@ -25,7 +68,7 @@ class AttachPlan:
     attachment_kind: str
     # 单资源：标题 N配额未齐也继续；多资源：关闭配额停手
     quota_stop: bool
-    # 无链先下：日限入队；正文复判日限：保留正文、不入队
+    # 无链先下：日限入队；正文复判：日限也优先报附件侧，不闷留正文待核
     queue_on_daily_limit: bool
     reason: str
 

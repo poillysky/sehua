@@ -1000,6 +1000,15 @@ def _thread_tid_key(url: str) -> str:
     return u.split("?", 1)[0].rstrip("/").lower()
 
 
+def _html_is_cf_challenge(html: str) -> bool:
+    try:
+        from crawler.cf_bypass import is_cf_challenge
+
+        return bool(html) and is_cf_challenge(html)
+    except Exception:
+        return False
+
+
 class AttachmentDownloader:
     """基于已进站 SessionManager（Playwright 页）下载附件。"""
 
@@ -1020,7 +1029,13 @@ class AttachmentDownloader:
                 html = await page.content()
             except Exception:
                 return None
-            if html and len(html) > 1000 and looks_like_attachment_zone(html):
+            # CF 挑战页勿当复用成功（否则会「看得到附件区壳却下不了」）
+            if (
+                html
+                and len(html) > 1000
+                and looks_like_attachment_zone(html)
+                and not _html_is_cf_challenge(html)
+            ):
                 log.info(
                     "attachments: already on tid=%s, skip reload (%s chars)",
                     target_key,
@@ -1038,6 +1053,84 @@ class AttachmentDownloader:
 
         html = await self.session.fetch_html(thread_url, timeout_ms=timeout_ms)
         return html
+
+    def _fetch_bytes_via_flare(
+        self, url: str
+    ) -> tuple[bytes | None, bool, bool, bool, bool]:
+        """经 FlareSolverr 同出口拉附件（Playwright 无 cf_clearance 时的回退）。
+
+        文本附件（ed2k txt）最稳；二进制种子可能被 Flare 当文本损坏，仍作尽力而为。
+        返回同 _fetch_bytes_via_page：(bytes, denied, login_required, daily_limited, empty)。
+        """
+        from crawler.cf_bypass import flaresolverr_get, resolve_flaresolverr_url
+
+        api = resolve_flaresolverr_url()
+        if not api:
+            return None, False, False, False, False
+        cookies = dict(getattr(self.session, "cookies", {}) or {})
+        proxy = str(getattr(self.session, "proxy", "") or "").strip()
+        try:
+            solution = flaresolverr_get(
+                api,
+                url,
+                cookies=cookies,
+                proxy=proxy,
+                timeout=120.0,
+                max_timeout_ms=90000,
+            )
+        except Exception as exc:
+            log.warning("FlareSolverr attach fetch error %s: %s", url, exc)
+            return None, False, False, False, False
+        if not solution:
+            return None, False, False, False, False
+
+        for c in solution.get("cookies") or []:
+            name = str(c.get("name") or "").strip()
+            value = c.get("value")
+            if name and value is not None:
+                self.session.cookies[name] = str(value)
+        ua = solution.get("userAgent")
+        if ua:
+            self.session.user_agent = str(ua)
+
+        body = solution.get("response") or ""
+        if not body:
+            return None, False, False, False, True
+        if _html_is_cf_challenge(body):
+            log.warning("FlareSolverr attach still CF: %s", url)
+            return None, False, False, False, False
+        if SessionManager.is_safe_shell(body):
+            log.warning("FlareSolverr attach hit R18 shell: %s", url)
+            return None, False, False, False, False
+
+        low = body.lstrip()[:200].lower()
+        looks_html = low.startswith("<!doctype") or low.startswith("<html")
+        if looks_html or "text/html" in str(solution.get("headers") or "").lower():
+            tip = body[:65536]
+            if is_attachment_not_found(tip):
+                return None, False, False, False, True
+            if is_attachment_login_required(tip):
+                return None, False, True, False, False
+            if is_attachment_download_limited(tip):
+                return None, True, False, True, False
+            if is_attachment_denied(tip):
+                return None, True, False, False, False
+            # 普通 HTML 提示页，无附件体
+            return None, False, False, False, False
+
+        # Flare 以字符串返回；文本附件用 utf-8，其它字节尽力保留
+        try:
+            data = body.encode("utf-8")
+        except UnicodeEncodeError:
+            data = body.encode("latin-1", errors="replace")
+        if _skip_oversized(url, len(data)):
+            return None, False, False, False, False
+        log.info(
+            "FlareSolverr attach ok: %s (%s bytes)",
+            url,
+            len(data),
+        )
+        return data, False, False, False, False
 
     async def _fetch_bytes_via_page(
         self, url: str
@@ -1306,14 +1399,49 @@ class AttachmentDownloader:
                     False,
                 )
 
-        # 页面直链已明确无权/需登录/日限且无字节：UI 再点一次通常同样失败，省一轮
-        if (fetch_denied or fetch_login or fetch_limited) and not data:
+        # Playwright 页无 clearance 时，页面 fetch 常空：改走 FlareSolverr 同出口
+        if not data and not (fetch_denied or fetch_login or fetch_limited or fetch_empty):
+            import asyncio
+
+            (
+                flare_data,
+                flare_denied,
+                flare_login,
+                flare_limited,
+                flare_empty,
+            ) = await asyncio.to_thread(self._fetch_bytes_via_flare, attachment.url)
+            denied = denied or flare_denied
+            login_required = login_required or flare_login
+            daily_limited = daily_limited or flare_limited
+            if flare_empty:
+                empty_attachment = True
+                if attachment.kind == "torrent":
+                    empty_torrent = True
+            if flare_data:
+                downloaded = True
+                text = _text_from_attachment_bytes(
+                    attachment, flare_data, passwords=passwords
+                )
+                if text.strip():
+                    return (
+                        text,
+                        denied,
+                        downloaded,
+                        login_required,
+                        daily_limited,
+                        False,
+                        False,
+                    )
+            data = flare_data
+
+        # 页面/Flare 已明确无权/需登录/日限且无字节：UI 再点一次通常同样失败，省一轮
+        if (denied or login_required or daily_limited) and not data:
             return (
                 "",
-                fetch_denied,
+                denied,
                 downloaded,
-                fetch_login,
-                fetch_limited,
+                login_required,
+                daily_limited,
                 empty_torrent,
                 empty_attachment,
             )
@@ -1388,7 +1516,9 @@ class AttachmentDownloader:
         - 单资源有标题 N配额（quota_stop=True）：**扫完所有可用附件**后再与额度对比
           （分卷/备用 txt 勿因中途「成功」早停）；配额已齐仍扫完其余可用附件。
         - 多资源（quota_stop=False）：不做额度匹配；试算合格且无剩余必要时可停。
-        例外：附件日限（今天下载请明天再来）立刻停，入附件队列。
+        例外：
+        - **任一附件无权/需登录 → 立即停并 denied**（丢弃已下部分文本，整帖占位）；
+        - 附件日限（今天下载请明天再来）立刻停，入附件队列。
         """
         if not self.session._ready:
             return AttachmentFetchResult(failed=True)
@@ -1407,8 +1537,6 @@ class AttachmentDownloader:
 
         quota_expect = _quota_expect_from_html(html) if quota_stop else None
         chunks: list[str] = []
-        any_denied = False
-        any_login = False
         any_downloaded = False
         any_daily_limited = False
         any_empty_torrent = False
@@ -1436,27 +1564,24 @@ class AttachmentDownloader:
                     continue
                 if daily_limited:
                     any_daily_limited = True
-                    any_denied = True
                     log.info(
                         "Attachment %s daily limited — stop polling",
                         attachment.name,
                     )
                     break
-                if login_required:
-                    any_login = True
+                if login_required or denied:
+                    # 多附件：任一无权/需登录立即占位，勿再试其它附件（避免部分链误判合格）
                     log.info(
-                        "Attachment %s login required — try next",
+                        "Attachment %s %s — stop all attaches (stub denied)",
                         attachment.name,
+                        "login required" if login_required else "denied",
                     )
-                    continue
-                if denied:
-                    any_denied = True
-                    # 无权限不代表整帖都不能下：继续试下一个（等待已缩短）
-                    log.info(
-                        "Attachment %s denied — try next",
-                        attachment.name,
+                    return AttachmentFetchResult(
+                        text="",
+                        downloaded=any_downloaded,
+                        denied=True,
+                        login_required=bool(login_required),
                     )
-                    continue
                 if downloaded:
                     any_downloaded = True
                 if not text.strip():
@@ -1537,28 +1662,18 @@ class AttachmentDownloader:
                 log.warning("Attachment download failed %s: %s", attachment.name, exc)
 
         result_text = _pick_best_archive_texts(chunks)
-        if result_text and _text_has_importable_link(result_text):
-            # 已抽到可入库链接：即使部分附件无权/需登录也算成功
-            return AttachmentFetchResult(
-                text=result_text, downloaded=True, denied=False, login_required=False
-            )
         # 日限：优先标 daily_limited，供上层入附件队列
         if any_daily_limited:
             return AttachmentFetchResult(
-                text=result_text or "",
+                text="",
                 downloaded=any_downloaded or bool(result_text),
                 denied=True,
                 login_required=False,
                 daily_limited=True,
             )
-        # 有文本但无可入库链（如只下到百度口令 txt），且另有 115/目标附件无权：
-        # 必须保留 denied，否则会回落成正文「蓝奏/网盘跳过」（tid=3341941）
-        if any_login or any_denied:
+        if result_text and _text_has_importable_link(result_text):
             return AttachmentFetchResult(
-                text=result_text or "",
-                downloaded=any_downloaded or bool(result_text),
-                denied=True,
-                login_required=any_login,
+                text=result_text, downloaded=True, denied=False, login_required=False
             )
         if result_text:
             return AttachmentFetchResult(text=result_text, downloaded=True)
@@ -1622,9 +1737,18 @@ async def fetch_attachments_for_outcome(
     except Exception as exc:
         log.warning("Navigate to thread for attachments failed: %s", exc)
 
-    http_ok = bool(html and len(html) > 8000 and looks_like_attachment_zone(html))
+    http_ok = bool(
+        html
+        and len(html) > 8000
+        and looks_like_attachment_zone(html)
+        and not _html_is_cf_challenge(html)
+    )
+    page_cf = bool(page_html) and _html_is_cf_challenge(page_html)
     page_ok = bool(
-        page_html and len(page_html) > 1000 and looks_like_attachment_zone(page_html)
+        page_html
+        and len(page_html) > 1000
+        and looks_like_attachment_zone(page_html)
+        and not page_cf
     )
     if page_ok:
         if html and html is not page_html:
@@ -1634,7 +1758,12 @@ async def fetch_attachments_for_outcome(
                 len(page_html),
             )
         html = page_html
-    elif (not http_ok) and page_html and len(page_html) > 1000:
+    elif page_cf and http_ok:
+        # 浏览器卡在 CF，但读帖 HTML（Flare）已有附件区 → 用读帖列表 + Flare 下附件
+        log.warning(
+            "attachments: browser page is Cloudflare — keep HTTP/Flare HTML for listing"
+        )
+    elif (not http_ok) and page_html and len(page_html) > 1000 and not page_cf:
         html = page_html
 
     # attachment_kind 仅作缺省主链提示；显式 preferred_link 优先
