@@ -42,6 +42,14 @@ jobs:
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
           echo "sehua VERSION=$TAG"
 
+      - name: Check Docker Hub secret
+        run: |
+          if [ -z "${{ secrets.DOCKERHUB_TOKEN }}" ]; then
+            echo "::error::secrets.DOCKERHUB_TOKEN is empty — Hub push cannot work"
+            exit 1
+          fi
+          echo "DOCKERHUB_TOKEN is present"
+
       - uses: docker/setup-buildx-action@v3
 
       - name: Login GHCR
@@ -57,34 +65,34 @@ jobs:
           username: ${{ env.DOCKERHUB_USER }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      - id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: |
-            ${{ env.GHCR }}/${{ github.repository_owner }}/sehuatang-app
-            ${{ env.DOCKERHUB_USER }}/sehuatang-app
-          tags: |
-            type=raw,value=${{ steps.ver.outputs.tag }}
-            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v') }}
-
-      - name: Show image tags
-        run: |
-          echo "sehua VERSION=${{ steps.ver.outputs.tag }}"
-          echo "tags:"
-          printf '%s\n' "${{ steps.meta.outputs.tags }}"
-
-      - uses: docker/build-push-action@v6
+      # 分仓推送：双 registry 同一步偶发只落到 GHCR，Hub 仍 404 但步骤仍绿
+      - name: Build and push GHCR
+        uses: docker/build-push-action@v6
         with:
           context: .
           file: deploy/app/Dockerfile
           push: true
-          # multi-registry + 默认 provenance 偶发只落到 GHCR；Hub 无新 tag
           provenance: false
           sbom: false
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
+          tags: |
+            ${{ env.GHCR }}/${{ github.repository_owner }}/sehuatang-app:${{ steps.ver.outputs.tag }}
+            ${{ env.GHCR }}/${{ github.repository_owner }}/sehuatang-app:latest
           cache-from: type=gha,scope=app
           cache-to: type=gha,mode=max,scope=app
+          platforms: linux/amd64
+
+      - name: Build and push Docker Hub
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: deploy/app/Dockerfile
+          push: true
+          provenance: false
+          sbom: false
+          tags: |
+            ${{ env.DOCKERHUB_USER }}/sehuatang-app:${{ steps.ver.outputs.tag }}
+            ${{ env.DOCKERHUB_USER }}/sehuatang-app:latest
+          cache-from: type=gha,scope=app
           platforms: linux/amd64
 
       - name: Verify Docker Hub tag
@@ -104,7 +112,7 @@ jobs:
             sleep 5
           done
           if [ "$ok" != "1" ]; then
-            echo "::error::Docker Hub missing tag ${TAG} (Actions push reported ok but Hub 404). Check DOCKERHUB_TOKEN write scope."
+            echo "::error::Docker Hub missing tag ${TAG} after dedicated Hub push. Check DOCKERHUB_TOKEN write scope / Hub repo permissions."
             cat /tmp/hub_tag.json || true
             exit 1
           fi
