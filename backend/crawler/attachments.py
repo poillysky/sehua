@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import io
 import logging
@@ -31,10 +32,24 @@ from parsers.attachments import (
     is_attachment_download_limited,
     is_attachment_login_required,
     is_attachment_not_found,
+    listing_shows_attach_denied,
 )
 from parsers.torrent import parse_torrent_bytes
 
 log = logging.getLogger(__name__)
+
+# 多附件防卡死：总墙钟 / 单附件 / 浏览器页操作 / Flare / 解压
+ATTACH_POLL_WALL_SEC = 180.0
+ATTACH_ONE_WALL_SEC = 55.0
+ATTACH_PAGE_OP_SEC = 30.0
+ATTACH_FLARE_HTTP_SEC = 35.0
+ATTACH_FLARE_MAX_TIMEOUT_MS = 25_000
+ATTACH_EXTRACT_SEC = 45.0
+# 连续空/超时多少次后停（多附件空转早停）
+ATTACH_EMPTY_STREAK_STOP = 3
+# 压缩包内最多尝试的链文件成员（防巨型目录包拖死）
+MAX_ARCHIVE_LINK_MEMBERS = 40
+MAX_NESTED_ARCHIVES_PER_LEVEL = 8
 
 
 def _bytes_over_limit(n: int, limit: int = MAX_ATTACHMENT_BYTES) -> bool:
@@ -194,13 +209,21 @@ def _doc_names_in_archive(names: list[str]) -> list[str]:
 
 def _link_member_names_in_archive(names: list[str]) -> list[str]:
     """压缩包内待试文件：txt → excel/csv → doc → torrent（逐个轮询）。"""
-    return (
+    ordered = (
         _txt_names_in_archive(names)
         + _excel_names_in_archive(names)
         + _csv_names_in_archive(names)
         + _doc_names_in_archive(names)
         + _torrent_names_in_archive(names)
     )
+    if len(ordered) > MAX_ARCHIVE_LINK_MEMBERS:
+        log.info(
+            "Archive has %s link members — only try first %s",
+            len(ordered),
+            MAX_ARCHIVE_LINK_MEMBERS,
+        )
+        return ordered[:MAX_ARCHIVE_LINK_MEMBERS]
+    return ordered
 
 
 def _text_has_importable_link(text: str) -> bool:
@@ -438,8 +461,11 @@ def _extract_via_7z(
                 _push_member_text(member_texts, text)
                 if text.strip():
                     log.debug("7z member %s → %s chars", path.name, len(text))
-            # 内层 zip/rar：逐个再解
+            # 内层 zip/rar：逐个再解（封顶，防嵌套爆炸）
+            nested_n = 0
             for path in sorted(out_dir.rglob("*")):
+                if nested_n >= MAX_NESTED_ARCHIVES_PER_LEVEL:
+                    break
                 if not path.is_file():
                     continue
                 kind = (
@@ -466,6 +492,7 @@ def _extract_via_7z(
                 )
                 if nested is None:
                     continue
+                nested_n += 1
                 text = _extract_txt_from_archive(
                     nested, kind, passwords=pwds, depth=depth + 1
                 )
@@ -524,7 +551,9 @@ def _extract_zip_pyzipper(
                         continue
                     text = _text_from_archive_member(name, raw_member)
                     _push_member_text(member_texts, text)
-                for name, kind in _nested_archive_members(names):
+                for name, kind in _nested_archive_members(names)[
+                    :MAX_NESTED_ARCHIVES_PER_LEVEL
+                ]:
                     nested = _zip_member_bytes(
                         archive, name, limit=MAX_ATTACHMENT_BYTES
                     )
@@ -591,7 +620,9 @@ def _extract_rar_text(
                                     continue
                                 text = _text_from_archive_member(name, raw_member)
                                 _push_member_text(member_texts, text)
-                            for name, kind in _nested_archive_members(names):
+                            for name, kind in _nested_archive_members(names)[
+                                :MAX_NESTED_ARCHIVES_PER_LEVEL
+                            ]:
                                 try:
                                     nested = archive.read(name)
                                 except Exception:
@@ -663,7 +694,7 @@ def _extract_zip_txt(
                     # 同包多 txt/excel/torrent：全部合并（分卷勿早停）
                     _push_member_text(member_texts, text)
                     break
-        for name, kind in _nested_archive_members(names):
+        for name, kind in _nested_archive_members(names)[:MAX_NESTED_ARCHIVES_PER_LEVEL]:
             for pwd in pwd_attempts:
                 nested = _zip_member_bytes(
                     archive, name, pwd=pwd, limit=MAX_ATTACHMENT_BYTES
@@ -1014,6 +1045,8 @@ class AttachmentDownloader:
 
     def __init__(self, session: SessionManager):
         self.session = session
+        # 同帖第一次 Flare 无收获后，后续附件不再打 Flare（省串行等待）
+        self._skip_flare = False
 
     async def ensure_thread_page(self, thread_url: str, *, timeout_ms: int = 60000) -> str:
         """确保浏览器在帖页。已在同一帖且附件区可见则跳过重复 goto（省 1～3s）。"""
@@ -1075,8 +1108,8 @@ class AttachmentDownloader:
                 url,
                 cookies=cookies,
                 proxy=proxy,
-                timeout=120.0,
-                max_timeout_ms=90000,
+                timeout=ATTACH_FLARE_HTTP_SEC,
+                max_timeout_ms=ATTACH_FLARE_MAX_TIMEOUT_MS,
             )
         except Exception as exc:
             log.warning("FlareSolverr attach fetch error %s: %s", url, exc)
@@ -1143,10 +1176,22 @@ class AttachmentDownloader:
         async def _on_page(page: Any) -> tuple[bytes | None, bool, bool, bool, bool]:
             try:
                 # Content-Length / 实际体积超限则不 btoa，避免 2～3× 峰值
+                # AbortSignal：避免 fetch 挂起拖满整帖墙钟
+                fetch_ms = max(5000, int(ATTACH_PAGE_OP_SEC * 1000) - 2000)
                 result = await page.evaluate(
                     """
-                    async ({ targetUrl, maxBytes }) => {
-                        const resp = await fetch(targetUrl, { credentials: 'include' });
+                    async ({ targetUrl, maxBytes, fetchMs }) => {
+                        const ctrl = new AbortController();
+                        const timer = setTimeout(() => ctrl.abort(), fetchMs);
+                        let resp;
+                        try {
+                            resp = await fetch(targetUrl, {
+                                credentials: 'include',
+                                signal: ctrl.signal,
+                            });
+                        } finally {
+                            clearTimeout(timer);
+                        }
                         const contentType = resp.headers.get('content-type') || '';
                         const disposition = resp.headers.get('content-disposition') || '';
                         const cl = resp.headers.get('content-length');
@@ -1189,7 +1234,11 @@ class AttachmentDownloader:
                         };
                     }
                     """,
-                    {"targetUrl": url, "maxBytes": MAX_ATTACHMENT_BYTES},
+                    {
+                        "targetUrl": url,
+                        "maxBytes": MAX_ATTACHMENT_BYTES,
+                        "fetchMs": fetch_ms,
+                    },
                 )
             except Exception as exc:
                 log.debug("Attachment page fetch failed %s: %s", url, exc)
@@ -1248,7 +1297,7 @@ class AttachmentDownloader:
                 return None, False, False, False, False
             return data, False, False, False, False
 
-        return await self.session.run_on_page(_on_page)
+        return await self.session.run_on_page(_on_page, timeout=ATTACH_PAGE_OP_SEC)
 
     async def _download_raw_via_ui(
         self,
@@ -1355,7 +1404,39 @@ class AttachmentDownloader:
 
             return None, False, False, False, False
 
-        return await self.session.run_on_page(_on_page)
+        return await self.session.run_on_page(_on_page, timeout=ATTACH_PAGE_OP_SEC)
+
+    async def _extract_attachment_text(
+        self,
+        attachment: DownloadAttachment,
+        data: bytes,
+        passwords: list[str] | None = None,
+    ) -> str:
+        """解压/解码放到线程池并限时，避免 rar/unrar 同步挂死事件循环。"""
+        if not data:
+            return ""
+        try:
+            return await asyncio.wait_for(
+                asyncio.to_thread(
+                    _text_from_attachment_bytes,
+                    attachment,
+                    data,
+                    passwords,
+                ),
+                timeout=ATTACH_EXTRACT_SEC,
+            )
+        except asyncio.TimeoutError:
+            log.warning(
+                "Attachment extract timed out (%.0fs): %s",
+                ATTACH_EXTRACT_SEC,
+                attachment.name,
+            )
+            return ""
+        except Exception as exc:
+            log.warning(
+                "Attachment extract failed %s: %s", attachment.name, exc
+            )
+            return ""
 
     async def _download_one(
         self,
@@ -1387,7 +1468,9 @@ class AttachmentDownloader:
                 empty_torrent = True
         if data:
             downloaded = True
-            text = _text_from_attachment_bytes(attachment, data, passwords=passwords)
+            text = await self._extract_attachment_text(
+                attachment, data, passwords=passwords
+            )
             if text.strip():
                 return (
                     text,
@@ -1400,9 +1483,12 @@ class AttachmentDownloader:
                 )
 
         # Playwright 页无 clearance 时，页面 fetch 常空：改走 FlareSolverr 同出口
-        if not data and not (fetch_denied or fetch_login or fetch_limited or fetch_empty):
-            import asyncio
-
+        # 同帖若已试 Flare 无收获，后续附件跳过 Flare（多附件防串行卡死）
+        if (
+            not data
+            and not self._skip_flare
+            and not (fetch_denied or fetch_login or fetch_limited or fetch_empty)
+        ):
             (
                 flare_data,
                 flare_denied,
@@ -1419,7 +1505,7 @@ class AttachmentDownloader:
                     empty_torrent = True
             if flare_data:
                 downloaded = True
-                text = _text_from_attachment_bytes(
+                text = await self._extract_attachment_text(
                     attachment, flare_data, passwords=passwords
                 )
                 if text.strip():
@@ -1433,6 +1519,18 @@ class AttachmentDownloader:
                         False,
                     )
             data = flare_data
+            if (
+                not flare_data
+                and not flare_denied
+                and not flare_login
+                and not flare_limited
+                and not flare_empty
+            ):
+                self._skip_flare = True
+                log.info(
+                    "Flare attach miss for %s — skip Flare for rest of thread",
+                    attachment.name,
+                )
 
         # 页面/Flare 已明确无权/需登录/日限且无字节：UI 再点一次通常同样失败，省一轮
         if (denied or login_required or daily_limited) and not data:
@@ -1477,7 +1575,9 @@ class AttachmentDownloader:
                 empty_torrent = True
         if ui_data:
             downloaded = True
-            text = _text_from_attachment_bytes(attachment, ui_data, passwords=passwords)
+            text = await self._extract_attachment_text(
+                attachment, ui_data, passwords=passwords
+            )
             if text.strip():
                 return (
                     text,
@@ -1518,10 +1618,17 @@ class AttachmentDownloader:
         - 多资源（quota_stop=False）：不做额度匹配；试算合格且无剩余必要时可停。
         例外：
         - **任一附件无权/需登录 → 立即停并 denied**（丢弃已下部分文本，整帖占位）；
-        - 附件日限（今天下载请明天再来）立刻停，入附件队列。
+        - 附件日限（今天下载请明天再来）立刻停，入附件队列；
+        - **整帖墙钟 / 单附件超时 / 连续空转早停**（防多附件串行卡死爬虫）；
+        - 列表区已写明无权 → 不下附件直接 denied。
         """
         if not self.session._ready:
             return AttachmentFetchResult(failed=True)
+
+        # 列表/楼主已明示无权：勿逐个下载空转
+        if listing_shows_attach_denied(html):
+            log.info("Attachment listing already shows denied — stub without download")
+            return AttachmentFetchResult(denied=True)
 
         attachments = filter_all_link_attachments(
             extract_download_attachments(base_url, html),
@@ -1541,26 +1648,81 @@ class AttachmentDownloader:
         any_daily_limited = False
         any_empty_torrent = False
         any_empty_attachment = False
-        for idx, attachment in enumerate(attachments):
-            try:
-                (
-                    text,
-                    denied,
-                    downloaded,
-                    login_required,
-                    daily_limited,
-                    empty_torrent,
-                    empty_attachment,
-                ) = await self._download_one(
-                    attachment, timeout, passwords=passwords
+        hit_wall = False
+        hit_empty_streak = False
+        streak_had_timeout = False
+        empty_streak = 0
+        deadline = time.monotonic() + float(ATTACH_POLL_WALL_SEC)
+
+        def _bump_empty_streak(*, timed_out: bool = False) -> bool:
+            """累加空转；达阈值返回 True 表示应停。"""
+            nonlocal empty_streak, hit_empty_streak, streak_had_timeout
+            empty_streak += 1
+            if timed_out:
+                streak_had_timeout = True
+            if empty_streak >= ATTACH_EMPTY_STREAK_STOP:
+                hit_empty_streak = True
+                log.warning(
+                    "Attachment empty/timeout streak %s — stop polling",
+                    empty_streak,
                 )
+                return True
+            return False
+
+        for idx, attachment in enumerate(attachments):
+            remain_wall = deadline - time.monotonic()
+            # 至少给第一个附件机会；其后剩余不足则停
+            if idx > 0 and remain_wall <= 0:
+                hit_wall = True
+                log.warning(
+                    "Attachment poll wall deadline (%.0fs) — stop after %s/%s",
+                    ATTACH_POLL_WALL_SEC,
+                    idx,
+                    len(attachments),
+                )
+                break
+            one_timeout = min(
+                float(ATTACH_ONE_WALL_SEC),
+                max(0.5, remain_wall if remain_wall > 0 else float(ATTACH_ONE_WALL_SEC)),
+            )
+            try:
+                try:
+                    (
+                        text,
+                        denied,
+                        downloaded,
+                        login_required,
+                        daily_limited,
+                        empty_torrent,
+                        empty_attachment,
+                    ) = await asyncio.wait_for(
+                        self._download_one(
+                            attachment, timeout, passwords=passwords
+                        ),
+                        timeout=one_timeout,
+                    )
+                except asyncio.TimeoutError:
+                    log.warning(
+                        "Attachment %s timed out (%.0fs) — streak %s/%s",
+                        attachment.name,
+                        one_timeout,
+                        empty_streak + 1,
+                        ATTACH_EMPTY_STREAK_STOP,
+                    )
+                    if _bump_empty_streak(timed_out=True):
+                        break
+                    continue
                 if empty_torrent or empty_attachment:
                     any_empty_torrent = any_empty_torrent or empty_torrent
                     any_empty_attachment = True
                     log.info(
-                        "Attachment %s empty/missing — continue next",
+                        "Attachment %s empty/missing — streak %s/%s",
                         attachment.name,
+                        empty_streak + 1,
+                        ATTACH_EMPTY_STREAK_STOP,
                     )
+                    if _bump_empty_streak():
+                        break
                     continue
                 if daily_limited:
                     any_daily_limited = True
@@ -1586,11 +1748,16 @@ class AttachmentDownloader:
                     any_downloaded = True
                 if not text.strip():
                     log.info(
-                        "Attachment %s (%s) yielded no text — continue next",
+                        "Attachment %s (%s) yielded no text — streak %s/%s",
                         attachment.name,
                         attachment.kind,
+                        empty_streak + 1,
+                        ATTACH_EMPTY_STREAK_STOP,
                     )
+                    if _bump_empty_streak():
+                        break
                     continue
+                empty_streak = 0
                 chunks.append(text)
                 if not _text_has_importable_link(text):
                     log.info(
@@ -1675,16 +1842,27 @@ class AttachmentDownloader:
             return AttachmentFetchResult(
                 text=result_text, downloaded=True, denied=False, login_required=False
             )
+        # 墙钟耗尽 / 超时连击仍无可用链 → 失败待重试
+        if (hit_wall or (hit_empty_streak and streak_had_timeout)) and not (
+            result_text and _text_has_importable_link(result_text)
+        ):
+            return AttachmentFetchResult(
+                text=result_text or "",
+                downloaded=any_downloaded or bool(result_text),
+                failed=True,
+            )
         if result_text:
             return AttachmentFetchResult(text=result_text, downloaded=True)
         if any_downloaded:
             return AttachmentFetchResult(downloaded=True)
-        # 空壳 / Not Found：跳过，勿「附件下载失败」重试
+        # 空壳 / Not Found（含连续空附件早停）：跳过，勿「附件下载失败」重试
         if any_empty_attachment or any_empty_torrent:
             return AttachmentFetchResult(
                 empty_attachment=True,
                 empty_torrent=any_empty_torrent,
             )
+        if hit_empty_streak:
+            return AttachmentFetchResult(failed=True)
         return AttachmentFetchResult(failed=True)
 
     async def download_torrents(

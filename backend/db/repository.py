@@ -535,12 +535,18 @@ def import_thread_stub(
     board_name: str | None = None,
     forum_id: str | None = None,
     import_outcome: str | None = None,
+    force: bool = False,
+    commit: bool = True,
 ) -> int:
+    """写入帖级占位。
+
+    force=False（默认）：同帖已有真链时不叠占位，避免「真链 + stub」假 ×2。
+    force=True：重爬改判占位时允许先写 stub，再由调用方清掉旧真链。
+    """
     source_url = (source_url or "").strip()
     if not source_url:
         return 0
-    # 同帖已有真链时不再叠占位，避免列表出现「真链 + stub」假 ×2
-    if _url_has_real_resource(conn, source_url):
+    if not force and _url_has_real_resource(conn, source_url):
         return 0
 
     stub_hash = thread_stub_hash(source_url)
@@ -564,6 +570,7 @@ def import_thread_stub(
         board_name=board_name,
         forum_id=forum_id,
         import_outcome=import_outcome or "无下载链 · 占位入库",
+        commit=commit,
     )
     return 1
 

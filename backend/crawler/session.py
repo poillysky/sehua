@@ -486,8 +486,11 @@ class SessionManager:
                 pass
             self._pw = None
 
-    async def run_on_page(self, fn: Any) -> Any:
-        """在浏览器循环上执行依赖当前 page 的协程工厂 `async def fn(page)`。"""
+    async def run_on_page(self, fn: Any, *, timeout: float | None = None) -> Any:
+        """在浏览器循环上执行依赖当前 page 的协程工厂 `async def fn(page)`。
+
+        timeout：覆盖默认 PW_OP_TIMEOUT（附件下载应传更短，避免多附件串行卡死）。
+        """
 
         async def _body() -> Any:
             await self._maybe_recycle_on_loop()
@@ -495,7 +498,7 @@ class SessionManager:
             assert self._page
             return await fn(self._page)
 
-        return await run_on_pw_loop(_body())
+        return await run_on_pw_loop(_body(), timeout=timeout)
 
     async def _close_extra_pages_on_loop(self) -> None:
         """关掉附件弹窗等非主 page，避免同 context 页面积压占内存。"""

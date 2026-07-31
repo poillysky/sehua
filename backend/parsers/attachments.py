@@ -163,6 +163,44 @@ def thread_body_shows_attach_denied(html: str) -> bool:
     return any(marker in blob for marker in THREAD_BODY_ATTACH_DENIED_MARKERS)
 
 
+_ATTACH_ZONE_BLOCK_RE = re.compile(
+    r"(?is)<(?:div|td|li|ignore_js_op)\b[^>]*"
+    r"(?:class\s*=\s*[\"'][^\"']*(?:tattl|pattl|attach-card|attnm)[^\"']*[\"']|"
+    r"id\s*=\s*[\"']attach[^\"']*[\"'])"
+    r"[^>]*>.*?</(?:div|td|li|ignore_js_op)>",
+)
+_ATTACH_HREF_WINDOW_RE = re.compile(
+    r"(?is).{0,240}(?:mod=attachment|action=download|job\.php\?[^\"'\s<>]*download).{0,240}"
+)
+
+
+def listing_shows_attach_denied(html: str) -> bool:
+    """附件列表/楼主区已写明无权——无需逐个下载即可占位。
+
+    只认明确无权文案；**不含**「阅读权限: N」（那只是门槛提示，账号可能够下）。
+    """
+    if thread_body_shows_attach_denied(html):
+        return True
+    raw = html or ""
+    if not raw:
+        return False
+    chunks: list[str] = [m.group(0) for m in _ATTACH_ZONE_BLOCK_RE.finditer(raw)]
+    if not chunks:
+        chunks = [m.group(0) for m in _ATTACH_HREF_WINDOW_RE.finditer(raw)]
+    if not chunks:
+        return False
+    blob = "\n".join(chunks).replace("请先登录再打赏", "")
+    if any(m in blob for m in THREAD_BODY_ATTACH_DENIED_MARKERS):
+        return True
+    if any(m in blob for m in ATTACHMENT_DENIED_MARKERS):
+        return True
+    if any(m in blob for m in ATTACHMENT_LOGIN_MARKERS):
+        return True
+    if any(m in blob for m in ATTACHMENT_LIMIT_MARKERS):
+        return True
+    return False
+
+
 def _is_attachment_href(href: str) -> bool:
     """Discuz attachment=… / PHPWind job.php?action=download&aid=…"""
     h = (href or "").lower()

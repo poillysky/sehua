@@ -349,6 +349,87 @@ def test_replace_thread_assets_off_by_default(monkeypatch):
     assert calls["n"] == 0
 
 
+def test_replace_stub_purges_old_unqual_hashes(monkeypatch):
+    """不合格重爬改判占位：强制写 stub 并清掉旧真链，离开不合格明细。"""
+    _patch_common(monkeypatch)
+    stub_calls: list[dict] = []
+    purged: list[tuple] = []
+
+    def fake_stub(conn, **kwargs):
+        stub_calls.append(kwargs)
+        return 1
+
+    def fake_purge(conn, source_url, keep_hashes, **kwargs):
+        purged.append((source_url, {str(h).upper() for h in keep_hashes}, kwargs.get("commit")))
+        return 2
+
+    monkeypatch.setattr(persist_mod, "import_thread_stub", fake_stub)
+    monkeypatch.setattr(persist_mod, "delete_other_resources_by_source_url", fake_purge)
+    monkeypatch.setattr(persist_mod, "thread_stub_hash", lambda url: "S" * 32)
+
+    out = persist_mod.persist_dual_parse(
+        _FakeConn(),
+        DualParseResult(
+            tid=2663222,
+            title="【重爬改判占位】示例帖",
+            description="",
+            metadata={},
+            preview_images=[],
+            extract_password="",
+            magnets=[],
+            ed2k_links=[],
+            assets=[],
+            primary_link_kind="none",
+        ),
+        source_url="https://www.sehuatang.net/thread-2663222-1-1.html",
+        import_outcome="附件无权（占位入库）",
+        replace_thread_assets=True,
+    )
+    assert out["stub"] is True
+    assert out["count"] == 1
+    assert out["purged"] == 2
+    assert out["hash"] == "S" * 32
+    assert stub_calls and stub_calls[0].get("force") is True
+    assert purged[0][1] == {"S" * 32}
+
+
+def test_stub_without_replace_does_not_purge(monkeypatch):
+    _patch_common(monkeypatch)
+    calls = {"purge": 0, "force": None}
+
+    def fake_stub(conn, **kwargs):
+        calls["force"] = kwargs.get("force", False)
+        return 1
+
+    def fake_purge(*a, **k):
+        calls["purge"] += 1
+        return 0
+
+    monkeypatch.setattr(persist_mod, "import_thread_stub", fake_stub)
+    monkeypatch.setattr(persist_mod, "delete_other_resources_by_source_url", fake_purge)
+
+    out = persist_mod.persist_dual_parse(
+        _FakeConn(),
+        DualParseResult(
+            tid=1,
+            title="【首次占位】示例帖",
+            description="",
+            metadata={},
+            preview_images=[],
+            extract_password="",
+            magnets=[],
+            ed2k_links=[],
+            assets=[],
+            primary_link_kind="none",
+        ),
+        source_url="https://example.com/thread-stub-1-1.html",
+        import_outcome="无下载链 · 占位入库",
+    )
+    assert out["stub"] is True
+    assert calls["purge"] == 0
+    assert calls["force"] is False
+
+
 class _OccupancyConn:
     """cursor 查询 hash→source_url；无行视为空闲。兼容单查与 ANY 批量。"""
 

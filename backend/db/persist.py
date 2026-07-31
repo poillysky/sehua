@@ -15,6 +15,7 @@ from db.repository import (
     import_thread_stub,
     name_row_hash,
     sync_board_meta_by_source_url,
+    thread_stub_hash,
     upsert_resource,
 )
 from parsers.ed2k import Ed2kLink, coerce_file_size
@@ -429,7 +430,8 @@ def persist_dual_parse(
     - filename = 【影片名称】/【资源名称】（入库维；无则用帖标题；不用 dn/链内名）
     - 同一资源名下多条链合并为 1 行，链写入 ed2k_links
     - 不同资源名各写 1 行
-    - replace_thread_assets：重爬时删掉同帖 URL 下本次未保留的旧真链
+    - replace_thread_assets：重爬时删掉同帖 URL 下本次未保留的旧真链；
+      改判占位时先写 stub 再清旧真链，使帖子离开「不合格」明细
     """
     from parsers.thread_gates import coalesce_thread_title, title_recognizable
 
@@ -456,27 +458,73 @@ def persist_dual_parse(
 
     if primary is None:
         stub_tip = _sanitize_stub_outcome(import_outcome)
-        count = import_thread_stub(
-            conn,
-            source_id=source_id,
-            source_url=source_url,
-            title=post_title or None,
-            description=parsed.description or None,
-            preview_images=parsed.preview_images or None,
-            board_fid=fid,
-            board_name=board_name or None,
-            forum_id=forum_id,
-            import_outcome=stub_tip,
-        )
+        purged = 0
+        stub_hash = thread_stub_hash(source_url)
+        if replace_thread_assets:
+            # 先写占位再清旧真链：不合格重爬→附件无权等占位时，须离开不合格明细
+            count = import_thread_stub(
+                conn,
+                source_id=source_id,
+                source_url=source_url,
+                title=post_title or None,
+                description=parsed.description or None,
+                preview_images=parsed.preview_images or None,
+                board_fid=fid,
+                board_name=board_name or None,
+                forum_id=forum_id,
+                import_outcome=stub_tip,
+                force=True,
+                commit=False,
+            )
+            purged = delete_other_resources_by_source_url(
+                conn,
+                source_url,
+                [stub_hash],
+                commit=False,
+            )
+            from db.queue import tid_from_url
+
+            tid_i = tid_from_url(source_url) or 0
+            if (forum_id or "").strip() == "2048" and tid_i:
+                purged += delete_other_resources_by_forum_tid(
+                    conn,
+                    forum_id="2048",
+                    tid=int(tid_i),
+                    keep_hashes=[stub_hash],
+                    keep_source_url=source_url,
+                    commit=False,
+                )
+            try:
+                conn.commit()
+            except Exception:
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+                raise
+        else:
+            count = import_thread_stub(
+                conn,
+                source_id=source_id,
+                source_url=source_url,
+                title=post_title or None,
+                description=parsed.description or None,
+                preview_images=parsed.preview_images or None,
+                board_fid=fid,
+                board_name=board_name or None,
+                forum_id=forum_id,
+                import_outcome=stub_tip,
+            )
         return {
             "count": count,
             "stub": True,
-            "hash": None,
+            "hash": stub_hash if count else None,
             "link_kind": "stub" if count else "failed",
             "import_outcome": stub_tip,
             "verdict": "stub",
             "shape": "F",
             "kind": "no_link",
+            "purged": purged,
         }
 
     frame = build_parse_frame(parsed, post_title=post_title)
