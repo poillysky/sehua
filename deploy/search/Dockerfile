@@ -56,6 +56,7 @@ ENV NODE_ENV=production \
     SCRAPE_PORT=9209 \
     COVERS_DIR=/data/covers \
     META_DIR=/data/meta \
+    SCRAPE_CONFIG_DIR=/data/config \
     SCRAPE_ORIGIN=http://127.0.0.1:9209 \
     TZ=Asia/Shanghai \
     NODE_OPTIONS="--dns-result-order=ipv4first"

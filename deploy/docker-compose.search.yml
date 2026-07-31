@@ -5,6 +5,8 @@
 #   data/search/
 #   data/search-cache/
 #   data/scrape-covers/
+#   data/scrape-meta/
+#   data/scrape-config/
 #
 # 前提：主栈已 up，postgres 在同一 Docker 网络里（默认 sehuatang-network）。
 # 资源库若是独立实例，把 POSTGRES_* 改成实际可达地址（如 172.17.0.1:5435）。
@@ -22,7 +24,7 @@ name: sehuatang-search
 
 services:
   search:
-    image: poillysky/sehuatang-search:1.2.5
+    image: poillysky/sehuatang-search:1.2.6
     container_name: sehuatang-search
     restart: always
     ports:
@@ -34,6 +36,7 @@ services:
       SCRAPE_PORT: "9209"
       COVERS_DIR: /data/covers
       META_DIR: /data/meta
+      SCRAPE_CONFIG_DIR: /data/config
       POSTGRES_HOST: postgres
       POSTGRES_PORT: 5432
       POSTGRES_USER: postgres
@@ -56,6 +59,8 @@ services:
       - /vol1/1000/Docker/sehuatang/data/search:/app/data
       - /vol1/1000/Docker/sehuatang/data/search-cache:/app/.next/cache
       - /vol1/1000/Docker/sehuatang/data/scrape-covers:/data/covers
+      - /vol1/1000/Docker/sehuatang/data/scrape-meta:/data/meta
+      - /vol1/1000/Docker/sehuatang/data/scrape-config:/data/config
     deploy:
       resources:
         limits:

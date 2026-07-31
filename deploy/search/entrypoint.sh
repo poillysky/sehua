@@ -11,13 +11,15 @@ export PORT="${PORT:-3000}"
 export SCRAPE_PORT="${SCRAPE_PORT:-9209}"
 export COVERS_DIR="${COVERS_DIR:-/data/covers}"
 export META_DIR="${META_DIR:-/data/meta}"
+export SCRAPE_CONFIG_DIR="${SCRAPE_CONFIG_DIR:-/data/config}"
 export SCRAPE_ORIGIN="${SCRAPE_ORIGIN:-http://127.0.0.1:${SCRAPE_PORT}}"
 
-mkdir -p "${COVERS_DIR}" "${META_DIR}" /app/.next/cache /app/data
+mkdir -p "${COVERS_DIR}" "${META_DIR}" "${SCRAPE_CONFIG_DIR}" /app/.next/cache /app/data
 
 log "=== sehuatang-search starting (next+scrape) ==="
 log "next=:${PORT} scrape=:${SCRAPE_PORT} SCRAPE_ORIGIN=${SCRAPE_ORIGIN}"
-log "COVERS_DIR=${COVERS_DIR} POSTGRES_HOST=${POSTGRES_HOST:-} POSTGRES_DB=${POSTGRES_DB:-}"
+log "COVERS_DIR=${COVERS_DIR} META_DIR=${META_DIR} SCRAPE_CONFIG_DIR=${SCRAPE_CONFIG_DIR}"
+log "POSTGRES_HOST=${POSTGRES_HOST:-} POSTGRES_DB=${POSTGRES_DB:-}"
 
 SCRAPE_PID=""
 NEXT_PID=""
