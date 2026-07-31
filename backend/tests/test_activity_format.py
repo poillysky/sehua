@@ -59,6 +59,27 @@ def test_random_prefix_dedupes_label():
     assert "非资源帖" in msg
 
 
+def test_format_includes_total_timing():
+    msg = format_thread_activity(
+        1,
+        {
+            "verdict": "import",
+            "verdict_label": "正常入库",
+            "outcome": "成功：附件解析出目标链接",
+            "primary": "ed2k",
+            "ed2k": 1,
+            "elapsed_sec": 3.1,
+            "read_sec": 1.0,
+            "attach_sec": 1.7,
+            "attach_path": "HTTP",
+            "title": "demo",
+        },
+    )
+    assert "总3.1s" in msg
+    assert "读1.0s" in msg
+    assert "附1.7s/HTTP" in msg
+
+
 def test_recrawl_end_includes_outcome_detail():
     msg = format_thread_activity(
         3570827,

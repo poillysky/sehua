@@ -104,6 +104,9 @@ class AttachmentFetchResult:
     empty_attachment: bool = False
     # 本轮实际尝试下载的附件名（供 kind 回退去重）
     tried_names: list[str] | None = None
+    # 供抓帖总耗时摘要（活动日志）
+    elapsed_sec: float = 0.0
+    path_summary: str = ""
 
 
 def is_attachment_login_required(html: str) -> bool:
@@ -415,8 +418,8 @@ def extract_download_attachments(base_url: str, html: str) -> list[DownloadAttac
     return list(found.values())
 
 
-# 单帖附件轮询上限（防异常帖挂几十个无关附件）
-MAX_ATTACHMENTS_PER_THREAD = 30
+# 单帖附件轮询上限（多分卷 ED2K txt 可达 100+；过小会截断漏链，如 tid=3170322）
+MAX_ATTACHMENTS_PER_THREAD = 150
 
 # 内存 / zip bomb 防护：链文件包通常 ≪1MB；超大附件多为误挂视频包
 MAX_ATTACHMENT_BYTES = 12 * 1024 * 1024
@@ -443,6 +446,12 @@ _ATTACH_ORDER_MAGNET = {
     "zip": 4,
     "rar": 5,
 }
+
+
+def _declared_attach_piece_count(name: str) -> int:
+    """文件名 ``(206个)`` / ``（206个）`` 宣称份数；无则 0。"""
+    m = re.search(r"[（(](\d{1,5})\s*个[）)]", name or "")
+    return int(m.group(1)) if m else 0
 
 
 def _attach_name_priority(name: str, *, preferred_link: str | None = None) -> int:
@@ -505,6 +514,7 @@ def filter_tail_attachments(
         key=lambda a: (
             _attach_name_priority(a.name, preferred_link="ed2k"),
             order.get(a.kind, 9),
+            -_declared_attach_piece_count(a.name),
             a.name,
         )
     )
@@ -574,9 +584,11 @@ def filter_all_link_attachments(
     order = _attach_kind_order(preferred_link)
 
     def _sort_key(a: DownloadAttachment) -> tuple:
+        # 同优先级下大分卷先下：墙钟不够时少漏大块（tid=3170322）
         return (
             _attach_name_priority(a.name, preferred_link=preferred_link),
             order.get(a.kind, 9),
+            -_declared_attach_piece_count(a.name),
             a.name,
         )
 

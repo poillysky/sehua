@@ -5,6 +5,18 @@ from __future__ import annotations
 from typing import Any
 
 
+def _fmt_sec(sec: Any) -> str:
+    try:
+        s = float(sec)
+    except (TypeError, ValueError):
+        return ""
+    if s <= 0:
+        return ""
+    if s < 10:
+        return f"{s:.1f}s"
+    return f"{s:.0f}s"
+
+
 def format_thread_activity(
     tid: int,
     outcome: dict[str, Any] | None,
@@ -13,7 +25,7 @@ def format_thread_activity(
     queue_note: str = "",
     soft_browser: bool = False,
 ) -> str:
-    """抓帖活动日志：判定标签 + 具体原因 + 链类型/板块/标题摘要。
+    """抓帖活动日志：判定 + 原因 + 板块/链数/标题 + 总耗时。
 
     保持 ``tid=123`` 形态，便于管理端渲染可点击链接。
     """
@@ -74,5 +86,20 @@ def format_thread_activity(
 
     if soft_browser:
         parts.append("软文浏览器重读")
+
+    # 总耗时 + 读/附拆分（有则带）
+    total = _fmt_sec(o.get("elapsed_sec"))
+    read = _fmt_sec(o.get("read_sec"))
+    attach = _fmt_sec(o.get("attach_sec"))
+    apath = str(o.get("attach_path") or "").strip()
+    timing_bits: list[str] = []
+    if total:
+        timing_bits.append(f"总{total}")
+    if read:
+        timing_bits.append(f"读{read}")
+    if attach:
+        timing_bits.append(f"附{attach}" + (f"/{apath}" if apath else ""))
+    if timing_bits:
+        parts.append(" ".join(timing_bits))
 
     return " · ".join(p for p in parts if p)

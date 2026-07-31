@@ -297,6 +297,12 @@ async def process_thread(
     session = session or (
         session_from_config(cfg, forum_id=forum_id) if cfg else SessionManager()
     )
+    import time as _time
+
+    _t_thread = _time.monotonic()
+    _read_sec = 0.0
+    _attach_sec = 0.0
+    _attach_path = ""
     own_fetcher = fetcher is None
     fetcher = fetcher or (fetcher_from_config(session, cfg) if cfg else Fetcher(session))
     retries = int(cfg.get("web_crawler_fetch_retries") or 3)
@@ -327,8 +333,28 @@ async def process_thread(
         soft_browser_retried = False
         if html is None:
             # HTTP 读帖；软文/安全壳时 get_thread_html 内会浏览器整页重试
+            _t_read = _time.monotonic()
             html = await fetcher.get_thread_html(thread_url, retries=retries)
             soft_browser_retried = fetcher.last_soft_browser_retried
+            _read_sec = _time.monotonic() - _t_read
+            # 慢读/补读才进活动页；正常秒级并入抓帖「总」
+            if soft_browser_retried or _read_sec >= 3.0:
+                try:
+                    from workers.runner import _log_activity
+
+                    _log_activity(
+                        f"读帖 · tid={tid} · {_read_sec:.1f}s"
+                        + (" · 浏览器补读" if soft_browser_retried else "")
+                    )
+                except Exception:
+                    pass
+            else:
+                log.info(
+                    "读帖 · tid=%s · %.1fs · %s字",
+                    tid,
+                    _read_sec,
+                    len(html or ""),
+                )
 
         # 0 元购买：先点购买链解锁正文；付费购买在 judge 里跳过
         from workers.purchase_unlock import unlock_free_purchase_html
@@ -549,6 +575,7 @@ async def process_thread(
                     attach_plan.reason,
                 )
                 attach_timeout = float(cfg.get("web_crawler_timeout") or 45)
+                _t_att = _time.monotonic()
                 attach_res = await fetch_attachments_for_outcome(
                     session,
                     html=html,
@@ -558,6 +585,10 @@ async def process_thread(
                     preferred_link=link_pref,
                     quota_stop=attach_plan.quota_stop,
                 )
+                _attach_sec = float(getattr(attach_res, "elapsed_sec", 0) or 0) or (
+                    _time.monotonic() - _t_att
+                )
+                _attach_path = str(getattr(attach_res, "path_summary", "") or "")
                 attach_tried = True
                 attachment_text = attach_res.text or ""
 
@@ -806,6 +837,14 @@ async def process_thread(
                                 quota_stop=attach_plan.quota_stop,
                                 skip_names=tried_names,
                             )
+                            _attach_sec += float(
+                                getattr(attach_res2, "elapsed_sec", 0) or 0
+                            )
+                            p2 = str(getattr(attach_res2, "path_summary", "") or "")
+                            if p2:
+                                _attach_path = (
+                                    f"{_attach_path}+{p2}" if _attach_path else p2
+                                )
                             if (
                                 forum_uses_attach_daily_queue(forum_id)
                                 and getattr(attach_res2, "daily_limited", False)
@@ -1079,6 +1118,10 @@ async def process_thread(
             "board_fid": str(board_fid),
             "board_name": persist_board_name,
             "persisted": None,
+            "elapsed_sec": round(_time.monotonic() - _t_thread, 2),
+            "read_sec": round(float(_read_sec or 0), 2),
+            "attach_sec": round(float(_attach_sec or 0), 2),
+            "attach_path": _attach_path or "",
         }
         if attach_queued:
             from workers.attach_queue import ATTACH_QUEUE_OUTCOME, ATTACH_QUEUE_VERDICT

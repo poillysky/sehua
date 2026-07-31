@@ -569,7 +569,6 @@ def test_filter_all_link_attachments_order_and_limit():
         "seed.torrent",
         "文件目录.txt",
     ]
-    assert not any("目录树" in a.name for a in got)
 
     # 磁力：torrent → excel/doc/txt → zip/rar；其它目录类垫底；目录树仍不出现
     got_m = filter_all_link_attachments(atts, limit=10, preferred_link="magnet")
@@ -585,6 +584,25 @@ def test_filter_all_link_attachments_order_and_limit():
     assert got_m[0].name == "seed.torrent"
     assert got_m[-1].name == "文件目录.txt"
     assert not any("目录树" in a.name for a in got_m)
+
+
+def test_filter_all_link_attachments_mega_txt_pack_not_capped_at_30():
+    """百级 ``(N个).txt`` 分卷不可被 30 截断（tid=3170322）。"""
+    from parsers.attachments import (
+        MAX_ATTACHMENTS_PER_THREAD,
+        DownloadAttachment,
+        filter_all_link_attachments,
+    )
+
+    assert MAX_ATTACHMENTS_PER_THREAD >= 100
+    atts = [
+        DownloadAttachment(f"【ED2K】P{i:03d}({(i % 50) + 1}个).txt", "u", "txt")
+        for i in range(103)
+    ]
+    got = filter_all_link_attachments(atts, preferred_link="ed2k")
+    assert len(got) == 103
+    # 同优先级下宣称份数大者优先
+    assert "(50个)" in got[0].name
 
 
 def test_directory_tree_name_hard_skipped():

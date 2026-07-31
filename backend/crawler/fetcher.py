@@ -492,12 +492,18 @@ class Fetcher:
             log.info("R18 shell on thread %s, extract safeid and retry", url)
             if not self._update_safeid(text):
                 return text
+            # 必须刷新 cookies：_update_safeid 写的是 session，旧 req_kwargs 仍无 _safe
+            req_kwargs["cookies"] = self._cookie_dict()
             try:
                 r2 = crequests.get(url, **req_kwargs)
             except Exception as exc:
                 raise FetchError(f"R18 重试失败: {exc}") from exc
             self._merge_response_cookies(r2)
             text = self._decode_body(r2)
+            try:
+                self.session.save()
+            except Exception:
+                pass
         return text
 
     def _merge_response_cookies(self, response) -> None:

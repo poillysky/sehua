@@ -233,3 +233,12 @@ def test_attach_v_without_quota_does_not_review():
     assert "info:attach_links_short_of_filename_v" not in frame.verdict.tags
     out = format_frame_outcome("成功：附件解析出目标链接", frame)
     assert out.startswith("成功")
+
+
+def test_title_quota_with_thousands_separator():
+    """标题 ``5,812配额`` / ``5,812v`` 认 5812，勿截成 812（tid=3170322）。"""
+    from parsers.resource_frame import _title_quota_count, _title_v_count
+
+    title = "【115ED2K】无码DVD系列合集【5,812v/14.2TB/5,812配额】"
+    assert _title_quota_count(title) == 5812
+    assert _title_v_count(title) == 5812

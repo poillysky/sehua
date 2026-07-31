@@ -71,6 +71,73 @@ _round_task: asyncio.Task | None = None
 _loop_future: Any = None  # concurrent.futures.Future | None
 _MAIN_LOOP: asyncio.AbstractEventLoop | None = None
 
+# 连续调度跨轮复用浏览器会话：仅失效 / 换配置时再进站
+_loop_session: Any = None
+_loop_session_key: tuple[str, str, str] | None = None
+_loop_session_needs_boot: bool = False
+
+
+def _loop_session_fingerprint(
+    forum_id: str, proxy: str, cfg: dict[str, Any]
+) -> tuple[str, str, str]:
+    return (
+        (forum_id or "").strip(),
+        (proxy or "").strip(),
+        str((cfg or {}).get("web_crawler_cookie") or "").strip()[:120],
+    )
+
+
+async def release_loop_session() -> None:
+    """关闭并丢弃连续调度复用会话。"""
+    global _loop_session, _loop_session_key, _loop_session_needs_boot
+    sess = _loop_session
+    _loop_session = None
+    _loop_session_key = None
+    _loop_session_needs_boot = False
+    if sess is None:
+        return
+    try:
+        await sess.close()
+    except Exception:
+        log.debug("release_loop_session close failed", exc_info=True)
+
+
+def invalidate_loop_session(*, reason: str = "") -> None:
+    """标记下一轮必须重新进站（仍可复用同一 SessionManager 对象）。"""
+    global _loop_session_needs_boot
+    _loop_session_needs_boot = True
+    if reason:
+        log.info("loop session will re-bootstrap: %s", reason)
+
+
+def _schedule_release_loop_session() -> None:
+    """同步路径（强制 idle）尽量异步关掉复用会话。"""
+    global _loop_session, _loop_session_key, _loop_session_needs_boot
+    sess = _loop_session
+    _loop_session = None
+    _loop_session_key = None
+    _loop_session_needs_boot = False
+    if sess is None:
+        return
+
+    async def _close() -> None:
+        try:
+            await sess.close()
+        except Exception:
+            pass
+
+    try:
+        loop = asyncio.get_running_loop()
+        loop.create_task(_close())
+        return
+    except RuntimeError:
+        pass
+    if _MAIN_LOOP is not None:
+        try:
+            asyncio.run_coroutine_threadsafe(_close(), _MAIN_LOOP)
+        except Exception:
+            pass
+
 
 def bind_main_loop(loop: asyncio.AbstractEventLoop | None = None) -> None:
     """记录 uvicorn 主循环，供旁路紧急停止 threadsafe cancel。"""
@@ -268,12 +335,12 @@ async def run_crawl_once(
     force_list_scan: bool = False,
     clear_stop_flag: bool | None = None,
 ) -> dict[str, Any]:
-    """执行拓扑一轮：选板→进站→扫列表入队→取待抓→抓帖入库。
+    """执行拓扑一轮：选板→进站(必要时)→扫列表入队→取待抓→抓帖入库。
 
-    - 手动「立即爬取」：from_loop=False；连续调度启用时拒绝；默认仅深扫当前板。
+    - 手动「立即爬取」：from_loop=False；连续调度启用时拒绝；默认仅深扫当前板；每轮新建并关闭会话。
     - 手动「扫新帖」：scan_head=True, deep_scan=False；可由 run_scan_head_once 按启用队列逐板调用。
-    - 连续循环：scan_head=False, deep_scan=True, from_loop=True；当前板 list_exhausted 后
-      先消化当前板可抓队列至空，再切下一启用板（退避中不阻塞切板；停止/熔断则暂不切）。
+    - 连续循环：scan_head=False, deep_scan=True, from_loop=True；复用进站会话，仅失效/换配置时再进站；
+      当前板 list_exhausted 后先消化当前板可抓队列至空，再切下一启用板（退避中不阻塞切板；停止/熔断则暂不切）。
     - queue_kind=abnormal|soft_ad：只在该队列内重爬，成功才出队，不扫列表。
     - hold_lock=True：调用方已占用 running，本函数不抢锁/不释放。
     - force_list_scan=True：忽略队列背压，仍读本板列表（扫新帖防漏板）。
@@ -449,7 +516,7 @@ async def run_crawl_once(
         )
 
         _STATE["phase"] = "session"
-        session = session_from_config(cfg, proxy=proxy, forum_id=forum_id)
+        global _loop_session, _loop_session_key, _loop_session_needs_boot
         if forum_id == "2048":
             _log_activity("2048 解析发布页 · 取当日论坛入口…")
         preferred = str(cfg.get("preferred_entry_url") or "").strip()
@@ -460,13 +527,59 @@ async def run_crawl_once(
             _log_activity(
                 f"2048 发布页解析完成 · {len(entries)} 条入口 · {tip}"
             )
-        _log_activity(f"进站中 · 候选 {len(entries or [])} 条…")
-        await session.bootstrap(entry_urls=entries, probe_url=probe)
-        start = session.active_entry_url or (entries[0] if entries else "")
+
+        sess_key = _loop_session_fingerprint(forum_id, proxy, cfg)
+        reused = False
+        force_boot = False
+        if from_loop and _loop_session is not None and _loop_session_key == sess_key:
+            session = _loop_session
+            force_boot = bool(_loop_session_needs_boot)
+            ready = bool(
+                getattr(session, "_ready", False) and getattr(session, "_page", None)
+            )
+            if ready and not force_boot:
+                reused = True
+            else:
+                force_boot = force_boot or not ready
+        else:
+            if from_loop and _loop_session is not None:
+                try:
+                    await _loop_session.close()
+                except Exception:
+                    pass
+                _loop_session = None
+                _loop_session_key = None
+            session = session_from_config(cfg, proxy=proxy, forum_id=forum_id)
+            force_boot = False
+
+        if reused:
+            start = session.active_entry_url or (entries[0] if entries else "")
+            _log_activity(f"复用进站会话 · {start or '—'}")
+        else:
+            why = "强制重进" if force_boot and from_loop else "新建会话"
+            _log_activity(
+                f"进站中 · 候选 {len(entries or [])} 条…"
+                + (f" · {why}" if from_loop else "")
+            )
+            await session.bootstrap(
+                force=force_boot,
+                entry_urls=entries,
+                probe_url=probe,
+            )
+            _loop_session_needs_boot = False
+            start = session.active_entry_url or (entries[0] if entries else "")
+            _log_activity(
+                f"进站就绪 · {start}" + (f" · 代理 {proxy}" if proxy else "")
+            )
+
+        if from_loop:
+            _loop_session = session
+            _loop_session_key = sess_key
+            _loop_session_needs_boot = False
+
         result["proxy_configured"] = bool((proxy or "").strip())
         result["entry_url"] = start
-        _log_activity(f"进站就绪 · {start}" + (f" · 代理 {proxy}" if proxy else ""))
-        if forum_id == "2048" and start:
+        if forum_id == "2048" and start and not reused:
             try:
                 saved = persist_preferred_entry_url(forum_id, start)
                 if saved and site_root(preferred) != site_root(saved):
@@ -1147,16 +1260,23 @@ async def run_crawl_once(
         result["ok"] = False
         result["reason"] = "stopped"
         result["error"] = "cancelled"
+        if from_loop:
+            invalidate_loop_session(reason="round cancelled")
         _log_activity("本轮任务已取消 · 会话清理中 · 未完成队列已保留")
         raise
     except Exception as exc:
         result["ok"] = False
         result["error"] = str(exc)
+        if from_loop:
+            invalidate_loop_session(reason=str(exc)[:120])
         _log_activity(f"本轮异常 · {exc}")
         log.exception("crawl round failed")
         return result
     finally:
-        if session is not None:
+        if from_loop and session is not None:
+            if not getattr(session, "_ready", False):
+                invalidate_loop_session(reason="session not ready after round")
+        if session is not None and not from_loop:
             try:
                 await session.close()
             except Exception:
@@ -1478,6 +1598,7 @@ async def _continuous_loop() -> None:
         _log_activity("连续调度任务已取消")
         raise
     finally:
+        await release_loop_session()
         _STATE["looping"] = False
         _STATE["running"] = False
         _STATE["loop_kind"] = None
@@ -1531,6 +1652,7 @@ def _force_idle_state() -> None:
     _STATE["forum_id"] = None
     _STATE["phase"] = "idle"
     _round_task = None
+    _schedule_release_loop_session()
 
 
 async def stop_crawler(

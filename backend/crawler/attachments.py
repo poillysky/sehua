@@ -41,10 +41,14 @@ log = logging.getLogger(__name__)
 
 # 多附件防卡死：总墙钟 / 单附件 / 浏览器页操作 / Flare / 解压
 ATTACH_POLL_WALL_SEC = 180.0
+ATTACH_POLL_WALL_MAX_SEC = 2400.0
 ATTACH_ONE_WALL_SEC = 55.0
 ATTACH_PAGE_OP_SEC = 30.0
-# 页内 fetch AbortSignal（与页操作/UI 解耦；过大附件勿过早掐断）
-ATTACH_FETCH_MS = 18_000
+# 页内 fetch 在未开帖/跨页时常立刻 Failed to fetch，却仍空等 AbortSignal；缩短避免白等
+ATTACH_FETCH_MS = 6_000
+# HTTP 直拉：过短误杀大 txt；过长（15s）挂死后再开帖会叠成 30s+
+ATTACH_HTTP_SEC = 8.0
+ATTACH_HTTP_CONNECT_SEC = 4.0
 ATTACH_FLARE_HTTP_SEC = 35.0
 ATTACH_FLARE_MAX_TIMEOUT_MS = 25_000
 ATTACH_EXTRACT_SEC = 45.0
@@ -283,8 +287,23 @@ def _quota_expect_from_html(html: str) -> int | None:
 
         return _title_quota_count("\n".join(parts))
     except Exception:
-        m = re.search(r"(\d+)\s*配额", "\n".join(parts))
-        return int(m.group(1)) if m else None
+        m = re.search(r"(\d{1,3}(?:,\d{3})+|\d+)\s*配额", "\n".join(parts))
+        if not m:
+            return None
+        raw = (m.group(1) or "").replace(",", "").replace("，", "")
+        return int(raw) if raw.isdigit() else None
+
+
+def _attach_poll_wall_sec(n_attachments: int, quota_expect: int | None) -> float:
+    """多分卷/高配额帖加长整帖墙钟，避免 30×txt 合集扫一半就停（tid=3170322）。"""
+    wall = float(ATTACH_POLL_WALL_SEC)
+    n = max(0, int(n_attachments or 0))
+    if n > 15:
+        wall = max(wall, 120.0 + n * 12.0)
+    q = int(quota_expect or 0)
+    if q >= 200:
+        wall = max(wall, 90.0 + q * 0.18)
+    return float(min(wall, ATTACH_POLL_WALL_MAX_SEC))
 
 
 def _pick_best_archive_texts(chunks: list[str]) -> str:
@@ -1060,6 +1079,48 @@ def _html_is_cf_challenge(html: str) -> bool:
         return False
 
 
+def _attach_activity(msg: str, *, feed: bool = True) -> None:
+    """默认写活动页；feed=False 只落 logger（常规进度不刷屏）。"""
+    text = (msg or "").strip()
+    if not text:
+        return
+    log.info("%s", text)
+    if not feed:
+        return
+    try:
+        from workers.runner import _log_activity
+
+        _log_activity(text)
+    except Exception:
+        try:
+            from db.activity import append_activity
+
+            append_activity(text)
+        except Exception:
+            pass
+
+
+def _fmt_dur(sec: float) -> str:
+    """耗时文案：0.85s / 12.3s。"""
+    try:
+        s = float(sec)
+    except (TypeError, ValueError):
+        return "?s"
+    if s < 10:
+        return f"{s:.2f}s"
+    return f"{s:.1f}s"
+
+
+def _attach_file_feed(path: str, sec: float) -> bool:
+    """快路径 HTTP 成功/终态不刷活动页；慢路径与 UI/开帖仍可见。"""
+    p = (path or "").strip()
+    if p in {"HTTP", "HTTP终态"} and float(sec or 0) < 5.0:
+        return False
+    if p in {"跳过页内", "跳过Flare"}:
+        return False
+    return True
+
+
 class AttachmentDownloader:
     """基于已进站 SessionManager（Playwright 页）下载附件。"""
 
@@ -1067,12 +1128,30 @@ class AttachmentDownloader:
         self.session = session
         # 同帖第一次 Flare 无收获后，后续附件不再打 Flare（省串行等待）
         self._skip_flare = False
+        # 最近一次页内 fetch 是否命中 CF 挑战页（供日志 / Flare 决策）
+        self._last_page_hit_cf = False
+        # 本帖是否已向活动日志打过「遇CF」摘要（避免百附件刷屏）
+        self._logged_cf_hit = False
+        self._logged_no_cf_ok = False
+        # 读帖 HTML 已有附件区时延后开帖；仅 UI 点击才导航
+        self._thread_url = ""
+        self._thread_page_ready = False
+        # 页内 fetch 本帖已失败（Failed to fetch）→ 后续跳过，直走 UI
+        self._skip_page_fetch = False
+        self._last_path = ""
 
-    async def ensure_thread_page(self, thread_url: str, *, timeout_ms: int = 60000) -> str:
-        """确保浏览器在帖页。已在同一帖且附件区可见则跳过重复 goto（省 1～3s）。"""
+    async def ensure_thread_page(
+        self, thread_url: str, *, timeout_ms: int = 60000, light: bool = True
+    ) -> str:
+        """确保浏览器在帖页。已在同一帖且附件区可见则跳过重复 goto。
+
+        light=True：暖会话短等待，跳过多余年龄门轮询（附件二次开帖专用）。
+        """
         from parsers.thread_gates import looks_like_attachment_zone
 
         target_key = _thread_tid_key(thread_url)
+        t0 = time.monotonic()
+        self._thread_url = thread_url or self._thread_url
 
         async def _try_reuse(page: Any) -> str | None:
             cur = (getattr(page, "url", None) or "") or ""
@@ -1100,12 +1179,126 @@ class AttachmentDownloader:
         try:
             reused = await self.session.run_on_page(_try_reuse)
             if reused:
+                self._thread_page_ready = True
+                _attach_activity(
+                    f"开帖复用 · tid={target_key or '?'} · {_fmt_dur(time.monotonic() - t0)}",
+                    feed=False,
+                )
                 return reused
         except Exception as exc:
             log.debug("attachments: reuse page check failed: %s", exc)
 
-        html = await self.session.fetch_html(thread_url, timeout_ms=timeout_ms)
+        html = await self.session.fetch_html(
+            thread_url, timeout_ms=timeout_ms, light=light
+        )
+        cf = _html_is_cf_challenge(html or "")
+        self._thread_page_ready = bool(html) and not cf
+        # 开帖导航仍进活动页（慢路径信号）
+        _attach_activity(
+            f"开帖导航 · tid={target_key or '?'} · {_fmt_dur(time.monotonic() - t0)}"
+            f" · CF={'是' if cf else '否'}"
+            + (" · 轻量" if light else "")
+        )
         return html
+
+    async def _ensure_thread_for_ui(self) -> None:
+        """UI 点击前才开帖；HTTP/页内 fetch 不依赖停在帖页。"""
+        if self._thread_page_ready:
+            return
+        url = (self._thread_url or "").strip()
+        if not url:
+            return
+        await self.ensure_thread_page(url, light=True)
+
+    def _fetch_bytes_via_curl(
+        self, url: str, *, referer: str = ""
+    ) -> tuple[bytes | None, bool, bool, bool, bool]:
+        """用进站 cookie + 帖页 Referer 直拉附件，无需先开帖导航。"""
+        try:
+            from curl_cffi import requests as crequests
+        except ImportError:
+            return None, False, False, False, False
+        import os
+
+        jar = dict(getattr(self.session, "cookies", {}) or {})
+        jar.setdefault("safe", "1")
+        jar = {k: v for k, v in jar.items() if v}
+        ua = (
+            str(getattr(self.session, "user_agent", "") or "").strip()
+            or "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+            "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        )
+        ref = (referer or self._thread_url or "").strip()
+        headers = {
+            "User-Agent": ua,
+            "Accept": "*/*",
+            "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+            "Referer": ref or "https://www.sehuatang.net/",
+        }
+        impersonate = (
+            os.environ.get("SHT_CURL_IMPERSONATE", "chrome").strip() or "chrome"
+        )
+        req_kwargs: dict[str, Any] = {
+            "headers": headers,
+            "cookies": jar,
+            "allow_redirects": True,
+            "timeout": (ATTACH_HTTP_CONNECT_SEC, ATTACH_HTTP_SEC),
+            "impersonate": impersonate,
+        }
+        proxy = str(getattr(self.session, "proxy", "") or "").strip()
+        if proxy:
+            req_kwargs["proxy"] = proxy
+        try:
+            r = crequests.get(url, **req_kwargs)
+        except Exception as exc:
+            log.info("附件HTTP直拉失败 · %s · %s", url, exc)
+            return None, False, False, False, False
+
+        try:
+            for name, value in (r.cookies or {}).items():
+                if name and value:
+                    self.session.cookies[name] = value
+        except Exception:
+            pass
+
+        status = int(getattr(r, "status_code", 0) or 0)
+        data = bytes(getattr(r, "content", None) or b"")
+        if status == 404:
+            return None, False, False, False, True
+        if status != 200:
+            log.info("附件HTTP直拉非200 · status=%s · %s", status, url)
+            return None, False, False, False, False
+        if not data:
+            return None, False, False, False, True
+        if _skip_oversized(url, len(data)):
+            return None, False, False, False, False
+
+        ctype = ""
+        try:
+            ctype = str(r.headers.get("content-type") or "").lower()
+        except Exception:
+            ctype = ""
+        if (
+            "text/html" in ctype
+            or data.startswith(b"<!DOCTYPE")
+            or data.startswith(b"<html")
+        ):
+            html = _decode_bytes(data[:65536])
+            if _html_is_cf_challenge(html):
+                self._last_page_hit_cf = True
+                return None, False, False, False, False
+            if is_attachment_not_found(html):
+                return None, False, False, False, True
+            if is_attachment_login_required(html):
+                return None, False, True, False, False
+            if is_attachment_download_limited(html):
+                return None, True, False, True, False
+            if is_attachment_denied(html):
+                return None, True, False, False, False
+            return None, False, False, False, False
+
+        log.info("附件HTTP直拉成功 · %s bytes · %s", len(data), url)
+        return data, False, False, False, False
 
     def _fetch_bytes_via_flare(
         self, url: str
@@ -1132,7 +1325,7 @@ class AttachmentDownloader:
                 max_timeout_ms=ATTACH_FLARE_MAX_TIMEOUT_MS,
             )
         except Exception as exc:
-            log.warning("FlareSolverr attach fetch error %s: %s", url, exc)
+            log.warning("附件Flare请求失败 · CF=是 · %s · %s", url, exc)
             return None, False, False, False, False
         if not solution:
             return None, False, False, False, False
@@ -1150,10 +1343,10 @@ class AttachmentDownloader:
         if not body:
             return None, False, False, False, True
         if _html_is_cf_challenge(body):
-            log.warning("FlareSolverr attach still CF: %s", url)
+            log.warning("附件Flare仍遇CF · CF=是 · %s", url)
             return None, False, False, False, False
         if SessionManager.is_safe_shell(body):
-            log.warning("FlareSolverr attach hit R18 shell: %s", url)
+            log.warning("附件Flare撞进站壳 · %s", url)
             return None, False, False, False, False
 
         low = body.lstrip()[:200].lower()
@@ -1179,7 +1372,7 @@ class AttachmentDownloader:
         if _skip_oversized(url, len(data)):
             return None, False, False, False, False
         log.info(
-            "FlareSolverr attach ok: %s (%s bytes)",
+            "附件Flare直下成功 · CF=已过 · %s (%s bytes)",
             url,
             len(data),
         )
@@ -1194,19 +1387,24 @@ class AttachmentDownloader:
         """
 
         async def _on_page(page: Any) -> tuple[bytes | None, bool, bool, bool, bool]:
+            self._last_page_hit_cf = False
             try:
                 # Content-Length / 实际体积超限则不 btoa，避免 2～3× 峰值
                 # AbortSignal：短超时，失败快落入 Flare/UI（勿拖满页操作 30s）
                 fetch_ms = int(ATTACH_FETCH_MS)
+                referer = (self._thread_url or "").strip()
                 result = await page.evaluate(
                     """
-                    async ({ targetUrl, maxBytes, fetchMs }) => {
+                    async ({ targetUrl, maxBytes, fetchMs, referer }) => {
                         const ctrl = new AbortController();
                         const timer = setTimeout(() => ctrl.abort(), fetchMs);
+                        const headers = {};
+                        if (referer) headers['Referer'] = referer;
                         let resp;
                         try {
                             resp = await fetch(targetUrl, {
                                 credentials: 'include',
+                                headers,
                                 signal: ctrl.signal,
                             });
                         } finally {
@@ -1258,10 +1456,14 @@ class AttachmentDownloader:
                         "targetUrl": url,
                         "maxBytes": MAX_ATTACHMENT_BYTES,
                         "fetchMs": fetch_ms,
+                        "referer": referer,
                     },
                 )
             except Exception as exc:
-                log.debug("Attachment page fetch failed %s: %s", url, exc)
+                err = str(exc)
+                log.info("附件页内fetch失败 · CF=未知 · %s · %s", url, err)
+                if "Failed to fetch" in err or "TypeError" in err:
+                    self._skip_page_fetch = True
                 return None, False, False, False, False
 
             if not result:
@@ -1271,6 +1473,11 @@ class AttachmentDownloader:
                 log.info("Attachment HTTP 404: %s", url)
                 return None, False, False, False, True
             if status != 200:
+                log.info(
+                    "附件页内fetch非200 · CF=未知 · status=%s · %s",
+                    status,
+                    url,
+                )
                 return None, False, False, False, False
 
             if result.get("skipped") == "too_large":
@@ -1295,6 +1502,7 @@ class AttachmentDownloader:
                 if looks_attach:
                     log.info("Attachment empty file (0 bytes): %s", url)
                     return None, False, False, False, True
+                log.info("附件页内fetch空体 · CF=否 · %s", url)
                 return None, False, False, False, False
             if _skip_oversized(url, len(data)):
                 return None, False, False, False, False
@@ -1302,6 +1510,10 @@ class AttachmentDownloader:
             if "text/html" in content_type or data.startswith(b"<!DOCTYPE") or data.startswith(b"<html"):
                 # 提示页导航很长，登录/日限文案常在 8KB+；勿只看前 4KB
                 html = _decode_bytes(data[:65536])
+                if _html_is_cf_challenge(html):
+                    self._last_page_hit_cf = True
+                    log.info("附件页内fetch遇CF · CF=是 · %s", url)
+                    return None, False, False, False, False
                 if is_attachment_not_found(html):
                     log.info("Attachment not found tip: %s", url)
                     return None, False, False, False, True
@@ -1314,7 +1526,13 @@ class AttachmentDownloader:
                 if is_attachment_denied(html):
                     log.info("Attachment denied: %s", url)
                     return None, True, False, False, False
+                log.info("附件页内fetch提示页 · CF=否 · %s", url)
                 return None, False, False, False, False
+            log.info(
+                "附件页内直下成功 · CF=否 · %s bytes · %s",
+                len(data),
+                url,
+            )
             return data, False, False, False, False
 
         return await self.session.run_on_page(_on_page, timeout=ATTACH_PAGE_OP_SEC)
@@ -1472,13 +1690,47 @@ class AttachmentDownloader:
         downloaded = False
         empty_torrent = False
         empty_attachment = False
+        t_all = time.monotonic()
+        t_http = t_page = t_flare = t_ui = t_extract = 0.0
+        path = "无"
+        cf_label = "否"
+        ensure_task: asyncio.Task | None = None
+
+        async def _drop_ensure() -> None:
+            nonlocal ensure_task
+            t = ensure_task
+            ensure_task = None
+            if t is None or t.done():
+                return
+            t.cancel()
+            try:
+                await t
+            except (asyncio.CancelledError, Exception):
+                pass
+            # 中途取消可能停在半页，勿当作已开帖
+            if not getattr(self, "_thread_page_ready", False):
+                self._thread_page_ready = False
+
+        # HTTP 可能挂满超时：与开帖并行，失败时少叠一段导航
+        on_thread_at_start = bool(self._thread_page_ready)
+        if not on_thread_at_start:
+            ensure_task = asyncio.create_task(self._ensure_thread_for_ui())
+
+        # 1) HTTP 直拉（cookie+帖 Referer）：多数有链/无权可免开帖导航
+        self._last_page_hit_cf = False
+        t0 = time.monotonic()
         (
             data,
             fetch_denied,
             fetch_login,
             fetch_limited,
             fetch_empty,
-        ) = await self._fetch_bytes_via_page(attachment.url)
+        ) = await asyncio.to_thread(
+            self._fetch_bytes_via_curl,
+            attachment.url,
+            referer=self._thread_url or "",
+        )
+        t_http = time.monotonic() - t0
         denied = denied or fetch_denied
         login_required = login_required or fetch_login
         daily_limited = daily_limited or fetch_limited
@@ -1486,12 +1738,150 @@ class AttachmentDownloader:
             empty_attachment = True
             if attachment.kind == "torrent":
                 empty_torrent = True
+        if self._last_page_hit_cf:
+            cf_label = "是"
+            page_hit_cf = True
+        else:
+            page_hit_cf = False
+
         if data:
             downloaded = True
+            path = "HTTP"
+            t1 = time.monotonic()
             text = await self._extract_attachment_text(
                 attachment, data, passwords=passwords
             )
+            t_extract = time.monotonic() - t1
             if text.strip():
+                await _drop_ensure()
+                parts = [
+                    f"附件耗时 · {attachment.name}",
+                    f"HTTP{_fmt_dur(t_http)}",
+                ]
+                if t_extract > 0:
+                    parts.append(f"解压{_fmt_dur(t_extract)}")
+                parts.extend(
+                    [
+                        f"合计{_fmt_dur(time.monotonic() - t_all)}",
+                        "路径=HTTP",
+                        f"CF={cf_label}",
+                        "有链",
+                    ]
+                )
+                _attach_activity(
+                    " · ".join(parts),
+                    feed=_attach_file_feed("HTTP", time.monotonic() - t_all),
+                )
+                self._last_path = "HTTP"
+                return (
+                    text,
+                    denied,
+                    downloaded,
+                    login_required,
+                    daily_limited,
+                    False,
+                    False,
+                )
+            data = None  # 解出空链，继续页内/UI
+
+        # HTTP 已明确终态：不必再开帖
+        if (denied or login_required or daily_limited or empty_attachment) and not data:
+            await _drop_ensure()
+            path = "HTTP终态"
+            parts = [
+                f"附件耗时 · {attachment.name}",
+                f"HTTP{_fmt_dur(t_http)}",
+                f"合计{_fmt_dur(time.monotonic() - t_all)}",
+                f"路径={path}",
+                f"CF={cf_label}",
+                "无链",
+            ]
+            _attach_activity(
+                " · ".join(parts),
+                feed=_attach_file_feed(path, time.monotonic() - t_all),
+            )
+            self._last_path = path
+            return (
+                "",
+                denied,
+                downloaded,
+                login_required,
+                daily_limited,
+                empty_torrent,
+                empty_attachment,
+            )
+
+        # 2) 页内 fetch：仅「开始时已在帖页」才试；并行开帖完成也不改走页内（易 Failed to fetch）
+        fetch_denied = fetch_login = fetch_limited = fetch_empty = False
+        data = None
+        if self._skip_page_fetch or not on_thread_at_start:
+            if not on_thread_at_start:
+                log.debug("attachments: skip page fetch (not on thread at start)")
+            path = "跳过页内"
+        else:
+            t0 = time.monotonic()
+            (
+                data,
+                fetch_denied,
+                fetch_login,
+                fetch_limited,
+                fetch_empty,
+            ) = await self._fetch_bytes_via_page(attachment.url)
+            t_page = time.monotonic() - t0
+            denied = denied or fetch_denied
+            login_required = login_required or fetch_login
+            daily_limited = daily_limited or fetch_limited
+            if fetch_empty:
+                empty_attachment = True
+                if attachment.kind == "torrent":
+                    empty_torrent = True
+        page_hit_cf = bool(self._last_page_hit_cf)
+        if page_hit_cf:
+            cf_label = "是"
+        has_clearance = bool(
+            (getattr(self.session, "cookies", {}) or {}).get("cf_clearance")
+        )
+
+        def _summary(ok: bool) -> None:
+            parts = [
+                f"附件耗时 · {attachment.name}",
+            ]
+            if t_http > 0:
+                parts.append(f"HTTP{_fmt_dur(t_http)}")
+            if t_page > 0:
+                parts.append(f"页内{_fmt_dur(t_page)}")
+            elif path == "跳过页内":
+                parts.append("页内跳过")
+            if t_flare > 0:
+                parts.append(f"Flare{_fmt_dur(t_flare)}")
+            elif path == "跳过Flare":
+                parts.append("Flare跳过")
+            if t_ui > 0:
+                parts.append(f"UI{_fmt_dur(t_ui)}")
+            if t_extract > 0:
+                parts.append(f"解压{_fmt_dur(t_extract)}")
+            parts.append(f"合计{_fmt_dur(time.monotonic() - t_all)}")
+            parts.append(f"路径={path}")
+            parts.append(f"CF={cf_label}")
+            parts.append("有链" if ok else "无链")
+            self._last_path = path
+            _attach_activity(
+                " · ".join(parts),
+                feed=_attach_file_feed(path, time.monotonic() - t_all),
+            )
+
+        if data:
+            downloaded = True
+            path = "页内"
+            if page_hit_cf:
+                cf_label = "是(仍得体)"
+            t1 = time.monotonic()
+            text = await self._extract_attachment_text(
+                attachment, data, passwords=passwords
+            )
+            t_extract = time.monotonic() - t1
+            if text.strip():
+                _summary(True)
                 return (
                     text,
                     denied,
@@ -1502,59 +1892,93 @@ class AttachmentDownloader:
                     False,
                 )
 
-        # Playwright 页 fetch 空且非终态：走 FlareSolverr 同出口
-        # 有 cf_clearance 仍可能过期（首爬软失败、复爬才好）→ 软空仍试 Flare
-        # 同帖若已试 Flare 无收获，后续附件跳过 Flare（多附件防串行卡死）
+        # 若开头未起开帖任务（已在帖页），软空时补起
+        if (
+            ensure_task is None
+            and not data
+            and not (denied or login_required or daily_limited or empty_attachment)
+            and not self._thread_page_ready
+        ):
+            ensure_task = asyncio.create_task(self._ensure_thread_for_ui())
+
+        # Playwright 页 fetch 空且非终态：
+        # - 明确遇 CF / 无 clearance → FlareSolverr
+        # - 有 clearance 且未见 CF → 跳过 Flare（省 30s+；过期 clearance 通常会返回 CF 页）
+        # 同帖若已试 Flare 无收获，后续附件跳过 Flare
         if (
             not data
             and not self._skip_flare
             and not (fetch_denied or fetch_login or fetch_limited or fetch_empty)
         ):
-            (
-                flare_data,
-                flare_denied,
-                flare_login,
-                flare_limited,
-                flare_empty,
-            ) = await asyncio.to_thread(self._fetch_bytes_via_flare, attachment.url)
-            denied = denied or flare_denied
-            login_required = login_required or flare_login
-            daily_limited = daily_limited or flare_limited
-            if flare_empty:
-                empty_attachment = True
-                if attachment.kind == "torrent":
-                    empty_torrent = True
-            if flare_data:
-                downloaded = True
-                text = await self._extract_attachment_text(
-                    attachment, flare_data, passwords=passwords
-                )
-                if text.strip():
-                    return (
-                        text,
-                        denied,
-                        downloaded,
-                        login_required,
-                        daily_limited,
-                        False,
-                        False,
-                    )
-            data = flare_data
-            if (
-                not flare_data
-                and not flare_denied
-                and not flare_login
-                and not flare_limited
-                and not flare_empty
-            ):
-                self._skip_flare = True
+            should_flare = page_hit_cf or not has_clearance
+            if not should_flare:
+                path = "跳过Flare"
                 log.info(
-                    "Flare attach miss for %s — skip Flare for rest of thread",
+                    "附件软空·有clearance·未见CF·跳过Flare · %s",
                     attachment.name,
                 )
+            else:
+                if page_hit_cf:
+                    cf_label = "是"
+                    if not self._logged_cf_hit:
+                        self._logged_cf_hit = True
+                t1 = time.monotonic()
+                (
+                    flare_data,
+                    flare_denied,
+                    flare_login,
+                    flare_limited,
+                    flare_empty,
+                ) = await asyncio.to_thread(self._fetch_bytes_via_flare, attachment.url)
+                t_flare = time.monotonic() - t1
+                denied = denied or flare_denied
+                login_required = login_required or flare_login
+                daily_limited = daily_limited or flare_limited
+                if flare_empty:
+                    empty_attachment = True
+                    if attachment.kind == "torrent":
+                        empty_torrent = True
+                if flare_data:
+                    downloaded = True
+                    path = "Flare"
+                    cf_label = "已过" if page_hit_cf else cf_label
+                    t2 = time.monotonic()
+                    text = await self._extract_attachment_text(
+                        attachment, flare_data, passwords=passwords
+                    )
+                    t_extract = time.monotonic() - t2
+                    if text.strip():
+                        await _drop_ensure()
+                        _summary(True)
+                        return (
+                            text,
+                            denied,
+                            downloaded,
+                            login_required,
+                            daily_limited,
+                            False,
+                            False,
+                        )
+                data = flare_data
+                if (
+                    not flare_data
+                    and not flare_denied
+                    and not flare_login
+                    and not flare_limited
+                    and not flare_empty
+                ):
+                    self._skip_flare = True
+                    path = "Flare失败"
+                    log.info(
+                        "附件Flare未过CF · 本帖后续跳过Flare · %s",
+                        attachment.name,
+                    )
 
         # 页面/Flare 已明确无权/需登录/日限且无字节：UI 再点一次通常同样失败，省一轮
         if (denied or login_required or daily_limited) and not data:
+            await _drop_ensure()
+            path = path if path not in {"无", "跳过Flare", "跳过页内"} else "终态"
+            _summary(False)
             return (
                 "",
                 denied,
@@ -1567,6 +1991,9 @@ class AttachmentDownloader:
 
         # 空壳 / Not Found：fetch 已确认，UI 再点多半同样空，直接返回
         if empty_attachment and not data:
+            await _drop_ensure()
+            path = "空附件"
+            _summary(False)
             return (
                 "",
                 denied,
@@ -1578,6 +2005,20 @@ class AttachmentDownloader:
             )
 
         suffix = _attachment_ui_suffix(attachment)
+        try:
+            if ensure_task is not None:
+                await ensure_task
+            else:
+                await self._ensure_thread_for_ui()
+        except Exception as exc:
+            log.warning("附件UI前开帖失败 · %s", exc)
+            if ensure_task is not None and not ensure_task.done():
+                ensure_task.cancel()
+            try:
+                await self._ensure_thread_for_ui()
+            except Exception as exc2:
+                log.warning("附件UI前开帖重试失败 · %s", exc2)
+        t1 = time.monotonic()
         (
             ui_data,
             ui_denied,
@@ -1587,6 +2028,7 @@ class AttachmentDownloader:
         ) = await self._download_raw_via_ui(
             attachment, timeout, suffix=suffix
         )
+        t_ui = time.monotonic() - t1
         denied = denied or ui_denied
         login_required = login_required or ui_login
         daily_limited = daily_limited or ui_limited
@@ -1596,10 +2038,14 @@ class AttachmentDownloader:
                 empty_torrent = True
         if ui_data:
             downloaded = True
+            path = "UI"
+            t2 = time.monotonic()
             text = await self._extract_attachment_text(
                 attachment, ui_data, passwords=passwords
             )
+            t_extract = time.monotonic() - t2
             if text.strip():
+                _summary(True)
                 return (
                     text,
                     denied,
@@ -1610,6 +2056,9 @@ class AttachmentDownloader:
                     False,
                 )
 
+        if path == "无":
+            path = "失败"
+        _summary(False)
         return (
             "",
             denied,
@@ -1678,7 +2127,25 @@ class AttachmentDownloader:
         empty_streak = 0
         streak_kind = ""
         skip_kinds: set[str] = set()
-        deadline = time.monotonic() + float(ATTACH_POLL_WALL_SEC)
+        wall_sec = _attach_poll_wall_sec(len(attachments), quota_expect)
+        deadline = time.monotonic() + wall_sec
+        poll_t0 = time.monotonic()
+        has_clearance = bool(
+            (getattr(self.session, "cookies", {}) or {}).get("cf_clearance")
+        )
+        _attach_activity(
+            f"附件轮询开始 · {len(attachments)}个 · clearance="
+            f"{'有' if has_clearance else '无'} · 配额={quota_expect or '无'}"
+            f" · 墙钟{_fmt_dur(wall_sec)}",
+            feed=False,
+        )
+        if wall_sec > ATTACH_POLL_WALL_SEC:
+            log.info(
+                "Attachment poll wall extended to %.0fs (files=%s quota=%s)",
+                wall_sec,
+                len(attachments),
+                quota_expect,
+            )
 
         def _bump_empty_streak(*, kind: str = "", timed_out: bool = False) -> bool:
             """同 kind 连续空/超时达阈值 → True（跳过该类型余下，改试 CSV/txt 等）。"""
@@ -1700,9 +2167,50 @@ class AttachmentDownloader:
                 return True
             return False
 
+        def _on_empty_streak(kind: str, *, timed_out: bool = False) -> str:
+            """连空达阈值后的动作：``skip`` 跳过该类型 / ``break`` 停手待重试 / ``cont`` 继续计。
+
+            tid=3170322：103 个 txt，CF 连失败若 skip txt → 整帖 0 链；高配额主导类型改为 break。
+            """
+            nonlocal hit_empty_streak, empty_streak, streak_kind
+            if not _bump_empty_streak(kind=kind, timed_out=timed_out):
+                return "cont"
+            hit_empty_streak = True
+            kind_total = sum(1 for a in attachments if a.kind == kind)
+            mostly_this_kind = kind_total >= max(10, int(0.8 * len(attachments)))
+            high_quota = bool(quota_expect and int(quota_expect) >= 200)
+            if high_quota and mostly_this_kind:
+                log.warning(
+                    "Attachment empty/timeout streak on dominant kind=%s "
+                    "(quota=%s files=%s) — stop for retry, do not skip kind",
+                    kind,
+                    quota_expect,
+                    len(attachments),
+                )
+                empty_streak = 0
+                streak_kind = ""
+                return "break"
+            skip_kinds.add(kind)
+            empty_streak = 0
+            streak_kind = ""
+            return "skip"
+
         def _result(**kwargs: Any) -> AttachmentFetchResult:
             kwargs.setdefault("tried_names", list(tried_names))
-            return AttachmentFetchResult(**kwargs)
+            kwargs.setdefault("elapsed_sec", time.monotonic() - poll_t0)
+            out = AttachmentFetchResult(**kwargs)
+            n_links = _count_importable_links(out.text or "")
+            # 失败/无权进活动页；成功细节并入抓帖总耗时
+            notable = bool(out.failed or out.denied or hit_wall)
+            _attach_activity(
+                f"附件轮询结束 · 试{len(tried_names)}/{len(attachments)} · "
+                f"链{n_links} · 合计{_fmt_dur(time.monotonic() - poll_t0)}"
+                + (" · 失败待重试" if out.failed else "")
+                + (" · 无权" if out.denied else "")
+                + (" · 墙钟到" if hit_wall else ""),
+                feed=notable,
+            )
+            return out
 
         for idx, attachment in enumerate(attachments):
             if is_directory_tree_attachment_name(attachment.name):
@@ -1716,7 +2224,7 @@ class AttachmentDownloader:
                 hit_wall = True
                 log.warning(
                     "Attachment poll wall deadline (%.0fs) — stop after %s/%s",
-                    ATTACH_POLL_WALL_SEC,
+                    wall_sec,
                     idx,
                     len(attachments),
                 )
@@ -1750,11 +2258,8 @@ class AttachmentDownloader:
                         empty_streak + 1,
                         ATTACH_EMPTY_STREAK_STOP,
                     )
-                    if _bump_empty_streak(kind=attachment.kind, timed_out=True):
-                        skip_kinds.add(attachment.kind)
-                        hit_empty_streak = True
-                        empty_streak = 0
-                        streak_kind = ""
+                    if _on_empty_streak(attachment.kind, timed_out=True) == "break":
+                        break
                     continue
                 if empty_torrent or empty_attachment:
                     any_empty_torrent = any_empty_torrent or empty_torrent
@@ -1765,11 +2270,8 @@ class AttachmentDownloader:
                         empty_streak + 1,
                         ATTACH_EMPTY_STREAK_STOP,
                     )
-                    if _bump_empty_streak(kind=attachment.kind):
-                        skip_kinds.add(attachment.kind)
-                        hit_empty_streak = True
-                        empty_streak = 0
-                        streak_kind = ""
+                    if _on_empty_streak(attachment.kind) == "break":
+                        break
                     continue
                 if daily_limited:
                     any_daily_limited = True
@@ -1801,11 +2303,8 @@ class AttachmentDownloader:
                         empty_streak + 1,
                         ATTACH_EMPTY_STREAK_STOP,
                     )
-                    if _bump_empty_streak(kind=attachment.kind):
-                        skip_kinds.add(attachment.kind)
-                        hit_empty_streak = True
-                        empty_streak = 0
-                        streak_kind = ""
+                    if _on_empty_streak(attachment.kind) == "break":
+                        break
                     continue
                 empty_streak = 0
                 streak_kind = ""
@@ -1953,6 +2452,7 @@ async def fetch_attachments_for_outcome(
 ) -> AttachmentFetchResult:
     """按判定 kind 下载：txt_tail | torrent；轮询顺序跟板块主链。"""
     downloader = AttachmentDownloader(session)
+    t_all = time.monotonic()
     # 附件 UI 点击依赖当前 Playwright 页在帖子上；必须先导航到帖页。
     # 附件列表也优先用浏览器页 HTML：HTTP 语料常有附件区壳但 aid 与当前页不一致，
     # 会「找到附件却下失败」（BT种子帖成批「附件下载失败」的常见原因）。
@@ -1960,22 +2460,32 @@ async def fetch_attachments_for_outcome(
 
     if not getattr(session, "_ready", False):
         try:
+            t_boot = time.monotonic()
             await session.bootstrap(force=False)
+            _attach_activity(f"附件前补进站 · {_fmt_dur(time.monotonic() - t_boot)}")
         except Exception as exc:
             log.warning("Bootstrap session for attachments failed: %s", exc)
 
     page_html = ""
-    try:
-        page_html = await downloader.ensure_thread_page(thread_url)
-    except Exception as exc:
-        log.warning("Navigate to thread for attachments failed: %s", exc)
-
     http_ok = bool(
         html
         and len(html) > 8000
         and looks_like_attachment_zone(html)
         and not _html_is_cf_challenge(html)
     )
+    downloader._thread_url = thread_url
+    # 读帖 HTML 已有真实附件区：先用它列表 + HTTP 直拉，避免固定再开帖 15～30s
+    if http_ok:
+        _attach_activity(
+            f"附件延后开帖 · 读帖已有附件区 · {len(html or '')}字",
+            feed=False,
+        )
+    else:
+        try:
+            page_html = await downloader.ensure_thread_page(thread_url)
+        except Exception as exc:
+            log.warning("Navigate to thread for attachments failed: %s", exc)
+
     page_cf = bool(page_html) and _html_is_cf_challenge(page_html)
     page_ok = bool(
         page_html
@@ -2005,7 +2515,7 @@ async def fetch_attachments_for_outcome(
         link_pref = "magnet" if attachment_kind == "torrent" else "ed2k"
 
     if attachment_kind == "torrent":
-        return await downloader.download_torrents(
+        res = await downloader.download_torrents(
             html,
             thread_url,
             timeout=timeout,
@@ -2013,8 +2523,8 @@ async def fetch_attachments_for_outcome(
             quota_stop=quota_stop,
             skip_names=skip_names,
         )
-    if attachment_kind == "txt_tail":
-        return await downloader.download_tail(
+    elif attachment_kind == "txt_tail":
+        res = await downloader.download_tail(
             html,
             thread_url,
             timeout=timeout,
@@ -2022,4 +2532,32 @@ async def fetch_attachments_for_outcome(
             quota_stop=quota_stop,
             skip_names=skip_names,
         )
-    return AttachmentFetchResult(failed=True)
+    else:
+        res = await downloader.download_tail(
+            html,
+            thread_url,
+            timeout=timeout,
+            preferred_link=link_pref,
+            quota_stop=quota_stop,
+            skip_names=skip_names,
+        )
+    elapsed = time.monotonic() - t_all
+    res.elapsed_sec = float(getattr(res, "elapsed_sec", 0) or elapsed) or elapsed
+    last = str(getattr(downloader, "_last_path", "") or "").strip()
+    if last:
+        res.path_summary = last
+    elif not (res.path_summary or "").strip():
+        if res.denied:
+            res.path_summary = "无权"
+        elif res.downloaded:
+            res.path_summary = "已下"
+        elif res.failed:
+            res.path_summary = "失败"
+        else:
+            res.path_summary = attachment_kind or "附件"
+    _attach_activity(
+        f"附件流程合计 · {_fmt_dur(elapsed)} · kind={attachment_kind}"
+        + (f" · {res.path_summary}" if res.path_summary else ""),
+        feed=False,
+    )
+    return res

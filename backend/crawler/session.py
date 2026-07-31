@@ -292,18 +292,36 @@ class SessionManager:
         await self._close_on_loop()
         raise RuntimeError(f"论坛进站失败：所有入口均未能完成浏览器初始化（{_fmt_exc(last_err)}）")
 
-    async def fetch_html(self, url: str, *, timeout_ms: int = 60000) -> str:
-        """浏览器导航取 HTML（列表页主路径）。"""
-        return await run_on_pw_loop(self._fetch_html_on_loop(url, timeout_ms=timeout_ms))
+    async def fetch_html(
+        self, url: str, *, timeout_ms: int = 60000, light: bool = False
+    ) -> str:
+        """浏览器导航取 HTML（列表页主路径）。
 
-    async def _fetch_html_on_loop(self, url: str, *, timeout_ms: int = 60000) -> str:
+        light=True：暖 cookie 下缩短固定等待，有正文则跳过年龄门长轮询（附件二次开帖）。
+        """
+        return await run_on_pw_loop(
+            self._fetch_html_on_loop(url, timeout_ms=timeout_ms, light=light)
+        )
+
+    async def _fetch_html_on_loop(
+        self, url: str, *, timeout_ms: int = 60000, light: bool = False
+    ) -> str:
         await self._maybe_recycle_on_loop()
         await self._ensure_browser()
         assert self._page
         page = self._page
 
         await page.goto(url, wait_until="domcontentloaded", timeout=timeout_ms)
-        await page.wait_for_timeout(1500)
+        if light:
+            try:
+                await page.wait_for_selector(
+                    "#postlist, .tattl, a[href*='attachment'], #postmessage_1, td.t_f",
+                    timeout=5000,
+                )
+            except Exception:
+                await page.wait_for_timeout(300)
+        else:
+            await page.wait_for_timeout(1500)
 
         html = await page.content()
         title = ""
@@ -346,14 +364,31 @@ class SessionManager:
         except Exception as cf_exc:
             log.debug("CF wait skipped: %s", cf_exc)
 
+        # 轻量模式：已有 safe cookie 且页上已是真帖 → 不再点年龄门/轮询壳
+        if light:
+            try:
+                from parsers.thread_gates import has_thread_post_body
+
+                jar = getattr(self, "cookies", {}) or {}
+                if (
+                    str(jar.get("safe") or "") == "1"
+                    and jar.get("_safe")
+                    and has_thread_post_body(html)
+                ):
+                    await self._sync_cookies_from_context()
+                    return html
+            except Exception:
+                pass
+
         if self._looks_like_age_gate(title, html):
             log.info("Age gate page detected for %s, clicking enter", url)
             if await self._click_age_gate(page):
-                await page.wait_for_timeout(3000)
+                await page.wait_for_timeout(3000 if not light else 1200)
                 html = await page.content()
 
         if self.is_safe_shell(html):
-            for _ in range(6):
+            rounds = 3 if light else 6
+            for _ in range(rounds):
                 await page.wait_for_timeout(1000)
                 html = await page.content()
                 if not self.is_safe_shell(html):
@@ -363,7 +398,7 @@ class SessionManager:
                 if safeid:
                     await self._set_context_cookies({"_safe": safeid, "safe": "1"})
                     await page.reload(wait_until="domcontentloaded", timeout=timeout_ms)
-                    await page.wait_for_timeout(2000)
+                    await page.wait_for_timeout(2000 if not light else 800)
                     html = await page.content()
 
         await self._sync_cookies_from_context()

@@ -83,11 +83,14 @@ _X_COUNT_RE = re.compile(
 )
 # DB/占位写入的 4KB 等极小 size，不当作真实入库容量
 _PLACEHOLDER_SIZE_MAX = 8 * 1024
-_V_COUNT_RE = re.compile(r"(?<![A-Za-z0-9.])(\d+)\s*V(?![A-Za-z])", re.I)
+_V_COUNT_RE = re.compile(
+    r"(?<![A-Za-z0-9.,，])(\d{1,3}(?:,\d{3})+|\d+)\s*V(?![A-Za-z])",
+    re.I,
+)
 # 番号后缀 V（破解标）：START-600V / SSIS-001V，不当片数 Nv
 _PRODUCT_CODE_BEFORE_V_RE = re.compile(r"[A-Za-z]{2,}[-_]$")
-# ed2k 合集常见：70.6G/1169V//7配额 · 20.2g/17V/2配额
-_QUOTA_COUNT_RE = re.compile(r"(\d+)\s*配额", re.I)
+# ed2k 合集常见：70.6G/1169V//7配额 · 20.2g/17V/2配额 · 5,812配额（千分位）
+_QUOTA_COUNT_RE = re.compile(r"(\d{1,3}(?:,\d{3})+|\d+)\s*配额", re.I)
 # 标题写「夸克/百度/迅雷/网盘」时，N配额常含云盘份，不全等于入库 ed2k 链数。
 # 注意：纯「115eD2k」是电驴合集标，不是云盘混合，勿当 cloud_soft（否则附件轮询会提前停）。
 _CLOUD_SHARE_IN_TITLE_RE = re.compile(
@@ -453,6 +456,14 @@ def count_unique_importable_quota_links(text: str) -> int:
     return len(found)
 
 
+def _parse_grouped_int(raw: str) -> int | None:
+    """``5812`` / ``5,812`` / ``5，812`` → int。"""
+    s = (raw or "").strip().replace(",", "").replace("，", "")
+    if not s.isdigit():
+        return None
+    return int(s)
+
+
 def _v_match_is_product_code(blob: str, digit_start: int) -> bool:
     """``START-600V`` 等番号+破解 V，不是合集片数。"""
     prefix = (blob or "")[max(0, digit_start - 16) : digit_start]
@@ -465,24 +476,24 @@ def _title_v_count(blob: str) -> int | None:
     for m in _V_COUNT_RE.finditer(text):
         if _v_match_is_product_code(text, m.start(1)):
             continue
-        n = int(m.group(1))
-        if 2 <= n <= 20000:
+        n = _parse_grouped_int(m.group(1))
+        if n is not None and 2 <= n <= 20000:
             best = n if best is None else max(best, n)
     return best
 
 
 def _title_quota_count(blob: str) -> int | None:
-    """标题/描述里的 N配额（ed2k 下载份数口径）。"""
+    """标题/描述里的 N配额（ed2k 下载份数口径；认千分位 ``5,812配额``）。"""
     best = None
     for m in _QUOTA_COUNT_RE.finditer(blob or ""):
-        n = int(m.group(1))
-        if 1 <= n <= 20000:
+        n = _parse_grouped_int(m.group(1))
+        if n is not None and 1 <= n <= 20000:
             best = n if best is None else max(best, n)
     return best
 
 
 _ATTACH_V_IN_NAME_RE = re.compile(
-    r"(?<![0-9])(\d{1,5})\s*[Vv](?![a-zA-Z])",
+    r"(?<![0-9,，])(\d{1,3}(?:,\d{3})+|\d{1,5})\s*[Vv](?![a-zA-Z])",
 )
 _ATTACH_V_SKIP_NAME = ("备用", "備份", "封面", "目录", "目錄", "失败", "失敗")
 
@@ -505,8 +516,8 @@ def _attach_filename_v_counts(names: Sequence[str] | None) -> list[int]:
             continue
         if _v_match_is_product_code(name, m.start(1)):
             continue
-        n = int(m.group(1))
-        if 2 <= n <= 20000:
+        n = _parse_grouped_int(m.group(1))
+        if n is not None and 2 <= n <= 20000:
             out.append(n)
     return out
 

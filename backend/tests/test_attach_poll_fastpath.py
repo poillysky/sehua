@@ -105,6 +105,23 @@ async def test_download_tail_empty_streak_stops(monkeypatch):
     assert res.failed is False
 
 
+def test_attach_poll_wall_extends_for_mega_pack():
+    from crawler.attachments import (
+        ATTACH_POLL_WALL_SEC,
+        _attach_poll_wall_sec,
+        _quota_expect_from_html,
+    )
+
+    assert _attach_poll_wall_sec(5, None) == ATTACH_POLL_WALL_SEC
+    assert _attach_poll_wall_sec(103, 5812) > ATTACH_POLL_WALL_SEC
+    assert _attach_poll_wall_sec(103, 5812) <= 2400.0
+    html = (
+        '<span id="thread_subject">【115ED2K】合集【5,812v/14.2TB/5,812配额】</span>'
+        "<div id='postmessage_1'>x</div>"
+    )
+    assert _quota_expect_from_html(html) == 5812
+
+
 @pytest.mark.asyncio
 async def test_torrent_empty_streak_still_tries_excel(monkeypatch):
     """磁力合集：种子连续空转后仍应试 CSV/excel（勿整帖直接失败）。"""
@@ -189,8 +206,8 @@ async def test_skip_flare_after_first_miss(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_soft_miss_still_tries_flare_with_cf_clearance(monkeypatch):
-    """有 cf_clearance 但 fetch 软空：仍试 Flare（clearance 可能过期）。"""
+async def test_soft_miss_with_clearance_skips_flare_unless_cf(monkeypatch):
+    """有 clearance 且页内未见 CF：跳过 Flare；标了 CF 才走 Flare。"""
     from crawler import attachments as mod
     from parsers.attachments import DownloadAttachment as DA
 
@@ -215,7 +232,20 @@ async def test_soft_miss_still_tries_flare_with_cf_clearance(monkeypatch):
 
     monkeypatch.setattr(downloader, "_download_raw_via_ui", fake_ui)
 
+    downloader._last_page_hit_cf = False
     await downloader._download_one(DA(name="a.txt", url="http://x/1", kind="txt"), 10)
+    assert flare_calls["n"] == 0
+
+    downloader._skip_flare = False
+    downloader._last_page_hit_cf = True
+    # _download_one 会先调 page fetch 清掉 flag；这里直接测 flare 分支：
+    # monkey patch page fetch to soft-empty while preserving cf flag after call
+    async def fake_page(_url):
+        downloader._last_page_hit_cf = True
+        return None, False, False, False, False
+
+    monkeypatch.setattr(downloader, "_fetch_bytes_via_page", fake_page)
+    await downloader._download_one(DA(name="b.txt", url="http://x/2", kind="txt"), 10)
     assert flare_calls["n"] == 1
 
 
