@@ -1421,6 +1421,22 @@ def attachment_inject_plain_len(html: str) -> int:
     return total
 
 
+def _thread_page_has_forum_shell(html: str) -> bool:
+    """论坛壳齐全：够长 + 一楼正文 + Discuz/PW 页脚（≠ 附件是否解出文本）。"""
+    h = html or ""
+    if len(h) < 8000:
+        return False
+    if not has_thread_post_body(h):
+        return False
+    lowered = h.lower()
+    return (
+        "Powered by Discuz" in h
+        or "powered by phpwind" in lowered
+        or 'id="read_tpc"' in lowered
+        or "id='read_tpc'" in lowered
+    )
+
+
 def looks_like_incomplete_thread_fetch(
     html: str,
     *,
@@ -1484,10 +1500,11 @@ def looks_like_incomplete_thread_fetch(
     ):
         return True
 
-    # 附件路径标成已下到内容，但注入极短 / 未挂上 → tip 页或空包被当成成功
+    # 附件「已下」但注入极短：仅当页面壳也不完整时才算半载。
+    # 完整帖 + rar 解压失败/空文本（如 tid=2229054）≠「页面未完整加载」。
     if attachments_already_tried and had_attachments:
         inj = attachment_inject_plain_len(h)
-        if inj < 100:
+        if inj < 100 and not _thread_page_has_forum_shell(h):
             return True
 
     return False
@@ -1518,19 +1535,7 @@ def looks_like_complete_thread_fetch(
         return False
 
     h = html or ""
-    if len(h) < 8000:
-        return False
-    if not has_thread_post_body(h):
-        return False
-
-    lowered = h.lower()
-    has_footer = (
-        "Powered by Discuz" in h
-        or "powered by phpwind" in lowered
-        or 'id="read_tpc"' in lowered
-        or "id='read_tpc'" in lowered
-    )
-    if not has_footer:
+    if not _thread_page_has_forum_shell(h):
         return False
 
     pt = normalize_title_core(page_title(h) or "")
@@ -1541,13 +1546,12 @@ def looks_like_complete_thread_fetch(
     ):
         return False
 
-    # 看得见附件区则必须已试附件且拿到足够文本，否则不能断言「无目标链」
+    # 看得见附件区则必须已试且标成已下；解压空/极短文本在壳完整时仍可结案
+    # （否则会反复「页面未完整」烧掉重试，如橙子整理 rar）
     if looks_like_attachment_zone(h):
         if not attachments_already_tried:
             return False
         if not had_attachments:
-            return False
-        if attachment_inject_plain_len(h) < 100:
             return False
 
     return True

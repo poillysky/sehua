@@ -1031,6 +1031,19 @@ def _text_from_attachment_bytes(
         return _extract_text_from_excel(data, attachment.name)
     if attachment.kind == "doc":
         return _extract_text_from_doc(data, attachment.name)
+    # 后缀谎报：.txt 实为 docx/xlsx/zip（tid=3114661 池上乙葉 ED2K.txt）
+    if len(data) >= 2 and data[:2] == b"PK":
+        for got in (
+            _extract_text_from_docx(data),
+            _extract_text_from_excel(data, attachment.name or ""),
+            _extract_txt_from_archive(data, "zip", passwords=passwords),
+        ):
+            if (got or "").strip():
+                return got
+    if len(data) >= 4 and data[:4] == b"Rar!":
+        rar_txt = _extract_txt_from_archive(data, "rar", passwords=passwords)
+        if (rar_txt or "").strip():
+            return rar_txt
     text = _decode_bytes(data)
     if "<html" in text.lower()[:200]:
         return ""

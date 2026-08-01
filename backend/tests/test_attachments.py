@@ -98,6 +98,32 @@ def test_rar_with_文件夹_in_name_not_skipped():
     assert "文件夹" in tail[0].name
 
 
+def test_same_display_name_two_aids_keeps_both_and_skips_tree_label():
+    """同名 ADN.txt：旁注「目录树:」硬跳过，另一份资源包保留（tid=3302250）。"""
+    html = """
+    <font size="4"><strong>目录树:</strong></font><br>
+    <ignore_js_op>
+      <a href="forum.php?mod=attachment&amp;aid=TREE">ADN.txt</a>
+      <em class="xg1">(27.32 KB)</em>
+    </ignore_js_op>
+    <font color="#4169e1">资源回复可见三天，三天后自动可见</font><br>
+    <ignore_js_op>
+      <a href="forum.php?mod=attachment&amp;aid=RES">ADN.txt</a>
+      <em class="xg1">(55.19 KB)</em>
+    </ignore_js_op>
+    """
+    base = "https://www.sehuatang.net/"
+    all_a = extract_download_attachments(base, html)
+    assert len(all_a) == 2
+    by_aid = {a.url.split("aid=")[-1]: a for a in all_a}
+    assert "目录树" in by_aid["TREE"].name
+    assert by_aid["RES"].name == "ADN.txt"
+    tail = filter_tail_attachments(all_a, limit=3)
+    assert len(tail) == 1
+    assert "aid=RES" in tail[0].url
+    assert tail[0].name == "ADN.txt"
+
+
 def test_zip_inner_txt_and_ed2k_parse():
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w") as zf:
@@ -809,6 +835,22 @@ def test_docx_attachment_bytes_extract():
     assert magnet in text
 
 
+def test_txt_named_docx_sniffed_by_magic():
+    """后缀 .txt 实为 docx（tid=3114661）→ 按 PK 魔数抽链，勿当文本乱码。"""
+    ed2k = (
+        "ed2k://|file|www.98T.la@MIFD-539.mp4|6929214407|"
+        "8BCFC309681A8EF57A8FC8145F70FDB9|/"
+    )
+    att = DownloadAttachment(
+        name="www98Tla池上乙葉原档合集ED2K.txt",
+        url="https://example.com/a",
+        kind="txt",
+    )
+    text = _text_from_attachment_bytes(att, _minimal_docx(ed2k))
+    assert "8BCFC309681A8EF57A8FC8145F70FDB9" in text
+    assert "ed2k://" in text
+
+
 def test_nested_zip_prefers_excel_magnet_over_115_txt():
     import openpyxl
     from crawler.attachments import _extract_txt_from_archive
@@ -867,6 +909,49 @@ def test_zip_merges_all_members_with_magnet():
     assert _count_importable_links(text) == 5
     assert f"{1:040x}" in text
     assert f"{11:040x}" in text
+
+
+def test_zip_magnet_and_ed2k_both_count_and_frame():
+    """同包一份磁力列表 + 一份 ed2k：解压合并、识别、链数均计两种。"""
+    from crawler.attachments import _count_importable_links, _extract_txt_from_archive
+    from db.persist import build_parse_frame, preview_frame_outcome
+    from parsers.links import parse_thread_dual
+    from parsers.resource_frame import count_post_quota_links
+
+    mags = "\n".join(
+        f"magnet:?xt=urn:btih:{i:040x}&dn=m{i}" for i in range(1, 3)
+    )
+    eds = "\n".join(
+        f"ed2k://|file|e{i}.mp4|{100 + i}|{'AB' * 15}{i:02X}|/" for i in range(1, 3)
+    )
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as z:
+        z.writestr("magnets.txt", mags)
+        z.writestr("ed2k.txt", eds)
+        z.writestr("rename.csv", "old,new\na,b\n")
+    text = _extract_txt_from_archive(buf.getvalue(), "zip")
+    assert count_post_quota_links(text) == 4
+    assert _count_importable_links(text) == 4
+    assert "magnet:" in text.lower() and "ed2k://" in text.lower()
+
+    html = (
+        '<html><body><span id="thread_subject">【测试】【4配额】dual</span>'
+        '<div id="postmessage_1">【影片名称】dual pack</div></body></html>'
+    )
+    parsed = parse_thread_dual(
+        html, tid=1, preferred_link="ed2k", extra_text=text, board_fid="95"
+    )
+    kinds = {a.link_kind for a in (parsed.assets or [])}
+    assert kinds == {"magnet", "ed2k"}
+    assert len(parsed.assets or []) == 4
+    frame = build_parse_frame(parsed, post_title=parsed.title or "")
+    assert frame is not None
+    member_n = sum(len(r.members) for r in frame.rows)
+    assert member_n == 4
+    out = preview_frame_outcome(
+        parsed, import_outcome="成功：附件目标链接", post_title=parsed.title or ""
+    )
+    assert "链数:4" in out
 
 
 def test_oversized_attachment_bytes_skipped():

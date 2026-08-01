@@ -32,11 +32,38 @@ HEAVY_ATTACH_CHARS = 24_000
 HEAVY_TOTAL_CHARS = 220_000
 # 正文内嵌链条数达到此值且 HTML 不太小 → 进进程池
 HEAVY_INLINE_LINKS = 80
-# 单帖解析硬上限（秒）；超时杀池，避免卡死整条调度
+# 单帖解析墙钟：默认 / 大合集加长 / 封顶（防卡死调度）
 PARSE_TIMEOUT_SEC = 120.0
+PARSE_TIMEOUT_MAX_SEC = 900.0
+
 
 _pool: concurrent.futures.ProcessPoolExecutor | None = None
 _pool_lock = threading.Lock()
+
+
+def _estimate_link_count(html: str = "", extra_text: str = "") -> int:
+    low = f"{html or ''}\n{extra_text or ''}".lower()
+    return low.count("ed2k://") + low.count("magnet:?")
+
+
+def parse_timeout_sec(html: str = "", extra_text: str = "") -> float:
+    """按附件语料与链数估算解析墙钟（1000V 合集默认 120s 不够）。
+
+    例：~1000 条 ed2k → 约 370s；超大附件再按体积加长；封顶 900s。
+    """
+    t = float(PARSE_TIMEOUT_SEC)
+    attach = len(extra_text or "")
+    total = len(html or "") + attach
+    n_links = _estimate_link_count(html, extra_text)
+    if attach >= HEAVY_ATTACH_CHARS:
+        # ~200KB 附件语料 → +100s
+        t = max(t, PARSE_TIMEOUT_SEC + attach / 2000.0)
+    if n_links >= HEAVY_INLINE_LINKS:
+        # 1000 链 → +250s
+        t = max(t, PARSE_TIMEOUT_SEC + n_links * 0.25)
+    if total >= HEAVY_TOTAL_CHARS:
+        t = max(t, 180.0)
+    return float(min(t, PARSE_TIMEOUT_MAX_SEC))
 
 
 def is_heavy_parse_payload(html: str = "", extra_text: str = "") -> bool:
@@ -54,10 +81,7 @@ def is_heavy_parse_payload(html: str = "", extra_text: str = "") -> bool:
         return True
     # 粗扫链数（大小写不敏感）；避免小帖误判
     if len(blob) >= 40_000:
-        low = blob.lower()
-        if low.count("magnet:?") >= HEAVY_INLINE_LINKS:
-            return True
-        if low.count("ed2k://") >= HEAVY_INLINE_LINKS:
+        if _estimate_link_count(blob, "") >= HEAVY_INLINE_LINKS:
             return True
     return False
 
@@ -88,32 +112,42 @@ def shutdown_cpu_pool() -> None:
             _pool = None
 
 
-async def run_in_cpu_pool(fn: Callable[..., T], *args: Any) -> T:
+async def run_in_cpu_pool(
+    fn: Callable[..., T],
+    *args: Any,
+    timeout: float | None = None,
+) -> T:
     """在进程池执行可 pickle 的顶层函数（勿传 lambda / 局部函数）。"""
+    limit = float(PARSE_TIMEOUT_SEC if timeout is None else timeout)
+    if limit < 1.0:
+        limit = float(PARSE_TIMEOUT_SEC)
     loop = asyncio.get_running_loop()
     pool = get_cpu_pool()
     fut = loop.run_in_executor(pool, fn, *args)
     try:
-        return await asyncio.wait_for(fut, timeout=PARSE_TIMEOUT_SEC)
+        return await asyncio.wait_for(fut, timeout=limit)
     except asyncio.TimeoutError:
         log.error(
             "cpu pool parse timeout after %.0fs · recreate pool (abandon hung worker)",
-            PARSE_TIMEOUT_SEC,
+            limit,
         )
         # 丢弃卡住的池；下次 get_cpu_pool 新建。旧 worker 可能短暂残留，由 OS 回收。
         shutdown_cpu_pool()
         raise TimeoutError(
-            f"重解析超时（>{int(PARSE_TIMEOUT_SEC)}s），已中止本帖解析以免卡死调度"
+            f"重解析超时（>{int(limit)}s），已中止本帖解析以免卡死调度"
         ) from None
 
 
 async def run_parse_job(fn: Callable[..., T], *args: Any, html: str = "", extra: str = "") -> T:
     """重载荷走进程池，轻载荷走线程池（避免小帖 spawn 开销）。"""
     if is_heavy_parse_payload(html, extra):
+        timeout = parse_timeout_sec(html, extra)
         log.info(
-            "cpu pool · heavy parse html=%s attach=%s",
+            "cpu pool · heavy parse html=%s attach=%s links~%s timeout=%.0fs",
             len(html or ""),
             len(extra or ""),
+            _estimate_link_count(html, extra),
+            timeout,
         )
-        return await run_in_cpu_pool(fn, *args)
+        return await run_in_cpu_pool(fn, *args, timeout=timeout)
     return await asyncio.to_thread(fn, *args)

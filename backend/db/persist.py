@@ -352,13 +352,22 @@ def build_parse_frame(
         return None
 
     title = (post_title or "").strip() or (coalesce_thread_title(parsed.title) or "")
-    same_kind = [a for a in parsed.assets if a.link_kind == primary.link_kind] or [
-        primary
+    # magnet+ed2k 并存时两种都入库/计数（附件解压常见双列表）；仅无 115 分享时才用分享链
+    candidates = [
+        a
+        for a in (parsed.assets or [])
+        if (a.link_kind or "") in {"magnet", "ed2k"}
     ]
+    if not candidates:
+        candidates = [
+            a
+            for a in (parsed.assets or [])
+            if (a.link_kind or "") == "115share"
+        ] or [primary]
     # 按 URI 去重：同 hash 不同文件名仍算多份（配额对照）；完全相同 URI（含仅实体编码差异）才并掉
     seen: set[str] = set()
     uniq: list[ParsedAsset] = []
-    for asset in same_kind:
+    for asset in candidates:
         u = _norm_uri_dedupe_key(asset.uri or "")
         h = (asset.hash or "").strip().upper()
         key = u or h

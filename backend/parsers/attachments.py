@@ -324,10 +324,81 @@ def _anchor_attachment_name(a) -> str:
     return name
 
 
+def _attach_url_key(url: str) -> str:
+    """同显示名不同 aid 要各留一份；按规范化 URL 去重。"""
+    return (url or "").replace("&amp;", "&").strip()
+
+
+def _text_has_directory_tree_marker(text: str) -> bool:
+    raw = text or ""
+    return any(marker in raw for marker in DIRECTORY_TREE_NAME_MARKERS)
+
+
+def _attachment_context_has_directory_tree(a) -> bool:
+    """旁注「目录树:」在附件块外时（文件名仍是 ADN.txt）也要识别。
+
+    常见 Discuz：
+      <strong>目录树:</strong>
+      <ignore_js_op>…<a>ADN.txt</a>…
+    """
+    scope = (
+        a.find_parent("ignore_js_op")
+        or a.find_parent("div", class_=re.compile(r"(?:^|\s)(?:tattl|pattl)(?:\s|$)"))
+        or a.find_parent("div", class_="attach-card")
+        or a.parent
+    )
+    if scope is None:
+        return False
+    cur = scope
+    for _ in range(10):
+        prev = getattr(cur, "previous_sibling", None)
+        if prev is None:
+            break
+        cur = prev
+        name = getattr(prev, "name", None)
+        if name == "ignore_js_op":
+            break
+        if name in ("div",) and getattr(prev, "get", None):
+            cls = " ".join(prev.get("class") or [])
+            if any(x in cls for x in ("tattl", "pattl", "attach-card")):
+                break
+        if getattr(prev, "get_text", None):
+            text = prev.get_text(" ", strip=True)
+        else:
+            text = str(prev).strip() if isinstance(prev, str) else ""
+        if not text:
+            continue
+        if _text_has_directory_tree_marker(text):
+            return True
+        # 已碰到其它说明文字且无目录树，停止（避免跨到更早附件的旁注）
+        if len(text) >= 4:
+            break
+    return False
+
+
+def _mark_directory_tree_name(name: str) -> str:
+    if not name or is_directory_tree_attachment_name(name):
+        return name
+    return f"目录树_{name}"
+
+
+def _directory_tree_label_before_href(html: str, anchor_start: int) -> bool:
+    """正则路径：锚点前短窗口内有「目录树」，且中间没有其它附件链。"""
+    window = (html or "")[max(0, anchor_start - 220) : anchor_start]
+    if re.search(
+        r"(?:mod=attachment|action=download|job=download)", window, re.I
+    ):
+        return False
+    return _text_has_directory_tree_marker(
+        re.sub(r"<[^>]+>", " ", window)
+    )
+
+
 def extract_download_attachments(base_url: str, html: str) -> list[DownloadAttachment]:
     """提取帖子内可下载的 txt / zip / rar / torrent / excel / doc（DOM 顺序）。
 
     兼容 Discuz（forum.php?mod=attachment）与 PHPWind（job.php?action=download）。
+    同显示名、不同 aid/URL 的附件各自保留（如两个 ADN.txt：目录树 + 资源包）。
     """
     found: dict[str, DownloadAttachment] = {}
     try:
@@ -388,9 +459,17 @@ def extract_download_attachments(base_url: str, html: str) -> list[DownloadAttac
                             kind = "torrent"
                 if not kind:
                     continue
+                if _attachment_context_has_directory_tree(a):
+                    name = _mark_directory_tree_name(name)
                 full = urljoin(base_url, href)
-                if name not in found:
-                    found[name] = DownloadAttachment(name=name, url=full, kind=kind)
+                key = _attach_url_key(full)
+                if key not in found:
+                    found[key] = DownloadAttachment(name=name, url=full, kind=kind)
+                elif is_directory_tree_attachment_name(name) and not (
+                    is_directory_tree_attachment_name(found[key].name)
+                ):
+                    # 同 URL 再扫到时，保留带目录树旁注的名字以便硬跳过
+                    found[key] = DownloadAttachment(name=name, url=full, kind=kind)
         if found:
             return list(found.values())
     except Exception:
@@ -412,9 +491,15 @@ def extract_download_attachments(base_url: str, html: str) -> list[DownloadAttac
         else:
             name = plain
         kind = _attachment_kind(name)
-        if not kind or name in found:
+        if not kind:
             continue
-        found[name] = DownloadAttachment(name=name, url=urljoin(base_url, href), kind=kind)
+        if _directory_tree_label_before_href(html or "", m.start()):
+            name = _mark_directory_tree_name(name)
+        full = urljoin(base_url, href)
+        key = _attach_url_key(full)
+        if key in found:
+            continue
+        found[key] = DownloadAttachment(name=name, url=full, kind=kind)
     return list(found.values())
 
 

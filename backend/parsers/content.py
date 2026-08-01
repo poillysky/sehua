@@ -474,7 +474,8 @@ PASSWORD_UNZIP_USE_RE = re.compile(
 )
 _PASSWORD_META_KEYS = ("解压密码", "提取密码", "资源密码", "解压码", "提取码", "资源码")
 _PASSWORD_LABELS = frozenset(_PASSWORD_META_KEYS)
-# 口令结束：换行 / 下一【标签】 / 标点 / 链 / 附件 UI / 空格+中文说明 / ASCII后紧贴中文
+# 口令结束：换行 / 下一【标签】 / 标点 / 链 / 附件 UI / 空格+中文说明 / 字母数字后紧贴中文
+# 注意：lookbehind 不含 @——否则「@皮卡丘_…www.98T.la@」会在首个 @ 后被砍成「@」
 _PASSWORD_END_RE = re.compile(
     r"(?:"
     r"\n"
@@ -484,7 +485,7 @@ _PASSWORD_END_RE = re.compile(
     r"|(?:下载附件|下载次数|点击文件名下载|阅读权限\s*:)"
     r"|\s+\S+\.(?:rar|zip|7z|txt|docx?|xlsx?|xls|torrent|jpe?g|png|gif|bmp|webp|mp4|mkv|avi)\b"
     r"|\s+[\u4e00-\u9fff]"
-    r"|(?<=[A-Za-z0-9@.])[\u4e00-\u9fff]"
+    r"|(?<=[A-Za-z0-9.])[\u4e00-\u9fff]"
     r")",
     re.I,
 )
@@ -492,6 +493,18 @@ _PASSWORD_END_RE = re.compile(
 _PASSWORD_98T_HEAD_RE = re.compile(
     r"^((?:www\.)?98[Tt]\.la\s*@?|[0-9A-Za-z._\-]+@(?:www\.)?98[Tt]\.la)",
     re.I,
+)
+# www.98T.la@ 后账号：ASCII 品牌 / 中日文名（小野りんか、lsp橙子）；不含句式说明
+_PASSWORD_98T_ACCOUNT_RE = re.compile(
+    r"^("
+    r"[A-Za-z0-9._\-]{1,40}(?:[\u4e00-\u9fff\u3040-\u30ff]{1,12})?"
+    r"|[\u4e00-\u9fff\u3040-\u30ff][\u4e00-\u9fff\u3040-\u30ffA-Za-z0-9._\-]{0,23}"
+    r")"
+)
+# @ 后若是「才能打开」这类说明，勿当账号
+_PASSWORD_98T_ACCOUNT_EXPLAIN_RE = re.compile(
+    r"^(?:才能|需要|请用|請用|请|請|把后|把後|即可|打开|打開|解压|解壓|删除|刪除|"
+    r"后面|後面|才能打开|才能打開)"
 )
 # 人一看就不是解压口令的提示词
 _BOGUS_PASSWORD_WORDS = frozenset(
@@ -1296,14 +1309,25 @@ def clip_password_value(raw: str) -> str:
         return ""
 
     # 3) 优先整段 98T / xxx@98T.la（站方惯用）
+    # @ 后可带中日文名（小野りんか / lsp橙子）；「@才能打开」仍当说明切掉
     m98 = _PASSWORD_98T_HEAD_RE.match(val)
     if m98:
         head = m98.group(1)
         rest = val[m98.end() :]
-        # 后面立刻是结束信号或结束 → 收下完整 98T
+        if head.rstrip().endswith("@"):
+            m_acc = _PASSWORD_98T_ACCOUNT_RE.match(rest)
+            if m_acc:
+                acc = m_acc.group(1)
+                if _is_bogus_password(acc) or _PASSWORD_98T_ACCOUNT_EXPLAIN_RE.match(acc):
+                    # 「@才能打开」→ 口令止于 @，勿把说明拼进密码
+                    return _normalize_password_value(head)
+                head = f"{head}{acc}"
+                rest = rest[m_acc.end() :]
+        # 后面立刻是结束信号或结束 → 收下完整 98T（含 @账号）
         if not rest or _PASSWORD_END_RE.match(rest) or rest[0] in " \t【":
             return _normalize_password_value(head)
-        # 后面是字母数字续写（极少）再往下走统一截断
+        # 后面还有续写：用已拼好的 head 继续统一截断（勿丢 @账号中文/假名后缀）
+        val = f"{head}{rest}"
 
     # 4) 统一结束切点
     m_end = _PASSWORD_END_RE.search(val)
@@ -1346,11 +1370,15 @@ def _is_bogus_password(value: str) -> bool:
         return True
     if re.match(r"\[?\s*email\b", v, flags=re.I):
         return True
+    # 单独 @ / 符号残片（@皮卡丘… 被误切后的废值）
+    if re.fullmatch(r"[@._\-]+", v):
+        return True
     # 「密码是 xxx」误把系词当成密码
     if re.fullmatch(r"[是为的了吧啊喔呢]", v):
         return True
     if v in _BOGUS_PASSWORD_WORDS:
         return True
+
     if re.search(
         r"(?:错误|不对|私信|看图|看圖|见下|見下|忘记|忘記|积分|積分|金币|金幣)",
         v,
@@ -1382,6 +1410,13 @@ def _normalize_password_value(value: str) -> str:
     compact = re.sub(r"\s+", "", v)
     if re.fullmatch(r"(?:www\.)?98[Tt]\.la@?", compact, flags=re.I):
         return compact
+    # @皮卡丘_剑染红尘www.98T.la@（域名被 <a> 拆开后夹空白，tid=2990288）
+    if re.fullmatch(
+        r"@[\u4e00-\u9fffA-Za-z0-9._\-]+(?:www\.)?98[Tt]\.la@?",
+        compact,
+        flags=re.I,
+    ):
+        return compact if compact.endswith("@") else f"{compact}@"
     # 1998@www.98T.la 类：去掉符号两侧多余空白
     compact2 = re.sub(r"\s*@\s*", "@", compact)
     if re.fullmatch(

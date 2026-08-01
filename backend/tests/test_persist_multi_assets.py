@@ -676,3 +676,62 @@ def test_one_name_card_forces_single_even_if_ed2k_names_differ():
     assert frame.kind == "single"
     assert len(frame.rows) == 1
     assert len(frame.rows[0].links) == 2
+
+
+def test_magnet_and_ed2k_both_persist_under_one_name(monkeypatch):
+    """主链偏好 ed2k 时，同资源名下的磁力也要入库并计入链数。"""
+    calls = _patch_common(monkeypatch)
+    pack = "双链合集【4配额】"
+    assets = [
+        ParsedAsset(
+            link_kind="ed2k",
+            hash="A" * 32,
+            filename=pack,
+            size=100,
+            uri="ed2k://|file|a.zip|100|" + "A" * 32 + "|/",
+            is_primary=True,
+        ),
+        ParsedAsset(
+            link_kind="ed2k",
+            hash="B" * 32,
+            filename=pack,
+            size=50,
+            uri="ed2k://|file|b.zip|50|" + "B" * 32 + "|/",
+        ),
+        ParsedAsset(
+            link_kind="magnet",
+            hash="C" * 40,
+            filename=pack,
+            size=0,
+            uri="magnet:?xt=urn:btih:" + "C" * 40,
+        ),
+        ParsedAsset(
+            link_kind="magnet",
+            hash="D" * 40,
+            filename=pack,
+            size=0,
+            uri="magnet:?xt=urn:btih:" + "D" * 40,
+        ),
+    ]
+    parsed = _parsed(*assets, title=pack)
+    parsed.description = f"【资源名称】：{pack}"
+    parsed.primary_link_kind = "ed2k"
+    frame = persist_mod.build_parse_frame(parsed, post_title=pack)
+    assert frame is not None
+    assert len(frame.rows) == 1
+    assert len(frame.rows[0].members) == 4
+    assert len(frame.rows[0].links) == 4
+    out = persist_mod.persist_dual_parse(
+        _FakeConn(),
+        parsed,
+        source_url="https://example/thread-1-1-1.html",
+        board_fid="95",
+        import_outcome="成功：附件目标链接",
+    )
+    assert out.get("count") == 1
+    assert len(calls) == 1
+    uris = calls[0]["ed2k_links"] or []
+    assert len(uris) == 4
+    assert any(u.startswith("magnet:") for u in uris)
+    assert any(u.startswith("ed2k:") for u in uris)
+    assert "链数:4" in (calls[0].get("import_outcome") or "")

@@ -1541,7 +1541,15 @@ def validate_frame(
                     ):
                         tags.append("info:pack_quota_soft")
                         tags.append("info:quota_echoes_v")
-            _note(tags, soft, code, msg, cause="parse")
+            # 附件文件名 Nv 合计仍高于实链 → 可能漏分卷（识别错误）；
+            # 否则正文/附件已尽仍不足 → 标题虚标（真没有），勿统称识别错误
+            attach_still_short = bool(
+                att_v_sum
+                and provided_n < int(att_v_sum)
+                and not _count_matches(provided_n, int(att_v_sum))
+            )
+            cause: FillCause = "parse" if attach_still_short else "missing"
+            _note(tags, soft, code, msg, cause=cause)
 
     for r in rows:
         for s in r.slots:
@@ -1615,8 +1623,12 @@ def validate_frame(
         tags.append("verdict:ok")
         if soft:
             tags.append("flag:needs_rule")
-            # 软提醒里的识别错误：outcome「不合格：待核」，tags 标 review
-            if any(str(w).startswith("【识别错误】") for w in soft):
+            # 软提醒里的识别错误/虚标配额：outcome「不合格：待核」，tags 标 review
+            if any(
+                str(w).startswith("【识别错误】")
+                or (str(w).startswith("【真没有】") and "配额" in str(w))
+                for w in soft
+            ):
                 tags.append("verdict:review")
 
     tags = _uniq(tags)
@@ -1722,13 +1734,17 @@ def format_frame_outcome(base_tip: str, frame: ResourceFrame) -> str:
         missing_soft = [
             w for w in (v.soft_warnings or []) if str(w).startswith("【真没有】")
         ]
+        # 标题虚标（配额不足且已穷尽语料）仍进待核，但原因用【真没有】
+        missing_quota_soft = [w for w in missing_soft if "配额" in str(w)]
         tags = list(v.tags or [])
         quota_soft_ok = (
             "info:cloud_quota_soft" in tags or "info:pack_quota_soft" in tags
         )
-        if quota_soft_ok and parse_soft:
+        if quota_soft_ok and (parse_soft or missing_quota_soft):
             # 仅配额口径类软提醒：保持成功
-            quota_soft = [w for w in parse_soft if "配额" in str(w)]
+            quota_soft = [
+                w for w in (parse_soft + missing_quota_soft) if "配额" in str(w)
+            ]
             other_soft = [w for w in parse_soft if "配额" not in str(w)]
             if not other_soft and quota_soft:
                 if tip.startswith("成功") or not tip:
@@ -1740,16 +1756,20 @@ def format_frame_outcome(base_tip: str, frame: ResourceFrame) -> str:
                 parts = [head, f"形态:{label}"]
                 if link_part:
                     parts.append(link_part)
-                remind = list(quota_soft[:2]) + list(missing_soft[:1])
+                remind = list(quota_soft[:2]) + [
+                    w for w in missing_soft if w not in quota_soft
+                ][:1]
                 if remind:
                     parts.append("提醒:" + "；".join(remind))
                 return " · ".join(parts)[:280]
             parse_soft = other_soft
-        if parse_soft:
+        if parse_soft or missing_quota_soft:
             parts = [UNQUAL_REVIEW, f"形态:{label}"]
             if link_part:
                 parts.append(link_part)
-            parts.append("原因:" + "；".join(parse_soft[:2]))
+            parts.append(
+                "原因:" + "；".join((parse_soft or missing_quota_soft)[:2])
+            )
         else:
             if tip.startswith("成功") or not tip:
                 head = tip if tip.startswith("成功") else (tip or "成功：已提取主链")

@@ -74,8 +74,11 @@ def test_see_attach_without_zone_retries():
     assert "未解析" not in out.outcome
 
 
-def test_tiny_attach_inject_retries():
-    """附件「已下」但注入极短（tip/空包）→ retry，勿未解析跳过。"""
+def test_tiny_attach_inject_on_complete_page_skips_not_page_incomplete():
+    """完整论坛壳 + 附件已下但解压/注入极短 → 未解析跳过，勿误报「页面未完整」。
+
+    典型：橙子整理小 rar 经 UI 下到字节但解不出文本（tid=2229054）。
+    """
     html = _pad(
         """
         <html><head><title>【ED2k】示例 - 站</title></head>
@@ -95,10 +98,62 @@ def test_tiny_attach_inject_retries():
         """
     )
     html2 = inject_attachment_text(html, "暂无")
+    assert looks_like_complete_thread_fetch(
+        html2,
+        title="【ED2k】示例",
+        list_title="【ED2k】示例",
+        link_kind="ed2k",
+        attachments_already_tried=True,
+        had_attachments=True,
+    )
     out = judge_thread_html(
         html2,
         board_fid=103,
         list_title="【ED2k】示例",
+        preferred_link="ed2k",
+        attachments_already_tried=True,
+        had_attachments=True,
+    )
+    assert out.verdict == "skipped"
+    assert "未解析" in out.outcome
+    assert "未完整" not in out.outcome
+
+
+def test_tiny_attach_inject_without_footer_still_retries():
+    """壳不完整（无页脚）且附件注入极短 → 仍按半载重试。"""
+    html = _pad(
+        """
+        <html><head><title>【ED2k】半载 - 站</title></head>
+        <body>
+          <span id="thread_subject">【ED2k】半载</span>
+          <div id="postlist">
+            <div id="post_1">
+              <div class="authi"><em>1#</em><img src="ico_lz.png" alt="楼主"/></div>
+              <div id="postmessage_1">见附件</div>
+              <div class="tattl">
+                <a href="forum.php?mod=attachment&amp;aid=1">links.txt</a>
+              </div>
+            </div>
+          </div>
+        </body></html>
+        """,
+        n=50,
+    )
+    # 偏短且无页脚
+    assert len(html) < 25000
+    html2 = inject_attachment_text(html, "暂无")
+    assert looks_like_incomplete_thread_fetch(
+        html2,
+        title="【ED2k】半载",
+        list_title="【ED2k】半载",
+        link_kind="ed2k",
+        attachments_already_tried=True,
+        had_attachments=True,
+    )
+    out = judge_thread_html(
+        html2,
+        board_fid=103,
+        list_title="【ED2k】半载",
         preferred_link="ed2k",
         attachments_already_tried=True,
         had_attachments=True,

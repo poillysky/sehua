@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 
 from workers.cpu_jobs import job_parse_thread_dual
-from workers.cpu_pool import is_heavy_parse_payload, run_parse_job
+from workers.cpu_pool import is_heavy_parse_payload, parse_timeout_sec, run_parse_job
 
 
 def test_is_heavy_parse_payload():
@@ -25,6 +25,20 @@ def test_is_heavy_parse_payload():
         f"magnet:?xt=urn:btih:{i:040x}" for i in range(100)
     )
     assert is_heavy_parse_payload(("pad" * 15_000) + magnets, "")
+
+
+def test_parse_timeout_scales_for_mega_pack():
+    """1000V 级附件链：解析墙钟应明显高于默认 120s（tid=2777300）。"""
+    from workers.cpu_pool import PARSE_TIMEOUT_MAX_SEC, PARSE_TIMEOUT_SEC
+
+    assert parse_timeout_sec("x", "") == PARSE_TIMEOUT_SEC
+    mega = "\n".join(
+        f"ed2k://|file|a{i}.mp4|1|{'A'*32}|/" for i in range(1000)
+    )
+    t = parse_timeout_sec("", mega)
+    assert t > PARSE_TIMEOUT_SEC
+    assert t >= 300.0
+    assert t <= PARSE_TIMEOUT_MAX_SEC
 
 
 def test_job_parse_thread_dual_small():

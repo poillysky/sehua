@@ -130,6 +130,34 @@ def test_clip_password_value_end_boundaries():
     assert clip_password_value("1998@www.98T.la【资源类型】：视频") == "1998@www.98T.la"
     assert clip_password_value("www.98T.la@，需要把后面删除") == "www.98T.la@"
     assert clip_password_value("www.98T.la@才能打开") == "www.98T.la@"
+    # @ 后账号含中文品牌（tid=2229054 橙子整理）；空格后说明不吞
+    assert (
+        clip_password_value("www.98t.la@lsp橙子 搬运无告知") == "www.98t.la@lsp橙子"
+    )
+    assert (
+        harvest_extract_password("解压密码： www.98t.la@lsp橙子 搬运无告知“ 司马 ”")
+        == "www.98t.la@lsp橙子"
+    )
+    # @ 后日文名（tid=2575947）；HTML 拆成 www.98T.la</a>@小野りんか
+    assert clip_password_value("www.98T.la@小野りんか") == "www.98T.la@小野りんか"
+    assert (
+        harvest_extract_password("密码： www.98T.la @小野りんか")
+        == "www.98T.la@小野りんか"
+    )
+    assert (
+        harvest_extract_password("压缩包密码：www.98T.la@小野りんか")
+        == "www.98T.la@小野りんか"
+    )
+    # 皮卡丘：【资源密码】：@品牌www.98T.la@（域名拆链夹空白，tid=2990288）
+    assert (
+        clip_password_value("@皮卡丘_剑染红尘 www.98T.la @")
+        == "@皮卡丘_剑染红尘www.98T.la@"
+    )
+    assert (
+        harvest_extract_password("【资源密码】：@皮卡丘_剑染红尘 www.98T.la @")
+        == "@皮卡丘_剑染红尘www.98T.la@"
+    )
+    assert harvest_extract_password("【资源密码】：@") == ""
     assert clip_password_value("sakura99 解压后可用") == "sakura99"
     assert clip_password_value("pass123 demo.rar (1 KB") == "pass123"
     assert clip_password_value("MyBigDick@host 18OnlyGirls.rar (42 KB") == "MyBigDick@host"
