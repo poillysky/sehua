@@ -458,13 +458,20 @@ def parse_thread_dual(
             board_fid=board_fid,
         )
 
+    from parsers.content import extract_attachment_inject_text
     from parsers.resource_frame import count_http_host_media_links, count_post_quota_links
 
-    # 额度只认正文 plain + 附件文本（出现次数、不去重）。
-    # 有附件目标链时只计附件，避免正文样例链再叠一层；绝不回落 HTML/叠语料。
+    # 额度只认正文 plain + 附件文本（出现次数、不去重；残缺 ed2k/magnet 行也计）。
+    # 有附件目标链时只计附件，避免正文样例链再叠一层；绝不回落整页 HTML。
+    # pipeline 常 inject 后未传 extra_text：从 postmessage_attach* 回取附件语料。
     body_plain = (content.plain_text or "").strip()
-    attach_text = (extra_text or "").strip()
-    if attach_text and attachment_corpus_has_target_links(html):
+    attach_text = (extra_text or "").strip() or extract_attachment_inject_text(html)
+    attach_has_target = bool(attach_text) and (
+        "magnet:" in attach_text.lower()
+        or "ed2k://" in attach_text.lower()
+        or attachment_corpus_has_target_links(html)
+    )
+    if attach_text and attach_has_target:
         quota_src = attach_text
     elif body_plain and attach_text:
         quota_src = f"{body_plain}\n{attach_text}"

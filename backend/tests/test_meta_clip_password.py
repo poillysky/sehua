@@ -121,6 +121,23 @@ def test_password_harvest_from_scattered_places():
     assert harvest_extract_password("解压用www.98T.la@") == "www.98T.la@"
     assert harvest_extract_password("解压请用这个 密码：sakura99") == "sakura99"
 
+    # 楼主二楼「钥匙：」——口令可为整段论坛链（tid=2983626），勿在 ? 截断
+    key_url = (
+        "sehuatang.net/forum.php?mod=viewthread&tid=2978299&extra=&page=1"
+    )
+    assert harvest_extract_password(f"钥匙：{key_url}") == key_url
+    assert harvest_extract_password(f"钥匙:{key_url}") == key_url
+    assert (
+        harvest_extract_password(
+            "防机器人搬运防盗门钥匙在2楼!\n"
+            f"钥匙：{key_url}\n"
+            "记住我的头像"
+        )
+        == key_url
+    )
+    # 无冒号的「钥匙在2楼」不是口令标注
+    assert harvest_extract_password("防盗门钥匙在2楼!") == ""
+
 
 def test_clip_password_value_end_boundaries():
     """口令吃到结束信号为止：完整提取、不吞说明。"""
@@ -176,6 +193,14 @@ def test_clip_password_value_end_boundaries():
     )
     assert harvest_extract_password("密码：sakura99\ned2k://|file|a|1|AA|/") == "sakura99"
     assert harvest_extract_password("本帖密码sakura99可用") == "sakura99"
+
+    key_url = (
+        "sehuatang.net/forum.php?mod=viewthread&tid=2978299&extra=&page=1"
+    )
+    assert clip_password_value(f"{key_url} 即可解压") == key_url
+    assert clip_password_value(f"{key_url}【资源类型】：视频") == key_url
+    # 旧逻辑会在 ? 处截成 forum.php；钥匙链须整段保留
+    assert clip_password_value(key_url) == key_url
 
     # 附件语料里才有
     html = """

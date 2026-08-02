@@ -745,8 +745,8 @@ async def process_thread(
                             attachment_text=attachment_text,
                         )
                     else:
-                        if attachment_text and not heavy_attach:
-                            html = inject_attachment_text(html, attachment_text)
+                        # 不在此 inject：job_judge_with_attachment 会注入一次；
+                        # 预注入再传 attachment_text 会导致额度按附件文本计两遍。
                         outcome = await _judge_html(
                             html,
                             board_fid=board_fid,
@@ -771,7 +771,7 @@ async def process_thread(
                             preferred_link=link_pref,
                             forum_id=forum_id,
                             tid=tid,
-                            attachment_text=attachment_text if heavy_attach else "",
+                            attachment_text=attachment_text,
                         )
                     # 电驴板：txt/zip/excel 无果再试种子；磁力/双链：种子无果再试 txt/excel
                     _empty_tor_skip = outcome.verdict == "skipped" and any(
@@ -905,8 +905,7 @@ async def process_thread(
                                         attachment_text=attachment_text,
                                     )
                                 else:
-                                    if not heavy2:
-                                        html = inject_attachment_text(html, attachment_text)
+                                    # 同主路径：仅由 job_judge_with_attachment 注入一次
                                     outcome = await _judge_html(
                                         html,
                                         board_fid=board_fid,
@@ -979,7 +978,7 @@ async def process_thread(
                                         preferred_link=link_pref,
                                         forum_id=forum_id,
                                         tid=tid,
-                                        attachment_text=attachment_text if heavy2 else "",
+                                        attachment_text=attachment_text,
                                     )
                             attachment_kind = f"{attachment_kind}+{next_kind}"
                     # 附件语料可能已含链但 judge 走了非 import：再双解析一次补全

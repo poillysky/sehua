@@ -260,10 +260,20 @@ def _post_level_name_label_count(parsed: DualParseResult) -> int:
     from parsers.content import iter_subresource_title_spans
     from parsers.structure_cards import name_values_from_cards, parse_structure_cards
 
-    parts: list[str] = []
+    def _count_blob(blob: str) -> int:
+        if not (blob or "").strip():
+            return 0
+        spans = iter_subresource_title_spans(blob)
+        if spans:
+            return len(spans)
+        return len(name_values_from_cards(parse_structure_cards(blob)))
+
+    # description 已含结构卡时勿再拼 metadata，否则同一【资源名称】会计成 2
     desc = (getattr(parsed, "description", None) or "").strip()
-    if desc:
-        parts.append(desc)
+    n_desc = _count_blob(desc)
+    if n_desc:
+        return n_desc
+    parts: list[str] = []
     meta = getattr(parsed, "metadata", None) or {}
     for key, val in meta.items():
         k = (key or "").strip()
@@ -272,13 +282,7 @@ def _post_level_name_label_count(parsed: DualParseResult) -> int:
             continue
         if any(x in k for x in ("名称", "片名", "標題", "标题")):
             parts.append(f"【{k}】：{v}")
-    blob = "\n".join(parts)
-    if not blob:
-        return 0
-    spans = iter_subresource_title_spans(blob)
-    if spans:
-        return len(spans)
-    return len(name_values_from_cards(parse_structure_cards(blob)))
+    return _count_blob("\n".join(parts))
 
 
 def _collapse_groups_to_single(

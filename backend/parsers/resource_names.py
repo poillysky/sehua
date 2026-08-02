@@ -860,12 +860,31 @@ def resolve_sub_filename(
     link_name = filename_from_link(link_uri)
     link_norm = link_name.strip().lower()
 
+    def _is_link_tech_filename(name: str) -> bool:
+        """链内技术文件名（alone.mp4 / www.98T.la@x.mp4），不是展示片名。"""
+        t = (name or "").strip()
+        if not t:
+            return False
+        low = t.lower()
+        if re.search(
+            r"\.(?:mp4|mkv|avi|wmv|mov|flv|ts|m4v|rmvb|iso|rar|zip|7z|txt)(?:$|[\s\|./])",
+            low,
+        ):
+            return True
+        if low.startswith("www.98") or "98t.la@" in low:
+            return True
+        return False
+
     def _usable(cand: str | None, *, allow_title: bool = False) -> str:
         text = (cand or "").strip()
         if not text or is_missing_filename(text, hash_value=hash_value):
             return ""
-        # 与链内技术名相同 → 不是子资源名
-        if link_norm and text.lower() == link_norm:
+        # 与链内技术名相同 → 不是子资源名；片名碰巧等于 magnet dn 时仍可用
+        if (
+            link_norm
+            and text.lower() == link_norm
+            and _is_link_tech_filename(text)
+        ):
             return ""
         # HTML / 附件 UI：整段丢弃，避免留下 gif hash 前缀
         if is_hard_dirty_filename(text):

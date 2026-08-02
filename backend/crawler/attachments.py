@@ -149,10 +149,16 @@ def _archive_password_candidates(html: str) -> list[str]:
             raw.replace(" ", ""),
             raw.replace("＠", "@"),
         ]
-        # www.98T.la@ ↔ www.98T.la
+        # www.98T.la@ ↔ www.98T.la；论坛钥匙链勿拼 @
+        from parsers.content import _looks_like_forum_key_password
+
         if raw.endswith("@") and len(raw) > 1:
             variants.append(raw[:-1].strip())
-        elif "@" not in raw and "." in raw:
+        elif (
+            "@" not in raw
+            and "." in raw
+            and not _looks_like_forum_key_password(raw)
+        ):
             variants.append(raw + "@")
         # CF 常把 MyBigDick@host 编成 MyBigDick@host.txt；实际解压不要 .txt
         for base in list(variants):

@@ -132,6 +132,23 @@ def test_resolve_rejects_ed2k_embedded_name():
     )
 
 
+def test_resolve_keeps_name_when_magnet_dn_equals_title():
+    """单资源正文：磁力 dn=资源名时不得回落脏帖标题拆成多资源（tid=2612847）。"""
+    name = "公雞俱樂部2024.12.28全部願望一次滿足！什麼都有系列"
+    title = f"【自购】【115 ED2K+磁链】{name}【3.55GB/2V/2配额】"
+    uri = f"magnet:?xt=urn:btih:{'1f5a820011ee87c247093514b561d653914bca7b'}&dn={name}"
+    assert (
+        resolve_sub_filename(
+            inner_name=name,
+            title=title,
+            hash_value="1F5A820011EE87C247093514B561D653914BCA7B",
+            link_uri=uri,
+            description=f"【资源名称】：{name}\n【资源大小】：3.55GB/2V/2配额",
+        )
+        == name
+    )
+
+
 def test_resolve_uses_description_subtitle():
     uri = "ed2k://|file|pack.rar|9|" + "C" * 32 + "|/"
     assert (

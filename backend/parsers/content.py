@@ -101,6 +101,8 @@ DESCRIPTION_LABEL_ALIASES = {
     "資源密碼": "解压密码",
     "资源码": "解压密码",
     "資源碼": "解压密码",
+    "钥匙": "解压密码",
+    "鑰匙": "解压密码",
 }
 
 # profile: labels 顺序；exclusive 组内只保留靠前且有值的一项；aliases 写入展示键
@@ -472,7 +474,29 @@ PASSWORD_UNZIP_USE_RE = re.compile(
     rf"({_PASSWORD_ASCII_TOKEN})",
     re.I,
 )
-_PASSWORD_META_KEYS = ("解压密码", "提取密码", "资源密码", "解压码", "提取码", "资源码")
+# 楼主二楼「钥匙：…」——口令可为论坛链（含 ?tid=），须带冒号以免误吞「钥匙在2楼」
+PASSWORD_KEY_RE = re.compile(
+    rf"(?:钥匙|鑰匙)\s*[:：=]\s*"
+    rf"{_PASSWORD_NOT_HINT}"
+    rf"(\S+)",
+    re.I,
+)
+# Discuz 防盗门钥匙：整段 forum.php?… / thread-tid-… 即解压口令（勿在 ? 处截断）
+_FORUM_KEY_PASSWORD_RE = re.compile(
+    r"(?i)^(?:https?://)?(?:www\.)?[a-z0-9.-]+/"
+    r"(?:forum\.php\?|thread-\d{5,}|home\.php\?)"
+    r"|^(?:forum\.php\?|[?&]?tid=\d{5,}|thread-\d{5,})"
+)
+_PASSWORD_META_KEYS = (
+    "解压密码",
+    "提取密码",
+    "资源密码",
+    "解压码",
+    "提取码",
+    "资源码",
+    "钥匙",
+    "鑰匙",
+)
 _PASSWORD_LABELS = frozenset(_PASSWORD_META_KEYS)
 # 口令结束：换行 / 下一【标签】 / 标点 / 链 / 附件 UI / 空格+中文说明 / 字母数字后紧贴中文
 # 注意：lookbehind 不含 @——否则「@皮卡丘_…www.98T.la@」会在首个 @ 后被砍成「@」
@@ -554,6 +578,8 @@ _BOGUS_PASSWORD_WORDS = frozenset(
         "解壓碼",
         "提取码",
         "提取碼",
+        "钥匙",
+        "鑰匙",
     }
 )
 # 优先 zoomfile / file（Discuz 高清）、data-original（PHPWind 懒加载），再 src
@@ -1016,8 +1042,8 @@ def extract_link_corpus_html(
     return "\n".join(parts)
 
 
-def attachment_corpus_has_target_links(html: str) -> bool:
-    """inject 后的附件块是否已含 magnet/ed2k 等目标链。"""
+def extract_attachment_inject_text(html: str) -> str:
+    """取出 inject_attachment_text 挂入的附件纯文本（可多块拼接）。"""
     chunks: list[str] = []
     for m in re.finditer(
         r'id=["\']postmessage_attach\d+["\'][^>]*>(.*?)</div>',
@@ -1027,9 +1053,14 @@ def attachment_corpus_has_target_links(html: str) -> bool:
         body = (m.group(1) or "").strip()
         if body:
             chunks.append(body)
-    if not chunks:
+    return "\n".join(chunks)
+
+
+def attachment_corpus_has_target_links(html: str) -> bool:
+    """inject 后的附件块是否已含 magnet/ed2k 等目标链。"""
+    low = extract_attachment_inject_text(html).lower()
+    if not low:
         return False
-    low = "\n".join(chunks).lower()
     return (
         "magnet:" in low
         or "ed2k://" in low
@@ -1285,11 +1316,21 @@ def extract_metadata(text: str) -> dict[str, str]:
     return meta
 
 
+def _looks_like_forum_key_password(value: str) -> bool:
+    """防盗门钥匙口令：forum.php?tid=… / thread-tid-…（含查询串）。"""
+    v = (value or "").strip()
+    if not v:
+        return False
+    # 去主机前缀后再判，兼容 sehuatang.net/forum.php?...
+    return bool(_FORUM_KEY_PASSWORD_RE.search(v))
+
+
 def clip_password_value(raw: str) -> str:
     """人写密码：标签后的口令吃到结束信号为止（完整提取、不吞说明）。
 
     结束信号：换行、下一【结构标签】、中英文标点、ed2k/magnet、
     附件 UI、空格+中文说明、粘在口令后的中文说明等。
+    例外：钥匙类论坛链口令保留 ?&=，只在换行/【/空格+中文处截。
     """
     if not (raw or "").strip():
         return ""
@@ -1307,6 +1348,16 @@ def clip_password_value(raw: str) -> str:
         val = val[1:].lstrip(":：︰= ").strip()
     if not val:
         return ""
+
+    # 2b) 钥匙=论坛链：勿被 _PASSWORD_END_RE 的 ? 截成 forum.php
+    if _looks_like_forum_key_password(val):
+        m_cut = re.search(r"【|\s+[\u4e00-\u9fff]", val)
+        if m_cut and m_cut.start() > 0:
+            val = val[: m_cut.start()].strip()
+        val = val.rstrip("，,。．；;、！!）)」\"'")
+        if len(val) > 160:
+            val = val[:160].rstrip()
+        return val
 
     # 3) 优先整段 98T / xxx@98T.la（站方惯用）
     # @ 后可带中日文名（小野りんか / lsp橙子）；「@才能打开」仍当说明切掉
@@ -1384,8 +1435,10 @@ def _is_bogus_password(value: str) -> bool:
         v,
     ):
         return True
-    # 明显把半页正文吞进来了
-    if len(v) > 80:
+    # 明显把半页正文吞进来了；钥匙类论坛链可略长（含 query）
+    if len(v) > 80 and not (
+        _looks_like_forum_key_password(v) and len(v) <= 160
+    ):
         return True
     if v.count("【") >= 1:
         return True
@@ -1452,9 +1505,10 @@ def harvest_extract_password(
     优先级（高→低）：
       1. metadata / 结构卡片 password 角色
       2. 「解压/提取/资源密码」标注
-      3. 「密码：/密码是/密码xxx」（人一眼能认的提示）
-      4. 「解压用/解压请用」+ ASCII/98T
-      5. 「码/密码」+ 98T.la@
+      3. 「钥匙：」防盗门口令（可为论坛链全文）
+      4. 「密码：/密码是/密码xxx」（人一眼能认的提示）
+      5. 「解压用/解压请用」+ ASCII/98T
+      6. 「码/密码」+ 98T.la@
     语料会先走 _clean_text（还原 CF 邮箱混淆）。
     """
     meta = metadata or {}
@@ -1491,6 +1545,7 @@ def harvest_extract_password(
 
     for cre in (
         PASSWORD_RE,
+        PASSWORD_KEY_RE,
         PASSWORD_GENERIC_RE,
         PASSWORD_UNZIP_USE_RE,
         PASSWORD_BARE_98T_RE,
@@ -1499,8 +1554,10 @@ def harvest_extract_password(
         if not m:
             continue
         # 从捕获起点往后多取一段，再统一 clip（防正则 token 截短/吞说明）
+        # 钥匙链口令可较长，多取一点
+        take = 200 if cre is PASSWORD_KEY_RE else 160
         start = m.start(1)
-        tail = blob[start : start + 160]
+        tail = blob[start : start + take]
         hit = _accept_password_candidate(tail)
         if hit:
             return hit
