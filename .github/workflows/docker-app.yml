@@ -2,8 +2,9 @@ name: Build sehua-app image
 
 # 仅构建 / 推送主栈 sehua（API+管理），与 search 完全独立
 # 触发：改主栈相关路径，或打标签 v1.2.36（不要用 search-v*）
-# 手动：Actions → Build sehua-app image → Run workflow
+# 手动：Actions → Build sehua-app image → Run workflow（Secrets 异常时可在表单粘贴 Token）
 # version pin: 1.2.36
+# Hub 登录与 telegramDL 对齐：Secrets / Variables / 手动输入 多源回退
 on:
   push:
     branches: [main]
@@ -18,6 +19,15 @@ on:
     tags:
       - "v[0-9]*"
   workflow_dispatch:
+    inputs:
+      dockerhub_username:
+        description: "Docker Hub 用户名（默认 poillysky）"
+        required: false
+        default: "poillysky"
+      dockerhub_token:
+        description: "Docker Hub Access Token（本仓库 Secrets 异常时可临时粘贴）"
+        required: false
+        default: ""
 
 permissions:
   contents: read
@@ -42,13 +52,16 @@ jobs:
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
           echo "sehua VERSION=$TAG"
 
-      - name: Check Docker Hub secret
+      - name: Check Docker Hub token
+        env:
+          TOKEN: ${{ secrets.DOCKERHUB_TOKEN || secrets.DOCKERHUB_PASSWORD || vars.DOCKERHUB_TOKEN || vars.DOCKERHUB_PASSWORD || inputs.dockerhub_token }}
         run: |
-          if [ -z "${{ secrets.DOCKERHUB_TOKEN }}" ]; then
-            echo "::error::secrets.DOCKERHUB_TOKEN is empty — Hub push cannot work"
+          if [ -z "$TOKEN" ]; then
+            echo "::error::Token 为空。请配置 secrets.DOCKERHUB_TOKEN，或 Run workflow 时在 dockerhub_token 栏粘贴 Access Token。"
+            echo "Token：https://hub.docker.com/settings/security"
             exit 1
           fi
-          echo "DOCKERHUB_TOKEN is present"
+          echo "Token OK (length=${#TOKEN})"
 
       - uses: docker/setup-buildx-action@v3
 
@@ -62,8 +75,8 @@ jobs:
       - name: Login Docker Hub
         uses: docker/login-action@v3
         with:
-          username: ${{ env.DOCKERHUB_USER }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
+          username: ${{ inputs.dockerhub_username || secrets.DOCKERHUB_USERNAME || vars.DOCKERHUB_USERNAME || env.DOCKERHUB_USER }}
+          password: ${{ secrets.DOCKERHUB_TOKEN || secrets.DOCKERHUB_PASSWORD || vars.DOCKERHUB_TOKEN || vars.DOCKERHUB_PASSWORD || inputs.dockerhub_token }}
 
       # 分仓推送。勿关 provenance：纯 OCI single-manifest 时
       # registry 有 tag，但 hub.docker.com 标签 API/网页常不同步（1.2.34 已验证）。
