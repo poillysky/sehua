@@ -22,7 +22,7 @@ function parseTab(value: string | null): Tab {
 function GeneralSettingsPanel() {
   const [proxy, setProxy] = useState('')
   const [searchFront, setSearchFront] = useState('http://localhost:3010')
-  const [flareUrl, setFlareUrl] = useState('http://127.0.0.1:8191/v1')
+  const [flareUrl, setFlareUrl] = useState('')
   const [intervalLabel, setIntervalLabel] = useState('连续无间隔')
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
@@ -32,7 +32,7 @@ function GeneralSettingsPanel() {
       .then((s) => {
         setProxy(s.web_crawler_proxy || '')
         setSearchFront(s.search_frontend_url || 'http://localhost:3010')
-        setFlareUrl(s.flaresolverr_url || 'http://127.0.0.1:8191/v1')
+        setFlareUrl(s.flaresolverr_url || '')
         setIntervalLabel(s.crawl_interval_label || '连续无间隔')
       })
       .catch((err) => toast.error(err instanceof Error ? err.message : '读取失败'))
@@ -45,11 +45,11 @@ function GeneralSettingsPanel() {
       const saved = await saveSettings({
         web_crawler_proxy: proxy.trim(),
         search_frontend_url: searchFront.trim() || 'http://localhost:3010',
-        flaresolverr_url: flareUrl.trim() || 'http://127.0.0.1:8191/v1',
+        flaresolverr_url: flareUrl.trim(),
       })
       setProxy(saved.web_crawler_proxy || '')
       setSearchFront(saved.search_frontend_url || 'http://localhost:3010')
-      setFlareUrl(saved.flaresolverr_url || 'http://127.0.0.1:8191/v1')
+      setFlareUrl(saved.flaresolverr_url || '')
       toast.success('通用配置已保存')
     } catch (err) {
       toast.error(err instanceof Error ? err.message : '保存失败')
@@ -95,9 +95,9 @@ function GeneralSettingsPanel() {
                 />
               </label>
               <label className="settings-field-full">
-                FlareSolverr
+                FlareSolverr（可选）
                 <input
-                  placeholder="http://127.0.0.1:8191/v1"
+                  placeholder="可空；例 http://127.0.0.1:8191/v1"
                   value={flareUrl}
                   disabled={loading}
                   onChange={(e) => setFlareUrl(e.target.value)}
@@ -105,8 +105,8 @@ function GeneralSettingsPanel() {
               </label>
             </div>
             <p className="hint">
-              代理供联通探测与 HTTP 读帖；遇 Cloudflare Turnstile 时用 FlareSolverr 过一次并写入
-              cookie，之后复用。请本机先启动 FlareSolverr（默认 8191）。请求延迟 / 冷却见论坛「爬虫配置」。
+              代理供联通探测与 HTTP 读帖。FlareSolverr 可空：未填时遇 Cloudflare 走浏览器等待，并尝试本机自动探测；填了则优先用该地址过
+              Turnstile 并写入 cookie。请求延迟 / 冷却见论坛「爬虫配置」。
             </p>
             <div className="actions">
               <button type="button" className="btn primary sm" disabled={loading || saving} onClick={() => void onSave()}>

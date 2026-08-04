@@ -201,6 +201,48 @@ def test_pack_title_one_link_quota_soft_success():
     assert not out.startswith("不合格")
 
 
+def test_xlsx_catalog_one_link_quota_soft_success():
+    """正文单链是 xlsx 目录包：标题 335配额 ≠ 漏链，成功入库该表（tid=3501123）。"""
+    title = (
+        "【ED2K丨原档合集丨整理】某某 DMM原档合集【2.02TB/335V/335配额】"
+    )
+    name = "某某 原档（www.98t.la@下片机器）.xlsx"
+    size = 4_162_033
+    h = "D61391788CF5BCB35DD503ADA0CB2981"
+    a = ParsedAsset(
+        link_kind="ed2k",
+        hash=h,
+        filename="某某 DMM原档合集（单体+共演+企划）",  # 帖内资源名称
+        size=size,
+        uri=f"ed2k://|file|{name}|{size}|{h}|/",
+        preview_images=["http://a.jpg"],
+    )
+    parsed = DualParseResult(
+        tid=3501123,
+        title=title,
+        description="【资源数量】：2.02TB/335V/335配额\n【资源下载】：",
+        metadata={},
+        preview_images=["http://a.jpg"],
+        extract_password="",
+        assets=[a],
+        primary_link_kind="ed2k",
+        layout="title_then_magnet",
+        had_attachments=False,
+    )
+    frame = build_resource_frame(
+        parsed,
+        named_groups=[(a.filename, a, [a])],
+        had_attachments=False,
+    )
+    assert frame.spec.kind == "single"
+    assert "info:pack_quota_soft" in frame.verdict.tags
+    assert "info:catalog_xlsx_pack" in frame.verdict.tags
+    assert "info:title_quota_overclaim_soft" in frame.verdict.tags
+    out = format_frame_outcome("成功：正文含目标链接", frame)
+    assert out.startswith("成功"), out
+    assert not out.startswith("不合格")
+
+
 def test_pure_ed2k_quota_mismatch_still_hard():
     """纯 ed2k 标题、链数远少于配额 → 标题偏高软提醒（附件已下）。"""
     title = "合集【10.0g/50V/20配额】"

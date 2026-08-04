@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlparse
+
 
 from parsers.content import decode_cf_email
 
@@ -329,6 +330,34 @@ def _attach_url_key(url: str) -> str:
     return (url or "").replace("&amp;", "&").strip()
 
 
+def _norm_attach_host(host: str) -> str:
+    h = (host or "").lower().strip()
+    if h.startswith("www."):
+        h = h[4:]
+    return h
+
+
+def _attach_url_host_ok(base_url: str, full_url: str) -> bool:
+    """附件必须与帖页同域。
+
+    正文广告常塞绝对外链 ``https://evil/forum.php?mod=attachment&aid=…``
+    （aid 甚至属别帖，如 tid=3192943 → youiv15 / tid=203506），
+    不能当成本站可下附件，否则会「识别需下附件 → 下载失败 → 重试/跳过」。
+    """
+    u = urlparse((full_url or "").strip())
+    host = _norm_attach_host(u.netloc or "")
+    if not host:
+        return True
+    scheme = (u.scheme or "").lower()
+    if scheme and scheme not in {"http", "https"}:
+        return True
+    bhost = _norm_attach_host(urlparse(base_url or "").netloc or "")
+    if bhost:
+        return bhost == host
+    # 无对照基址：绝对外链一律丢掉（相对 forum.php?mod=attachment 仍保留）
+    return False
+
+
 def _text_has_directory_tree_marker(text: str) -> bool:
     raw = text or ""
     return any(marker in raw for marker in DIRECTORY_TREE_NAME_MARKERS)
@@ -462,6 +491,8 @@ def extract_download_attachments(base_url: str, html: str) -> list[DownloadAttac
                 if _attachment_context_has_directory_tree(a):
                     name = _mark_directory_tree_name(name)
                 full = urljoin(base_url, href)
+                if not _attach_url_host_ok(base_url, full):
+                    continue
                 key = _attach_url_key(full)
                 if key not in found:
                     found[key] = DownloadAttachment(name=name, url=full, kind=kind)
@@ -496,6 +527,8 @@ def extract_download_attachments(base_url: str, html: str) -> list[DownloadAttac
         if _directory_tree_label_before_href(html or "", m.start()):
             name = _mark_directory_tree_name(name)
         full = urljoin(base_url, href)
+        if not _attach_url_host_ok(base_url, full):
+            continue
         key = _attach_url_key(full)
         if key in found:
             continue

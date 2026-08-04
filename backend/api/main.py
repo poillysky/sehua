@@ -108,22 +108,22 @@ async def lifespan(_app: FastAPI):
 
     try:
         from crawler.cf_bypass import (
-            DEFAULT_FLARESOLVERR_URL,
             apply_flaresolverr_setting,
             normalize_flaresolverr_url,
         )
-        from db.settings_store import get_setting, set_setting
+        from db.settings_store import get_setting
 
         conn = connect()
         try:
+            # 可空：不强制写入默认地址；空则运行时再探测 / 浏览器过 CF
             flare = normalize_flaresolverr_url(
                 get_setting(conn, "flaresolverr_url", "")
             )
-            if not flare:
-                flare = DEFAULT_FLARESOLVERR_URL
-                set_setting(conn, "flaresolverr_url", flare)
             apply_flaresolverr_setting(flare)
-            logger.info("FlareSolverr setting: %s", flare)
+            logger.info(
+                "FlareSolverr setting: %s",
+                flare or "(empty · optional)",
+            )
         finally:
             conn.close()
     except Exception:

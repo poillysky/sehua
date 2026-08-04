@@ -99,6 +99,11 @@ _CLOUD_SHARE_IN_TITLE_RE = re.compile(
 )
 # 【115eD2k压缩包】+1链：配额常指包内份数/115 额度，不是多条 ed2k
 _PACK_IN_TITLE_RE = re.compile(r"压缩包", re.I)
+# 正文单链目标是 xlsx/xls 表格目录包：标题 N配额=包内条目，不是要 N 条 ed2k（tid=3501123）
+_CATALOG_SPREADSHEET_RE = re.compile(
+    r"\.(?:xlsx|xlsm|xls|xlsb)(?:\||/|\?|#|\"|'|\s|$)",
+    re.I,
+)
 # 配额旁证：帖内下载向链接（不必可入库）。扩展名后禁吃逗号，防 "a.mp4,http://b" 并一条
 _ED2K_QUOTA_RE = re.compile(r"ed2k://[^\s<>\"']+", re.I)
 _MAGNET_QUOTA_RE = re.compile(r"magnet:\?[^\s<>\"']+", re.I)
@@ -609,6 +614,29 @@ def _primary_link_kind(parsed: DualParseResult, rows: list[FrameRow]) -> str:
             if k in {"magnet", "ed2k", "115share"}:
                 return k
     return ""
+
+
+def _asset_looks_like_catalog_spreadsheet(asset: ParsedAsset | None) -> bool:
+    """链目标是 xlsx/xls 等表格文件（合集目录包），不是片源本体。"""
+    if asset is None:
+        return False
+    blob = "\n".join(
+        [
+            str(getattr(asset, "uri", "") or ""),
+            str(getattr(asset, "filename", "") or ""),
+        ]
+    )
+    return bool(_CATALOG_SPREADSHEET_RE.search(blob))
+
+
+def _single_row_is_catalog_spreadsheet(rows: Sequence[FrameRow]) -> bool:
+    """单资源且唯一入库链指向表格目录包。"""
+    if len(rows) != 1:
+        return False
+    members = list(rows[0].members or [])
+    if len(members) != 1:
+        return False
+    return _asset_looks_like_catalog_spreadsheet(members[0])
 
 
 def _piece_count_expect(
@@ -1516,9 +1544,14 @@ def validate_frame(
             elif provided_n < int(expect_pieces_a):
                 code = "warn:piece_count_mismatch_title_over"
                 tags.append("info:title_quota_overclaim_soft")
-                # 压缩包单链：标题 N配额 ≠ 漏链（包内多份/115额度口径）
-                if member_n == 1 and _PACK_IN_TITLE_RE.search(pack_blob or ""):
+                # 压缩包单链 / xlsx 目录包单链：标题 N配额 ≠ 漏链（包内多份口径）
+                if member_n == 1 and (
+                    _PACK_IN_TITLE_RE.search(pack_blob or "")
+                    or _single_row_is_catalog_spreadsheet(rows)
+                ):
                     tags.append("info:pack_quota_soft")
+                    if _single_row_is_catalog_spreadsheet(rows):
+                        tags.append("info:catalog_xlsx_pack")
                 else:
                     # 链数对齐标题 V、配额虚高（如 2V/3配额 实 2 链）→ 脏配额，勿待核
                     v_title = _title_v_count(title or "")

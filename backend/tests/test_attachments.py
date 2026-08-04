@@ -43,6 +43,87 @@ def test_extract_and_filter_tail():
     assert len(torrents) == 1 and torrents[0].kind == "torrent"
 
 
+def test_offsite_fake_attachment_href_dropped():
+    """正文绝对外域 attachment 广告不当可下附件（tid=3192943 youiv15 / 错帖 aid）。"""
+    html = """
+    <td class="t_f" id="postmessage_1">
+      【影片大小】：3.12GB<br>
+      <a href="https://youiv15.com/forum.php?mod=attachment&amp;aid=MzM4NDI2"
+         target="_blank">MMR-AA387.torrent</a>
+      <ignore_js_op>
+        <a href="forum.php?mod=attachment&amp;aid=REALJPG">MMR-AA387.jpg</a>
+      </ignore_js_op>
+    </td>
+    """
+    base = "https://www.sehuatang.net/"
+    got = extract_download_attachments(base, html)
+    assert got == []  # jpg 非链接附件；外域 torrent 丢掉
+    # 同域相对种子仍保留
+    html2 = html.replace(
+        "https://youiv15.com/forum.php?mod=attachment&amp;aid=MzM4NDI2",
+        "forum.php?mod=attachment&amp;aid=REALTORRENT",
+    ).replace(
+        ">MMR-AA387.torrent<",
+        " class=\"x\">MMR-AA387.torrent<",
+    )
+    # put real torrent inside ignore_js_op
+    html3 = """
+    <td class="t_f" id="postmessage_1">
+      <a href="https://youiv15.com/forum.php?mod=attachment&aid=FAKE">fake.torrent</a>
+      <ignore_js_op>
+        <a href="forum.php?mod=attachment&aid=REAL">MMR-AA387.torrent</a>
+      </ignore_js_op>
+    </td>
+    """
+    got3 = extract_download_attachments(base, html3)
+    assert len(got3) == 1
+    assert got3[0].name == "MMR-AA387.torrent"
+    assert "sehuatang.net" in got3[0].url
+    assert "youiv" not in got3[0].url
+
+
+def test_offsite_attach_no_zone_skip_not_need_attach():
+    """仅外域伪种子 + 预览图：不挂起下附件；完整帖壳则「未解析到目标链」跳过。"""
+    from parsers.thread_gates import looks_like_attachment_zone
+    from workers.thread_outcome import judge_thread_html
+
+    html = """
+    <html><head><title>【BT种子】某某影片 - 转帖交流区 - 98堂[原色花堂] - Powered by Discuz!</title></head>
+    <body>
+    <div id="wp"><div id="ct">
+    <div id="postlist">
+    <table id="pid1" class="plhin"><tbody><tr>
+    <td class="t_f" id="postmessage_1">
+      【影片名称】：某某影片<br>
+      【影片大小】：3.12GB<br>
+      <a href="https://youiv15.com/forum.php?mod=attachment&aid=FAKE">MMR-AA387.torrent</a>
+      <ignore_js_op>
+        <p><strong>MMR-AA387.jpg</strong> <em>(143.88 KB, 下载次数: 0)</em></p>
+        <a href="forum.php?mod=attachment&aid=IMG">预览图</a>
+      </ignore_js_op>
+    </td></tr></tbody></table>
+    </div>
+    <div id="ft" class="cl"><div>Powered by Discuz!</div></div>
+    </div></div>
+    </body></html>
+    """
+    # 完整抓取门要求页长 ≥8000；补垫避免误成「页面未完整」重试
+    html = html + ("<!-- pad -->\n" * 800)
+    assert looks_like_attachment_zone(html) is False
+    out = judge_thread_html(
+        html,
+        board_fid="142:700",
+        list_title="【BT种子】某某影片",
+        preferred_link="magnet",
+        forum_id="sehuatang",
+        base_url="https://www.sehuatang.net/thread-3192943-1-1.html",
+    )
+    assert out.need_attachments is False
+    assert out.verdict == "skipped"
+    assert "未解析到目标链" in (out.outcome or "")
+    assert "附件下载失败" not in (out.outcome or "")
+
+
 def test_cf_email_obfuscated_attachment_name():
     """含 @ 的附件名被 CF 混淆成 [email protected] 时仍应识别为 txt。"""
     enc = "d3a4a4a4fdeaeb87fdbfb29383a1baa5b2a7b690b2a0a7babdb4fe8bfda7aba7"

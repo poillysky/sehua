@@ -7,7 +7,6 @@ from pydantic import BaseModel, Field
 
 from auth.deps import require_permission
 from crawler.cf_bypass import (
-    DEFAULT_FLARESOLVERR_URL,
     apply_flaresolverr_setting,
     normalize_flaresolverr_url,
 )
@@ -24,12 +23,12 @@ FLARESOLVERR_KEY = "flaresolverr_url"
 class SettingsBody(BaseModel):
     web_crawler_proxy: str = ""
     search_frontend_url: str = Field(default="http://localhost:3008")
-    flaresolverr_url: str = Field(default=DEFAULT_FLARESOLVERR_URL)
+    # 可空：未配则爬虫走浏览器等待 / 本机自动探测，不强制填
+    flaresolverr_url: str = ""
 
 
 def _read_flaresolverr(conn) -> str:
-    raw = get_setting(conn, FLARESOLVERR_KEY, "")
-    return normalize_flaresolverr_url(raw) or DEFAULT_FLARESOLVERR_URL
+    return normalize_flaresolverr_url(get_setting(conn, FLARESOLVERR_KEY, ""))
 
 
 @router.get("/settings")
@@ -59,7 +58,7 @@ def put_settings(
 ) -> dict:
     conn = connect()
     try:
-        flare = normalize_flaresolverr_url(body.flaresolverr_url) or DEFAULT_FLARESOLVERR_URL
+        flare = normalize_flaresolverr_url(body.flaresolverr_url)
         save_settings(
             conn,
             {
