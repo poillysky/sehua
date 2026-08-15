@@ -193,7 +193,7 @@ function StepDetail({
 
   if (step === 'switch') {
     return (
-      <ChartShell hint="连续深扫受总开关约束。手动立即/扫新帖、随机连续、账号重爬、异常重试不要求开关开，但与 looping/running 互斥。停止后若 running+停止标卡住，手动入口会先复位再跑。队列行永不因停止而删除。">
+      <ChartShell hint="连续深扫受总开关约束。手动立即/扫新帖、账号重爬、异常重试不要求开关开，但与 looping/running 互斥。随机抓帖为独立循环开关，与深扫互斥。停止后若 running+停止标卡住，手动入口会先复位再跑。队列行永不因停止而删除。">
         <Process text="读爬虫开关" sub={`当前：${cfg.web_crawler_enabled ? '开' : '关'}`} />
         <ArrowDown />
         <Decision text="触发来源？" />
@@ -226,7 +226,7 @@ function StepDetail({
           </Branch>
           <Branch label="侧线任务">
             <Spine>
-              <Terminal text="随机抓帖连续" sub="loop=random_tid · 与深扫互斥" kind="ok" />
+              <Terminal text="随机抓帖开关" sub="loop=random_tid · 与深扫互斥" kind="ok" />
               <ArrowDown sm />
               <Terminal text="账号重爬" sub="失败/无权跳过 → 占位 · 需账号 Cookie" kind="warn" />
               <ArrowDown sm />
@@ -795,7 +795,7 @@ function StepDetail({
         hint={
           is2048
             ? '随机抓帖连续循环；直链 read.php；不写待抓队列；停止后清空本会话已探 tid。'
-            : '活动页「随机抓帖」= 连续循环（loop_kind=random_tid），与深扫连续互斥；不写待抓队列；停止后清空本会话已探 tid。'
+            : '活动页「随机抓帖」开关 = 连续循环（loop_kind=random_tid），与深扫连续互斥；不写待抓队列；关闭后清空本会话已探 tid。'
         }
       >
         <Process text="启动随机连续调度" sub="清 stop · 清空本会话抽样" />

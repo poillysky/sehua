@@ -811,6 +811,10 @@ export function CrawlerPage() {
   }, [stubActive, stubDone, stubRemaining, stubUpgraded, stubStill, stubFailed, runHint])
 
   const onToggle = async (next: boolean) => {
+    if (next && randomActive) {
+      toast.info('请先关闭「随机抓帖」开关')
+      return
+    }
     setBusy(true)
     try {
       if (next) {
@@ -831,6 +835,44 @@ export function CrawlerPage() {
       await refresh()
     } catch (err) {
       toast.error(err instanceof Error ? err.message : '切换失败')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const onToggleRandom = async (next: boolean) => {
+    if (next && (enabled || (looping && loopKind !== 'random_tid') || (running && !randomActive))) {
+      toast.info(enabled || looping ? '请先关闭「连续深扫」开关' : '爬虫正在执行，请稍候')
+      return
+    }
+    setBusy(true)
+    try {
+      if (next) {
+        setRunHint('随机抓帖连续调度启动中…')
+        const res = await startRandomTidLoop({
+          count: 200,
+          ...(crawlForumId ? { forum_id: crawlForumId } : {}),
+        })
+        const probe = res.probe ?? 200
+        const line =
+          res.message === 'already'
+            ? `随机抓帖连续调度已在运行 · 每轮 ${probe}`
+            : `随机抓帖连续调度已启动 · 每轮 ${probe} · 不进队列 · 跳过已入库 · 停止后重新抽样`
+        setRunHint(line)
+        toast.success(line)
+      } else {
+        setRunHint('正在停止随机抓帖…')
+        const res = await stopCrawler()
+        autoLoopTried.current = false
+        const line = res.forced
+          ? '随机抓帖已关闭 · 已强制停止 · 下次重新抽样'
+          : '随机抓帖已关闭 · 本会话抽样已清空'
+        setRunHint(line)
+        toast.info(line)
+      }
+      await refresh()
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : '随机抓帖切换失败')
     } finally {
       setBusy(false)
     }
@@ -900,35 +942,6 @@ export function CrawlerPage() {
       await refresh()
     } catch (err) {
       const msg = err instanceof Error ? err.message : '扫新帖失败'
-      setRunHint(msg)
-      toast.error(msg)
-    } finally {
-      setBusy(false)
-    }
-  }
-
-  const onRandomTid = async () => {
-    if (enabled || looping || running || busy || stopping) {
-      toast.info(enabled || looping ? '连续调度进行中，请先关闭开关' : '爬虫正在执行，请稍候')
-      return
-    }
-    setBusy(true)
-    setRunHint('随机抓帖连续调度启动中…')
-    try {
-      const res = await startRandomTidLoop({
-        count: 200,
-        ...(crawlForumId ? { forum_id: crawlForumId } : {}),
-      })
-      const probe = res.probe ?? 200
-      const line =
-        res.message === 'already'
-          ? `随机抓帖连续调度已在运行 · 每轮 ${probe}`
-          : `随机抓帖连续调度已启动 · 每轮 ${probe} · 不进队列 · 跳过已入库 · 停止后重新抽样`
-      setRunHint(line)
-      toast.success(line)
-      await refresh()
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : '随机抓帖启动失败'
       setRunHint(msg)
       toast.error(msg)
     } finally {
@@ -1304,15 +1317,55 @@ export function CrawlerPage() {
             <div className="crawler-toolbar">
               <div className="crawler-toolbar-top">
                 <div className="crawler-toolbar-left">
-                  <label className="crawler-switch" title="开启/关闭论坛爬虫">
-                    <input
-                      type="checkbox"
-                      checked={enabled}
-                      disabled={busy || loading}
-                      onChange={(e) => void onToggle(e.target.checked)}
-                    />
-                    <span className="crawler-switch-slider" aria-hidden />
-                  </label>
+                  <div className="crawler-switch-stack" aria-label="连续调度开关">
+                    <div className="crawler-switch-row">
+                      <label
+                        className="crawler-switch"
+                        title={
+                          randomActive
+                            ? '请先关闭「随机抓帖」后再开连续深扫'
+                            : '开启/关闭论坛爬虫连续深扫'
+                        }
+                      >
+                        <input
+                          type="checkbox"
+                          checked={enabled}
+                          disabled={busy || loading || randomActive}
+                          onChange={(e) => void onToggle(e.target.checked)}
+                        />
+                        <span className="crawler-switch-slider" aria-hidden />
+                      </label>
+                      <span className="crawler-switch-caption">连续深扫</span>
+                    </div>
+                    <div className="crawler-switch-row">
+                      <label
+                        className="crawler-switch"
+                        title={
+                          enabled || (looping && loopKind !== 'random_tid')
+                            ? '请先关闭「连续深扫」后再开随机抓帖'
+                            : running && !randomActive
+                              ? '本轮仍在执行，请稍候'
+                              : '循环：每轮随机 200 个 tid 直链探测并入库；不写待抓队列；跳过已入库；关闭后清空本会话抽样'
+                        }
+                      >
+                        <input
+                          type="checkbox"
+                          checked={randomActive}
+                          disabled={
+                            busy ||
+                            loading ||
+                            stopping ||
+                            enabled ||
+                            (looping && loopKind !== 'random_tid') ||
+                            (running && !randomActive)
+                          }
+                          onChange={(e) => void onToggleRandom(e.target.checked)}
+                        />
+                        <span className="crawler-switch-slider" aria-hidden />
+                      </label>
+                      <span className="crawler-switch-caption">随机抓帖</span>
+                    </div>
+                  </div>
                   <span className="crawler-run-label">{runLabel}</span>
                 </div>
                 <button
@@ -1359,21 +1412,6 @@ export function CrawlerPage() {
                     onClick={() => void onScanHead()}
                   >
                     扫新帖
-                  </button>
-                  <button
-                    type="button"
-                    className="crawler-action"
-                    disabled={enabled || looping || running || busy || stopping}
-                    title={
-                      enabled || looping
-                        ? '连续调度进行中，请先关闭开关后再随机抓帖'
-                        : running || stopping
-                          ? '本轮仍在执行，请稍候'
-                          : '循环模式：每轮随机 200 个 tid 直链探测并入库；不写待抓队列；跳过已入库；停止后清空本会话抽样，下次重新生成'
-                    }
-                    onClick={() => void onRandomTid()}
-                  >
-                    随机抓帖
                   </button>
                   <button
                     type="button"

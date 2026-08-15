@@ -256,14 +256,24 @@ async def run_random_tid_batch(
             }
         THROTTLE.clear_stop()
 
+    # 与连续深扫一致：论坛 cfg + 通用设置里的代理（随机路径以前漏读 proxy）
+    from db.settings_store import get_setting
+
     cfg = dict(crawler_config or {})
-    if not cfg:
-        conn = connect()
-        try:
+    proxy = ""
+    conn = connect()
+    try:
+        if not cfg:
             configs = load_forum_configs_map(conn)
             cfg = dict(configs.get(forum_id) or configs.get(SITE_CRAWLER_FORUM_ID) or {})
-        finally:
-            conn.close()
+        proxy = (get_setting(conn, "web_crawler_proxy", "") or "").strip()
+        cookie = (get_setting(conn, "web_crawler_cookie", "") or "").strip()
+        if cookie:
+            cfg["web_crawler_cookie"] = cookie
+    finally:
+        conn.close()
+    if proxy:
+        cfg["web_crawler_proxy"] = proxy
 
     lo = int(tid_min if tid_min is not None else cfg.get("web_crawler_random_tid_min") or DEFAULT_TID_MIN)
     hi = int(tid_max if tid_max is not None else cfg.get("web_crawler_random_tid_max") or DEFAULT_TID_MAX)
@@ -293,28 +303,34 @@ async def run_random_tid_batch(
         "skipped": 0,
         "other": 0,
         "samples": [],
+        "proxy_configured": bool(proxy),
     }
 
     root = site_root(str(cfg.get("web_crawl_urls") or "").split(",")[0] if cfg else BASE_URL)
     adapter = get_site_adapter(forum_id)
-    session = session_from_config(cfg, forum_id=forum_id)
-    fetcher = fetcher_from_config(session, cfg)
+    session = session_from_config(cfg, proxy=proxy, forum_id=forum_id)
+    fetcher = fetcher_from_config(session, cfg, proxy=proxy)
     # 本会话已抽过的 + 本批已抽的，避免同会话重复抽号（仍不写队列）
     used: set[int] = set(_session_probed)
 
     target_label = f"入库目标 {target}" if stop_on_persisted else "跑满本轮探测"
     _log_activity(
         f"随机抓帖开始 · {forum_id} · tid[{lo},{hi}] · 探测 {max_probe} · {target_label} · 不进队列 · both 链"
+        + (f" · 代理 {proxy}" if proxy else " · 无代理")
     )
     _STATE["phase"] = "random_tid"
     _publish_random_progress(result, probe_budget=max_probe, active=True)
 
     try:
         if not session._ready:
-            entries = resolve_forum_entry_urls(cfg, forum_id)
-            probe = bootstrap_probe_for_forum(cfg, forum_id)
+            entries = resolve_forum_entry_urls(cfg, forum_id, proxy=proxy)
+            probe = bootstrap_probe_for_forum(cfg, forum_id, proxy=proxy)
             await session.bootstrap(entry_urls=entries or None, probe_url=probe)
             root = site_root(session.active_entry_url or (entries[0] if entries else root))
+            _log_activity(
+                f"随机进站就绪"
+                + (f" · 代理 {proxy}" if proxy else " · 无代理")
+            )
 
         candidates = sample_tids(lo, hi, max_probe, exclude=used)
         for tid in candidates:
