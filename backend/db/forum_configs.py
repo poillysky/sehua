@@ -77,7 +77,7 @@ FORUM_CRAWLER_DEFAULTS: dict[str, Any] = {
     # 随机抓帖（tid 直链探测早期帖）
     "web_crawler_random_tid_min": 80_000,
     "web_crawler_random_tid_max": 500_000,
-    "web_crawler_random_tid_probe": 200,
+    "web_crawler_random_tid_probe": 500,
     "web_crawler_random_tid_import_target": 0,
     "board_order": default_board_order(),
     # 勾选参与爬取的子版（按勾选先后顺序爬）；默认全开非版务

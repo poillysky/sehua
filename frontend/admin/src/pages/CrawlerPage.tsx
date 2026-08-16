@@ -5,6 +5,7 @@ import {
   fetchDiscardedTids,
   fetchFrameFailTids,
   fetchQueueBrowse,
+  fetchRandomProbes,
   markFrameFailReviewed,
   recrawlAccountStubs,
   recrawlFrameFailTids,
@@ -18,11 +19,25 @@ import {
   type CrawlerStatus,
   type QueueBrowseItem,
   type QueueBrowseKind,
+  type RandomProbeItem,
 } from '../api/crawler'
 import { confirmDialog } from '../ui/confirm'
 import { toast } from '../ui/toast'
 
 const DISCARDED_PAGE = 30
+const RANDOM_PROBE_DEFAULT = 500
+const RANDOM_PROBES_PAGE = 30
+
+const RANDOM_OUTCOME_LABEL: Record<string, string> = {
+  import: '入库',
+  stub: '占位',
+  missing: '缺失',
+  dup: '重复',
+  skipped: '跳过',
+  failed: '失败',
+  fetch_error: '取页失败',
+  error: '异常',
+}
 
 const STATUS_LABEL: Record<string, string> = {
   failed: '失败（未见正文）',
@@ -551,6 +566,20 @@ export function CrawlerPage() {
   const [discSelected, setDiscSelected] = useState<Set<number>>(() => new Set())
   const [discRequeueBusy, setDiscRequeueBusy] = useState(false)
   const [discSelectAllBusy, setDiscSelectAllBusy] = useState(false)
+  const [randomModalOpen, setRandomModalOpen] = useState(false)
+  const [randomTab, setRandomTab] = useState<'current' | 'history'>('current')
+  const [rndOutcome, setRndOutcome] = useState('all')
+  const [rndQInput, setRndQInput] = useState('')
+  const [rndQ, setRndQ] = useState('')
+  const [rndOffset, setRndOffset] = useState(0)
+  const [rndItems, setRndItems] = useState<RandomProbeItem[]>([])
+  const [rndTotal, setRndTotal] = useState(0)
+  const [rndCounts, setRndCounts] = useState<Record<string, number>>({})
+  const [rndLoading, setRndLoading] = useState(false)
+  const [rndReadyItems, setRndReadyItems] = useState<QueueBrowseItem[]>([])
+  const [rndReadyTotal, setRndReadyTotal] = useState(0)
+  const [rndReadyOffset, setRndReadyOffset] = useState(0)
+  const [rndReadyLoading, setRndReadyLoading] = useState(false)
 
   const refresh = useCallback(async () => {
     try {
@@ -686,6 +715,72 @@ export function CrawlerPage() {
     setQueueModal(kind)
   }
 
+  const openRandomModal = () => {
+    setRandomTab('current')
+    setRndOutcome('all')
+    setRndQInput('')
+    setRndQ('')
+    setRndOffset(0)
+    setRndReadyOffset(0)
+    setRandomModalOpen(true)
+  }
+
+  const loadRandomHistory = useCallback(async () => {
+    if (!randomModalOpen || randomTab !== 'history') return
+    setRndLoading(true)
+    try {
+      const res = await fetchRandomProbes({
+        outcome: rndOutcome,
+        q: rndQ || undefined,
+        limit: RANDOM_PROBES_PAGE,
+        offset: rndOffset,
+      })
+      setRndItems(res.items || [])
+      setRndTotal(Number(res.total || 0))
+      setRndCounts(res.counts || {})
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : '加载历史随机队列失败')
+    } finally {
+      setRndLoading(false)
+    }
+  }, [randomModalOpen, randomTab, rndOutcome, rndQ, rndOffset])
+
+  const loadRandomReady = useCallback(async () => {
+    if (!randomModalOpen || randomTab !== 'current') return
+    setRndReadyLoading(true)
+    try {
+      const res = await fetchQueueBrowse({
+        kind: 'ready',
+        limit: RANDOM_PROBES_PAGE,
+        offset: rndReadyOffset,
+      })
+      setRndReadyItems(res.items || [])
+      setRndReadyTotal(Number(res.total || 0))
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : '加载目前队列失败')
+    } finally {
+      setRndReadyLoading(false)
+    }
+  }, [randomModalOpen, randomTab, rndReadyOffset])
+
+  useEffect(() => {
+    void loadRandomHistory()
+  }, [loadRandomHistory])
+
+  useEffect(() => {
+    void loadRandomReady()
+  }, [loadRandomReady])
+
+  useEffect(() => {
+    if (!randomModalOpen) return
+    const t = window.setTimeout(() => setRndQ(rndQInput.trim()), 320)
+    return () => window.clearTimeout(t)
+  }, [rndQInput, randomModalOpen])
+
+  useEffect(() => {
+    setRndOffset(0)
+  }, [rndOutcome, rndQ])
+
   // 与 ed2k 一致：开关开启即连续执行；进入页面时若已开则补启一次调度
   useEffect(() => {
     if (!status?.enabled) {
@@ -744,9 +839,20 @@ export function CrawlerPage() {
   const rnd = status?.random_progress
   const randomActive = !!rnd?.active || (looping && loopKind === 'random_tid')
   const randomProbed = Number(rnd?.probed ?? metrics?.random_probed ?? 0)
-  const randomBudget = Number(rnd?.probe_budget ?? metrics?.random_budget ?? 200)
+  const randomBudget = Number(rnd?.probe_budget ?? metrics?.random_budget ?? RANDOM_PROBE_DEFAULT)
   const randomImported = Number(rnd?.imported ?? metrics?.random_imported ?? 0)
   const randomSession = Number(rnd?.session_probed ?? metrics?.random_session ?? 0)
+  const randomPersist = Number(rnd?.persist_probed ?? 0)
+  const randomAdaptive = !!rnd?.adaptive
+  const randomSamples = Array.isArray(rnd?.samples) ? rnd.samples : []
+  const rndHistoryPageStart = rndTotal === 0 ? 0 : rndOffset + 1
+  const rndHistoryPageEnd = Math.min(rndOffset + rndItems.length, rndTotal)
+  const rndHistoryHasPrev = rndOffset > 0
+  const rndHistoryHasNext = rndOffset + RANDOM_PROBES_PAGE < rndTotal
+  const rndReadyPageStart = rndReadyTotal === 0 ? 0 : rndReadyOffset + 1
+  const rndReadyPageEnd = Math.min(rndReadyOffset + rndReadyItems.length, rndReadyTotal)
+  const rndReadyHasPrev = rndReadyOffset > 0
+  const rndReadyHasNext = rndReadyOffset + RANDOM_PROBES_PAGE < rndReadyTotal
   const stubProg = status?.account_stub_progress
   const stubActive =
     !!stubProg?.active || (running && String(status?.phase || '') === 'account_stubs')
@@ -814,7 +920,7 @@ export function CrawlerPage() {
 
   const onToggle = async (next: boolean) => {
     if (next && randomActive) {
-      toast.info('请先关闭「随机」开关')
+      toast.info('请先关闭「扫新随机」开关')
       return
     }
     setBusy(true)
@@ -852,11 +958,11 @@ export function CrawlerPage() {
       if (next) {
         setRunHint('随机启动中 · 先扫新帖再持续随机…')
         const res = await startRandomTidLoop({
-          count: 200,
+          count: RANDOM_PROBE_DEFAULT,
           scan_head_first: true,
           ...(crawlForumId ? { forum_id: crawlForumId } : {}),
         })
-        const probe = res.probe ?? 200
+        const probe = res.probe ?? RANDOM_PROBE_DEFAULT
         const line =
           res.message === 'already'
             ? `随机已在运行 · 每轮 ${probe}`
@@ -1272,7 +1378,7 @@ export function CrawlerPage() {
     if (riskTripped) return `${forumName} · 风控熔断`
     if (looping && loopKind === 'random_tid') {
       if (phase === 'scan_head') return `随机 · 扫新帖中 · ${forumName}${runningForumHint}`
-      return `随机连续中 · 每轮 200 · ${forumName}${runningForumHint}`
+      return `随机连续中 · 每轮 ${RANDOM_PROBE_DEFAULT} · ${forumName}${runningForumHint}`
     }
     if (running || looping) return `正在执行 · ${forumName}${runningForumHint}`
     if (enabled) return `${forumName} · 已开启 · 连续执行`
@@ -1294,7 +1400,7 @@ export function CrawlerPage() {
                         className="crawler-switch"
                         title={
                           randomActive
-                            ? '请先关闭「随机」后再开连续深扫'
+                            ? '请先关闭「扫新随机」后再开连续深扫'
                             : '开启/关闭论坛爬虫连续深扫'
                         }
                       >
@@ -1313,7 +1419,7 @@ export function CrawlerPage() {
                         className="crawler-switch"
                         title={
                           enabled || (looping && loopKind !== 'random_tid')
-                            ? '请先关闭「连续深扫」后再开随机'
+                            ? '请先关闭「连续深扫」后再开扫新随机'
                             : running && !randomActive
                               ? '本轮仍在执行，请稍候'
                               : '先扫新帖（全板入队并消化至空）→ 再持续随机抓帖；关闭即停；不写待抓队列'
@@ -1334,7 +1440,7 @@ export function CrawlerPage() {
                         />
                         <span className="crawler-switch-slider" aria-hidden />
                       </label>
-                      <span className="crawler-switch-caption">随机</span>
+                      <span className="crawler-switch-caption">扫新随机</span>
                     </div>
                   </div>
                   <span className="crawler-run-label">{runLabel}</span>
@@ -1463,19 +1569,25 @@ export function CrawlerPage() {
                     </span>
                     <span className="metric-lbl">不合格</span>
                   </button>
-                  <span
-                    className={`metric-pill${randomActive ? ' metric-pill-random' : ''}`}
+                  <button
+                    type="button"
+                    className={`metric-pill metric-pill-btn${randomActive ? ' metric-pill-random' : ''}`}
                     title={
                       randomActive
-                        ? `随机抓取进行中：本轮 ${randomProbed}/${randomBudget} · 入库 ${randomImported} · 本会话已探 ${randomSession}（不进待抓队列）`
-                        : `随机抓取进度（空闲）。启动后显示本轮已探/配额；入库 ${randomImported} · 会话 ${randomSession}`
+                        ? `随机抓取进行中：本轮 ${randomProbed}/${randomBudget} · 入库 ${randomImported} · 本会话 ${randomSession} · 已探库 ${randomPersist}${
+                            randomAdaptive ? ' · 自适应范围' : ''
+                          }。点此查看目前队列 / 总历史随机队列`
+                        : `随机抓取进度（空闲）。点此查看目前队列 / 总历史随机队列；入库 ${randomImported} · 会话 ${randomSession} · 已探库 ${randomPersist}${
+                            randomAdaptive ? ' · 自适应' : ''
+                          }`
                     }
+                    onClick={() => openRandomModal()}
                   >
                     <span className={`metric-val${randomActive ? ' stat-ok' : ''}`}>
                       {randomProbed}/{randomBudget}
                     </span>
                     <span className="metric-lbl">随机进度</span>
-                  </span>
+                  </button>
                   <button
                     type="button"
                     className={`metric-pill metric-pill-btn${stubActive ? ' metric-pill-stub' : ''}`}
@@ -1556,7 +1668,7 @@ export function CrawlerPage() {
                   <div className="activity-empty">
                     {enabled
                       ? '暂无活动日志 · 点「立即爬取」或等待连续调度'
-                      : '暂无活动日志 · 点「立即爬取」、开「随机」或明细里「重爬选中」后会出现'}
+                      : '暂无活动日志 · 点「立即爬取」、开「扫新随机」或明细里「重爬选中」后会出现'}
                   </div>
                 )}
               </div>
@@ -2058,6 +2170,312 @@ export function CrawlerPage() {
                   </button>
                 </div>
               </div>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {randomModalOpen ? (
+        <div
+          className="modal-backdrop crawler-discarded-backdrop"
+          role="presentation"
+          onClick={() => setRandomModalOpen(false)}
+        >
+          <div
+            className="modal-card crawler-discarded-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="crawler-random-modal-title"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="modal-head crawler-discarded-modal-head">
+              <div className="crawler-discarded-title">
+                <div className="crawler-discarded-title-row">
+                  <h3 id="crawler-random-modal-title">扫新随机队列</h3>
+                  <span className="crawler-discarded-kind-hint">
+                    本轮 {randomProbed}/{randomBudget} · 已探库 {randomPersist || rndCounts.total || 0}
+                  </span>
+                </div>
+                <p className="crawler-discarded-sub">
+                  目前队列 = 本轮探测 + 扫新待抓；总历史 = 落库已探 tid（重启仍跳过）
+                </p>
+              </div>
+              <button
+                type="button"
+                className="btn ghost sm icon-only"
+                title="关闭"
+                onClick={() => setRandomModalOpen(false)}
+              >
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden>
+                  <path d="M18 6L6 18M6 6l12 12" />
+                </svg>
+              </button>
+            </div>
+
+            <div className="crawler-discarded-modal-body">
+              <div className="crawler-discarded-tools">
+                <div className="crawler-discarded-tabs" role="tablist" aria-label="随机队列切换">
+                  {(
+                    [
+                      ['current', `目前队列 ${randomSamples.length + rndReadyTotal}`],
+                      ['history', `总历史随机 ${Number(rndCounts.total || randomPersist || 0)}`],
+                    ] as const
+                  ).map(([id, label]) => (
+                    <button
+                      key={id}
+                      type="button"
+                      role="tab"
+                      aria-selected={randomTab === id}
+                      className={`crawler-discarded-tab${randomTab === id ? ' active' : ''}`}
+                      onClick={() => setRandomTab(id)}
+                    >
+                      {label}
+                    </button>
+                  ))}
+                </div>
+                {randomTab === 'history' ? (
+                  <>
+                    <div className="crawler-discarded-tabs" role="tablist" aria-label="历史结果筛选">
+                      {(
+                        [
+                          ['all', `全部 ${Number(rndCounts.total || 0)}`],
+                          ['import', `入库 ${Number(rndCounts.import || 0)}`],
+                          ['stub', `占位 ${Number(rndCounts.stub || 0)}`],
+                          ['missing', `缺失 ${Number(rndCounts.missing || 0)}`],
+                          ['dup', `重复 ${Number(rndCounts.dup || 0)}`],
+                        ] as const
+                      ).map(([id, label]) => (
+                        <button
+                          key={id}
+                          type="button"
+                          role="tab"
+                          aria-selected={rndOutcome === id}
+                          className={`crawler-discarded-tab${rndOutcome === id ? ' active' : ''}`}
+                          onClick={() => setRndOutcome(id)}
+                        >
+                          {label}
+                        </button>
+                      ))}
+                    </div>
+                    <input
+                      className="crawler-discarded-search"
+                      value={rndQInput}
+                      onChange={(e) => setRndQInput(e.target.value)}
+                      placeholder="tid / 标题 / 板块…"
+                      aria-label="搜索历史随机"
+                    />
+                  </>
+                ) : null}
+              </div>
+
+              {randomTab === 'current' ? (
+                <>
+                  <div className="crawler-discarded-meta">
+                    <span>
+                      本轮探测 {randomSamples.length}
+                      {randomActive ? ' · 进行中' : ' · 空闲'}
+                      {randomAdaptive ? ' · 自适应' : ''}
+                    </span>
+                  </div>
+                  <div className="crawler-discarded-table-wrap">
+                    <table className="crawler-discarded-table">
+                      <thead>
+                        <tr>
+                          <th>tid</th>
+                          <th>结果</th>
+                          <th>标题</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {randomSamples.length ? (
+                          randomSamples.map((row, idx) => {
+                            const tid = Number(row.tid || 0)
+                            const st = String(row.status || row.verdict || '')
+                            return (
+                              <tr key={`s-${tid || idx}`}>
+                                <td>
+                                  {tid > 0 ? (
+                                    <a
+                                      href={threadPageUrl(String(tid), {
+                                        forumId: crawlForumId,
+                                        threadRoot: status?.thread_root,
+                                        preferredEntryUrl: status?.preferred_entry_url,
+                                        webCrawlUrls: status?.web_crawl_urls,
+                                      })}
+                                      target="_blank"
+                                      rel="noreferrer"
+                                    >
+                                      {tid}
+                                    </a>
+                                  ) : (
+                                    '—'
+                                  )}
+                                </td>
+                                <td>{RANDOM_OUTCOME_LABEL[st] || st || '—'}</td>
+                                <td title={row.title || ''}>{row.title || row.error || '—'}</td>
+                              </tr>
+                            )
+                          })
+                        ) : (
+                          <tr>
+                            <td colSpan={3}>本轮尚无探测样本（扫新阶段或未启动）</td>
+                          </tr>
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
+
+                  <div className="crawler-discarded-meta" style={{ marginTop: 12 }}>
+                    <span>
+                      扫新待抓 {rndReadyPageStart}-{rndReadyPageEnd} / {rndReadyTotal}
+                      {rndReadyLoading ? ' · 加载中…' : ''}
+                    </span>
+                  </div>
+                  <div className="crawler-discarded-table-wrap">
+                    <table className="crawler-discarded-table">
+                      <thead>
+                        <tr>
+                          <th>tid</th>
+                          <th>状态</th>
+                          <th>标题</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {rndReadyItems.length ? (
+                          rndReadyItems.map((row) => {
+                            const tid = rowTid(row) || 0
+                            const title = rowTitle(row)
+                            return (
+                              <tr key={`r-${tid}-${rowUrl(row) || title}`}>
+                                <td>
+                                  {tid > 0 ? (
+                                    <a
+                                      href={threadPageUrl(String(tid), {
+                                        forumId: crawlForumId,
+                                        threadRoot: status?.thread_root,
+                                        preferredEntryUrl: status?.preferred_entry_url,
+                                        webCrawlUrls: status?.web_crawl_urls,
+                                      })}
+                                      target="_blank"
+                                      rel="noreferrer"
+                                    >
+                                      {tid}
+                                    </a>
+                                  ) : (
+                                    '—'
+                                  )}
+                                </td>
+                                <td>{STATUS_LABEL[String(row.status || '')] || row.status || '待抓'}</td>
+                                <td title={title}>{title}</td>
+                              </tr>
+                            )
+                          })
+                        ) : (
+                          <tr>
+                            <td colSpan={3}>{rndReadyLoading ? '加载中…' : '暂无待抓帖'}</td>
+                          </tr>
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
+                  <div className="crawler-discarded-pager">
+                    <button
+                      type="button"
+                      className="crawler-action crawler-action-muted"
+                      disabled={!rndReadyHasPrev || rndReadyLoading}
+                      onClick={() => setRndReadyOffset((v) => Math.max(0, v - RANDOM_PROBES_PAGE))}
+                    >
+                      上一页
+                    </button>
+                    <button
+                      type="button"
+                      className="crawler-action crawler-action-muted"
+                      disabled={!rndReadyHasNext || rndReadyLoading}
+                      onClick={() => setRndReadyOffset((v) => v + RANDOM_PROBES_PAGE)}
+                    >
+                      下一页
+                    </button>
+                  </div>
+                </>
+              ) : (
+                <>
+                  <div className="crawler-discarded-meta">
+                    <span>
+                      {rndHistoryPageStart}-{rndHistoryPageEnd} / {rndTotal}
+                      {rndLoading ? ' · 加载中…' : ''}
+                    </span>
+                  </div>
+                  <div className="crawler-discarded-table-wrap">
+                    <table className="crawler-discarded-table">
+                      <thead>
+                        <tr>
+                          <th>tid</th>
+                          <th>结果</th>
+                          <th>板块</th>
+                          <th>标题</th>
+                          <th>更新</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {rndItems.length ? (
+                          rndItems.map((row) => {
+                            const tid = Number(row.tid || 0)
+                            const st = String(row.outcome || row.status || '')
+                            return (
+                              <tr key={`h-${tid}-${row.updated_at || ''}`}>
+                                <td>
+                                  {tid > 0 ? (
+                                    <a
+                                      href={threadPageUrl(String(tid), {
+                                        forumId: crawlForumId,
+                                        threadRoot: status?.thread_root,
+                                        preferredEntryUrl: status?.preferred_entry_url,
+                                        webCrawlUrls: status?.web_crawl_urls,
+                                      })}
+                                      target="_blank"
+                                      rel="noreferrer"
+                                    >
+                                      {tid}
+                                    </a>
+                                  ) : (
+                                    '—'
+                                  )}
+                                </td>
+                                <td>{RANDOM_OUTCOME_LABEL[st] || st || '—'}</td>
+                                <td>{row.board_fid || '—'}</td>
+                                <td title={row.title || ''}>{row.title || '—'}</td>
+                                <td>{formatWhen(row.updated_at || row.probed_at)}</td>
+                              </tr>
+                            )
+                          })
+                        ) : (
+                          <tr>
+                            <td colSpan={5}>{rndLoading ? '加载中…' : '暂无历史随机记录'}</td>
+                          </tr>
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
+                  <div className="crawler-discarded-pager">
+                    <button
+                      type="button"
+                      className="crawler-action crawler-action-muted"
+                      disabled={!rndHistoryHasPrev || rndLoading}
+                      onClick={() => setRndOffset((v) => Math.max(0, v - RANDOM_PROBES_PAGE))}
+                    >
+                      上一页
+                    </button>
+                    <button
+                      type="button"
+                      className="crawler-action crawler-action-muted"
+                      disabled={!rndHistoryHasNext || rndLoading}
+                      onClick={() => setRndOffset((v) => v + RANDOM_PROBES_PAGE)}
+                    >
+                      下一页
+                    </button>
+                  </div>
+                </>
+              )}
             </div>
           </div>
         </div>

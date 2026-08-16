@@ -106,7 +106,7 @@ class ScanHeadBody(BaseModel):
 class RandomTidBody(BaseModel):
     forum_id: str = ""
     persist: bool = True
-    count: int | None = Field(default=None, ge=1, le=500, description="探测 tid 数上限")
+    count: int | None = Field(default=None, ge=1, le=2000, description="探测 tid 数上限")
     import_target: int | None = Field(
         default=None, ge=0, le=200, description="入库+占位目标；0=跑满本轮探测"
     )
@@ -116,7 +116,7 @@ class RandomTidBody(BaseModel):
 
 class RandomTidLoopBody(BaseModel):
     forum_id: str = ""
-    count: int | None = Field(default=200, ge=1, le=500, description="每轮随机探测数")
+    count: int | None = Field(default=500, ge=1, le=2000, description="每轮随机探测数")
     tid_min: int | None = Field(default=None, ge=1, le=50_000_000)
     tid_max: int | None = Field(default=None, ge=1, le=50_000_000)
     scan_head_first: bool = Field(
@@ -679,9 +679,11 @@ async def post_crawler_random_tid_loop_start(
     fid = _resolve_crawler_forum_id(body.forum_id)
     if fid not in FULL_CRAWLER_FORUM_IDS:
         raise HTTPException(status_code=400, detail="该论坛尚未接入爬虫")
+    from workers.random_tid import DEFAULT_PROBE
+
     result = start_random_tid_loop(
         forum_id=fid,
-        probe=body.count if body.count is not None else 200,
+        probe=body.count if body.count is not None else DEFAULT_PROBE,
         tid_min=body.tid_min,
         tid_max=body.tid_max,
         scan_head_first=bool(body.scan_head_first),
@@ -695,8 +697,53 @@ async def post_crawler_random_tid_loop_start(
         "message": "started",
         "looping": True,
         "loop_kind": "random_tid",
-        "probe": result.get("probe") or body.count or 200,
+        "probe": result.get("probe") or body.count or DEFAULT_PROBE,
         "scan_head_first": bool(result.get("scan_head_first", body.scan_head_first)),
+    }
+
+
+@router.get("/random-tid/probes")
+def get_random_tid_probes(
+    outcome: str = "all",
+    q: str = "",
+    limit: int = 50,
+    offset: int = 0,
+    _user: dict = Depends(require_permission("crawl.run")),
+) -> dict:
+    """总历史随机探测队列（random_tid_probes）。"""
+    from db.random_probes import (
+        count_probes_by_outcome,
+        count_probes_filtered,
+        ensure_random_probes_schema,
+        list_probes,
+    )
+
+    fid = _resolve_crawler_forum_id("")
+    lim = max(1, min(200, int(limit or 50)))
+    off = max(0, int(offset or 0))
+    oc = (outcome or "all").strip().lower() or "all"
+    query = (q or "").strip()
+    conn = connect()
+    try:
+        ensure_random_probes_schema(conn)
+        try:
+            conn.commit()
+        except Exception:
+            pass
+        by = count_probes_by_outcome(conn, fid)
+        total = count_probes_filtered(conn, fid, outcome=oc, q=query)
+        items = list_probes(conn, fid, outcome=oc, q=query, limit=lim, offset=off)
+    finally:
+        conn.close()
+    return {
+        "forum_id": fid,
+        "outcome": oc,
+        "q": query,
+        "limit": lim,
+        "offset": off,
+        "total": total,
+        "counts": by,
+        "items": items,
     }
 
 

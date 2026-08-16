@@ -1,7 +1,8 @@
 """随机抓帖：按 tid 直链探测早期帖，both 链判定入库。
 
-不写 crawl_pages 待抓队列；本会话已探测 tid 仅记在内存，
-停止/结束后清空，下次启动重新随机抽样。
+已探 tid 持久化到 random_tid_probes（重启仍跳过）。
+抽样可按白名单板块已有帖号分布自适应窗口，提高命中率。
+本会话内存 _session_probed 仅作加速；停止时不清数据库记录。
 """
 
 from __future__ import annotations
@@ -18,8 +19,22 @@ from crawler.session import BASE_URL
 from crawler.sites import get_site_adapter
 from crawler.throttle import THROTTLE
 from db.connection import connect
-from db.forum_configs import SITE_CRAWLER_FORUM_ID, load_forum_configs_map
+from db.forum_configs import (
+    SITE_CRAWLER_FORUM_ID,
+    load_forum_configs_map,
+    resolve_enabled_board_fids,
+)
 from db.queue import canonical_thread_url, is_thread_known
+from db.random_probes import (
+    collect_whitelist_tids,
+    count_probed,
+    ensure_random_probes_schema,
+    estimate_tid_range,
+    load_known_tids_for_exclude,
+    load_probed_tids,
+    record_probe,
+)
+from db.resource_db import connect_resource
 from parsers.thread_gates import extract_board_fid, page_title
 from workers.pipeline import process_thread
 from workers.runner import (
@@ -40,11 +55,11 @@ log = logging.getLogger(__name__)
 
 DEFAULT_TID_MIN = 80_000
 DEFAULT_TID_MAX = 500_000
-DEFAULT_PROBE = 200
+DEFAULT_PROBE = 500
 # 0 = 不按入库数提前结束，跑满本轮探测数
 DEFAULT_IMPORT_TARGET = 0
 
-# 本会话内已抽中的 tid（不进库队列）；停止/结束时清空
+# 本会话内已抽中的 tid（加速）；持久化以 DB 为准
 _session_probed: set[int] = set()
 
 
@@ -60,6 +75,7 @@ def _empty_random_progress(*, active: bool = False, probe_budget: int = DEFAULT_
         "failed": 0,
         "skipped": 0,
         "session_probed": len(_session_probed),
+        "samples": [],
     }
 
 
@@ -88,6 +104,14 @@ def _publish_random_progress(
                 base[key] = int(result.get(key) or 0)
         if result.get("probe_budget") is not None:
             base["probe_budget"] = int(result["probe_budget"])
+        if result.get("persist_probed") is not None:
+            base["persist_probed"] = int(result["persist_probed"])
+        if result.get("adaptive") is not None:
+            base["adaptive"] = bool(result["adaptive"])
+        samples = result.get("samples")
+        if isinstance(samples, list):
+            # 弹窗「目前」展示本轮最近探测（倒序）
+            base["samples"] = list(reversed(samples[-120:]))
     base["session_probed"] = len(_session_probed)
     base["active"] = active
     _STATE["random_progress"] = base
@@ -103,7 +127,7 @@ def random_progress() -> dict[str, Any]:
 
 
 def clear_random_session_state() -> None:
-    """循环结束或暂停：清空本会话抽样记录，下次重新生成。"""
+    """循环结束或暂停：仅清空内存抽样缓存；数据库已探记录保留。"""
     _session_probed.clear()
     _publish_random_progress(active=False)
 
@@ -151,6 +175,48 @@ def sample_tids(
         seen.add(tid)
         out.append(tid)
     return out
+
+
+def sample_tids_weighted(
+    windows: list[tuple[int, int, float]],
+    n: int,
+    *,
+    exclude: set[int] | None = None,
+    rng: random.Random | None = None,
+) -> list[int]:
+    """按窗口权重抽样；窗口内均匀，全局去重。"""
+    r = rng or random.Random()
+    ban = set(exclude or ())
+    need = max(0, int(n))
+    if need <= 0 or not windows:
+        return []
+    weights = [max(0.0, float(w)) for _, _, w in windows]
+    total_w = sum(weights) or 1.0
+    quotas: list[int] = []
+    assigned = 0
+    for i, w in enumerate(weights):
+        if i == len(weights) - 1:
+            quotas.append(max(0, need - assigned))
+        else:
+            q = int(need * (w / total_w))
+            quotas.append(q)
+            assigned += q
+    out: list[int] = []
+    seen = set(ban)
+    for (lo, hi, _w), q in zip(windows, quotas):
+        if q <= 0:
+            continue
+        chunk = sample_tids(lo, hi, q, exclude=seen, rng=r)
+        for t in chunk:
+            if t not in seen:
+                seen.add(t)
+                out.append(t)
+    if len(out) < need and windows:
+        glo = min(a for a, _b, _w in windows)
+        ghi = max(b for _a, b, _w in windows)
+        extra = sample_tids(glo, ghi, need - len(out), exclude=seen, rng=r)
+        out.extend(extra)
+    return out[:need]
 
 
 def is_missing_thread(html: str, title: str = "") -> bool:
@@ -227,6 +293,122 @@ def is_tid_known(
                 rconn.close()
             except Exception:
                 pass
+
+
+def _persist_probe(
+    *,
+    forum_id: str,
+    tid: int,
+    outcome: str,
+    board_fid: str | int | None = None,
+    title: str | None = None,
+) -> bool:
+    """写入已探记录。成功 True；失败 False（调用方应中止本轮，避免无落库再探）。"""
+    last_exc: Exception | None = None
+    for _attempt in range(2):
+        try:
+            conn = connect()
+            try:
+                ensure_random_probes_schema(conn)
+                record_probe(
+                    conn,
+                    forum_id=forum_id,
+                    tid=tid,
+                    outcome=outcome,
+                    board_fid=board_fid,
+                    title=title,
+                )
+                conn.commit()
+                return True
+            finally:
+                conn.close()
+        except Exception as exc:
+            last_exc = exc
+            log.exception("persist random probe tid=%s attempt", tid)
+    if last_exc is not None:
+        log.error("persist random probe tid=%s failed: %s", tid, last_exc)
+    return False
+
+
+def _load_exclude_tids(*, forum_id: str) -> tuple[set[int], int, int]:
+    """加载抽样排除集：(probes∪known, probes_count, known_extra_count)。
+
+    任一关键表读取失败则抛错，由调用方中止本轮。
+    """
+    meta = connect()
+    try:
+        ensure_random_probes_schema(meta)
+        try:
+            meta.commit()
+        except Exception:
+            pass
+        probed = load_probed_tids(meta, forum_id)
+        persist_n = count_probed(meta, forum_id)
+        rconn = None
+        try:
+            rconn = connect_resource()
+        except Exception:
+            rconn = None
+        try:
+            known = load_known_tids_for_exclude(meta, rconn, forum_id=forum_id)
+        finally:
+            if rconn is not None:
+                try:
+                    rconn.close()
+                except Exception:
+                    pass
+    finally:
+        meta.close()
+    merged = set(probed) | set(known)
+    known_extra = len(merged) - len(probed)
+    return merged, int(persist_n), max(0, known_extra)
+
+
+def _resolve_sampling_plan(
+    *,
+    forum_id: str,
+    cfg: dict[str, Any],
+    cfg_lo: int,
+    cfg_hi: int,
+    enabled: list[str],
+) -> dict[str, Any]:
+    adaptive_on = str(cfg.get("web_crawler_random_adaptive", "1")).strip().lower() not in {
+        "0",
+        "false",
+        "no",
+        "off",
+    }
+    plan = estimate_tid_range([], cfg_lo=cfg_lo, cfg_hi=cfg_hi)
+    if not adaptive_on:
+        return plan
+    try:
+        meta = connect()
+        try:
+            ensure_random_probes_schema(meta)
+            rconn = None
+            try:
+                rconn = connect_resource()
+            except Exception:
+                rconn = None
+            try:
+                wl = collect_whitelist_tids(
+                    meta,
+                    rconn,
+                    forum_id=forum_id,
+                    enabled_keys=enabled,
+                )
+            finally:
+                if rconn is not None:
+                    try:
+                        rconn.close()
+                    except Exception:
+                        pass
+            plan = estimate_tid_range(wl, cfg_lo=cfg_lo, cfg_hi=cfg_hi)
+        finally:
+            meta.close()
+    except Exception:
+        log.exception("estimate tid range failed")
+    return plan
 
 
 async def run_random_tid_batch(
@@ -310,12 +492,54 @@ async def run_random_tid_batch(
     adapter = get_site_adapter(forum_id)
     session = session_from_config(cfg, proxy=proxy, forum_id=forum_id)
     fetcher = fetcher_from_config(session, cfg, proxy=proxy)
-    # 本会话已抽过的 + 本批已抽的，避免同会话重复抽号（仍不写队列）
+
+    enabled = resolve_enabled_board_fids(cfg, forum_id=forum_id)
+    persist_n = 0
+    known_extra = 0
     used: set[int] = set(_session_probed)
+    try:
+        db_exclude, persist_n, known_extra = _load_exclude_tids(forum_id=forum_id)
+        used |= db_exclude
+    except Exception as exc:
+        log.exception("load exclude tids")
+        result["ok"] = False
+        result["reason"] = "load_exclude_failed"
+        result["error"] = str(exc)[:200]
+        _log_activity(f"随机抓帖中止 · 无法加载已探/已入库 tid · {exc}")
+        _publish_random_progress(result, probe_budget=max_probe, active=False)
+        if not from_loop:
+            clear_random_session_state()
+            end_exclusive()
+        try:
+            await session.close()
+        except Exception:
+            pass
+        return result
+
+    plan = _resolve_sampling_plan(
+        forum_id=forum_id,
+        cfg=cfg,
+        cfg_lo=lo,
+        cfg_hi=hi,
+        enabled=enabled,
+    )
+    windows = list(plan.get("windows") or [(lo, hi, 1.0)])
+    result["adaptive"] = bool(plan.get("adaptive"))
+    result["persist_probed"] = int(persist_n)
+    result["exclude_known"] = int(known_extra)
+    result["tid_min"] = int(plan.get("lo") or lo)
+    result["tid_max"] = int(plan.get("hi") or hi)
 
     target_label = f"入库目标 {target}" if stop_on_persisted else "跑满本轮探测"
+    adapt_label = (
+        f"自适应 tid[{plan.get('lo')},{plan.get('hi')}] · 样本 {plan.get('sample_n')}"
+        if plan.get("adaptive")
+        else f"固定 tid[{lo},{hi}]"
+    )
     _log_activity(
-        f"随机抓帖开始 · {forum_id} · tid[{lo},{hi}] · 探测 {max_probe} · {target_label} · 不进队列 · both 链"
+        f"随机抓帖开始 · {forum_id} · {adapt_label} · 已探库 {persist_n}"
+        + (f" · 另排除已入库 {known_extra}" if known_extra else "")
+        + f" · 探测 {max_probe} · {target_label} · 不进队列 · both 链"
         + (f" · 代理 {proxy}" if proxy else " · 无代理")
     )
     _STATE["phase"] = "random_tid"
@@ -332,7 +556,17 @@ async def run_random_tid_batch(
                 + (f" · 代理 {proxy}" if proxy else " · 无代理")
             )
 
-        candidates = sample_tids(lo, hi, max_probe, exclude=used)
+        candidates = sample_tids_weighted(windows, max_probe, exclude=used)
+
+        def _ok_persist(**kwargs: Any) -> bool:
+            if _persist_probe(**kwargs):
+                return True
+            result["ok"] = False
+            result["reason"] = "persist_probe_failed"
+            result["error"] = f"persist tid={kwargs.get('tid')} failed"
+            _log_activity(f"随机抓帖中止 · 已探落库失败 tid={kwargs.get('tid')}")
+            return False
+
         for tid in candidates:
             if THROTTLE.should_stop() or (from_loop and not _STATE.get("looping")):
                 result["reason"] = "stopped"
@@ -360,6 +594,8 @@ async def run_random_tid_batch(
                 if known:
                     result["skipped_dup"] += 1
                     result["samples"].append({"tid": tid, "status": "dup"})
+                    if not _ok_persist(forum_id=forum_id, tid=tid, outcome="dup"):
+                        break
                     continue
 
                 await THROTTLE.sleep()
@@ -375,6 +611,8 @@ async def run_random_tid_batch(
                     result["failed"] += 1
                     result["other"] += 1
                     result["samples"].append({"tid": tid, "status": "fetch_error", "error": str(exc)[:120]})
+                    if not _ok_persist(forum_id=forum_id, tid=tid, outcome="fetch_error"):
+                        break
                     _log_activity(f"随机 tid={tid} · 取页失败 · {exc}")
                     continue
 
@@ -382,6 +620,10 @@ async def run_random_tid_batch(
                 if is_missing_thread(html, title):
                     result["missing"] += 1
                     result["samples"].append({"tid": tid, "status": "missing", "title": title[:80]})
+                    if not _ok_persist(
+                        forum_id=forum_id, tid=tid, outcome="missing", title=title[:80]
+                    ):
+                        break
                     _log_activity(f"随机 tid={tid} · 主题不存在")
                     continue
 
@@ -389,6 +631,7 @@ async def run_random_tid_batch(
                 pol = adapter.get_board_policy(int(fid) if fid else 0)
                 board_fid = int(pol.fid) if fid else 0
                 board_name = pol.name if fid else "未知板块"
+                board_key = pol.key if fid else (str(board_fid) if board_fid else None)
 
                 try:
                     outcome = await process_thread(
@@ -408,6 +651,14 @@ async def run_random_tid_batch(
                     result["failed"] += 1
                     result["other"] += 1
                     result["samples"].append({"tid": tid, "status": "error", "error": str(exc)[:120]})
+                    if not _ok_persist(
+                        forum_id=forum_id,
+                        tid=tid,
+                        outcome="error",
+                        board_fid=board_key,
+                        title=title[:80],
+                    ):
+                        break
                     _log_activity(f"随机 tid={tid} · 判定异常 · {exc}")
                     continue
 
@@ -420,6 +671,14 @@ async def run_random_tid_batch(
                     "status": verdict,
                 }
                 result["samples"].append(sample)
+                if not _ok_persist(
+                    forum_id=forum_id,
+                    tid=tid,
+                    outcome=verdict,
+                    board_fid=board_key or outcome.get("board_fid"),
+                    title=sample["title"],
+                ):
+                    break
 
                 if verdict == "import":
                     result["imported"] += 1
@@ -484,6 +743,7 @@ async def run_random_tid_batch(
             f"随机抓帖本轮结束 · 探测 {result['probed']} · 缺失 {result['missing']} · "
             f"重复 {result['skipped_dup']} · 入库 {result['imported']}+占位 {result['stubbed']}"
             + (f" · 目标 {target}" if stop_on_persisted else "")
+            + (f" · 自适应" if result.get("adaptive") else "")
         )
         result["persisted_total"] = persisted_n
         _STATE["last_result"] = {

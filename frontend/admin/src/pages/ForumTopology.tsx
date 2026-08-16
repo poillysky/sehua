@@ -226,7 +226,7 @@ function StepDetail({
           </Branch>
           <Branch label="侧线任务">
             <Spine>
-              <Terminal text="随机开关" sub="先扫新帖→消化空→持续随机 · 与深扫互斥" kind="ok" />
+              <Terminal text="扫新随机开关" sub="先扫新帖→消化空→持续随机 · 与深扫互斥" kind="ok" />
               <ArrowDown sm />
               <Terminal text="账号重爬" sub="失败/无权跳过 → 占位 · 需账号 Cookie" kind="warn" />
               <ArrowDown sm />
@@ -794,13 +794,13 @@ function StepDetail({
       <ChartShell
         hint={
           is2048
-            ? '随机抓帖连续循环；直链 read.php；不写待抓队列；停止后清空本会话已探 tid。'
-            : '活动页「随机」开关 = 先扫新帖消化队列 → 再持续随机（loop_kind=random_tid），与深扫连续互斥；随机阶段不写待抓队列；关闭后清空本会话已探 tid。'
+            ? '随机抓帖连续循环；直链 read.php；不写待抓队列；已探 tid 落库持久跳过；停止仅清本会话内存缓存。'
+            : '活动页「扫新随机」开关 = 先扫新帖消化队列 → 再持续随机（loop_kind=random_tid），与深扫连续互斥；随机阶段不写待抓队列；已探 tid 落库（重启仍跳过）；关闭后仅清本会话内存缓存。'
         }
       >
         <Process text="启动随机管道" sub="可选：先扫新帖入队并消化至空" />
         <ArrowDown />
-        <Process text="每轮随机探测" sub="默认 200 个 tid · 范围可配 · 跳过已入库/已在队列" />
+        <Process text="每轮随机探测" sub="默认 500 个 tid · 白名单分布自适应范围 · 跳过已探库/已入库" />
         <ArrowDown />
         <Process
           text="直链读帖判定"
@@ -949,7 +949,7 @@ function buildPipeline(
     {
       id: 'random_tid',
       label: '随机',
-      detail: '连续 200/轮 · 不进队列',
+      detail: '连续 500/轮 · 不进队列',
       status: 'idle',
     },
     {

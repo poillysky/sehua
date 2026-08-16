@@ -46,6 +46,16 @@ export type CrawlerStatus = {
     failed?: number
     skipped?: number
     session_probed?: number
+    persist_probed?: number
+    adaptive?: boolean
+    samples?: Array<{
+      tid?: number
+      status?: string
+      verdict?: string
+      title?: string
+      fid?: number | null
+      error?: string
+    }>
   }
   account_stub_progress?: {
     active?: boolean
@@ -208,8 +218,44 @@ export function startRandomTidLoop(opts?: {
     scan_head_first?: boolean
   }>('/api/crawler/random-tid/loop/start', {
     method: 'POST',
-    body: JSON.stringify({ count: 200, scan_head_first: true, ...(opts || {}) }),
+    body: JSON.stringify({ count: 500, scan_head_first: true, ...(opts || {}) }),
   })
+}
+
+export type RandomProbeItem = {
+  tid?: number | null
+  outcome?: string
+  status?: string
+  board_fid?: string | null
+  title?: string
+  probed_at?: string | null
+  updated_at?: string | null
+}
+
+export type RandomProbesResult = {
+  forum_id?: string
+  outcome: string
+  q: string
+  limit: number
+  offset: number
+  total: number
+  counts?: Record<string, number>
+  items: RandomProbeItem[]
+}
+
+export function fetchRandomProbes(params?: {
+  outcome?: string
+  q?: string
+  limit?: number
+  offset?: number
+}) {
+  const sp = new URLSearchParams()
+  if (params?.outcome) sp.set('outcome', params.outcome)
+  if (params?.q) sp.set('q', params.q)
+  if (params?.limit != null) sp.set('limit', String(params.limit))
+  if (params?.offset != null) sp.set('offset', String(params.offset))
+  const qs = sp.toString()
+  return api<RandomProbesResult>(`/api/crawler/random-tid/probes${qs ? `?${qs}` : ''}`)
 }
 
 export function startCrawlerLoop() {
