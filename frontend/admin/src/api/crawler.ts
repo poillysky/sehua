@@ -196,6 +196,8 @@ export function startRandomTidLoop(opts?: {
   count?: number
   tid_min?: number
   tid_max?: number
+  /** 默认 true：先扫新帖入队并消化至空，再持续随机 */
+  scan_head_first?: boolean
 }) {
   return api<{
     message: string
@@ -203,9 +205,10 @@ export function startRandomTidLoop(opts?: {
     loop_kind?: string
     probe?: number
     already?: boolean
+    scan_head_first?: boolean
   }>('/api/crawler/random-tid/loop/start', {
     method: 'POST',
-    body: JSON.stringify(opts || { count: 200 }),
+    body: JSON.stringify({ count: 200, scan_head_first: true, ...(opts || {}) }),
   })
 }
 

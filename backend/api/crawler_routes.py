@@ -119,6 +119,10 @@ class RandomTidLoopBody(BaseModel):
     count: int | None = Field(default=200, ge=1, le=500, description="每轮随机探测数")
     tid_min: int | None = Field(default=None, ge=1, le=50_000_000)
     tid_max: int | None = Field(default=None, ge=1, le=50_000_000)
+    scan_head_first: bool = Field(
+        default=True,
+        description="先扫新帖（入队并消化至空）再持续随机抓帖",
+    )
 
 
 class RecrawlStubsBody(BaseModel):
@@ -670,7 +674,7 @@ async def post_crawler_random_tid_loop_start(
     body: RandomTidLoopBody | None = None,
     _user: dict = Depends(require_permission("crawl.run")),
 ) -> dict:
-    """启动随机抓帖连续循环：每轮 count 个随机 tid，跳过已入库，无间隔再开下一轮。"""
+    """启动随机连续：默认先扫新帖入队并消化至空，再每轮 count 个随机 tid。"""
     body = body or RandomTidLoopBody()
     fid = _resolve_crawler_forum_id(body.forum_id)
     if fid not in FULL_CRAWLER_FORUM_IDS:
@@ -680,17 +684,19 @@ async def post_crawler_random_tid_loop_start(
         probe=body.count if body.count is not None else 200,
         tid_min=body.tid_min,
         tid_max=body.tid_max,
+        scan_head_first=bool(body.scan_head_first),
     )
     if result.get("already"):
         return {"message": "already", "looping": True, "loop_kind": "random_tid", **result}
     if not result.get("ok"):
         raise HTTPException(status_code=409, detail=str(result.get("error") or "无法启动"))
-    _log_activity(str(result.get("message") or "随机抓帖连续调度已启动"))
+    _log_activity(str(result.get("message") or "随机连续调度已启动"))
     return {
         "message": "started",
         "looping": True,
         "loop_kind": "random_tid",
         "probe": result.get("probe") or body.count or 200,
+        "scan_head_first": bool(result.get("scan_head_first", body.scan_head_first)),
     }
 
 

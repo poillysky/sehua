@@ -193,7 +193,7 @@ function StepDetail({
 
   if (step === 'switch') {
     return (
-      <ChartShell hint="连续深扫受总开关约束。手动立即/扫新帖、账号重爬、异常重试不要求开关开，但与 looping/running 互斥。随机抓帖为独立循环开关，与深扫互斥。停止后若 running+停止标卡住，手动入口会先复位再跑。队列行永不因停止而删除。">
+      <ChartShell hint="连续深扫受总开关约束。手动立即/账号重爬/异常重试不要求开关开，但与 looping/running 互斥。「随机」= 先扫新帖消化队列再持续随机，与深扫互斥。停止后若 running+停止标卡住，手动入口会先复位再跑。队列行永不因停止而删除。">
         <Process text="读爬虫开关" sub={`当前：${cfg.web_crawler_enabled ? '开' : '关'}`} />
         <ArrowDown />
         <Decision text="触发来源？" />
@@ -217,7 +217,7 @@ function StepDetail({
               </Junction>
             </Spine>
           </Branch>
-          <Branch label="手动立即 / 扫新帖" main>
+          <Branch label="手动立即爬取" main>
             <Spine>
               <Process text="复位卡住状态" sub="running+停止标 → idle · 清 stop" />
               <ArrowDown />
@@ -226,7 +226,7 @@ function StepDetail({
           </Branch>
           <Branch label="侧线任务">
             <Spine>
-              <Terminal text="随机抓帖开关" sub="loop=random_tid · 与深扫互斥" kind="ok" />
+              <Terminal text="随机开关" sub="先扫新帖→消化空→持续随机 · 与深扫互斥" kind="ok" />
               <ArrowDown sm />
               <Terminal text="账号重爬" sub="失败/无权跳过 → 占位 · 需账号 Cookie" kind="warn" />
               <ArrowDown sm />
@@ -261,8 +261,8 @@ function StepDetail({
           <Branch label="连续 / 立即">
             <Terminal text="仅深扫" sub="跳过首页捕新 · 游标续扫" kind="ok" />
           </Branch>
-          <Branch label="扫新帖按钮" main>
-            <Terminal text="多板捕新" sub="每板 head 后同锁抓帖 · 再收尾消化" kind="ok" />
+          <Branch label="随机·扫新帖阶段" main>
+            <Terminal text="全板先入队再读帖" sub="消化至空后进入随机" kind="ok" />
           </Branch>
           <Branch label="异常重试">
             <Terminal text="不扫列表" sub="queue_kind=abnormal" kind="warn" />
@@ -288,7 +288,7 @@ function StepDetail({
         hint={
           is2048
             ? '启用板按 board_order（纯 fid）。一轮：当前板 thread.php 列表 → 启用板合计抓帖。深扫触底后切板；5/13 需 Cookie。'
-            : '启用板按 board_order（含 fid:typeid）。一轮：当前板列表 → 启用板合计抓帖。深扫触底后再切 active_board_fid；扫新帖逐板捕新。'
+            : '启用板按 board_order（含 fid:typeid）。扫新帖：按主板块纯 fid 汇总列表入队（142 子版→约 14 主板块）→ 再统一读帖；深扫仍按分类子版。'
         }
       >
         <Process
@@ -410,7 +410,7 @@ function StepDetail({
                     <ArrowDown />
                     <Junction cols={3}>
                       <Branch label="是 · 完成">
-                        <Terminal text="本板捕新结束" sub="同锁抓帖 → 下一启用板" kind="muted" />
+                        <Terminal text="本板捕新结束" sub="只入队 · 全板完后再统一读帖" kind="muted" />
                       </Branch>
                       <Branch label="触达上限仍有新">
                         <Terminal text="记未完成" sub="可再点扫新帖续扫" kind="warn" />
@@ -795,10 +795,10 @@ function StepDetail({
         hint={
           is2048
             ? '随机抓帖连续循环；直链 read.php；不写待抓队列；停止后清空本会话已探 tid。'
-            : '活动页「随机抓帖」开关 = 连续循环（loop_kind=random_tid），与深扫连续互斥；不写待抓队列；关闭后清空本会话已探 tid。'
+            : '活动页「随机」开关 = 先扫新帖消化队列 → 再持续随机（loop_kind=random_tid），与深扫连续互斥；随机阶段不写待抓队列；关闭后清空本会话已探 tid。'
         }
       >
-        <Process text="启动随机连续调度" sub="清 stop · 清空本会话抽样" />
+        <Process text="启动随机管道" sub="可选：先扫新帖入队并消化至空" />
         <ArrowDown />
         <Process text="每轮随机探测" sub="默认 200 个 tid · 范围可配 · 跳过已入库/已在队列" />
         <ArrowDown />
@@ -969,7 +969,7 @@ const STEP_TITLE: Record<TopoStepId, string> = {
   list_scan: '⑤ 扫列表 — 细步骤',
   thread_crawl: '⑥ 抓帖 — 细步骤',
   import: '⑦ 入库 — 细步骤',
-  random_tid: '⑧ 随机抓帖 — 侧线',
+  random_tid: '⑧ 随机 — 扫新帖后侧线',
   account_stub: '⑨ 账号重爬 — 侧线',
 }
 

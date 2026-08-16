@@ -11,7 +11,6 @@ import {
   requeueDiscardedTids,
   retryAbnormalQueue,
   runCrawlerOnce,
-  scanHeadOnce,
   setCrawlerEnabled,
   startCrawlerLoop,
   startRandomTidLoop,
@@ -334,9 +333,12 @@ function activityLevelClass(msg: string): string {
     (m.includes('已入库批量重爬') && zeroFail) ||
     m.includes('扫新帖完成') ||
     m.includes('改板块') ||
+    m.includes('随机 ·') ||
+    m.includes('随机已启动') ||
     m.includes('随机抓帖结束') ||
     m.includes('随机抓帖本轮结束') ||
     m.includes('随机抓帖连续调度已启动') ||
+    m.includes('随机连续调度已启动') ||
     m.includes('本批入库已达上限') ||
     m.includes('账号爬占位结束') ||
     m.includes('账号爬占位升级') ||
@@ -812,7 +814,7 @@ export function CrawlerPage() {
 
   const onToggle = async (next: boolean) => {
     if (next && randomActive) {
-      toast.info('请先关闭「随机抓帖」开关')
+      toast.info('请先关闭「随机」开关')
       return
     }
     setBusy(true)
@@ -848,31 +850,32 @@ export function CrawlerPage() {
     setBusy(true)
     try {
       if (next) {
-        setRunHint('随机抓帖连续调度启动中…')
+        setRunHint('随机启动中 · 先扫新帖再持续随机…')
         const res = await startRandomTidLoop({
           count: 200,
+          scan_head_first: true,
           ...(crawlForumId ? { forum_id: crawlForumId } : {}),
         })
         const probe = res.probe ?? 200
         const line =
           res.message === 'already'
-            ? `随机抓帖连续调度已在运行 · 每轮 ${probe}`
-            : `随机抓帖连续调度已启动 · 每轮 ${probe} · 不进队列 · 跳过已入库 · 停止后重新抽样`
+            ? `随机已在运行 · 每轮 ${probe}`
+            : `随机已启动 · 先扫新帖清空队列 → 再每轮 ${probe} 持续随机 · 可手动停止`
         setRunHint(line)
         toast.success(line)
       } else {
-        setRunHint('正在停止随机抓帖…')
+        setRunHint('正在停止随机…')
         const res = await stopCrawler()
         autoLoopTried.current = false
         const line = res.forced
-          ? '随机抓帖已关闭 · 已强制停止 · 下次重新抽样'
-          : '随机抓帖已关闭 · 本会话抽样已清空'
+          ? '随机已关闭 · 已强制停止 · 下次重新抽样'
+          : '随机已关闭 · 本会话抽样已清空'
         setRunHint(line)
         toast.info(line)
       }
       await refresh()
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : '随机抓帖切换失败')
+      toast.error(err instanceof Error ? err.message : '随机切换失败')
     } finally {
       setBusy(false)
     }
@@ -906,42 +909,6 @@ export function CrawlerPage() {
       await refresh()
     } catch (err) {
       const msg = err instanceof Error ? err.message : '启动失败'
-      setRunHint(msg)
-      toast.error(msg)
-    } finally {
-      setBusy(false)
-    }
-  }
-
-  const onScanHead = async () => {
-    if (enabled || looping || running || busy || stopping) {
-      toast.info(enabled || looping ? '连续调度进行中，请先关闭开关' : '爬虫正在执行，请稍候')
-      return
-    }
-    setBusy(true)
-    setRunHint('扫新帖中，请稍候...')
-    try {
-      const res = await scanHeadOnce(crawlForumId ? { forum_id: crawlForumId } : undefined)
-      const r = res.result || {}
-      if (r.skipped) {
-        setRunHint(`跳过：${String(r.reason || '本轮未执行')}`)
-        toast.info(String(r.reason || '本轮跳过'))
-      } else if (r.ok === false) {
-        setRunHint(`失败：${String(r.error || r.reason || '本轮失败')}`)
-        toast.error(String(r.error || '本轮失败'))
-      } else if (r.reason === 'stopped') {
-        const line = `已停止：新帖 ${r.enqueued ?? 0} · 处理 ${r.crawled ?? 0} · 队列已保留`
-        setRunHint(line)
-        toast.info(line)
-      } else {
-        const headN = Array.isArray(r.pages_head) ? r.pages_head.length : 0
-        const line = `扫新帖完成：捕新 ${headN} 页 · 新入队 ${r.enqueued ?? r.discovered ?? 0} · 处理 ${r.crawled ?? 0}`
-        setRunHint(line)
-        toast.success(line)
-      }
-      await refresh()
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : '扫新帖失败'
       setRunHint(msg)
       toast.error(msg)
     } finally {
@@ -1297,12 +1264,16 @@ export function CrawlerPage() {
       ? ` · 运行中 ${status.running_forum_id}`
       : ''
 
+  const phase = status?.phase || ''
   const runLabel = (() => {
     if (loading) return '读取中…'
     if (stopping || (running && !enabled && loopKind !== 'random_tid')) return `正在停止 · ${forumName}`
     if (stopping) return `正在停止 · ${forumName}`
     if (riskTripped) return `${forumName} · 风控熔断`
-    if (looping && loopKind === 'random_tid') return `随机抓帖连续中 · 每轮 200 · ${forumName}${runningForumHint}`
+    if (looping && loopKind === 'random_tid') {
+      if (phase === 'scan_head') return `随机 · 扫新帖中 · ${forumName}${runningForumHint}`
+      return `随机连续中 · 每轮 200 · ${forumName}${runningForumHint}`
+    }
     if (running || looping) return `正在执行 · ${forumName}${runningForumHint}`
     if (enabled) return `${forumName} · 已开启 · 连续执行`
     return `${forumName} · 已关闭`
@@ -1323,7 +1294,7 @@ export function CrawlerPage() {
                         className="crawler-switch"
                         title={
                           randomActive
-                            ? '请先关闭「随机抓帖」后再开连续深扫'
+                            ? '请先关闭「随机」后再开连续深扫'
                             : '开启/关闭论坛爬虫连续深扫'
                         }
                       >
@@ -1342,10 +1313,10 @@ export function CrawlerPage() {
                         className="crawler-switch"
                         title={
                           enabled || (looping && loopKind !== 'random_tid')
-                            ? '请先关闭「连续深扫」后再开随机抓帖'
+                            ? '请先关闭「连续深扫」后再开随机'
                             : running && !randomActive
                               ? '本轮仍在执行，请稍候'
-                              : '循环：每轮随机 200 个 tid 直链探测并入库；不写待抓队列；跳过已入库；关闭后清空本会话抽样'
+                              : '先扫新帖（全板入队并消化至空）→ 再持续随机抓帖；关闭即停；不写待抓队列'
                         }
                       >
                         <input
@@ -1363,7 +1334,7 @@ export function CrawlerPage() {
                         />
                         <span className="crawler-switch-slider" aria-hidden />
                       </label>
-                      <span className="crawler-switch-caption">随机抓帖</span>
+                      <span className="crawler-switch-caption">随机</span>
                     </div>
                   </div>
                   <span className="crawler-run-label">{runLabel}</span>
@@ -1397,21 +1368,6 @@ export function CrawlerPage() {
                     onClick={() => void onRun()}
                   >
                     {running || looping || enabled ? '执行中…' : '立即爬取'}
-                  </button>
-                  <button
-                    type="button"
-                    className="crawler-action"
-                    disabled={enabled || looping || running || busy || stopping}
-                    title={
-                      enabled || looping
-                        ? '连续调度进行中，请先关闭开关后再扫新帖'
-                        : running || stopping
-                          ? '本轮仍在执行，请稍候'
-                          : '启用子板按序捕新（强制读列表）→ 收尾消化待抓至空；连续全旧帖早停；可手动停止'
-                    }
-                    onClick={() => void onScanHead()}
-                  >
-                    扫新帖
                   </button>
                   <button
                     type="button"
@@ -1600,7 +1556,7 @@ export function CrawlerPage() {
                   <div className="activity-empty">
                     {enabled
                       ? '暂无活动日志 · 点「立即爬取」或等待连续调度'
-                      : '暂无活动日志 · 点「立即爬取」「扫新帖」或明细里「重爬选中」后会出现'}
+                      : '暂无活动日志 · 点「立即爬取」、开「随机」或明细里「重爬选中」后会出现'}
                   </div>
                 )}
               </div>

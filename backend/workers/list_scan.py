@@ -23,6 +23,7 @@ from db.connection import connect
 from db.queue import enqueue_thread, update_crawl_board_meta_by_tids
 from db.repository import known_resource_tids, update_board_meta_by_tids
 from db.resource_db import connect_resource
+from parsers.boards import allowed_typeids_for_list_scan, list_row_enqueue_target
 from parsers.list_dates import is_thread_old_enough
 from parsers.thread_gates import is_thread_login_required
 
@@ -49,6 +50,7 @@ class ListScanResult:
     enqueued: int = 0
     board_updated: int = 0  # 已有资源仅改板块字段
     deferred_young: int = 0  # 未满龄跳过（不入队）数
+    skipped_typeid: int = 0  # 汇总列表上非启用/版务分类跳过
     last_list_page: int = 0  # 计数阶段最后一页（游标）
     harvest_start_page: int = 0
     list_exhausted: bool = False
@@ -182,20 +184,37 @@ def _enqueue_batch(
     min_thread_age_days: int = 0,
     forum_id: str = "sehuatang",
     entry_url: str = "",
+    allow_typeids: frozenset[str] | None = None,
 ) -> tuple[int, int]:
     """入队缺失帖；已有资源只改板块字段不读帖。
 
     返回 (本页新插入数, 本页因未满龄跳过数)。未满龄帖不入队。
+    汇总父板扫时传 allow_typeids：行上 typeid 不在集合 / 版务 → 不入队。
     """
     page_enqueued = 0
     page_skipped_young = 0
     if not batch:
         return 0, 0
+
+    resolved: list[tuple[ThreadBrief, str, str]] = []
+    for t in batch:
+        target = list_row_enqueue_target(
+            board_fid,
+            getattr(t, "typeid", None),
+            allow_typeids=allow_typeids,
+        )
+        if target is None:
+            out.skipped_typeid += 1
+            if t.tid not in seen:
+                seen.add(t.tid)
+            continue
+        resolved.append((t, target[0], target[1]))
+
     if persist_enqueue:
         conn = connect()
         rconn = connect_resource()
         try:
-            tids = [int(t.tid) for t in batch if getattr(t, "tid", None)]
+            tids = [int(t.tid) for t, _, _ in resolved if getattr(t, "tid", None)]
             known = (
                 known_resource_tids(
                     rconn, tids, forum_id=forum_id, entry_url=entry_url
@@ -203,28 +222,36 @@ def _enqueue_batch(
                 if tids
                 else set()
             )
-            to_update = [tid for tid in tids if tid in known and tid not in seen]
-            # 去重后再更新，避免同页重复 tid
-            to_update = list(dict.fromkeys(to_update))
-            if to_update:
+            # 按目标子版分组更新已有资源板块元数据
+            by_board: dict[str, list[int]] = {}
+            name_by_board: dict[str, str] = {}
+            for t, bkey, bname in resolved:
+                if t.tid in known and t.tid not in seen:
+                    by_board.setdefault(bkey, []).append(int(t.tid))
+                    name_by_board[bkey] = bname
+            for bkey, upd_tids in by_board.items():
+                upd_tids = list(dict.fromkeys(upd_tids))
+                if not upd_tids:
+                    continue
+                bname = name_by_board.get(bkey) or board_name
                 n = update_board_meta_by_tids(
                     rconn,
-                    to_update,
-                    board_fid=str(board_fid),
-                    board_name=board_name,
+                    upd_tids,
+                    board_fid=str(bkey),
+                    board_name=bname,
                     forum_id=forum_id,
                     entry_url=entry_url,
                 )
                 update_crawl_board_meta_by_tids(
                     conn,
-                    to_update,
-                    board_fid=board_fid,
-                    board_name=board_name,
+                    upd_tids,
+                    board_fid=bkey,
+                    board_name=bname,
                 )
                 out.board_updated += max(0, int(n or 0))
-                for tid in to_update:
+                for tid in upd_tids:
                     seen.add(tid)
-            for t in batch:
+            for t, bkey, bname in resolved:
                 if t.tid in seen:
                     continue
                 seen.add(t.tid)
@@ -251,8 +278,8 @@ def _enqueue_batch(
                 if enqueue_thread(
                     conn,
                     url=enqueue_url,
-                    board_fid=board_fid,
-                    board_name=board_name,
+                    board_fid=bkey,
+                    board_name=bname,
                     title=t.title,
                     forum_id=forum_id,
                     retry_after=None,
@@ -279,7 +306,7 @@ def _enqueue_batch(
                 except Exception:
                     pass
     else:
-        for t in batch:
+        for t, _bkey, _bname in resolved:
             if t.tid in seen:
                 continue
             seen.add(t.tid)
@@ -317,6 +344,7 @@ async def scan_board_list(
     on_log: Optional[LogFn] = None,
     on_cursor: Optional[CursorFn] = None,
     forum_id: str = "sehuatang",
+    enabled_board_fids: list[str] | tuple[str, ...] | None = None,
 ) -> ListScanResult:
     """扫列表并入队。
 
@@ -327,6 +355,7 @@ async def scan_board_list(
     4. 深扫每轮 pages_per_board 页，跨轮从游标续扫直到空页或内容重复（板底）。
     5. 列表页失败不推进游标。
     6. 龄期板仅入队已满龄帖；未满龄跳过，不入队。
+    7. 父板汇总扫（无 list_typeid）时按 enabled_board_fids 排除未启用/版务 typeid。
     """
     from crawler.sites import get_site_adapter
 
@@ -345,6 +374,7 @@ async def scan_board_list(
     head_known_need = max(1, head_known_need)
     min_age = int(pol.min_thread_age_days or 0)
     head_from = max(1, int(head_start_page or 1))
+    allow_typeids = allowed_typeids_for_list_scan(board_fid, enabled_board_fids)
 
     out = ListScanResult(board_fid=numeric_fid, last_list_page=cursor)
     seen: set[int] = set()
@@ -446,6 +476,7 @@ async def scan_board_list(
             out.pages_head.append(page)
             pages_read_in_head += 1
             upd_before = out.board_updated
+            skip_td_before = out.skipped_typeid
             enq, young_skip = _enqueue_batch(
                 out,
                 fetched.batch,
@@ -456,10 +487,12 @@ async def scan_board_list(
                 min_thread_age_days=min_age,
                 forum_id=forum_id,
                 entry_url=entry_url,
+                allow_typeids=allow_typeids,
             )
             page_upd = out.board_updated - upd_before
-            # 未满龄跳过不算「全已知」，避免板 141 首页因年轻帖早停
-            if enq == 0 and young_skip == 0:
+            page_skip_td = out.skipped_typeid - skip_td_before
+            # 未满龄 / 非启用分类 跳过不算「全已知」，避免早停漏帖
+            if enq == 0 and young_skip == 0 and page_skip_td == 0:
                 known_streak += 1
             elif enq > 0:
                 known_streak = 0
@@ -467,9 +500,10 @@ async def scan_board_list(
                 f"首页捕新 P{page} · {len(fetched.batch)} 帖 · 新入队 {enq}（不计配额）"
                 + (f" · 改板块 {page_upd}" if page_upd else "")
                 + (f" · 未满龄跳过 {young_skip}" if young_skip else "")
+                + (f" · 非启用分类跳过 {page_skip_td}" if page_skip_td else "")
                 + (
                     f" · 全已知连续 {known_streak}/{head_known_need}"
-                    if enq == 0 and young_skip == 0
+                    if enq == 0 and young_skip == 0 and page_skip_td == 0
                     else ""
                 )
             )
@@ -570,6 +604,7 @@ async def scan_board_list(
         harvested += 1
         prev_tids = tids
         upd_before = out.board_updated
+        skip_td_before = out.skipped_typeid
         enq, young_skip = _enqueue_batch(
             out,
             fetched.batch,
@@ -580,9 +615,11 @@ async def scan_board_list(
             min_thread_age_days=min_age,
             forum_id=forum_id,
             entry_url=entry_url,
+            allow_typeids=allow_typeids,
         )
         page_upd = out.board_updated - upd_before
-        if enq == 0 and young_skip == 0:
+        page_skip_td = out.skipped_typeid - skip_td_before
+        if enq == 0 and young_skip == 0 and page_skip_td == 0:
             known_streak += 1
         elif enq > 0:
             known_streak = 0
@@ -592,7 +629,12 @@ async def scan_board_list(
             + (f" · 改板块 {page_upd}" if page_upd else "")
             + f" · {progress}"
             + (f" · 未满龄跳过 {young_skip}" if young_skip else "")
-            + (f" · 全已知连续 {known_streak}" if enq == 0 and young_skip == 0 else "")
+            + (f" · 非启用分类跳过 {page_skip_td}" if page_skip_td else "")
+            + (
+                f" · 全已知连续 {known_streak}"
+                if enq == 0 and young_skip == 0 and page_skip_td == 0
+                else ""
+            )
         )
         await THROTTLE.sleep()
         page += 1

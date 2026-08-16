@@ -15,6 +15,26 @@ class ThreadBrief:
     url: str = ""
     is_sticky: bool = False
     posted_at: object | None = None  # datetime | None
+    typeid: str | None = None  # Discuz 主题分类，汇总列表 typehtml 可抽到
+
+
+_TYPEID_IN_HREF = re.compile(r"[?&]typeid=(\d+)", re.I)
+
+
+def _typeid_from_list_row_html(chunk: str) -> str | None:
+    """从列表行 HTML 抽 typeid（Discuz typehtml 链接）。"""
+    if not chunk:
+        return None
+    # 优先 forumdisplay + filter=typeid 形态
+    m = re.search(
+        r"forumdisplay[^\"']{0,160}?typeid=(\d+)|typeid=(\d+)[^\"']{0,80}?forumdisplay",
+        chunk,
+        re.I,
+    )
+    if m:
+        return m.group(1) or m.group(2)
+    m = _TYPEID_IN_HREF.search(chunk)
+    return m.group(1) if m else None
 
 
 @dataclass
@@ -114,6 +134,19 @@ def _parse_forum_list_dom(
             em = by_cell.select_one("em span") or by_cell.select_one("em")
             if em:
                 posted_at = parse_discuz_list_datetime(em.get_text(strip=True))
+        row_typeid = None
+        for a in tb.select("a[href]"):
+            href = a.get("href") or ""
+            if "typeid=" not in href:
+                continue
+            # 主题分类徽标，不是帖内无关链
+            if "forumdisplay" in href or "filter=typeid" in href or "typeid=" in href:
+                m = _TYPEID_IN_HREF.search(href.replace("&amp;", "&"))
+                if m:
+                    row_typeid = m.group(1)
+                    break
+        if not row_typeid:
+            row_typeid = _typeid_from_list_row_html(str(tb))
         out.append(
             ThreadBrief(
                 tid=tid,
@@ -121,6 +154,7 @@ def _parse_forum_list_dom(
                 url=f"{base}thread-{tid}-1-1.html",
                 is_sticky=is_sticky,
                 posted_at=posted_at,
+                typeid=row_typeid,
             )
         )
     return out
@@ -135,10 +169,17 @@ def _parse_forum_list_regex(
     threads: list[ThreadBrief] = []
     seen: set[int] = set()
     sticky_tids: set[int] = set()
-    for m in re.finditer(r'<tbody[^>]*\bid="(stickthread|normalthread)_(\d+)"', html, re.I):
-        kind, tid_s = m.group(1).lower(), m.group(2)
+    tbody_chunks: dict[int, str] = {}
+    for m in re.finditer(
+        r'<tbody[^>]*\bid="(stickthread|normalthread)_(\d+)"[^>]*>(.*?)(?=<tbody\b|$)',
+        html,
+        re.I | re.S,
+    ):
+        kind, tid_s, body = m.group(1).lower(), m.group(2), m.group(3)
+        tid = int(tid_s)
         if kind == "stickthread":
-            sticky_tids.add(int(tid_s))
+            sticky_tids.add(tid)
+        tbody_chunks[tid] = body
 
     patterns = [
         re.compile(
@@ -176,13 +217,13 @@ def _parse_forum_list_regex(
                     title=title,
                     url=f"{base}thread-{tid}-1-1.html",
                     is_sticky=is_sticky,
+                    typeid=_typeid_from_list_row_html(tbody_chunks.get(tid, "")),
                 )
             )
 
     if not threads:
-        for m in re.finditer(r'<tbody[^>]*\bid="(stickthread|normalthread)_(\d+)"', html, re.I):
-            kind, tid = m.group(1).lower(), int(m.group(2))
-            is_sticky = kind == "stickthread"
+        for tid, body in tbody_chunks.items():
+            is_sticky = tid in sticky_tids
             if skip_sticky and is_sticky:
                 continue
             if tid in seen:
@@ -194,6 +235,7 @@ def _parse_forum_list_regex(
                     title=f"(tid={tid})",
                     url=f"{base}thread-{tid}-1-1.html",
                     is_sticky=is_sticky,
+                    typeid=_typeid_from_list_row_html(body),
                 )
             )
     return threads

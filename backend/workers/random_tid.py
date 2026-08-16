@@ -569,8 +569,12 @@ def start_random_tid_loop(
     probe: int | None = None,
     tid_min: int | None = None,
     tid_max: int | None = None,
+    scan_head_first: bool = True,
 ) -> dict[str, Any]:
-    """启动随机抓帖连续循环（与深扫连续调度互斥）。"""
+    """启动随机抓帖连续循环（与深扫连续调度互斥）。
+
+    默认 scan_head_first=True：先扫新帖（全板入队并消化至空），再持续随机抓帖。
+    """
     global _random_loop_task, _random_loop_future
     from workers.crawl_executor import spawn_crawl
 
@@ -580,7 +584,7 @@ def start_random_tid_loop(
             (_random_loop_future is not None and not _random_loop_future.done())
             or (_random_loop_task is not None and not _random_loop_task.done())
         ):
-            return {"ok": True, "already": True, "message": "随机抓帖连续调度已在运行"}
+            return {"ok": True, "already": True, "message": "随机连续调度已在运行"}
         return {
             "ok": False,
             "reason": "loop_running",
@@ -596,22 +600,66 @@ def start_random_tid_loop(
     _STATE["looping"] = True
     _STATE["running"] = True
     _STATE["loop_kind"] = "random_tid"
-    _STATE["phase"] = "random_tid"
+    _STATE["phase"] = "scan_head" if scan_head_first else "random_tid"
+    _STATE["forum_id"] = forum_id
     _STATE["last_started_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
 
     async def _boot() -> None:
         global _random_loop_task
         _random_loop_task = asyncio.current_task()
+        entered_random = False
         try:
+            if scan_head_first:
+                from workers.runner import run_scan_head_once
+
+                _log_activity(
+                    f"随机 · 1/2 扫新帖（全板入队→消化队列至空）· 随后每轮 {n} 随机抓帖"
+                )
+                scan = await run_scan_head_once(
+                    forum_id=forum_id,
+                    persist=True,
+                    hold_lock=True,
+                )
+                if THROTTLE.should_stop() or scan.get("reason") == "stopped":
+                    _log_activity("随机 · 扫新帖阶段已停止 · 不进入随机抓帖")
+                    return
+                if scan.get("ok") is False and not scan.get("skipped"):
+                    _log_activity(
+                        f"随机 · 扫新帖失败 · {scan.get('error') or scan.get('reason') or '未知'} · 不进入随机"
+                    )
+                    return
+                if THROTTLE.should_stop() or not _STATE.get("looping"):
+                    return
+                _log_activity(
+                    f"随机 · 2/2 扫新帖完成 · 入队 {scan.get('enqueued') or 0} · "
+                    f"抓 {scan.get('crawled') or 0} · 开始持续随机抓帖"
+                )
+            entered_random = True
             await _random_tid_loop(
                 forum_id=forum_id, probe=n, tid_min=tid_min, tid_max=tid_max
             )
+        except asyncio.CancelledError:
+            _log_activity("随机管道已取消")
+            raise
         finally:
             if _random_loop_task is asyncio.current_task():
                 _random_loop_task = None
+            if not entered_random:
+                clear_random_session_state()
+                _STATE["looping"] = False
+                _STATE["running"] = False
+                _STATE["loop_kind"] = None
+                _STATE["forum_id"] = None
+                _STATE["phase"] = "idle"
+                _STATE["last_finished_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
 
     _random_loop_future = spawn_crawl(_boot(), name="random-tid-loop")
-    return {"ok": True, "message": f"随机抓帖连续调度已启动 · 每轮 {n} · 不进队列", "probe": n}
+    msg = (
+        f"随机已启动 · 先扫新帖再每轮 {n} 随机抓帖 · 不进队列"
+        if scan_head_first
+        else f"随机抓帖连续调度已启动 · 每轮 {n} · 不进队列"
+    )
+    return {"ok": True, "message": msg, "probe": n, "scan_head_first": bool(scan_head_first)}
 
 
 def stop_random_tid_loop() -> dict[str, Any]:

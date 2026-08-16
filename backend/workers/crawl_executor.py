@@ -114,7 +114,14 @@ def spawn_crawl(
             return await coro
         except asyncio.CancelledError:
             log.info("crawl cancelled · %s", name)
-            raise
+            # 停止任务时勿把 CancelledError 打成 HTTP 500；交给 await 方结构化结果
+            stopped: dict[str, Any] = {
+                "ok": True,
+                "reason": "stopped",
+                "skipped": False,
+                "error": "已手动停止",
+            }
+            return stopped  # type: ignore[return-value]
         except Exception:
             log.exception("crawl failed · %s", name)
             raise
@@ -129,7 +136,26 @@ async def await_crawl(
 ) -> T:
     """在爬虫线程跑协程，当前（通常为 uvicorn）循环只等 Future，可继续处理登录/健康检查。"""
     fut = spawn_crawl(coro, name=name)
-    return await asyncio.wrap_future(fut)
+    try:
+        return await asyncio.wrap_future(fut)
+    except concurrent.futures.CancelledError:
+        log.info("crawl future cancelled · %s", name)
+        stopped: dict[str, Any] = {
+            "ok": True,
+            "reason": "stopped",
+            "skipped": False,
+            "error": "已手动停止",
+        }
+        return stopped  # type: ignore[return-value]
+    except asyncio.CancelledError:
+        log.info("crawl await cancelled · %s", name)
+        stopped = {
+            "ok": True,
+            "reason": "stopped",
+            "skipped": False,
+            "error": "已手动停止",
+        }
+        return stopped  # type: ignore[return-value]
 
 
 def cancel_all_crawls() -> int:

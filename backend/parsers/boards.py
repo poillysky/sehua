@@ -19,6 +19,74 @@ DISCUZ_BOARD_FID = 95
 DISCUZ_SHARE_TYPEID = "716"
 
 
+def is_banwu_typeid(typeid: str | int | None) -> bool:
+    tid = str(typeid or "").strip()
+    return bool(tid) and tid in _BANWU_TYPEIDS
+
+
+def allowed_typeids_for_list_scan(
+    unit_key: str | int,
+    enabled: list[str] | tuple[str, ...] | None,
+) -> frozenset[str] | None:
+    """父板汇总列表入队时的 typeid 白名单。
+
+    - 已在带 typeid 的子版 URL 上扫 → None（列表本身已过滤）
+    - 启用队列里该 fid 没有任何 ``fid:typeid`` → None（整板无分类）
+    - 否则返回启用中的 typeid 集合（版务等未启用的会被排除）
+    """
+    fid, list_tid = parse_board_key(unit_key)
+    if not fid:
+        return None
+    if list_tid:
+        return None
+    prefix = f"{fid}:"
+    out: set[str] = set()
+    for raw in enabled or []:
+        k = str(raw).strip()
+        if not k.startswith(prefix):
+            continue
+        _, tid = parse_board_key(k)
+        if tid and not is_banwu_typeid(tid):
+            out.add(tid)
+    return frozenset(out) if out else None
+
+
+def list_row_enqueue_target(
+    scan_key: str | int,
+    row_typeid: str | int | None,
+    *,
+    allow_typeids: frozenset[str] | None,
+) -> tuple[str, str] | None:
+    """汇总/子版列表行 → 入队用 (board_key, board_name)；None 表示跳过。
+
+    规则：
+    - 版务 typeid 一律跳过
+    - 有 allow_typeids 时：行上 typeid 不在集合内则跳过；无 typeid 标记则保留扫板 key（防漏帖）
+    - 能对应到白名单子版时，入队 key 升为 ``fid:typeid``
+    """
+    fid, _ = parse_board_key(scan_key)
+    if not fid:
+        return None
+    tid = str(row_typeid).strip() if row_typeid is not None and str(row_typeid).strip() else None
+    if tid and is_banwu_typeid(tid):
+        return None
+    if allow_typeids is not None:
+        if tid is None:
+            pol = get_board_policy(scan_key)
+            return str(scan_key), pol.name
+        if tid not in allow_typeids:
+            return None
+        key = board_unit_key(fid, tid)
+        pol = BOARD_POLICIES.get(key) or get_board_policy(scan_key)
+        return key, pol.name
+    if tid:
+        key = board_unit_key(fid, tid)
+        if key in BOARD_POLICIES and not is_banwu_typeid(tid):
+            return key, BOARD_POLICIES[key].name
+    pol = get_board_policy(scan_key)
+    return str(scan_key), pol.name
+
+
 @dataclass(frozen=True, slots=True)
 class BoardPolicy:
     """一条可勾选的爬取单位（板块 或 板块-分类）。"""
@@ -363,6 +431,68 @@ def default_board_order() -> list[str]:
 
 def all_board_keys() -> set[str]:
     return set(BOARD_POLICIES.keys())
+
+
+def collapse_to_parent_board_fids(keys: list[str] | tuple[str, ...] | None) -> list[str]:
+    """启用队列折叠为主板块纯 fid（保序去重）。
+
+    扫新帖用：启用了 142 个分类子版时，只扫 14 个主板块汇总列表（无 typeid），
+    避免同一 fid 下每个分类各翻一遍。
+    """
+    out: list[str] = []
+    seen: set[str] = set()
+    for raw in keys or []:
+        fid, _ = parse_board_key(raw)
+        bare = str(fid) if fid else str(raw).split(":", 1)[0].strip()
+        if not bare or bare in seen:
+            continue
+        seen.add(bare)
+        out.append(bare)
+    return out
+
+
+def scan_head_board_keys(keys: list[str] | tuple[str, ...] | None) -> list[str]:
+    """扫新帖列表单位（保序）。
+
+    - 同一主板块下启用多个分类子版 → 扫纯 fid 汇总列表（一次收全该板新帖）
+    - 仅启用一个子版 → 保留 typed key（带 typeid，避免同板其它分类误入）
+    """
+    groups: dict[str, list[str]] = {}
+    order: list[str] = []
+    for raw in keys or []:
+        k = str(raw).strip()
+        if not k:
+            continue
+        fid, _ = parse_board_key(k)
+        bare = str(fid) if fid else k.split(":", 1)[0].strip()
+        if not bare:
+            continue
+        if bare not in groups:
+            groups[bare] = []
+            order.append(bare)
+        if k not in groups[bare]:
+            groups[bare].append(k)
+    out: list[str] = []
+    for bare in order:
+        kids = groups[bare]
+        if len(kids) == 1:
+            out.append(kids[0])
+        else:
+            out.append(bare)
+    return out
+
+
+def is_parent_of_enabled(board_fid: str | int, enabled: list[str] | tuple[str, ...] | None) -> bool:
+    """纯 fid 是否覆盖启用队列中任一子版（含自身）。"""
+    bare = str(board_fid or "").strip()
+    if not bare.isdigit():
+        return False
+    prefix = f"{bare}:"
+    for k in enabled or []:
+        s = str(k).strip()
+        if s == bare or s.startswith(prefix):
+            return True
+    return False
 
 
 def expand_legacy_board_keys(keys: list[str] | None) -> list[str]:
