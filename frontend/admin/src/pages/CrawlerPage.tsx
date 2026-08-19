@@ -2182,7 +2182,7 @@ export function CrawlerPage() {
           onClick={() => setRandomModalOpen(false)}
         >
           <div
-            className="modal-card crawler-discarded-modal"
+            className="modal-card crawler-discarded-modal crawler-random-modal"
             role="dialog"
             aria-modal="true"
             aria-labelledby="crawler-random-modal-title"
@@ -2269,7 +2269,7 @@ export function CrawlerPage() {
               </div>
 
               {randomTab === 'current' ? (
-                <>
+                <div className="crawler-discarded-pane">
                   <div className="crawler-discarded-meta">
                     <span>
                       本轮探测 {randomSamples.length}
@@ -2277,8 +2277,9 @@ export function CrawlerPage() {
                       {randomAdaptive ? ' · 自适应' : ''}
                     </span>
                   </div>
-                  <div className="crawler-discarded-table-wrap">
-                    <table className="crawler-discarded-table">
+                  <div className="crawler-discarded-pane-scroll">
+                    <div className="crawler-discarded-table-wrap">
+                      <table className="crawler-discarded-table">
                       <thead>
                         <tr>
                           <th>tid</th>
@@ -2311,8 +2312,13 @@ export function CrawlerPage() {
                                     '—'
                                   )}
                                 </td>
-                                <td>{RANDOM_OUTCOME_LABEL[st] || st || '—'}</td>
-                                <td title={row.title || ''}>{row.title || row.error || '—'}</td>
+                                <td className="crawler-discarded-reason">{RANDOM_OUTCOME_LABEL[st] || st || '—'}</td>
+                                <td
+                                  className="crawler-discarded-title-cell"
+                                  title={row.title || ''}
+                                >
+                                  {row.title || row.error || '—'}
+                                </td>
                               </tr>
                             )
                           })
@@ -2365,8 +2371,12 @@ export function CrawlerPage() {
                                     '—'
                                   )}
                                 </td>
-                                <td>{STATUS_LABEL[String(row.status || '')] || row.status || '待抓'}</td>
-                                <td title={title}>{title}</td>
+                                <td className="crawler-discarded-reason">
+                                  {STATUS_LABEL[String(row.status || '')] || row.status || '待抓'}
+                                </td>
+                                <td className="crawler-discarded-title-cell" title={title}>
+                                  {title}
+                                </td>
                               </tr>
                             )
                           })
@@ -2377,6 +2387,7 @@ export function CrawlerPage() {
                         )}
                       </tbody>
                     </table>
+                  </div>
                   </div>
                   <div className="crawler-discarded-pager">
                     <button
@@ -2396,23 +2407,24 @@ export function CrawlerPage() {
                       下一页
                     </button>
                   </div>
-                </>
+                </div>
               ) : (
-                <>
+                <div className="crawler-discarded-pane">
                   <div className="crawler-discarded-meta">
                     <span>
                       {rndHistoryPageStart}-{rndHistoryPageEnd} / {rndTotal}
                       {rndLoading ? ' · 加载中…' : ''}
                     </span>
                   </div>
-                  <div className="crawler-discarded-table-wrap">
-                    <table className="crawler-discarded-table">
+                  <div className="crawler-discarded-pane-scroll">
+                    <div className="crawler-discarded-table-wrap">
+                    <table className="crawler-discarded-table crawler-random-history-table">
                       <thead>
                         <tr>
                           <th>tid</th>
-                          <th>结果</th>
-                          <th>板块</th>
-                          <th>标题</th>
+                          <th className="crawler-discarded-reason">结果</th>
+                          <th className="crawler-discarded-board-cell">板块</th>
+                          <th className="crawler-discarded-title-cell">标题</th>
                           <th>更新</th>
                         </tr>
                       </thead>
@@ -2456,6 +2468,7 @@ export function CrawlerPage() {
                       </tbody>
                     </table>
                   </div>
+                  </div>
                   <div className="crawler-discarded-pager">
                     <button
                       type="button"
@@ -2474,7 +2487,7 @@ export function CrawlerPage() {
                       下一页
                     </button>
                   </div>
-                </>
+                </div>
               )}
             </div>
           </div>

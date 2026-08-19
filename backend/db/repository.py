@@ -299,8 +299,12 @@ def upsert_resource(
     commit: bool = True,
 ) -> bool:
     _ensure_resource_schema(conn)
-    title = strip_nul(title) or None
-    description = strip_nul(description) or None
+    from parsers.content import strip_forum_shell_from_text, strip_forum_shell_from_title
+
+    title = strip_nul(strip_forum_shell_from_title(title or "") if title else None) or None
+    description = strip_nul(
+        strip_forum_shell_from_text(description) if description else None
+    ) or None
     extract_password = strip_nul(extract_password) or None
     board_name = strip_nul(board_name) or None
     import_outcome = strip_nul(import_outcome) or None

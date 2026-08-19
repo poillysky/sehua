@@ -173,6 +173,25 @@ def _existing_tables(conn: Any) -> list[str]:
     return found
 
 
+def _table_columns(conn: Any, name: str) -> list[str]:
+    """取表列名；named cursor 在首次 fetch 前 description 为空，需单独查询。"""
+    with conn.cursor() as cur:
+        cur.execute(f"SELECT * FROM {name} LIMIT 0")
+        if not cur.description:
+            return []
+        return [d[0] for d in cur.description]
+
+
+def _table_row_counts(conn: Any, tables: list[str]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    with conn.cursor() as cur:
+        for name in tables:
+            cur.execute(f"SELECT count(*) FROM {name}")
+            row = cur.fetchone()
+            counts[name] = int(row[0] if row else 0)
+    return counts
+
+
 def _sql_literal(value: Any) -> str:
     if value is None:
         return "NULL"
@@ -202,6 +221,8 @@ def _run_python_dump(tables: list[str], dest_tmp: Path) -> None:
     使用服务端游标（named cursor）按批拉取，避免整表进客户端内存。
     """
     conn = connect_resource()
+    expected_rows = _table_row_counts(conn, tables)
+    exported_rows = 0
     try:
         # named cursor 必须在事务中；关闭自动提交
         try:
@@ -214,15 +235,17 @@ def _run_python_dump(tables: list[str], dest_tmp: Path) -> None:
             for name in reversed(tables):
                 gz.write(f"DELETE FROM {name};\n")
             for name in tables:
+                cols = _table_columns(conn, name)
+                if not cols:
+                    if expected_rows.get(name, 0) > 0:
+                        raise RuntimeError(f"无法读取表 {name} 的列信息")
+                    continue
+                col_sql = ", ".join(cols)
                 # 每表独立命名游标，服务端流式
                 cur = conn.cursor(name=f"bak_{name[:40]}")
                 try:
                     cur.itersize = 500
                     cur.execute(f"SELECT * FROM {name}")
-                    cols = [d[0] for d in cur.description] if cur.description else []
-                    if not cols:
-                        continue
-                    col_sql = ", ".join(cols)
                     while True:
                         rows = cur.fetchmany(500)
                         if not rows:
@@ -230,6 +253,7 @@ def _run_python_dump(tables: list[str], dest_tmp: Path) -> None:
                         for row in rows:
                             vals = ", ".join(_sql_literal(v) for v in row)
                             gz.write(f"INSERT INTO {name} ({col_sql}) VALUES ({vals});\n")
+                            exported_rows += 1
                 finally:
                     try:
                         cur.close()
@@ -242,6 +266,18 @@ def _run_python_dump(tables: list[str], dest_tmp: Path) -> None:
             pass
     finally:
         conn.close()
+
+    expected_total = sum(expected_rows.values())
+    if expected_total > 0 and exported_rows == 0:
+        dest_tmp.unlink(missing_ok=True)
+        raise RuntimeError(
+            f"Python 备份未导出任何数据行（预期 {expected_total} 行），已中止"
+        )
+    if expected_total > 0 and exported_rows < expected_total:
+        dest_tmp.unlink(missing_ok=True)
+        raise RuntimeError(
+            f"Python 备份导出不完整：{exported_rows}/{expected_total} 行，已中止"
+        )
     if not dest_tmp.is_file() or dest_tmp.stat().st_size < 32:
         dest_tmp.unlink(missing_ok=True)
         raise RuntimeError("备份文件为空或过小")

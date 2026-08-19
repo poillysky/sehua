@@ -1367,8 +1367,9 @@ a {
   display: grid;
   place-items: center;
   padding: 20px;
-  background: rgba(6, 10, 16, 0.62);
-  backdrop-filter: blur(2px);
+  background: radial-gradient(ellipse at center, rgba(6, 10, 16, 0.55), rgba(6, 10, 16, 0.78));
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
 }
 
 .modal-card {
@@ -2276,6 +2277,17 @@ a {
   place-items: stretch;
   padding: 16px;
   z-index: 90;
+  animation: backdrop-fade-in 0.18s ease-out;
+}
+
+@keyframes backdrop-fade-in {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+
+@keyframes modal-slide-up {
+  from { opacity: 0; transform: translateY(12px); }
+  to   { opacity: 1; transform: translateY(0); }
 }
 
 .crawler-discarded-modal {
@@ -2287,16 +2299,17 @@ a {
   background: var(--panel);
   border: 1px solid var(--border);
   border-radius: 14px;
-  box-shadow: var(--shadow);
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.28), 0 2px 8px rgba(0, 0, 0, 0.12);
   overflow: hidden;
+  animation: modal-slide-up 0.22s ease-out;
 }
 
 .crawler-discarded-modal-head {
   flex-shrink: 0;
   align-items: flex-start;
   gap: 12px;
-  padding: 12px 16px;
-  background: var(--bg-elevated);
+  padding: 14px 16px;
+  background: linear-gradient(180deg, var(--bg-elevated) 0%, color-mix(in srgb, var(--bg-elevated) 85%, var(--panel)) 100%);
   border-bottom: 1px solid var(--border);
 }
 
@@ -2337,10 +2350,46 @@ a {
   overflow: hidden;
 }
 
+/* 弹窗主内容区：工具栏下方列表 + 分页 */
+.crawler-discarded-pane {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.crawler-discarded-pane-scroll {
+  flex: 1 1 0;
+  min-height: 0;
+  overflow: auto;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior: contain;
+}
+
+.crawler-discarded-pane .crawler-discarded-meta,
+.crawler-discarded-pane .crawler-discarded-pager {
+  flex-shrink: 0;
+}
+
+.crawler-discarded-pane-scroll .crawler-discarded-table-wrap {
+  flex: none;
+  min-height: 0;
+  max-height: none;
+  overflow: visible;
+}
+
+.crawler-discarded-pane-scroll .crawler-discarded-table-wrap + .crawler-discarded-meta {
+  margin-top: 8px;
+  border-top: 1px solid var(--border);
+  padding-top: 10px;
+}
+
 .crawler-discarded-modal-body .crawler-discarded-tools {
   flex-shrink: 0;
   padding: 10px 14px;
   border-bottom: 1px solid var(--border);
+  background: var(--bg-elevated);
   justify-content: flex-start;
   flex-wrap: nowrap;
   align-items: center;
@@ -2500,6 +2549,17 @@ a {
   color: var(--muted);
 }
 
+.crawler-discarded-meta {
+  font-size: 12px;
+  color: var(--muted);
+  padding: 8px 14px 4px;
+  white-space: nowrap;
+  overflow: hidden;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.01em;
+  text-overflow: ellipsis;
+}
+
 .crawler-discarded-tools {
   display: flex;
   flex-wrap: wrap;
@@ -2554,11 +2614,11 @@ a {
 }
 
 .crawler-discarded-table {
-  width: max-content;
+  width: 100%;
   min-width: 100%;
   border-collapse: collapse;
   font-size: 12.5px;
-  table-layout: auto;
+  table-layout: fixed;
 }
 
 .crawler-discarded-table th,
@@ -2595,23 +2655,30 @@ a {
   text-decoration: underline;
 }
 
+.crawler-discarded-table th:first-child,
+.crawler-discarded-table td:first-child {
+  width: 5.5rem;
+}
+
+.crawler-discarded-reason {
+  width: 4rem;
+  color: var(--muted);
+}
+
 .crawler-discarded-board-cell {
-  max-width: 9rem;
+  width: 5rem;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 
 .crawler-discarded-title-cell {
-  max-width: 16rem;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 
-.crawler-discarded-reason {
-  max-width: none;
-  overflow: visible;
-  text-overflow: clip;
-  color: var(--muted);
+.crawler-discarded-table td:last-child {
+  width: 7.5rem;
+  text-align: right;
 }
 
 .crawler-discarded-reason-th {
@@ -2758,11 +2825,47 @@ a {
   gap: 12px;
   padding: 10px 14px;
   border-top: 1px solid var(--border);
+  background: var(--bg-elevated);
+}
+
+.crawler-discarded-foot .toolbar-meta {
+  font-size: 12px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
 }
 
 .crawler-discarded-pager {
   display: inline-flex;
   gap: 6px;
+  align-items: center;
+}
+
+.crawler-discarded-pager .crawler-action {
+  min-width: 72px;
+  justify-content: center;
+  padding: 5px 14px;
+  font-size: 12px;
+  font-weight: 500;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--bg-elevated);
+  color: var(--text);
+  transition: background 0.15s, border-color 0.15s, box-shadow 0.15s;
+}
+
+.crawler-discarded-pager .crawler-action:not(:disabled):hover {
+  background: color-mix(in srgb, var(--accent) 10%, var(--bg-elevated));
+  border-color: color-mix(in srgb, var(--accent) 35%, var(--border));
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
+}
+
+.crawler-discarded-pager .crawler-action:not(:disabled):active {
+  transform: scale(0.97);
+}
+
+.crawler-discarded-pager .crawler-action:disabled {
+  opacity: 0.38;
+  cursor: not-allowed;
 }
 
 .activity-time {
@@ -5293,7 +5396,10 @@ a {
   .crawler-discarded-modal-head {
     padding: 12px 10px 10px 14px;
     gap: 8px;
-    position: relative;
+    /* 手机端：头部吸顶，避免滚动时标题/关闭按钮丢失 */
+    position: sticky;
+    top: 0;
+    z-index: 3;
     align-items: flex-start;
   }
 
@@ -5310,7 +5416,8 @@ a {
   }
 
   .crawler-discarded-modal-head .crawler-discarded-title {
-    padding-top: 6px;
+    /* 给顶部“手柄”留出空间，避免遮到标题文本 */
+    padding-top: 7px;
     min-width: 0;
   }
 
@@ -5318,15 +5425,25 @@ a {
     gap: 6px;
   }
 
+  .crawler-discarded-modal-head .crawler-discarded-title-row {
+    /* 标题尽量按自然宽度换行，避免在窄屏挤成一行 */
+    align-items: flex-start;
+    flex-wrap: wrap;
+  }
+
   .crawler-discarded-modal-head h3 {
     font-size: 14px;
     line-height: 1.25;
+    letter-spacing: -0.01em;
+    overflow-wrap: anywhere;
   }
 
   .crawler-discarded-modal-head .icon-only {
     flex: 0 0 auto;
     align-self: flex-start;
     margin-top: 2px;
+    /* 关闭按钮始终靠右 */
+    margin-left: auto;
     min-width: 36px;
     min-height: 36px;
     width: 36px;
@@ -5346,6 +5463,7 @@ a {
     overflow: hidden;
     font-size: 11px;
     line-height: 1.35;
+    overflow-wrap: anywhere;
   }
 
   .crawler-discarded-modal-body .crawler-discarded-tools {
@@ -5353,6 +5471,11 @@ a {
     align-items: stretch;
     gap: 8px;
     padding: 8px 10px;
+  }
+
+  .crawler-discarded-meta {
+    padding: 8px 10px 2px;
+    font-size: 11px;
   }
 
   .crawler-discarded-modal-body .crawler-discarded-tabs {
@@ -5388,8 +5511,42 @@ a {
     font-size: 16px;
   }
 
-  .crawler-discarded-modal-body .crawler-discarded-table-wrap {
-    display: none !important;
+  /* 仅隐藏带 desktop-only 的表格；随机队列等纯表格弹窗在窄屏仍显示 */
+  .crawler-discarded-modal-body .crawler-discarded-table-wrap:not(.desktop-only) {
+    display: block !important;
+  }
+
+  .crawler-random-modal .crawler-discarded-table {
+    font-size: 11px;
+  }
+
+  .crawler-random-modal .crawler-discarded-table th,
+  .crawler-random-modal .crawler-discarded-table td {
+    padding: 6px 8px;
+    vertical-align: top;
+  }
+
+  .crawler-random-modal .crawler-discarded-table .crawler-discarded-title-cell {
+    max-width: 9rem;
+    white-space: normal;
+    word-break: break-word;
+    line-height: 1.35;
+  }
+
+  .crawler-random-modal .crawler-discarded-pane-scroll {
+    min-height: 10rem;
+  }
+
+  .crawler-random-modal .crawler-discarded-pane .crawler-discarded-pager {
+    border-top: 1px solid var(--border);
+    padding: 8px 10px;
+    background: var(--bg-elevated);
+  }
+
+  /* 历史 5 列在窄屏隐藏「更新」，减少横滑 */
+  .crawler-random-modal .crawler-random-history-table th:last-child,
+  .crawler-random-modal .crawler-random-history-table td:last-child {
+    display: none;
   }
 
   .crawler-discarded-cards.mobile-only {
@@ -6138,8 +6295,9 @@ a {
 @media (max-width: 1200px) {
   .crawler-discarded-modal-body .crawler-discarded-table {
     font-size: 9px;
-    width: max-content;
+    width: 100%;
     min-width: 100%;
+    table-layout: fixed;
   }
 
   .crawler-discarded-modal-body .crawler-discarded-table th,

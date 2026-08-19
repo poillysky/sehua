@@ -786,7 +786,7 @@ def extract_title(html: str) -> str:
 
 def _strip_forum_title_suffix(title: str) -> str:
     """去掉页标题尾部的板块/站名（2048 常见「片名 | 最新合集 - 论坛名」）。"""
-    t = (title or "").strip()
+    t = strip_forum_shell_from_title(title)
     if not t:
         return ""
     # 先去站名，再去板块：`<title>片名 | 最新合集 - 人人为我论坛</title>`
@@ -799,6 +799,102 @@ def _strip_forum_title_suffix(title: str) -> str:
             t = t.split(sep, 1)[0].strip()
             break
     return t
+
+
+_FORUM_SHELL_BOARDS = frozenset(
+    {
+        "亚洲有码原创",
+        "亚洲无码原创",
+        "国产原创",
+        "欧美无码",
+        "动漫原创",
+        "每日合集",
+        "转帖交流",
+        "综合讨论",
+        "字幕分享",
+        "高清原版",
+        "套图专区",
+    }
+)
+
+
+def strip_forum_shell_from_title(title: str) -> str:
+    """剥 Discuz/98堂 页标题壳：``片名 - 板块 - 98堂[原色花堂] - Powered by Discuz!``。
+
+    仅认「空格-空格」分段，避免裁掉番号里的 ``GOJU-153``。
+    无壳标记则原样返回；剥完只剩板块名/空则保留原值。
+    """
+    raw = (title or "").strip()
+    if not raw:
+        return ""
+    low = raw.lower()
+    if "powered by discuz" not in low and "98堂" not in raw and "原色花堂" not in raw:
+        return raw
+
+    def _is_shell_part(part: str) -> bool:
+        s = (part or "").strip()
+        pl = s.lower()
+        return "powered by discuz" in pl or "98堂" in s or "原色花堂" in s
+
+    def _is_board_part(part: str) -> bool:
+        s = (part or "").strip()
+        if not s or len(s) > 20:
+            return False
+        if s in _FORUM_SHELL_BOARDS:
+            return True
+        # 仅认「区」及常见板块后缀；勿用「版」——片名「高清版」会误伤
+        if s.endswith("区"):
+            return True
+        for kw in ("原创", "合集", "分享", "讨论", "交流"):
+            if s.endswith(kw):
+                return True
+        return False
+
+    parts = re.split(r"\s+[-–—]\s+", raw)
+    if len(parts) <= 1:
+        out = re.sub(r"\s*Powered by Discuz!?\s*$", "", raw, flags=re.I).strip()
+        out = re.sub(r"\s*98堂(?:\[[^\]]*\])?\s*$", "", out).strip()
+        return out or raw
+
+    while len(parts) > 1 and _is_shell_part(parts[-1]):
+        parts.pop()
+    if len(parts) > 1 and _is_board_part(parts[-1]):
+        parts.pop()
+
+    out = " - ".join(p.strip() for p in parts if p.strip()).strip()
+    if not out:
+        return raw
+    core = out.lstrip("-–—|｜ ").strip()
+    if _is_shell_part(out):
+        return raw
+    # 剥完仍是明确短板块名才保留原值（勿因片名以「版」结尾整段回退）
+    if core in _FORUM_SHELL_BOARDS:
+        return raw
+    if len(core) <= 10 and core.endswith("区"):
+        return raw
+    if "powered by discuz" in out.lower() or "98堂" in out or "原色花堂" in out:
+        return raw
+    return out
+
+
+def strip_forum_shell_from_text(text: str) -> str:
+    """多行文本逐行剥论坛壳（用于 description / search_string）。"""
+    raw = text or ""
+    if "powered by discuz" not in raw.lower() and "98堂" not in raw and "原色花堂" not in raw:
+        return raw
+    lines = [strip_forum_shell_from_title(line) for line in raw.splitlines()]
+    out = "\n".join(lines)
+    if "powered by discuz" in out.lower() or "98堂[原色花堂]" in out:
+        out = re.sub(
+            r"(?:\s*[-–—]\s*[^-–—\n]+)*\s*[-–—]\s*Powered by Discuz!?",
+            "",
+            out,
+            flags=re.I,
+        )
+        out = re.sub(r"(?:\s*[-–—]\s*)?98堂(?:\[[^\]]*\])?", "", out)
+        out = re.sub(r"[ \t]+\n", "\n", out)
+        out = re.sub(r"\n{3,}", "\n\n", out).strip()
+    return out
 
 
 def extract_tid(html: str, fallback: int = 0) -> int:

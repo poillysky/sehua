@@ -251,6 +251,101 @@ def test_pg_dump_version_mismatch_falls_back_to_python(monkeypatch, tmp_path):
     assert gzmod.open(dest, "rb").read().startswith(b"-- python fallback")
 
 
+def test_python_dump_named_cursor_exports_rows(monkeypatch, tmp_path):
+    """named cursor 首次 fetch 前 description 为空时，仍应导出 INSERT。"""
+    import gzip as gzmod
+
+    class _NamedCursor:
+        def __init__(self):
+            self.description = None
+            self.itersize = 500
+            self._rows = [("abc123", "demo.mkv", 100, "ed2k://x", "mkv", "demo")]
+
+        def execute(self, _sql: str) -> None:
+            return None
+
+        def fetchmany(self, _size: int):
+            if self._rows:
+                self.description = [
+                    ("hash",),
+                    ("filename",),
+                    ("size",),
+                    ("ed2k_link",),
+                    ("extension",),
+                    ("search_string",),
+                ]
+                out = self._rows
+                self._rows = []
+                return out
+            return []
+
+        def close(self) -> None:
+            return None
+
+    class _MetaCursor:
+        def __init__(self):
+            self.description = [
+                ("hash",),
+                ("filename",),
+                ("size",),
+                ("ed2k_link",),
+                ("extension",),
+                ("search_string",),
+            ]
+
+        def execute(self, sql: str) -> None:
+            assert "LIMIT 0" in sql
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc: object) -> None:
+            return None
+
+    class _CountCursor:
+        def execute(self, _sql: str) -> None:
+            return None
+
+        def fetchone(self):
+            return (1,)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc: object) -> None:
+            return None
+
+    class _Conn:
+        autocommit = True
+
+        def cursor(self, name=None):
+            if name:
+                return _NamedCursor()
+            return _CountCursor()
+
+        def commit(self) -> None:
+            return None
+
+        def close(self) -> None:
+            return None
+
+    monkeypatch.setattr(bk, "connect_resource", lambda: _Conn())
+    monkeypatch.setattr(bk, "_table_columns", lambda conn, name: [
+        "hash",
+        "filename",
+        "size",
+        "ed2k_link",
+        "extension",
+        "search_string",
+    ])
+
+    dest = tmp_path / "out.sql.gz"
+    bk._run_python_dump(["ed2k_resources"], dest)
+    text = gzmod.open(dest, "rt", encoding="utf-8").read()
+    assert "INSERT INTO ed2k_resources" in text
+    assert "'demo.mkv'" in text
+
+
 def test_save_backup_config_clamps(monkeypatch):
     stored: dict[str, str] = {}
 

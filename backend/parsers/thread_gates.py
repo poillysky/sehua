@@ -926,10 +926,11 @@ def coalesce_thread_title(*candidates: str) -> str:
     仅当列表空/伪标题时，才用后续帖页候选兜底。
     不再用帖内更长 subject/正文覆盖列表，避免污染。
     """
+    from parsers.content import strip_forum_shell_from_title
     from parsers.resource_names import unwrap_subject_film_title
 
     for c in candidates:
-        t = (c or "").strip()
+        t = strip_forum_shell_from_title((c or "").strip())
         if not t or not title_recognizable(t):
             continue
         return close_trailing_capacity_bracket(unwrap_subject_film_title(t))
